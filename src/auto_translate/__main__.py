@@ -81,10 +81,13 @@ def main() -> None:
     # Load models before starting ingest.
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
+    asr_model = (
+        cfg.asr.haas_model if cfg.asr.backend == "haas" else cfg.asr.model
+    )
 
     log.info(
         "ASR ready (%s, %s) in %.1fs",
-        cfg.asr.model,
+        asr_model,
         cfg.asr.backend,
         time.perf_counter() - t0,
     )
@@ -100,18 +103,8 @@ def main() -> None:
     )
 
     use_mpv = args.mpv or cfg.mpv.enabled
-
-    video_out = (
-        f"tcp://127.0.0.1:{cfg.mpv.port}"
-        if use_mpv
-        else None
-    )
-
-    burst_s = (
-        cfg.mpv.delay_s
-        if use_mpv and not source.live
-        else 0.0
-    )
+    video_out = f"tcp://127.0.0.1:{cfg.mpv.port}" if use_mpv else None
+    burst_s = cfg.mpv.delay_s if use_mpv and not source.live else 0.0
 
     ingest = Ingest(
         source,
@@ -130,24 +123,17 @@ def main() -> None:
         outputs.append(TerminalOutput())
 
     if cfg.output.web and not args.no_web:
-        outputs.append(
-            WebOutput(
-                cfg.output.web_host,
-                cfg.output.web_port,
-            )
-        )
+        outputs.append(WebOutput(cfg.output.web_host, cfg.output.web_port))
 
     if use_mpv:
         from .output.mpv import MpvOutput
         outputs.append(MpvOutput(cfg.mpv, ingest, stop))
 
     diarizer = None
-
     if cfg.mpv.speaker_diarization:
         from .speaker import PyannoteDiarizer
 
         t0 = time.perf_counter()
-
         try:
             diarizer = PyannoteDiarizer(
                 device=cfg.mpv.speaker_device,
@@ -164,15 +150,7 @@ def main() -> None:
             time.perf_counter() - t0,
         )
 
-    run(
-        ingest,
-        cfg,
-        asr,
-        translator,
-        outputs,
-        stop,
-        diarizer=diarizer,
-    )
+    run(ingest, cfg, asr, translator, outputs, stop, diarizer=diarizer)
 
 
 if __name__ == "__main__":

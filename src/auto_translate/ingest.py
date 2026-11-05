@@ -264,8 +264,8 @@ class Ingest:
             ]
         return self._audio_commands()
 
-    def start_video(self) -> None:
-        """Start the paced video stream after the translation buffer is ready."""
+    def start_video(self, start_s: float | None = None) -> None:
+        """Start the paced video stream at the source or requested recovery position."""
         if not self.video_out:
             return
 
@@ -281,7 +281,7 @@ class Ingest:
 
             session = self._session
             proc = subprocess.Popen(
-                self._video_command(),
+                self._video_command(start_s=start_s),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
@@ -340,9 +340,10 @@ class Ingest:
         log.info("prepared FFmpeg video retry with refreshed YouTube URLs")
         return True
 
-    def _video_command(self) -> list[str]:
+    def _video_command(self, start_s: float | None = None) -> list[str]:
         """Build the paced video stream sent to MPV."""
         src = self.source
+        start_s = src.start_s if start_s is None else max(0.0, start_s)
         inputs = self._resolve_video_inputs()
 
         ffmpeg = [
@@ -365,8 +366,8 @@ class Ingest:
                         f"{self.burst_s:g}",
                     ]
 
-                if src.start_s:
-                    ffmpeg += ["-ss", f"{src.start_s:.3f}"]
+                if start_s:
+                    ffmpeg += ["-ss", f"{start_s:.3f}"]
 
             # Retry transient HTTP/HLS segment connection failures before
             # allowing the video sender process to exit.
@@ -571,10 +572,10 @@ class Ingest:
                     current = self._video_proc is proc
                 if current:
                     log.warning(
-                        "FFmpeg video output stalled for %.1fs; requesting MPV stream recovery",
+                        "FFmpeg video output made no progress for %.1fs; "
+                        "the sender may be blocked or source delivery may be stalled",
                         stalled_for,
                     )
-                    self._video_failed.set()
                 warned = True
 
         returncode = proc.poll()

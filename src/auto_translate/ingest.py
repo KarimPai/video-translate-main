@@ -343,7 +343,12 @@ class Ingest:
         return True
 
     def _video_command(self, start_s: float | None = None) -> list[str]:
-        """Build the paced video stream sent to MPV."""
+        """Build the paced video stream sent to MPV.
+
+        Do not preserve YouTube's source timestamps here: MPV receives a
+        fresh TCP/MPEG-TS session after each seek, so its time-pos is elapsed
+        session time. The subtitle clock adds start_s to that elapsed time.
+        """
         src = self.source
         start_s = src.start_s if start_s is None else max(0.0, start_s)
         inputs = self._resolve_video_inputs()
@@ -355,7 +360,6 @@ class Ingest:
             "-nostats",
             "-loglevel",
             "info",
-            "-copyts",
         ]
 
         for url in inputs:

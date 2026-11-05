@@ -30,17 +30,10 @@ CONTEXT = 64  # samples of the previous frame the model also sees
 
 class StreamingSileroVAD:
     def __init__(self) -> None:
-        # VAD runs on CUDA; do not silently fall back to CPU.
+        # Prefer CUDA when its runtime dependencies are available, but keep VAD
+        # operational on CPU when the CUDA provider cannot be loaded.
         cuda_dlls.setup()
         import onnxruntime as ort
-
-        available = ort.get_available_providers()
-        if "CUDAExecutionProvider" not in available:
-            raise RuntimeError(
-                "Silero VAD requires ONNX Runtime CUDA, but CUDAExecutionProvider "
-                f"is unavailable (providers: {available}). Install a compatible "
-                "onnxruntime-gpu build and CUDA/cuDNN libraries."
-            )
 
         options = ort.SessionOptions()
         options.inter_op_num_threads = 1
@@ -49,17 +42,55 @@ class StreamingSileroVAD:
         options.log_severity_level = 4
 
         model_path = os.path.join(get_assets_path(), "silero_vad_v6.onnx")
-        self._session = ort.InferenceSession(
-            model_path,
-            providers=["CUDAExecutionProvider"],
-            sess_options=options,
-        )
-        providers = self._session.get_providers()
-        if not providers or providers[0] != "CUDAExecutionProvider":
-            raise RuntimeError(
-                f"Silero VAD failed to initialize on CUDA: {providers}"
+        available = ort.get_available_providers()
+        self.device = "cpu"
+
+        if "CUDAExecutionProvider" in available:
+            try:
+                session = ort.InferenceSession(
+                    model_path,
+                    providers=["CUDAExecutionProvider"],
+                    sess_options=options,
+                )
+                providers = session.get_providers()
+                if providers and providers[0] == "CUDAExecutionProvider":
+                    self._session = session
+                    self.device = "cuda"
+                else:
+                    log.warning(
+                        "Silero VAD CUDA provider did not activate (%s); falling back to CPU",
+                        providers,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "Silero VAD CUDA initialization failed; falling back to CPU: %s",
+                    exc,
+                )
+        else:
+            log.warning(
+                "Silero VAD CUDA provider is unavailable (%s); falling back to CPU",
+                available,
             )
-        log.info("Silero VAD initialized on CUDA (%s)", providers)
+
+        if self.device == "cpu":
+            if "CPUExecutionProvider" not in available:
+                raise RuntimeError(
+                    "Silero VAD cannot initialize: neither CUDAExecutionProvider "
+                    f"nor CPUExecutionProvider is available ({available})."
+                )
+            self._session = ort.InferenceSession(
+                model_path,
+                providers=["CPUExecutionProvider"],
+                sess_options=options,
+            )
+            providers = self._session.get_providers()
+            if not providers or providers[0] != "CPUExecutionProvider":
+                raise RuntimeError(
+                    f"Silero VAD failed to initialize on CPU: {providers}"
+                )
+            log.info("Silero VAD initialized on CPU (%s)", providers)
+        else:
+            log.info("Silero VAD initialized on CUDA (%s)", providers)
         self._h = np.zeros((1, 1, 128), dtype=np.float32)  # LSTM state, carried over
         self._c = np.zeros((1, 1, 128), dtype=np.float32)
         self._context = np.zeros(CONTEXT, dtype=np.float32)

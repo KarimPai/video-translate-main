@@ -35,6 +35,13 @@ class StreamingSileroVAD:
         cuda_dlls.setup()
         import onnxruntime as ort
 
+        # Load CUDA/cuDNN DLLs from the installed NVIDIA Python packages before
+        # ONNX Runtime attempts to create the CUDA execution provider.
+        try:
+            ort.preload_dlls(directory="")
+        except Exception as exc:
+            log.warning("Could not preload ONNX Runtime CUDA dependencies: %s", exc)
+
         options = ort.SessionOptions()
         options.inter_op_num_threads = 1
         options.intra_op_num_threads = 1

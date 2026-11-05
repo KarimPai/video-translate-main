@@ -25,9 +25,11 @@ class HaasASR:
                 "release and make sure speech.exe is on PATH."
             )
 
-        command = [speech, "worker", cfg.haas_model, "--device", cfg.haas_device]
-        if not cfg.haas_decode_on_cpu:
-            command.append("--decode-on-cpu=false")
+        command = [
+            speech, "worker", cfg.haas_model,
+            "--device", cfg.haas_device,
+            f"--decode-on-cpu={str(cfg.haas_decode_on_cpu).lower()}",
+        ]
 
         try:
             self.process = subprocess.Popen(

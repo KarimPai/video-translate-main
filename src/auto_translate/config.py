@@ -41,8 +41,11 @@ class VadConfig:
 
 @dataclass
 class AsrConfig:
-    backend: str = "faster-whisper"
+    backend: str = "haas"
     model: str = "kotoba-tech/kotoba-whisper-v2.0-faster"
+    haas_model: str = "haas-ja-v1.0"
+    haas_device: str = "Vulkan0"
+    haas_decode_on_cpu: bool = False
     device: str = "cuda"
     compute_type: str = "int8_float16"
     beam_size: int = 5
@@ -142,15 +145,9 @@ def load_config(path: Path) -> Config:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    # Ignore fields left behind by old Haas, Qwen3-ASR and Parakeet configs.
+    # Remove fields belonging only to the deleted experimental ASR backends.
     asr_data = dict(data.get("asr", {}))
-    for key in (
-        "qwen_model",
-        "qwen_python",
-        "parakeet_model",
-        "parakeet_threads",
-        "haas_model",
-    ):
+    for key in ("qwen_model", "qwen_python", "parakeet_model", "parakeet_threads"):
         asr_data.pop(key, None)
 
     return Config(

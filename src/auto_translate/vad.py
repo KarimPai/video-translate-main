@@ -333,6 +333,8 @@ def run_segmenter(
         out_q.put(None)
         return
 
+    awaiting_first_utterance = False
+
     while True:
         item = in_q.get()
 
@@ -365,6 +367,7 @@ def run_segmenter(
                 item.start_sample / SAMPLE_RATE,
             )
             seg.feed(item)
+            awaiting_first_utterance = True
             out_q.put(
                 AudioProgress(
                     item.start_sample,
@@ -375,6 +378,14 @@ def run_segmenter(
             continue
 
         for utt in seg.feed(item):
+            if awaiting_first_utterance:
+                log.info(
+                    "first VAD utterance after seek: generation=%d range=%.2f-%.2fs",
+                    utt.generation,
+                    utt.start_s,
+                    utt.end_s,
+                )
+                awaiting_first_utterance = False
             out_q.put(utt)
 
         progress = seg.release_progress()

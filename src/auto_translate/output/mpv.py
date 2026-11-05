@@ -271,6 +271,8 @@ class MpvOutput:
         self._job = None
         self._closed = False
         self._video_retries = 0
+        self._clock_sample_logged = False
+        self._logged_subtitle_generations: set[int] = set()
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -372,17 +374,28 @@ class MpvOutput:
         line = _Line(sub, sub.start_s, until)
         now = self._now
 
+        if sub.generation not in self._logged_subtitle_generations:
+            self._logged_subtitle_generations.add(sub.generation)
+            log.info(
+                "first subtitle received: generation=%d speech=%.3f-%.3f "
+                "mpv_clock=%.3f delta=%+.3fs",
+                sub.generation,
+                sub.start_s,
+                sub.end_s,
+                now if now is not None else float("nan"),
+                (now - sub.start_s) if now is not None else float("nan"),
+            )
+
         if now is not None and now > until:
-            log.debug(
-                "late subtitle (%.1fs): %s",
-                now - sub.end_s,
-                sub.ja,
-            )
-            line = _Line(
-                sub,
+            log.warning(
+                "dropping expired subtitle instead of shifting it late: "
+                "generation=%d speech_end=%.3f mpv_clock=%.3f late=%.3fs",
+                sub.generation,
+                sub.end_s,
                 now,
-                now + cfg.min_display_s + cfg.hold_s,
+                now - sub.end_s,
             )
+            return
 
         with self._lock:
             self._lines.append(line)
@@ -506,7 +519,15 @@ class MpvOutput:
             - self.ingest.source.start_s
         )
 
+        self._clock_sample_logged = False
         self._session_start = self.ingest.source.start_s
+        log.info(
+            "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
+            "offset=%.3f; translated_time = mpv_time_pos - offset",
+            self._session_start,
+            self.ingest.first_pts,
+            offset,
+        )
 
         if self.ingest.source.live:
             unpause_at = (
@@ -617,6 +638,19 @@ class MpvOutput:
 
             if (pos := self.ipc.get("time-pos")) is not None:
                 self._now = pos - offset
+
+                if not self._clock_sample_logged:
+                    self._clock_sample_logged = True
+                    log.info(
+                        "MPV clock sample: raw_time_pos=%.3f "
+                        "mapped_source_time=%.3f source_start=%.3f "
+                        "mapping_error=%+.3fs",
+                        pos,
+                        self._now,
+                        self._session_start,
+                        self._now - self._session_start,
+                    )
+
                 self._render(self._now)
 
             if (delta := self._jump_request()) and self._jump(delta):

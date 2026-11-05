@@ -25,6 +25,7 @@ import numpy as np
 
 from .config import IngestConfig, SeparationConfig, DeepFilterConfig
 from .types import SAMPLE_RATE, AudioChunk
+from .timeline import load_vod_metadata
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class Source:
     start_s: float = 0.0
     paced: bool = True
     duration: float | None = None
+    timeline: dict | None = None
 
 
 # ---- source resolution -------------------------------------------------------------------
@@ -90,29 +92,9 @@ def _cookie_args(cfg: IngestConfig) -> list[str]:
 
 
 def probe(url: str, cfg: IngestConfig) -> tuple[str, float | None]:
-    """Return live status and duration."""
-    cmd = [
-        "yt-dlp",
-        "--no-warnings",
-        "--skip-download",
-        "--print",
-        "%(live_status)s|%(duration)s",
-    ]
-    cmd += _cookie_args(cfg) + [url]
-
-    out = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-    status, _, duration = out.partition("|")
-
-    return (
-        status,
-        float(duration) if duration not in ("", "NA", "None") else None,
-    )
+    """Fetch VOD metadata and return live status and duration."""
+    metadata = load_vod_metadata(url, cfg)
+    return str(metadata.get("live_status") or "not_live"), float(metadata["duration_s"])
 
 
 def fmt_hms(seconds: float) -> str:
@@ -131,12 +113,15 @@ def resolve_source(
     """Resolve CLI arguments into a Source."""
     is_file = Path(location).exists()
     duration: float | None = None
+    timeline: dict | None = None
 
     if mode == "auto":
         if is_file:
             mode = "vod"
         else:
-            status, duration = probe(location, cfg)
+            timeline = load_vod_metadata(location, cfg)
+            status = str(timeline.get("live_status") or "not_live")
+            duration = float(timeline["duration_s"])
             log.info(
                 "yt-dlp: live_status=%s duration=%s",
                 status,
@@ -156,6 +141,10 @@ def resolve_source(
             )
         return Source(location, live=True)
 
+    if not is_file and timeline is None:
+        timeline = load_vod_metadata(location, cfg)
+        duration = float(timeline["duration_s"])
+
     start_s = (
         parse_time(start)
         if start
@@ -174,6 +163,7 @@ def resolve_source(
         start_s=start_s,
         paced=not fast,
         duration=duration,
+        timeline=timeline,
     )
 
 

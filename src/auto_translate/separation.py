@@ -37,17 +37,6 @@ class VocalSeparator:
                 "CUDA is unavailable for vocal separation"
             )
 
-        # audio-separator selects CUDA for PyTorch and ONNX models only when
-        # both CUDA runtimes are present. Its default otherwise is CPU.
-        import onnxruntime as ort
-
-        providers = ort.get_available_providers()
-        if "CUDAExecutionProvider" not in providers:
-            raise RuntimeError(
-                "Vocal separation requires ONNX Runtime CUDA, but "
-                f"CUDAExecutionProvider is unavailable (providers: {providers})."
-            )
-
         from audio_separator.separator import Separator
 
         model = Path(model_path).resolve()

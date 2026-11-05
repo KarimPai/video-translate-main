@@ -12,7 +12,10 @@ log = logging.getLogger(__name__)
 
 class HaasASR:
     def __init__(self, cfg: AsrConfig) -> None:
-        self.cfg = cfg
+        raise RuntimeError(
+            "The Haas worker is currently configured for Vulkan0, not CUDA. "
+            "Select faster-whisper, qwen3-asr, or parakeet for CUDA inference."
+        )
         self.request_counter = 0
 
         self.process = subprocess.Popen(

@@ -281,7 +281,12 @@ def run_segmenter(
     out_q: "queue.Queue[Utterance | AudioProgress | None]",
 ) -> None:
     """Thread body."""
-    seg = Segmenter(cfg)
+    try:
+        seg = Segmenter(cfg)
+    except Exception:
+        log.exception("Could not initialize the CUDA Silero VAD segmenter")
+        out_q.put(None)
+        return
 
     while True:
         item = in_q.get()

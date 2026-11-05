@@ -149,7 +149,7 @@ def record_session_anchor(
         })
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(
-            json.dumps(stored, ensure_ascii=False, indent=2) + "\\n",
+            json.dumps(stored, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         temporary.replace(path)

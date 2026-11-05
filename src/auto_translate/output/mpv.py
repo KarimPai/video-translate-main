@@ -528,22 +528,30 @@ class MpvOutput:
             self._mpv_anchor = None
             mapping = "live: mpv_time_pos - (ffmpeg_first_pts - source_start)"
         else:
-            # The VOD video sender now emits normalized timestamps (no
-            # -copyts). MPV time-pos is elapsed time from this FFmpeg session.
+            # Anchor MPV's actual session clock to the requested source
+            # position. This avoids assuming time-pos starts at exactly zero.
             self._mpv_anchor = None
             self._clock_source_anchor = self._session_start
             self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
             mapping = "vod: measured MPV session anchor against source timeline"
 
         self._clock_sample_logged = False
-        log.info(
-            "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
-            "offset=%.3f; %s",
-            self._session_start,
-            self.ingest.first_pts,
-            self._clock_offset,
-            mapping,
-        )
+        if self.ingest.source.live:
+            log.info(
+                "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
+                "offset=%.3f; %s",
+                self._session_start,
+                self.ingest.first_pts,
+                self._clock_offset,
+                mapping,
+            )
+        else:
+            log.info(
+                "MPV clock mapping: VOD source_start=%.3f; waiting for "
+                "measured MPV session anchor; %s",
+                self._session_start,
+                mapping,
+            )
 
         if self.ingest.source.live:
             unpause_at = (
@@ -686,8 +694,8 @@ class MpvOutput:
                     self._clock_sample_logged = True
                     log.info(
                         "MPV clock sample: raw_time_pos=%.3f "
-                        "mapped_source_time=%.3f source_start=%.3f "
-                        "mapping_error=%+.3fs",
+                        "mapped_source_time=%.3f session_start=%.3f "
+                        "session_elapsed=%+.3fs",
                         pos,
                         self._now,
                         self._session_start,

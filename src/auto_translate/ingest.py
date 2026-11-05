@@ -35,6 +35,7 @@ SEPARATION_INPUT_RATE = 44100
 DEEPFILTER_INPUT_RATE = 48000
 
 _PTS = re.compile(r"pts_time:(-?[\d.]+)")
+_ASHOWINFO_SAMPLES = re.compile(r"nb_samples:(\d+)")
 
 
 @dataclass
@@ -490,6 +491,14 @@ class Ingest:
     ) -> None:
         """Read FFmpeg logs, capture first audio PTS, and filter noisy output."""
         receiver_gone = False
+        first_frame_pts: float | None = None
+        audio_samples = 0
+        next_pts_log_sample = 0
+        output_rate = (
+            SEPARATION_INPUT_RATE if self.separation_enabled
+            else DEEPFILTER_INPUT_RATE if self.deepfilter_enabled
+            else SAMPLE_RATE
+        )
 
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
@@ -515,6 +524,35 @@ class Ingest:
                             )
 
             if "ashowinfo" in line:
+                if capture_pts:
+                    pts_match = _PTS.search(line)
+                    samples_match = _ASHOWINFO_SAMPLES.search(line)
+                    if pts_match and samples_match:
+                        frame_pts = float(pts_match.group(1))
+                        frame_samples = int(samples_match.group(1))
+                        if first_frame_pts is None:
+                            first_frame_pts = frame_pts
+                            log.info(
+                                "audio PTS baseline: %.3fs at %d Hz",
+                                first_frame_pts,
+                                output_rate,
+                            )
+                        audio_samples += frame_samples
+                        if audio_samples >= next_pts_log_sample:
+                            expected_pts = (
+                                first_frame_pts + (audio_samples - frame_samples) / output_rate
+                            )
+                            pts_error = frame_pts - expected_pts
+                            log.info(
+                                "audio PTS continuity: pts=%.3f "
+                                "sample_clock=%.3f drift=%+.3fs",
+                                frame_pts,
+                                expected_pts,
+                                pts_error,
+                            )
+                            next_pts_log_sample = (
+                                (audio_samples // (output_rate * 10)) + 1
+                            ) * output_rate * 10
                 continue
 
             receiver_gone |= any(

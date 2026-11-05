@@ -430,6 +430,20 @@ class Ingest:
             output_rate = SAMPLE_RATE
 
         audio_filters = self._pitch_filter(output_rate)
+
+        # VOD HLS audio can contain timestamp gaps or discontinuities between
+        # media segments. Raw PCM has no timestamps, so without compensation
+        # those gaps disappear when _read_session advances its sample counter
+        # by the number of decoded samples. MPV's video clock still follows
+        # the media timeline, making subtitles progressively early.
+        #
+        # Let libswresample reconcile decoded audio against its packet PTS
+        # before timestamps are discarded into the raw PCM pipe. The high
+        # async ceiling allows hard correction at segment discontinuities;
+        # the filter is deliberately VOD-only so live latency is unchanged.
+        if not src.live:
+            audio_filters.append("aresample=async=1000:min_hard_comp=0.1")
+
         audio_filters.append("ashowinfo")
         ffmpeg += ["-map", audio, "-af", ",".join(audio_filters)]
 

@@ -332,6 +332,7 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 |---|---|---|
 | `ytdlp_format` | `"bestaudio/93/best"` | yt-dlp format for the audio (without mpv). Live streams often have no audio-only format, so `93` (360p) is the fallback. |
 | `cookies_from_browser` | `""` | `"chrome"`, `"firefox"`, `"edge"`, … to use your browser's YouTube login. Needed for **members-only** streams. |
+| `pitch_semitones` | `-3.0` | Pitch shift applied to ASR audio only; playback audio remains unchanged. `0.0` disables it. |
 
 ### `[vad]`: cutting speech into lines
 

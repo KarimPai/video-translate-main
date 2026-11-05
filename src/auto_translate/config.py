@@ -116,7 +116,7 @@ class MpvConfig:
     )
     en_size: int = 44
     ja_size: int = 28
-    speaker_diarization: bool = True
+    speaker_diarization: bool = False
     speaker_similarity_threshold: float = 0.72
     speaker_device: str = "cuda"
     max_speakers: int = 3
@@ -150,6 +150,11 @@ def load_config(path: Path) -> Config:
     for key in ("qwen_model", "qwen_python", "parakeet_model", "parakeet_threads"):
         asr_data.pop(key, None)
 
+    mpv_data = dict(data.get("mpv", {}))
+    # Temporarily disable diarization to avoid GPU contention during playback.
+    # An explicit true in an older config.toml must not re-enable it.
+    mpv_data["speaker_diarization"] = False
+
     return Config(
         ingest=IngestConfig(**data.get("ingest", {})),
         separation=SeparationConfig(**data.get("separation", {})),
@@ -158,6 +163,6 @@ def load_config(path: Path) -> Config:
         asr=AsrConfig(**asr_data),
         translate=TranslateConfig(**data.get("translate", {})),
         output=OutputConfig(**data.get("output", {})),
-        mpv=MpvConfig(**data.get("mpv", {})),
+        mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),
     )

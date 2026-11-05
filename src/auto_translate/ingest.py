@@ -94,7 +94,11 @@ def _cookie_args(cfg: IngestConfig) -> list[str]:
 def probe(url: str, cfg: IngestConfig) -> tuple[str, float | None]:
     """Fetch VOD metadata and return live status and duration."""
     metadata = load_vod_metadata(url, cfg)
-    return str(metadata.get("live_status") or "not_live"), float(metadata["duration_s"])
+    duration = metadata.get("duration_s")
+    return (
+        str(metadata.get("live_status") or "not_live"),
+        float(duration) if duration is not None else None,
+    )
 
 
 def fmt_hms(seconds: float) -> str:

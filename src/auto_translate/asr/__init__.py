@@ -1,9 +1,5 @@
-import logging
-
 from ..config import AsrConfig
 from .base import ASR
-
-log = logging.getLogger(__name__)
 
 
 def create_asr(cfg: AsrConfig) -> ASR:

@@ -1,4 +1,3 @@
-
 """CLI entry point: uv run auto-translate <youtube-url | audio file> [options]."""
 
 import argparse
@@ -83,15 +82,9 @@ def main() -> None:
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
 
-    asr_model = (
-        cfg.asr.qwen_model
-        if cfg.asr.backend == "qwen3-asr"
-        else cfg.asr.model
-    )
-
     log.info(
         "ASR ready (%s, %s) in %.1fs",
-        asr_model,
+        cfg.asr.model,
         cfg.asr.backend,
         time.perf_counter() - t0,
     )

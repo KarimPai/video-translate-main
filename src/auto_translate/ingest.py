@@ -540,7 +540,7 @@ class Ingest:
                         audio_samples += frame_samples
                         if audio_samples >= next_pts_log_sample:
                             expected_pts = (
-                                first_frame_pts + audio_samples / output_rate
+                                first_frame_pts + (audio_samples - frame_samples) / output_rate
                             )
                             pts_error = frame_pts - expected_pts
                             log.info(

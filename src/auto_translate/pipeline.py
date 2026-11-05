@@ -297,6 +297,7 @@ def run(
         thread.start()
 
     stats = Stats()
+    logged_subtitle_generations: set[int] = set()
     started = time.monotonic()
     next_stats = started + cfg.stats_interval_s
 
@@ -330,6 +331,14 @@ def run(
                             if advance is not None:
                                 advance(item.sample / SAMPLE_RATE)
                     continue
+
+                if item.generation not in logged_subtitle_generations:
+                    logged_subtitle_generations.add(item.generation)
+                    log.info(
+                        "first translated subtitle for generation=%d at %.2fs",
+                        item.generation,
+                        item.start_s,
+                    )
 
                 stats.add(item)
 

@@ -215,6 +215,8 @@ class Ingest:
 
         self._procs: list[subprocess.Popen] = []
         self._video_proc: subprocess.Popen | None = None
+        self._video_progress_lock = threading.Lock()
+        self._video_progress_at = 0.0
         self._proc_lock = threading.Lock()
         self._inputs: list[str] | None = None
         self._stopped = False
@@ -286,12 +288,22 @@ class Ingest:
             self._video_proc = proc
             self._procs.append(proc)
 
+        with self._video_progress_lock:
+            self._video_progress_at = time.monotonic()
+
         assert proc.stderr is not None
 
         threading.Thread(
             target=self._read_stderr,
             args=(proc.stderr, session, False),
             name="ffmpeg-video-log",
+            daemon=True,
+        ).start()
+
+        threading.Thread(
+            target=self._watch_video_progress,
+            args=(proc,),
+            name="ffmpeg-video-progress",
             daemon=True,
         ).start()
 
@@ -338,6 +350,9 @@ class Ingest:
             "-f", "mpegts",
             "-muxdelay", "0",
             "-muxpreload", "0",
+            # Emit a low-frequency progress heartbeat for stall diagnosis.
+            "-stats_period", "5",
+            "-progress", "pipe:2",
             self.video_out,
         ]
 
@@ -437,6 +452,12 @@ class Ingest:
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
 
+            # FFmpeg writes one progress=continue/end marker per heartbeat.
+            if not capture_pts and line.startswith("progress="):
+                with self._video_progress_lock:
+                    self._video_progress_at = time.monotonic()
+                continue
+
             if capture_pts:
                 with self._proc_lock:
                     current = session == self._session
@@ -488,6 +509,31 @@ class Ingest:
                 log.error("ffmpeg: %s", line)
             elif receiver_gone:
                 log.debug("ffmpeg: %s", line)
+
+    def _watch_video_progress(self, proc: subprocess.Popen) -> None:
+        """Warn when FFmpeg stops reporting output progress for too long."""
+        last_seen = 0.0
+        warned = False
+
+        while proc.poll() is None:
+            time.sleep(2.0)
+
+            with self._video_progress_lock:
+                progress_at = self._video_progress_at
+
+            if progress_at != last_seen:
+                last_seen = progress_at
+                warned = False
+                continue
+
+            stalled_for = time.monotonic() - progress_at
+            if stalled_for >= 12.0 and not warned:
+                log.warning(
+                    "FFmpeg video output made no progress for %.1fs; "
+                    "check source delivery and MPV cache state",
+                    stalled_for,
+                )
+                warned = True
 
     def _pitch_filter(self, sample_rate: int) -> list[str]:
         """Shift ASR input pitch while preserving its original duration."""

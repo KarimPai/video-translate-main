@@ -284,9 +284,12 @@ class MpvOutput:
             "--idle=yes",
             "--rebase-start-time=no",
 
-            # Do not build a large forward/backward video cache.
-            # VOD seeking is handled by restarting ingest at the target time.
-            "--cache=no",
+            # Keep a modest forward cache to absorb brief FFmpeg/YouTube
+            # delivery interruptions. VOD seeking still restarts ingest.
+            "--cache=yes",
+            "--demuxer-readahead-secs=12",
+            "--demuxer-max-bytes=128MiB",
+            "--demuxer-max-back-bytes=32MiB",
             "--input-default-bindings=no",
 
             # Disable unsafe on-screen controls.

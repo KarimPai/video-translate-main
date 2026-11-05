@@ -1,4 +1,4 @@
-"""Load config.toml into typed dataclasses (missing keys fall back to the defaults below)."""
+"""Load config.toml into typed dataclasses (missing keys fall back to defaults)."""
 
 import tomllib
 from dataclasses import dataclass, field
@@ -7,9 +7,8 @@ from pathlib import Path
 
 @dataclass
 class IngestConfig:
-    # Live streams usually have no audio-only format, so fall back to 93 (360p, 128 kbps audio).
     ytdlp_format: str = "bestaudio/93/best"
-    cookies_from_browser: str = ""  # e.g. "chrome" for members-only streams
+    cookies_from_browser: str = ""
 
 
 @dataclass
@@ -44,11 +43,6 @@ class VadConfig:
 class AsrConfig:
     backend: str = "faster-whisper"
     model: str = "kotoba-tech/kotoba-whisper-v2.0-faster"
-    qwen_model: str = "Qwen/Qwen3-ASR-0.6B-hf"
-    qwen_python: str = r"C:\Games\qwen3-asr-env\Scripts\python.exe"
-    parakeet_model: str = "models/parakeet-ja/sherpa-onnx-nemo-parakeet-tdt_ctc-0.6b-ja-35000-int8"
-    parakeet_threads: int = 2
-    haas_model: str = "haas-ja-v1.0"
     device: str = "cuda"
     compute_type: str = "int8_float16"
     beam_size: int = 5
@@ -85,7 +79,6 @@ class OpenAICompatConfig:
     load_timeout_s: float = 300.0
     min_request_interval_s: float = 3.0
     extra_body: dict = field(default_factory=dict)
-    
 
 
 @dataclass
@@ -106,7 +99,7 @@ class OutputConfig:
 
 @dataclass
 class MpvConfig:
-    """M4: play the stream in mpv delay_s behind live, with subtitles drawn in sync."""
+    """Play the stream in mpv with subtitles drawn in sync."""
 
     enabled: bool = False
     path: str = ""

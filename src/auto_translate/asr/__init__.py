@@ -1,8 +1,24 @@
+import logging
+
 from ..config import AsrConfig
 from .base import ASR
 
+log = logging.getLogger(__name__)
+
 
 def create_asr(cfg: AsrConfig) -> ASR:
+    # Older local configs used "haas", whose Vulkan backend is disabled in
+    # this CUDA-only build. Preserve compatibility by routing those configs
+    # through the configured faster-whisper model instead.
+    if cfg.backend == "haas":
+        log.warning(
+            "ASR backend 'haas' is no longer supported; using faster-whisper "
+            "with model %s on %s",
+            cfg.model,
+            cfg.device,
+        )
+        cfg.backend = "faster-whisper"
+
     if cfg.backend == "faster-whisper":
         from .faster_whisper import FasterWhisperASR
 

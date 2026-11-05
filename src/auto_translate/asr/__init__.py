@@ -1,0 +1,25 @@
+from ..config import AsrConfig
+from .base import ASR
+
+
+def create_asr(cfg: AsrConfig) -> ASR:
+    if cfg.backend == "faster-whisper":
+        from .faster_whisper import FasterWhisperASR
+
+        return FasterWhisperASR(cfg)
+
+    if cfg.backend == "qwen3-asr":
+        from .qwen3 import Qwen3ASR
+
+        return Qwen3ASR(cfg)
+
+    if cfg.backend == "parakeet":
+        from .parakeet import ParakeetASR
+
+        return ParakeetASR(cfg)
+    if cfg.backend == "haas":
+        from .haas import HaasASR
+
+        return HaasASR(cfg)
+
+    raise ValueError(f"unknown ASR backend: {cfg.backend!r}")

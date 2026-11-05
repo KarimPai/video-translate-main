@@ -1,0 +1,90 @@
+stats_interval_s = 30
+
+[separation]
+enabled = false
+model = "pretrained_models/separation/UVR-MDX-NET-Voc_FT.onnx"
+
+[ingest]
+ytdlp_format = "bestaudio/93/best"
+cookies_from_browser = ""
+
+[vad]
+threshold = 0.4
+neg_threshold = 0.25
+min_silence_ms = 450
+speech_pad_ms = 350
+min_speech_ms = 120
+max_utterance_s = 8.0
+fallback_s = 0
+fallback_min_s = 1.5
+fallback_min_db = -45.0
+
+[asr]
+backend = "faster-whisper"
+model = "kotoba-tech/kotoba-whisper-v2.0-faster"
+device = "cuda"
+compute_type = "int8_float16"
+beam_size = 8
+no_speech_threshold = 0.6
+log_prob_threshold = -1.0
+
+[translate]
+preset = "quality"
+context_lines = 8
+glossary = "glossary.toml"
+
+# Lightweight CPU translation
+[translate.presets.light]
+backend = "ct2"
+model = "gaudi/opus-mt-ja-en-ctranslate2"
+source_spm = "source.spm"
+target_spm = "target.spm"
+device = "cpu"
+compute_type = "int8"
+
+# Sugoi Japanese-English translation
+[translate.presets.light-sugoi]
+backend = "ct2"
+model = "entai2965/sugoi-v4-ja-en-ctranslate2"
+source_spm = "spm/spm.ja.nopretok.model"
+target_spm = "spm/spm.en.nopretok.model"
+device = "cuda"
+compute_type = "int8_float16"
+
+# Balanced Qwen3 4B
+[translate.presets.balanced]
+backend = "openai-compat"
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen3:4b-instruct-2507-q4_K_M"
+
+# Quality Qwen3.5 9B
+[translate.presets.quality]
+backend = "openai-compat"
+base_url = "http://127.0.0.1:11434/v1"
+model = "hololive-qwen"
+extra_body = { reasoning_effort = "none" }
+
+[output]
+terminal = true
+web = true
+web_host = "0.0.0.0"
+web_port = 8765
+
+[mpv]
+enabled = true
+path = ""
+delay_s = 20.0
+start_wait_s = 3.0
+port = 9137
+hwdec = "auto-safe"
+ytdlp_format = "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]/b[height<=1080][protocol^=m3u8]/b[protocol^=m3u8]"
+en_size = 28
+ja_size = 0
+min_display_s = 1.5
+hold_s = 1.0
+
+# Speaker diarization and subtitle display
+speaker_diarization = false
+speaker_device = "cuda"
+max_speakers = 3
+max_subtitle_rows = 6

@@ -270,6 +270,7 @@ class MpvOutput:
         self._source_finished = False
         self._job = None
         self._closed = False
+        self._video_retries = 0
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -537,6 +538,11 @@ class MpvOutput:
 
         while not self.stop.is_set():
 
+            if self.ingest.video_failed.is_set():
+                if self._recover_video_stream():
+                    paused = True
+                    unpause_at = None
+
             if (
                 not self.ingest.source.live
                 and not paused
@@ -618,6 +624,40 @@ class MpvOutput:
 
             time.sleep(0.1)
 
+    def _recover_video_stream(self) -> bool:
+        """Reload MPV's TCP listener and restart a failed VOD video sender."""
+        if self._video_retries >= 3:
+            self.ingest.video_failed.clear()
+            log.error("video recovery stopped after 3 attempts; seek manually to retry")
+            return False
+
+        restart_at = self._now
+        if restart_at is None:
+            restart_at = self.ingest.source.start_s
+
+        self._video_retries += 1
+        log.warning(
+            "recovering MPV video stream (attempt %d/3) at %.2fs",
+            self._video_retries,
+            restart_at,
+        )
+
+        self.ipc.command("set_property", "pause", True)
+
+        if not self.ingest.prepare_video_retry():
+            return False
+
+        self.ipc.command(
+            "loadfile",
+            f"{self.listen_url}?listen=1",
+        )
+        self._wait_for_event("start-file")
+
+        self.ingest.start_video(start_s=restart_at)
+        self._shown = ""
+        log.info("MPV video stream recovery started at %.2fs", restart_at)
+        return True
+
     def _jump_request(self) -> float:
         """Collect jump-key requests from mpv."""
         delta = 0.0
@@ -678,6 +718,7 @@ class MpvOutput:
         with self._lock:
             self._lines.clear()
 
+        self._video_retries = 0
         self.ingest.request_restart(target)
 
         self.ipc.command(

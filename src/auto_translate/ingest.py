@@ -217,6 +217,7 @@ class Ingest:
         self._video_proc: subprocess.Popen | None = None
         self._video_progress_lock = threading.Lock()
         self._video_progress_at = 0.0
+        self._video_failed = threading.Event()
         self._proc_lock = threading.Lock()
         self._inputs: list[str] | None = None
         self._stopped = False
@@ -245,6 +246,8 @@ class Ingest:
             self._session += 1
 
             self._inputs = None
+            self._video_proc = None
+            self._video_failed.clear()
             self._go.clear()
             self.first_pts = None
             self._restart_at = start_s
@@ -263,8 +266,8 @@ class Ingest:
             ]
         return self._audio_commands()
 
-    def start_video(self) -> None:
-        """Start the paced video stream after the translation buffer is ready."""
+    def start_video(self, start_s: float | None = None) -> None:
+        """Start the paced video stream at the source or requested recovery position."""
         if not self.video_out:
             return
 
@@ -280,7 +283,7 @@ class Ingest:
 
             session = self._session
             proc = subprocess.Popen(
-                self._video_command(),
+                self._video_command(start_s=start_s),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
@@ -309,9 +312,40 @@ class Ingest:
 
         log.info("video stream started after translation buffer")
 
-    def _video_command(self) -> list[str]:
+    @property
+    def video_failed(self) -> threading.Event:
+        """Set when the current MPV video FFmpeg process stalls or exits badly."""
+        return self._video_failed
+
+    def prepare_video_retry(self) -> bool:
+        """Stop a failed video sender and refresh signed source URLs for retry."""
+        with self._proc_lock:
+            if self._stopped:
+                return False
+            proc = self._video_proc
+            self._video_proc = None
+            self._inputs = None
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+
+        if proc is not None:
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+        self._video_failed.clear()
+        log.info("prepared FFmpeg video retry with refreshed YouTube URLs")
+        return True
+
+    def _video_command(self, start_s: float | None = None) -> list[str]:
         """Build the paced video stream sent to MPV."""
         src = self.source
+        start_s = src.start_s if start_s is None else max(0.0, start_s)
         inputs = self._resolve_video_inputs()
 
         ffmpeg = [
@@ -334,10 +368,18 @@ class Ingest:
                         f"{self.burst_s:g}",
                     ]
 
-                if src.start_s:
-                    ffmpeg += ["-ss", f"{src.start_s:.3f}"]
+                if start_s:
+                    ffmpeg += ["-ss", f"{start_s:.3f}"]
 
-            ffmpeg += ["-http_persistent", "0", "-i", url]
+            # Retry transient HTTP/HLS segment connection failures before
+            # allowing the video sender process to exit.
+            ffmpeg += [
+                "-http_persistent", "0",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "10",
+                "-i", url,
+            ]
 
         audio = f"{len(inputs) - 1}:a:0"
 
@@ -528,12 +570,25 @@ class Ingest:
 
             stalled_for = time.monotonic() - progress_at
             if stalled_for >= 12.0 and not warned:
-                log.warning(
-                    "FFmpeg video output made no progress for %.1fs; "
-                    "check source delivery and MPV cache state",
-                    stalled_for,
-                )
+                with self._proc_lock:
+                    current = self._video_proc is proc
+                if current:
+                    log.warning(
+                        "FFmpeg video output made no progress for %.1fs; "
+                        "the sender may be blocked or source delivery may be stalled",
+                        stalled_for,
+                    )
                 warned = True
+
+        returncode = proc.poll()
+        with self._proc_lock:
+            current = self._video_proc is proc
+        if current and returncode not in (None, 0):
+            log.error(
+                "FFmpeg video sender exited with code %s; requesting MPV stream recovery",
+                returncode,
+            )
+            self._video_failed.set()
 
     def _pitch_filter(self, sample_rate: int) -> list[str]:
         """Shift ASR input pitch while preserving its original duration."""
@@ -640,6 +695,11 @@ class Ingest:
 
                     generation = self._generation
 
+                log.info(
+                    "ingest seek reset: generation=%d position=%.2fs",
+                    generation,
+                    self.source.start_s,
+                )
                 out_q.put(
                     AudioChunk(
                         round(self.source.start_s * SAMPLE_RATE),
@@ -664,6 +724,7 @@ class Ingest:
     ) -> None:
         """Read FFmpeg PCM and optionally enhance or separate speech."""
         generation = self.generation
+        first_chunk_after_seek = generation > 0
 
         cmds = (
             [self._video_audio_command()]
@@ -807,6 +868,14 @@ class Ingest:
                 if not data:
                     break
 
+                if first_chunk_after_seek:
+                    log.info(
+                        "first audio data after seek: generation=%d position=%.2fs",
+                        generation,
+                        self.source.start_s,
+                    )
+                    first_chunk_after_seek = False
+
                 if worker:
                     data = pending + data
 
@@ -937,6 +1006,8 @@ class Ingest:
     def stop(self) -> None:
         with self._proc_lock:
             self._stopped = True
+            self._video_proc = None
+            self._video_failed.clear()
             self._go.set()
             self._terminate_locked()
 

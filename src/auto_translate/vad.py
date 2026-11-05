@@ -98,7 +98,11 @@ class StreamingSileroVAD:
             log.info("Silero VAD initialized on CPU (%s)", providers)
         else:
             log.info("Silero VAD initialized on CUDA (%s)", providers)
-        self._h = np.zeros((1, 1, 128), dtype=np.float32)  # LSTM state, carried over
+        self.reset()
+
+    def reset(self) -> None:
+        """Clear recurrent state without reloading the ONNX model/session."""
+        self._h = np.zeros((1, 1, 128), dtype=np.float32)
         self._c = np.zeros((1, 1, 128), dtype=np.float32)
         self._context = np.zeros(CONTEXT, dtype=np.float32)
 
@@ -132,12 +136,15 @@ class Segmenter:
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
         self.fallback_min = _ms_to_frames(cfg.fallback_min_s * 1000)
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
+        # Keep one ONNX Runtime session for the lifetime of the segmenter.
+        # A seek only resets recurrent state; it must not reload the model.
+        self.vad = StreamingSileroVAD()
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:
         """Fresh stream state, starting at sample `next_sample` (0 = take it from the first chunk)."""
         self._generation = generation
-        self.vad = StreamingSileroVAD()
+        self.vad.reset()
         self._leftover = np.zeros(0, dtype=np.float32)  # samples not yet a whole frame
         self._next_frame_sample = next_sample  # sample index of the next frame to process
         self._preroll: deque[np.ndarray] = deque(maxlen=self.pad)  # recent non-speech frames
@@ -326,6 +333,8 @@ def run_segmenter(
         out_q.put(None)
         return
 
+    awaiting_first_utterance = False
+
     while True:
         item = in_q.get()
 
@@ -352,7 +361,13 @@ def run_segmenter(
             continue
 
         if item.reset:
+            log.info(
+                "VAD seek reset: generation=%d position=%.2fs",
+                item.generation,
+                item.start_sample / SAMPLE_RATE,
+            )
             seg.feed(item)
+            awaiting_first_utterance = True
             out_q.put(
                 AudioProgress(
                     item.start_sample,
@@ -363,6 +378,14 @@ def run_segmenter(
             continue
 
         for utt in seg.feed(item):
+            if awaiting_first_utterance:
+                log.info(
+                    "first VAD utterance after seek: generation=%d range=%.2f-%.2fs",
+                    utt.generation,
+                    utt.start_s,
+                    utt.end_s,
+                )
+                awaiting_first_utterance = False
             out_q.put(utt)
 
         progress = seg.release_progress()

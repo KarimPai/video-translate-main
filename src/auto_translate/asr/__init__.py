@@ -7,15 +7,10 @@ log = logging.getLogger(__name__)
 
 
 def create_asr(cfg: AsrConfig) -> ASR:
-    # Migrate old local configs without retaining the obsolete Haas backend.
     if cfg.backend == "haas":
-        log.warning(
-            "ASR backend 'haas' is obsolete; using faster-whisper "
-            "with model %s on %s",
-            cfg.model,
-            cfg.device,
-        )
-        cfg.backend = "faster-whisper"
+        from .haas import HaasASR
+
+        return HaasASR(cfg)
 
     if cfg.backend == "faster-whisper":
         from .faster_whisper import FasterWhisperASR
@@ -23,5 +18,5 @@ def create_asr(cfg: AsrConfig) -> ASR:
         return FasterWhisperASR(cfg)
 
     raise ValueError(
-        f"unsupported ASR backend {cfg.backend!r}; use 'faster-whisper'"
+        f"unsupported ASR backend {cfg.backend!r}; use 'haas' or 'faster-whisper'"
     )

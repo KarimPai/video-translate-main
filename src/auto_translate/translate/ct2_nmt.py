@@ -16,7 +16,21 @@ class Ct2NmtTranslator:
         self.cfg = cfg
         self.glossary = glossary
         folder = Path(cfg.model) if Path(cfg.model).is_dir() else Path(snapshot_download(cfg.model))
-        self.model = ctranslate2.Translator(str(folder), device=cfg.device, compute_type=cfg.compute_type)
+        if cfg.device != "cuda":
+            raise ValueError(
+                f"CTranslate2 is configured for {cfg.device!r}; CUDA is required "
+                "for local NMT translation."
+            )
+        if ctranslate2.get_cuda_device_count() < 1:
+            raise RuntimeError(
+                "CTranslate2 CUDA is unavailable. Install a CUDA-enabled "
+                "CTranslate2 build and verify the NVIDIA driver."
+            )
+        self.model = ctranslate2.Translator(
+            str(folder),
+            device="cuda",
+            compute_type=cfg.compute_type,
+        )
         self.src_spm = sentencepiece.SentencePieceProcessor(model_file=str(folder / cfg.source_spm))
         self.tgt_spm = sentencepiece.SentencePieceProcessor(model_file=str(folder / cfg.target_spm))
         # Some converted models add the end-of-sentence token themselves (Sugoi), others expect it (Opus-MT).

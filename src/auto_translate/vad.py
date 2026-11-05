@@ -9,12 +9,15 @@ and Whisper (with stricter filters, see asr) decides whether anyone is talking.
 """
 
 import logging
+import os
 import queue
 import time
 from collections import deque
 
 import numpy as np
-from faster_whisper.vad import get_vad_model
+
+from . import cuda_dlls
+from faster_whisper.utils import get_assets_path
 
 from .config import VadConfig
 from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
@@ -27,7 +30,36 @@ CONTEXT = 64  # samples of the previous frame the model also sees
 
 class StreamingSileroVAD:
     def __init__(self) -> None:
-        self._session = get_vad_model().session  # onnxruntime session, CPU
+        # VAD runs on CUDA; do not silently fall back to CPU.
+        cuda_dlls.setup()
+        import onnxruntime as ort
+
+        available = ort.get_available_providers()
+        if "CUDAExecutionProvider" not in available:
+            raise RuntimeError(
+                "Silero VAD requires ONNX Runtime CUDA, but CUDAExecutionProvider "
+                f"is unavailable (providers: {available}). Install a compatible "
+                "onnxruntime-gpu build and CUDA/cuDNN libraries."
+            )
+
+        options = ort.SessionOptions()
+        options.inter_op_num_threads = 1
+        options.intra_op_num_threads = 1
+        options.enable_cpu_mem_arena = False
+        options.log_severity_level = 4
+
+        model_path = os.path.join(get_assets_path(), "silero_vad_v6.onnx")
+        self._session = ort.InferenceSession(
+            model_path,
+            providers=["CUDAExecutionProvider"],
+            sess_options=options,
+        )
+        providers = self._session.get_providers()
+        if not providers or providers[0] != "CUDAExecutionProvider":
+            raise RuntimeError(
+                f"Silero VAD failed to initialize on CUDA: {providers}"
+            )
+        log.info("Silero VAD initialized on CUDA (%s)", providers)
         self._h = np.zeros((1, 1, 128), dtype=np.float32)  # LSTM state, carried over
         self._c = np.zeros((1, 1, 128), dtype=np.float32)
         self._context = np.zeros(CONTEXT, dtype=np.float32)

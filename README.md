@@ -46,7 +46,9 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
 CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
-don't need to install the CUDA Toolkit. Only an up-to-date NVIDIA driver.
+don't need to install the CUDA Toolkit. Only an up-to-date NVIDIA driver. GPU-backed VAD, ASR, diarization,
+and local CTranslate2 translation require CUDA and fail clearly instead of silently switching to CPU.
+FFmpeg decoding, resampling, and pipeline coordination remain CPU tasks.
 
 ## Installation
 
@@ -198,8 +200,8 @@ backend = "ct2"
 model = "some-user/some-ctranslate2-model"   # HF repo or local folder
 source_spm = "source.spm"                    # tokenizer paths inside the model folder
 target_spm = "target.spm"
-device = "cpu"                               # or "cuda"
-compute_type = "int8"
+device = "cuda"
+compute_type = "float16"
 beam_size = 4
 ```
 

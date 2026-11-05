@@ -67,8 +67,8 @@ class Ct2NmtConfig:
     model: str
     source_spm: str
     target_spm: str
-    device: str = "cpu"
-    compute_type: str = "int8"
+    device: str = "cuda"
+    compute_type: str = "float16"
     beam_size: int = 4
 
 

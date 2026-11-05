@@ -32,9 +32,15 @@ class PyannoteDiarizer:
         self.torch = torch
         self.max_speakers = max(1, int(max_speakers))
 
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            log.warning("CUDA unavailable; using CPU for pyannote")
-            device = "cpu"
+        if not device.startswith("cuda"):
+            raise ValueError(
+                f"Pyannote diarization is configured for {device!r}; CUDA is required."
+            )
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "Pyannote diarization requires CUDA, but torch.cuda.is_available() "
+                "is false. Check the CUDA-enabled PyTorch build and NVIDIA driver."
+            )
 
         self.device = device
 

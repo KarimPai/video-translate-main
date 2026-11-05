@@ -246,6 +246,8 @@ class Ingest:
             self._session += 1
 
             self._inputs = None
+            self._video_proc = None
+            self._video_failed.clear()
             self._go.clear()
             self.first_pts = None
             self._restart_at = start_s
@@ -1004,6 +1006,8 @@ class Ingest:
     def stop(self) -> None:
         with self._proc_lock:
             self._stopped = True
+            self._video_proc = None
+            self._video_failed.clear()
             self._go.set()
             self._terminate_locked()
 

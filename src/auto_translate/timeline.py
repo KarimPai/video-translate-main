@@ -57,7 +57,8 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     data = json.loads(raw)
 
     duration = data.get("duration")
-    if duration is None:
+    live_status = str(data.get("live_status") or "not_live")
+    if duration is None and live_status not in ("is_live", "is_upcoming"):
         raise ValueError("yt-dlp did not provide a VOD duration")
 
     chapters = []
@@ -85,9 +86,9 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
         "video_id": str(data.get("id") or ""),
         "title": str(data.get("title") or ""),
         "extractor": str(data.get("extractor_key") or data.get("extractor") or ""),
-        "duration_s": float(duration),
+        "duration_s": float(duration) if duration is not None else None,
         "upload_timestamp": data.get("release_timestamp") or data.get("timestamp"),
-        "live_status": str(data.get("live_status") or "not_live"),
+        "live_status": live_status,
         "chapters": chapters,
         "formats": formats,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -111,7 +112,7 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     log.info(
         "VOD timeline metadata: id=%s duration=%s chapters=%d formats=%d cache=%s",
         video_id,
-        _format_duration(float(duration)),
+        _format_duration(float(duration)) if duration is not None else "LIVE/unknown",
         len(chapters),
         len(formats),
         path,
@@ -124,3 +125,33 @@ def _format_duration(seconds: float) -> str:
     hours, remainder = divmod(total, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def record_session_anchor(
+    timeline: dict[str, Any] | None,
+    source_start_s: float,
+    mpv_time_pos_s: float,
+    reason: str,
+) -> None:
+    """Persist a measured MPV-to-source clock anchor in the VOD metadata."""
+    if not timeline or not timeline.get("cache_path"):
+        return
+
+    path = Path(timeline["cache_path"])
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        sessions = stored.setdefault("session_anchors", [])
+        sessions.append({
+            "source_start_s": round(float(source_start_s), 6),
+            "mpv_time_pos_s": round(float(mpv_time_pos_s), 6),
+            "reason": str(reason),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        })
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(stored, ensure_ascii=False, indent=2) + "\\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        log.warning("could not persist VOD clock anchor to %s", path, exc_info=True)

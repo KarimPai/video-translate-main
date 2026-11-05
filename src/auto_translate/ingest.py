@@ -193,6 +193,7 @@ class Ingest:
     ):
         self.source = source
         self.cfg = cfg
+        self.pitch_semitones = cfg.pitch_semitones
         self.video_out = video_out
         self.video_format = video_format
         self.burst_s = burst_s
@@ -362,7 +363,17 @@ class Ingest:
             ffmpeg += ["-http_persistent", "0", "-i", url]
 
         audio = f"{len(inputs) - 1}:a:0"
-        ffmpeg += ["-map", audio, "-af", "ashowinfo"]
+
+        if self.separation_enabled:
+            output_rate = SEPARATION_INPUT_RATE
+        elif self.deepfilter_enabled:
+            output_rate = DEEPFILTER_INPUT_RATE
+        else:
+            output_rate = SAMPLE_RATE
+
+        audio_filters = self._pitch_filter(output_rate)
+        audio_filters.append("ashowinfo")
+        ffmpeg += ["-map", audio, "-af", ",".join(audio_filters)]
 
         if self.separation_enabled:
             ffmpeg += [
@@ -478,6 +489,24 @@ class Ingest:
             elif receiver_gone:
                 log.debug("ffmpeg: %s", line)
 
+    def _pitch_filter(self, sample_rate: int) -> list[str]:
+        """Shift ASR input pitch while preserving its original duration."""
+        semitones = self.pitch_semitones
+
+        if abs(semitones) < 1e-6:
+            return []
+
+        ratio = 2 ** (semitones / 12.0)
+        tempo = 1.0 / ratio
+
+        log.info("ASR audio pitch shift: %.1f semitones", semitones)
+
+        return [
+            f"asetrate={sample_rate * ratio:.8f}",
+            f"aresample={sample_rate}",
+            f"atempo={tempo:.8f}",
+        ]
+
     def _audio_commands(self) -> list[list[str]]:
         """Build audio-only FFmpeg commands."""
         src = self.source
@@ -497,23 +526,30 @@ class Ingest:
                 ffmpeg += ["-ss", f"{src.start_s:.3f}"]
 
         if self.separation_enabled:
+            output_rate = SEPARATION_INPUT_RATE
             out = [
                 "-vn", "-ac", "2",
-                "-ar", str(SEPARATION_INPUT_RATE),
+                "-ar", str(output_rate),
                 "-f", "s16le", "pipe:1",
             ]
         elif self.deepfilter_enabled:
+            output_rate = DEEPFILTER_INPUT_RATE
             out = [
                 "-vn", "-ac", "1",
-                "-ar", str(DEEPFILTER_INPUT_RATE),
+                "-ar", str(output_rate),
                 "-f", "s16le", "pipe:1",
             ]
         else:
+            output_rate = SAMPLE_RATE
             out = [
                 "-vn", "-ac", "1",
-                "-ar", str(SAMPLE_RATE),
+                "-ar", str(output_rate),
                 "-f", "s16le", "pipe:1",
             ]
+
+        filters = self._pitch_filter(output_rate)
+        if filters:
+            out = ["-af", ",".join(filters)] + out
 
         if Path(src.location).exists():
             return [ffmpeg + ["-i", src.location] + out]

@@ -9,6 +9,7 @@ from pathlib import Path
 class IngestConfig:
     ytdlp_format: str = "bestaudio/93/best"
     cookies_from_browser: str = ""
+    pitch_semitones: float = -3.0
 
 
 @dataclass

@@ -213,19 +213,6 @@ class Segmenter:
 
     def _step(self, frame: np.ndarray, prob: float) -> None:
         cfg = self.cfg
-        # Temporary diagnostic: inspect VAD during the opening 60 seconds.
-        if (
-            self._next_frame_sample < 60 * SAMPLE_RATE
-            and (self._next_frame_sample // FRAME) % 4 == 0
-        ):
-            rms = float(np.sqrt(np.mean(frame * frame)))
-            log.info(
-                "VAD %.3fs: probability=%.3f, RMS=%.4f, detected=%s",
-                self._next_frame_sample / SAMPLE_RATE,
-                prob,
-                rms,
-                prob >= cfg.threshold,
-            )
         if not self._in_speech:
             if prob >= cfg.threshold:
                 # Idle audio before the preroll goes to Whisper; the preroll joins the utterance.

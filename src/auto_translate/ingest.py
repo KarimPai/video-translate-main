@@ -121,7 +121,11 @@ def resolve_source(
         else:
             timeline = load_vod_metadata(location, cfg)
             status = str(timeline.get("live_status") or "not_live")
-            duration = (\n                float(timeline["duration_s"])\n                if timeline.get("duration_s") is not None else None\n            )\n            log.info(
+            duration = (
+                float(timeline["duration_s"])
+                if timeline.get("duration_s") is not None else None
+            )
+            log.info(
                 "yt-dlp: live_status=%s duration=%s",
                 status,
                 fmt_hms(duration) if duration else "?",
@@ -142,7 +146,7 @@ def resolve_source(
 
     if not is_file and timeline is None:
         timeline = load_vod_metadata(location, cfg)
-        duration = float(timeline["duration_s"])\n
+        duration = float(timeline["duration_s"])
     start_s = (
         parse_time(start)
         if start

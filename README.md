@@ -1,15 +1,15 @@
 # auto-translate
 
-Live **Japanese → English subtitles** for YouTube streams (VTubers, gamers), running fully locally
-on your own GPU. Japanese speech is transcribed with Whisper (kotoba-whisper) and translated by a local
-NMT model or a local LLM (Ollama). Subtitles can be shown in three places, at the same time:
+Live **Japanese → English subtitles** for YouTube streams (VTubers, gamers), running locally on your GPU.
+Japanese speech can be transcribed with **Haas-ja-v1.0 through speech.cpp/Vulkan** or faster-whisper/CUDA,
+then translated by a local NMT model or a local LLM (Ollama). Subtitles can be shown in three places:
 
 - **Terminal**: Japanese + English lines with timings and latency.
 - **Browser viewer**: big captions on any device on your LAN (phone, Mac, tablet).
 - **mpv**: the video plays a few seconds behind, so each subtitle appears exactly when the line is spoken.
 
 ```
-yt-dlp → ffmpeg → VAD (Silero) → ASR (faster-whisper) → glossary + translator → terminal / browser / mpv
+yt-dlp → ffmpeg → VAD (Silero) → ASR (Haas/Vulkan or faster-whisper/CUDA) → glossary + translator → terminal / browser / mpv
 ```
 
 Works with **live streams** and **VODs** (past streams, normal videos), and with **local audio/video files**.
@@ -43,12 +43,13 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [ffmpeg](https://ffmpeg.org/) | On `PATH`. Decodes audio, and streams the video to mpv. |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | On `PATH`. **Keep it updated** (`yt-dlp -U` or `winget upgrade yt-dlp`): YouTube changes break old versions. |
 | [Ollama](https://ollama.com/) | Only for the LLM presets (`balanced`, `quality`). |
+| [speech.cpp](https://github.com/nyosegawa/speech.cpp) | Required for Haas ASR; use the Windows x64 Vulkan release and put `speech.exe` on `PATH`. |
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
 CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
-don't need to install the CUDA Toolkit. Only an up-to-date NVIDIA driver. GPU-backed VAD, ASR, diarization,
-and local CTranslate2 translation require CUDA and fail clearly instead of silently switching to CPU.
-FFmpeg decoding, resampling, and pipeline coordination remain CPU tasks.
+don't need the CUDA Toolkit. Haas runs separately through speech.cpp's Windows Vulkan build; faster-whisper,
+VAD, diarization and local CTranslate2 translation use CUDA. FFmpeg decoding, resampling and pipeline
+coordination remain CPU tasks.
 
 ## Installation
 
@@ -63,8 +64,8 @@ uv sync                                       # creates .venv and installs depen
 ollama pull qwen3:4b-instruct-2507-q4_K_M
 ```
 
-The Whisper model (`kotoba-tech/kotoba-whisper-v2.0-faster`, ~1.5 GB) and the NMT models are downloaded
-from Hugging Face automatically on first use.
+Haas is the default ASR backend. With speech.cpp on `PATH`, its `haas-ja-v1.0` GGUF is fetched automatically
+by the worker on first use. The optional faster-whisper model and NMT models are downloaded from Hugging Face.
 
 Check that the GPU works:
 
@@ -350,10 +351,13 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 
 | Key | Default | Description |
 |---|---|---|
-| `backend` | `"faster-whisper"` | Only backend for now. |
-| `model` | `"kotoba-tech/kotoba-whisper-v2.0-faster"` | HF repo id or local folder (CTranslate2 format). `"large-v3"` also works (slower, more VRAM). |
-| `device` | `"cuda"` | `"cuda"` or `"cpu"`. |
-| `compute_type` | `"int8_float16"` | ~1.3 GB VRAM. `"float16"` uses ~1 GB more for the same accuracy. On CPU use `"int8"`. |
+| `backend` | `"haas"` | `"haas"` uses speech.cpp/Vulkan; `"faster-whisper"` uses CUDA. |
+| `haas_model` | `"haas-ja-v1.0"` | speech.cpp model name or GGUF file path. |
+| `haas_device` | `"Vulkan0"` | speech.cpp device selected for Haas. |
+| `haas_decode_on_cpu` | `false` | `false` keeps Haas decoding on Vulkan; `true` decodes on CPU. |
+| `model` | `"kotoba-tech/kotoba-whisper-v2.0-faster"` | faster-whisper HF repo id or local CTranslate2 model folder. |
+| `device` | `"cuda"` | faster-whisper device: `"cuda"` or `"cpu"`. |
+| `compute_type` | `"int8_float16"` | faster-whisper compute type. |
 | `beam_size` | `5` | 1 = fastest; 5 = more accurate. |
 | `no_speech_threshold` | `0.6` | A segment is dropped when no-speech probability is above this **and**… |
 | `log_prob_threshold` | `-1.0` | …the average log-probability is below this (Whisper's hallucination filter). |

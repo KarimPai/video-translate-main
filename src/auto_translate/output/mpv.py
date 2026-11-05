@@ -27,6 +27,7 @@ from typing import Any
 from ..config import MpvConfig
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
+from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
 
@@ -273,6 +274,9 @@ class MpvOutput:
         self._video_retries = 0
         self._clock_sample_logged = False
         self._clock_offset = 0.0
+        self._mpv_anchor: float | None = None
+        self._clock_source_anchor = self._session_start
+        self._anchor_reason = "initial"
         self._logged_subtitle_generations: set[int] = set()
 
         self._proc = subprocess.Popen([
@@ -521,22 +525,33 @@ class MpvOutput:
             self._clock_offset = (
                 self.ingest.first_pts - self._session_start
             )
+            self._mpv_anchor = None
             mapping = "live: mpv_time_pos - (ffmpeg_first_pts - source_start)"
         else:
-            # The VOD video sender now emits normalized timestamps (no
-            # -copyts). MPV time-pos is elapsed time from this FFmpeg session.
-            self._clock_offset = -self._session_start
-            mapping = "vod: source_start + mpv_time_pos"
+            # Anchor MPV's actual session clock to the requested source
+            # position. This avoids assuming time-pos starts at exactly zero.
+            self._mpv_anchor = None
+            self._clock_source_anchor = self._session_start
+            self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
+            mapping = "vod: measured MPV session anchor against source timeline"
 
         self._clock_sample_logged = False
-        log.info(
-            "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
-            "offset=%.3f; %s",
-            self._session_start,
-            self.ingest.first_pts,
-            self._clock_offset,
-            mapping,
-        )
+        if self.ingest.source.live:
+            log.info(
+                "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
+                "offset=%.3f; %s",
+                self._session_start,
+                self.ingest.first_pts,
+                self._clock_offset,
+                mapping,
+            )
+        else:
+            log.info(
+                "MPV clock mapping: VOD source_start=%.3f; waiting for "
+                "measured MPV session anchor; %s",
+                self._session_start,
+                mapping,
+            )
 
         if self.ingest.source.live:
             unpause_at = (
@@ -646,18 +661,44 @@ class MpvOutput:
                 )
 
             if (pos := self.ipc.get("time-pos")) is not None:
-                self._now = pos - self._clock_offset
+                if self.ingest.source.live:
+                    self._now = pos - self._clock_offset
+                else:
+                    if self._mpv_anchor is None:
+                        self._mpv_anchor = float(pos)
+                        record_session_anchor(
+                            self.ingest.source.timeline,
+                            self._clock_source_anchor,
+                            self._mpv_anchor,
+                            self._anchor_reason,
+                        )
+                        log.info(
+                            "VOD timeline anchor: source=%.3f mpv=%.3f "
+                            "reason=%s duration=%s",
+                            self._clock_source_anchor,
+                            self._mpv_anchor,
+                            self._anchor_reason,
+                            fmt_hms(self.ingest.source.duration)
+                            if self.ingest.source.duration is not None else "?",
+                        )
+
+                    self._now = (
+                        self._clock_source_anchor
+                        + float(pos)
+                        - self._mpv_anchor
+                    )
+                    if self.ingest.source.duration is not None:
+                        self._now = min(self._now, self.ingest.source.duration)
 
                 if not self._clock_sample_logged:
                     self._clock_sample_logged = True
                     log.info(
                         "MPV clock sample: raw_time_pos=%.3f "
-                        "mapped_source_time=%.3f source_start=%.3f "
-                        "clock_offset=%.3f mapping_error=%+.3fs",
+                        "mapped_source_time=%.3f session_start=%.3f "
+                        "session_elapsed=%+.3fs",
                         pos,
                         self._now,
                         self._session_start,
-                        self._clock_offset,
                         self._now - self._session_start,
                     )
 
@@ -698,7 +739,9 @@ class MpvOutput:
         self._wait_for_event("start-file")
 
         self.ingest.start_video(start_s=restart_at)
-        self._clock_offset = -restart_at
+        self._clock_source_anchor = restart_at
+        self._mpv_anchor = None
+        self._anchor_reason = "video-recovery"
         self._clock_sample_logged = False
         self._shown = ""
         log.info("MPV video stream recovery started at %.2fs", restart_at)

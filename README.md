@@ -260,6 +260,19 @@ so subtitles appear exactly with the speech (measured: within ~0.1 s). English i
 - **VOD:** playback starts after ~3 s (the first 9 s of audio are read at full speed).
 - Closing the mpv window stops the app.
 
+### VOD timeline metadata
+
+For YouTube VODs, yt-dlp metadata is saved to
+`%LOCALAPPDATA%\\auto-translate\\timelines\\VIDEO_ID.json`. It records the
+video duration, available chapter boundaries, upload timestamp, and selected
+format details. MPV's actual `time-pos` is then anchored to the requested
+source position for each initial session, seek, and video-stream recovery.
+Those measured clock anchors are appended to the same JSON file.
+
+Subtitle timestamps remain on the original VOD timeline. The metadata duration
+is used to reject seeks beyond the video and bound the playback clock; chapter
+timestamps are reference markers, not a substitute for frame-level timestamps.
+
 ### mpv keys
 
 mpv's default keys are replaced; seeking with mpv itself would break the incoming stream.

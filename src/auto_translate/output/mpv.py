@@ -273,6 +273,8 @@ class MpvOutput:
         self._closed = False
         self._video_retries = 0
         self._clock_sample_logged = False
+        self._clock_last_sample_at = 0.0
+        self._clock_last_sample_pos: float | None = None
         self._clock_offset = 0.0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
@@ -690,17 +692,27 @@ class MpvOutput:
                     if self.ingest.source.duration is not None:
                         self._now = min(self._now, self.ingest.source.duration)
 
-                if not self._clock_sample_logged:
-                    self._clock_sample_logged = True
+                sample_now = time.monotonic()
+                if (
+                    not self._clock_sample_logged
+                    or sample_now - self._clock_last_sample_at >= 10.0
+                ):
+                    raw_delta = (
+                        float(pos) - self._clock_last_sample_pos
+                        if self._clock_last_sample_pos is not None
+                        else 0.0
+                    )
                     log.info(
-                        "MPV clock sample: raw_time_pos=%.3f "
-                        "mapped_source_time=%.3f session_start=%.3f "
-                        "session_elapsed=%+.3fs",
+                        "MPV clock sample: raw=%.3f mapped=%.3f "
+                        "session_elapsed=%+.3fs raw_step=%+.3fs",
                         pos,
                         self._now,
-                        self._session_start,
                         self._now - self._session_start,
+                        raw_delta,
                     )
+                    self._clock_sample_logged = True
+                    self._clock_last_sample_at = sample_now
+                    self._clock_last_sample_pos = float(pos)
 
                 self._render(self._now)
 
@@ -892,6 +904,18 @@ class MpvOutput:
 
         if text != self._shown:
             self._shown = text
+
+            if active:
+                first_line = active[0]
+                log.info(
+                    "subtitle display: speech=%.3f-%.3f "
+                    "mpv_clock=%.3f start_delta=%+.3fs active=%d",
+                    first_line.sub.start_s,
+                    first_line.sub.end_s,
+                    now,
+                    now - first_line.show_from,
+                    len(active),
+                )
 
             for ln in active:
                 if abs(now - ln.show_from) < 0.15:

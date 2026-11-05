@@ -56,7 +56,7 @@ class AsrConfig:
 
 @dataclass
 class Ct2NmtConfig:
-    """A CTranslate2 seq2seq model (Opus-MT, Sugoi) + SentencePiece tokenizers."""
+    """A CTranslate2 seq2seq model + SentencePiece tokenizers."""
 
     model: str
     source_spm: str
@@ -142,12 +142,23 @@ def load_config(path: Path) -> Config:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
+    # Ignore fields left behind by old Haas, Qwen3-ASR and Parakeet configs.
+    asr_data = dict(data.get("asr", {}))
+    for key in (
+        "qwen_model",
+        "qwen_python",
+        "parakeet_model",
+        "parakeet_threads",
+        "haas_model",
+    ):
+        asr_data.pop(key, None)
+
     return Config(
         ingest=IngestConfig(**data.get("ingest", {})),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),
-        asr=AsrConfig(**data.get("asr", {})),
+        asr=AsrConfig(**asr_data),
         translate=TranslateConfig(**data.get("translate", {})),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**data.get("mpv", {})),

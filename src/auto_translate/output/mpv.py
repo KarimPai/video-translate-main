@@ -280,6 +280,7 @@ class MpvOutput:
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
         self._logged_subtitle_generations: set[int] = set()
+        self._logged_displayed_subtitles: set[tuple[int, float, float]] = set()
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -902,26 +903,34 @@ class MpvOutput:
             else ""
         )
 
+        # Log each subtitle only on its first visible scheduler tick.
+        # Overlay changes can be caused by an older overlapping line, so
+        # logging active[0] on every text change does not measure new lines.
+        for ln in active:
+            key = (
+                ln.sub.generation,
+                ln.sub.start_s,
+                ln.sub.end_s,
+            )
+            if key in self._logged_displayed_subtitles:
+                continue
+
+            self._logged_displayed_subtitles.add(key)
+            delta = now - ln.show_from
+            self._lags.append(delta)
+            log.info(
+                "subtitle first visible: generation=%d speech=%.3f-%.3f "
+                "mpv_clock=%.3f start_delta=%+.3fs active=%d",
+                ln.sub.generation,
+                ln.sub.start_s,
+                ln.sub.end_s,
+                now,
+                delta,
+                len(active),
+            )
+
         if text != self._shown:
             self._shown = text
-
-            if active:
-                first_line = active[0]
-                log.info(
-                    "subtitle display: speech=%.3f-%.3f "
-                    "mpv_clock=%.3f start_delta=%+.3fs active=%d",
-                    first_line.sub.start_s,
-                    first_line.sub.end_s,
-                    now,
-                    now - first_line.show_from,
-                    len(active),
-                )
-
-            for ln in active:
-                if abs(now - ln.show_from) < 0.15:
-                    self._lags.append(
-                        now - ln.sub.start_s
-                    )
 
             self.ipc.command(
                 "osd-overlay",

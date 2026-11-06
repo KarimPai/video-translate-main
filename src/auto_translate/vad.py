@@ -28,7 +28,7 @@ class StreamingFireRedVAD:
 
     WINDOW_SAMPLES = 400  # 25 ms model window
 
-    def __init__(self) -> None:
+    def __init__(self, speech_threshold: float) -> None:
         from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
@@ -52,7 +52,7 @@ class StreamingFireRedVAD:
         config = FireRedStreamVadConfig(
             use_gpu=True,
             smooth_window_size=1,
-            speech_threshold=0.4,
+            speech_threshold=speech_threshold,
             pad_start_frame=1,
             min_speech_frame=1,
             max_speech_frame=2000,
@@ -106,7 +106,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD()
+        self.vad = StreamingFireRedVAD(cfg.threshold)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:

@@ -384,7 +384,7 @@ class MpvOutput:
             if sub.speech_start_s is not None
             else sub.start_s
         )
-        show_from = speech_start + cfg.start_delay_s
+        show_from = speech_start
         until = (
             max(sub.end_s, show_from + cfg.min_display_s)
             + cfg.hold_s

@@ -377,9 +377,14 @@ class MpvOutput:
         if sub.end_s < self._session_start:
             return
 
-        # Delay the subtitle onset slightly to compensate for early ASR/VAD
-        # timestamps relative to the audible start of speech.
-        show_from = sub.start_s + cfg.start_delay_s
+        # Use the first speech-positive VAD frame, not the earlier padded
+        # audio start used to preserve context for ASR.
+        speech_start = (
+            sub.speech_start_s
+            if sub.speech_start_s is not None
+            else sub.start_s
+        )
+        show_from = speech_start + cfg.start_delay_s
         until = (
             max(sub.end_s, show_from + cfg.min_display_s)
             + cfg.hold_s

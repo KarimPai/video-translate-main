@@ -93,7 +93,6 @@ class MpvConfig:
     speaker_device: str = "cuda"
     max_speakers: int = 3
     max_subtitle_rows: int = 3
-    start_delay_s: float = 0.5  # delay subtitle display 500 ms after VAD speech onset
     min_display_s: float = 4.0
     hold_s: float = 2.0
 
@@ -134,6 +133,8 @@ def load_config(path: Path) -> Config:
         asr_data.pop(key, None)
 
     mpv_data = dict(data.get("mpv", {}))
+    # Ignore the removed subtitle start-delay setting in older configs.
+    mpv_data.pop("start_delay_s", None)
 
     # Migrate old preset-based configs to the single flat HY-MT2 section.
     # The selected HY-MT2 preset's values are retained; preset names are discarded.

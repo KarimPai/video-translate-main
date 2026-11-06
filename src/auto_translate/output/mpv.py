@@ -303,6 +303,8 @@ class MpvOutput:
 
             # Disable unsafe on-screen controls.
             "--osc=no",
+            "--osd-on-seek=no",
+            "--osd-bar=no",
             "--no-input-default-bindings",
             f"--input-conf={INPUT_CONF}",
 

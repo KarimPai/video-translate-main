@@ -29,11 +29,11 @@ class DeepFilterConfig:
 
 @dataclass
 class VadConfig:
-    threshold: float = 0.4
+    threshold: float = 0.35
     neg_threshold: float = 0.25
-    min_silence_ms: int = 350
-    speech_pad_ms: int = 200
-    min_speech_ms: int = 180
+    min_silence_ms: int = 400
+    speech_pad_ms: int = 80
+    min_speech_ms: int = 100
     max_utterance_s: float = 5.0
     fallback_s: float = 5.0
     fallback_min_s: float = 1.5

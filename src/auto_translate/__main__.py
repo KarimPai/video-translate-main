@@ -46,6 +46,7 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .asr import create_asr
+    from .captions import download_vod_captions
     from .config import load_config
     from .glossary import Glossary
     from .ingest import Ingest, resolve_source
@@ -69,6 +70,31 @@ def main() -> None:
         cfg.ingest,
     )
 
+    # Fetch VOD captions in parallel with model loading. Captions are optional:
+    # any download/parse failure leaves the Haas-only pipeline unchanged.
+    caption_result = {}
+    caption_thread = None
+    video_id = (
+        source.timeline.get("video_id")
+        if not source.live and source.timeline
+        else None
+    )
+    if video_id:
+        def load_captions() -> None:
+            try:
+                caption_result["index"] = download_vod_captions(
+                    str(video_id), source.location, cfg.ingest
+                )
+            except Exception:
+                log.exception("caption preparation failed; continuing with Haas")
+
+        caption_thread = threading.Thread(
+            target=load_captions,
+            name="youtube-captions",
+            daemon=True,
+        )
+        caption_thread.start()
+
     # Load models before starting ingest.
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
@@ -88,6 +114,13 @@ def main() -> None:
         len(glossary.terms),
         time.perf_counter() - t0,
     )
+
+    captions = None
+    if caption_thread is not None:
+        caption_thread.join()
+        captions = caption_result.get("index")
+        if captions is None:
+            log.info("caption assistance unavailable; using Haas transcription only")
 
     use_mpv = args.mpv or cfg.mpv.enabled
 
@@ -160,6 +193,7 @@ def main() -> None:
         outputs,
         stop,
         diarizer=diarizer,
+        captions=captions,
     )
 
 

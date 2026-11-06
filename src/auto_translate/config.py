@@ -42,20 +42,10 @@ class VadConfig:
 
 @dataclass
 class AsrConfig:
-    backend: str = "haas"
-    model: str = "kotoba-tech/kotoba-whisper-v2.0-faster"
     haas_model: str = "haas-ja-v1.0"
     haas_device: str = "Vulkan0"
     haas_decode_on_cpu: bool = False
-    device: str = "cuda"
-    compute_type: str = "int8_float16"
-    beam_size: int = 5
-    initial_prompt: str = ""
-    no_speech_threshold: float = 0.6
-    log_prob_threshold: float = -1.0
     blocklist: list[str] = field(default_factory=list)
-    probe_no_speech_max: float = 0.5
-    probe_log_prob_min: float = -0.7
 
 
 @dataclass
@@ -146,9 +136,14 @@ def load_config(path: Path) -> Config:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    # Remove fields belonging only to the deleted experimental ASR backends.
+    # Ignore legacy fields so existing config.toml files remain compatible.
     asr_data = dict(data.get("asr", {}))
-    for key in ("qwen_model", "qwen_python", "parakeet_model", "parakeet_threads"):
+    for key in (
+        "backend", "model", "device", "compute_type", "beam_size",
+        "initial_prompt", "no_speech_threshold", "log_prob_threshold",
+        "probe_no_speech_max", "probe_log_prob_min",
+        "qwen_model", "qwen_python", "parakeet_model", "parakeet_threads",
+    ):
         asr_data.pop(key, None)
 
     mpv_data = dict(data.get("mpv", {}))

@@ -93,6 +93,7 @@ class MpvConfig:
     speaker_device: str = "cuda"
     max_speakers: int = 3
     max_subtitle_rows: int = 3
+    start_delay_s: float = 0.5
     min_display_s: float = 4.0
     hold_s: float = 2.0
 

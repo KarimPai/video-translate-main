@@ -294,8 +294,8 @@ class MpvOutput:
             "--idle=yes",
             "--rebase-start-time=no",
 
-            # Keep a modest forward/backward demux cache while reading the
-            # progressive local fMP4 HLS playlist.
+            # Keep a modest forward/backward demux cache for the direct
+            # YouTube video stream.
             "--cache=yes",
             "--demuxer-readahead-secs=12",
             "--demuxer-max-bytes=128MiB",
@@ -696,7 +696,7 @@ class MpvOutput:
                 )
 
             if (pos := self.ipc.get("time-pos")) is not None:
-                if self._direct_video_loaded:
+                if self._direct_video_loaded and not self.ingest.source.live:
                     sampled_at = time.monotonic()
                     if self._last_direct_pos is not None:
                         raw_step = float(pos) - self._last_direct_pos

@@ -950,7 +950,6 @@ class Ingest:
 
         return [
             ffmpeg + [
-                "-http_persistent", "0",
                 "-reconnect", "1",
                 "-reconnect_streamed", "1",
                 "-reconnect_delay_max", "10",

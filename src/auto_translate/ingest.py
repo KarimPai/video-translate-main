@@ -458,6 +458,9 @@ class Ingest:
             "-nostats",
             "-loglevel",
             "info",
+            # Write FFmpeg's complete debug report in the session directory.
+            # This captures the exact file operation behind HLS muxer errors.
+            "-report",
         ]
 
         for url in inputs:

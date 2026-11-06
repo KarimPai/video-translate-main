@@ -6,7 +6,7 @@ __pycache__/
 cache/
 models/
 *.onnx
-!assets/silero_vad_v6.onnx
+assets/fireredvad/
 *.gguf
 *.bin
 *.ckpt

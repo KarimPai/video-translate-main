@@ -193,10 +193,17 @@ class Ingest:
         self.cfg = cfg
         self.pitch_semitones = cfg.pitch_semitones
         self.video_format = video_format
-        self._cache_temp = (
-            tempfile.TemporaryDirectory(prefix="auto-translate-fmp4-")
-            if video_out else None
-        )
+        # Keep the temporary fMP4 cache beside the project instead of
+        # using the per-user Windows TEMP directory. Each run still gets
+        # its own unique session directory and is removed during cleanup.
+        cache_parent = Path(__file__).resolve().parents[2] / "temp" / "fmp4"
+        self._cache_temp = None
+        if video_out:
+            cache_parent.mkdir(parents=True, exist_ok=True)
+            self._cache_temp = tempfile.TemporaryDirectory(
+                prefix="auto-translate-fmp4-",
+                dir=str(cache_parent),
+            )
         self._cache_root = (
             Path(self._cache_temp.name) if self._cache_temp else None
         )

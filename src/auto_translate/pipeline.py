@@ -30,16 +30,29 @@ log = logging.getLogger(__name__)
 class FanoutQueue:
     """Send audio to VAD and pyannote, but progress markers only to VAD."""
 
-    def __init__(self, *queues):
+    def __init__(self, *queues, secondary_active=None):
         self.queues = queues
+        self.secondary_active = secondary_active
 
     def put(self, item):
         if isinstance(item, AudioProgress):
             self.queues[0].put(item)
             return
 
-        for q in self.queues:
-            q.put(item)
+        for index, q in enumerate(self.queues):
+            while True:
+                try:
+                    q.put(item, timeout=0.5)
+                    break
+                except queue.Full:
+                    # A failed diarizer exits its consumer thread. Do not let
+                    # its now-unconsumed bounded queue stall the VAD pipeline.
+                    if (
+                        index > 0
+                        and self.secondary_active is not None
+                        and not self.secondary_active()
+                    ):
+                        break
 
 
 def run_asr(
@@ -244,7 +257,11 @@ def run(
 
     # Ingest audio is copied to VAD and pyannote.
     ingest_output = (
-        FanoutQueue(audio_q, diarization_q)
+        FanoutQueue(
+            audio_q,
+            diarization_q,
+            secondary_active=lambda: not diarizer.finished and not diarizer.failed,
+        )
         if diarizer is not None
         else audio_q
     )

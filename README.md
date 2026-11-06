@@ -102,7 +102,7 @@ Then open the browser viewer at **http://127.0.0.1:8765/** on this PC. LAN acces
 
 ```
 uv run auto-translate SOURCE [--mode auto|live|vod] [--start TIME] [--fast]
-                             [--engine NAME] [--mpv] [--delay SECONDS] [--no-web] [--config FILE] [-v]
+                             [--mpv] [--delay SECONDS] [--no-web] [--config FILE] [-v]
 ```
 
 | Option | Default | Description |
@@ -364,9 +364,16 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 | `context_lines` | `8` | Previous JA/EN lines supplied to PLaMo as context. |
 | `glossary` | `"glossary.toml"` | Glossary file. |
 
-`[translate.engines.NAME]` tables define engines (see [Translation](#translation)).
-PLaMo settings: `plamo_base_url`, `plamo_model`, `plamo_hf_model`, `plamo_context`,
-`plamo_gpu_layers`, `max_tokens`, `timeout_s`, `load_timeout_s`, `context_lines`, and `glossary`.
+| `plamo_base_url` | `"http://127.0.0.1:8000/v1"` | OpenAI-compatible llama.cpp server endpoint. |
+| `plamo_model` | `"plamo-3-translate"` | Model alias passed to llama.cpp. |
+| `plamo_hf_model` | `"pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"` | Hugging Face GGUF model and quantization. |
+| `plamo_context` | `8192` | llama.cpp context size. |
+| `plamo_gpu_layers` | `99` | Layers offloaded to GPU. |
+| `max_tokens` | `120` | Maximum generated tokens per subtitle. |
+| `timeout_s` | `20.0` | Translation request timeout. |
+| `load_timeout_s` | `300.0` | Server startup and model warm-up timeout. |
+| `context_lines` | `8` | Previous JA/EN lines supplied to PLaMo as context. |
+| `glossary` | `"glossary.toml"` | Glossary file passed to PLaMo when terms match. |
 
 ### `[output]`
 

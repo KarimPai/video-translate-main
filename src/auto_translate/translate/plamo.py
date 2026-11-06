@@ -3,7 +3,6 @@
 import atexit
 import json
 import logging
-import os
 import shutil
 import subprocess
 import time
@@ -122,10 +121,7 @@ class PlamoTranslator:
         if self._server_log is not None:
             self._server_log.close()
             self._server_log = None
-        try:
-            atexit.unregister(self.close)
-        except Exception:
-            pass
+        atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         return _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
@@ -177,7 +173,6 @@ def _server_responds(base_url: str) -> bool:
         with urllib.request.urlopen(base_url + "/models", timeout=1.0):
             return True
     except urllib.error.HTTPError:
-        # An HTTP response still proves a server is listening at this address.
         return True
     except (OSError, urllib.error.URLError):
         return False

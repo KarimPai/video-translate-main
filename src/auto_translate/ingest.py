@@ -509,13 +509,13 @@ class Ingest:
             # every fragment so backward seeking within the session is possible.
             hls_options += [
                 "-hls_list_size", "30",
-                "-hls_flags", "delete_segments+temp_file+independent_segments",
+                "-hls_flags", "delete_segments+independent_segments",
             ]
         else:
             hls_options += [
                 "-hls_list_size", "0",
                 "-hls_playlist_type", "event",
-                "-hls_flags", "temp_file+independent_segments",
+                "-hls_flags", "independent_segments",
             ]
 
         # YouTube's separate HLS video rendition can deliver H.264 packets

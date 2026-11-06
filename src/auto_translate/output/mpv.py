@@ -282,6 +282,9 @@ class MpvOutput:
         self._logged_subtitle_generations: set[int] = set()
         self._logged_displayed_subtitles: set[tuple[int, float, float]] = set()
         self._overlay_diagnostic_done = False
+        self._audio_clock_diag_until = 0.0
+        self._audio_clock_diag_last_at = 0.0
+        self._audio_clock_diag_done = False
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -572,6 +575,9 @@ class MpvOutput:
             mapping = "vod: measured MPV session anchor against source timeline"
 
         self._clock_sample_logged = False
+        self._audio_clock_diag_until = 0.0
+        self._audio_clock_diag_last_at = 0.0
+        self._audio_clock_diag_done = False
         if self.ingest.source.live:
             log.info(
                 "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
@@ -697,6 +703,14 @@ class MpvOutput:
                 paused = False
                 unpause_at = None
 
+                if (
+                    self._anchor_reason == "seek"
+                    and not self._audio_clock_diag_done
+                ):
+                    self._audio_clock_diag_until = time.monotonic() + 12.0
+                    self._audio_clock_diag_done = True
+                    log.info("MPV audio-clock diagnostics started after seek")
+
                 log.info(
                     "mpv playing from %s",
                     fmt_hms(self._session_start),
@@ -755,6 +769,24 @@ class MpvOutput:
                     self._clock_last_sample_pos = float(pos)
 
                 self._render(self._now)
+
+                sample_at = time.monotonic()
+                if (
+                    sample_at < self._audio_clock_diag_until
+                    and sample_at - self._audio_clock_diag_last_at >= 0.5
+                ):
+                    audio_pts = self.ipc.get("audio-pts")
+                    avsync = self.ipc.get("avsync")
+                    mpv_paused = self.ipc.get("pause")
+                    log.info(
+                        "MPV audio clock: time_pos=%s audio_pts=%s "
+                        "avsync=%s pause=%s",
+                        pos,
+                        audio_pts,
+                        avsync,
+                        mpv_paused,
+                    )
+                    self._audio_clock_diag_last_at = sample_at
 
             if (delta := self._jump_request()) and self._jump(delta):
                 return

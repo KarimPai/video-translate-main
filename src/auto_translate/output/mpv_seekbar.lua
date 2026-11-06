@@ -50,15 +50,15 @@ local function video_rect()
     return left, top, right, bottom, width, height
 end
 
-local function track_bounds(width)
+local function track_bounds()
     -- Match the clickable range to the rendered text track, rather than the
-    -- full video width. ASS monospace-like box glyphs average about 0.55 em.
+    -- full video width. ASS box glyphs are approximately 0.55 em wide.
     local font_size = 35
-    local left, right = video_rect()
-    local available = math.max(1, right - left)
+    local video_left, _, video_right = video_rect()
+    local available = math.max(1, video_right - video_left)
     local bar_chars = math.max(24, math.floor(available / (font_size * 0.55)))
     local track_width = bar_chars * font_size * 0.55
-    local center = width / 2
+    local center = (video_left + video_right) / 2
     return center - track_width / 2, center + track_width / 2, bar_chars
 end
 
@@ -100,7 +100,7 @@ local function render()
         return
     end
 
-    local bar_left, bar_right, bar_chars = track_bounds(width)
+    local bar_left, bar_right, bar_chars = track_bounds()
     local bar_y = bottom - 52
     local fraction = math.max(0, math.min(1, position / duration))
     local filled = math.floor(bar_chars * fraction + 0.5)
@@ -138,7 +138,7 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
     if event.event == "down" then
         local mouse = mouse_position()
         local left, top, right, bottom = video_rect()
-        local seek_left, seek_right = track_bounds(video_rect())
+        local seek_left, seek_right = track_bounds()
         if mouse and mouse.x >= seek_left and mouse.x <= seek_right
             and mouse.y >= bottom - 105 and mouse.y <= bottom
             and seek_from_mouse(mouse, seek_left, seek_right) then

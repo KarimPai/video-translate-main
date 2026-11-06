@@ -50,8 +50,11 @@ class AsrConfig:
 
 @dataclass
 class TranslateConfig:
-    """Single translation engine configuration: HY-MT2."""
+    """Translation backend and model settings."""
 
+    backend: str = "hymt2"
+    plamo_base_url: str = "http://127.0.0.1:8000/v1"
+    plamo_model: str = "plamo-3-translate"
     model: str = "kaelri/hy-mt2:1.8b-q4_K_M"
     base_url: str = "http://127.0.0.1:11434/v1"
     temperature: float = 0.2

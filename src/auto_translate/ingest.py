@@ -480,6 +480,9 @@ class Ingest:
                 "-reconnect", "1",
                 "-reconnect_streamed", "1",
                 "-reconnect_delay_max", "10",
+                # Regenerate missing presentation timestamps and ignore
+                # potentially unreliable input indexes on YouTube HLS.
+                "-fflags", "+genpts+ignidx",
                 "-i", url,
             ]
 

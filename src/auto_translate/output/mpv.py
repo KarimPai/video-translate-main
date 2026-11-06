@@ -579,6 +579,12 @@ class MpvOutput:
             # The HLS playlist's time-pos is relative to its first segment;
             # keep the requested fragment offset as the source-clock anchor.
             self._mpv_anchor = seek_offset
+            record_session_anchor(
+                self.ingest.source.timeline,
+                self._clock_source_anchor,
+                self._mpv_anchor,
+                self._anchor_reason,
+            )
             log.info(
                 "reused cached fMP4 fragments: playlist_offset=%.3fs observed_mpv_pos=%s",
                 seek_offset,

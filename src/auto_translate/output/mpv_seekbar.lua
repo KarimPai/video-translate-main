@@ -73,25 +73,25 @@ local function render()
     local left = 70
     local right = width - 70
     local bar_y = height - 46
-    local bar_chars = 72
+    local bar_chars = 48
     local fraction = math.max(0, math.min(1, position / duration))
     local filled = math.floor(bar_chars * fraction + 0.5)
     local empty = bar_chars - filled
     local bar = "{\\1c&HFFFFFF&}" .. string.rep("━", filled)
         .. "{\\1c&H808080&}" .. string.rep("─", empty)
     local ass = string.format(
-        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s",
+        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs24\\1c&HFFFFFF&}%s",
         math.floor(width / 2), bar_y, bar
     )
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)
     ass = ass .. string.format(
-        "{\\an1\\pos(%d,%d)\\bord0\\shad0\\fs16\\1c&HFFFFFF&} %s",
+        "{\\an1\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&} %s",
         left, height - 70, elapsed
     )
     ass = ass .. string.format(
-        "{\\an3\\pos(%d,%d)\\bord0\\shad0\\fs16\\1c&HFFFFFF&}%s ",
+        "{\\an3\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s ",
         right, height - 70, total
     )
 

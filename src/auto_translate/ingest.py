@@ -514,7 +514,7 @@ class Ingest:
         else:
             hls_options += [
                 "-hls_list_size", "0",
-                "-hls_playlist_type", "event",
+                "-hls_playlist_type", "vod",
                 "-hls_flags", "independent_segments",
             ]
 

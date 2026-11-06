@@ -539,7 +539,20 @@ class Ingest:
             output_rate = SAMPLE_RATE
 
         audio_filters = self._pitch_filter(output_rate)
-        audio_filters.append("ashowinfo")
+        output_layout = "stereo" if self.separation_enabled else "mono"
+        # Put diagnostics after resampling/format conversion so nb_samples
+        # is measured at the same rate used by the PCM sample clock.
+        audio_filters += [
+            f"aresample={output_rate}",
+            f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
+            "ashowinfo",
+        ]
+        log.info(
+            "ASR audio from fMP4 cache: source_start=%.3fs playlist_offset=%.3fs rate=%dHz",
+            self.source.start_s,
+            offset,
+            output_rate,
+        )
         ffmpeg += ["-map", "0:a:0", "-af", ",".join(audio_filters)]
 
         if self.separation_enabled:

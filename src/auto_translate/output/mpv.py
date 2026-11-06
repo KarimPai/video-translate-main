@@ -385,6 +385,14 @@ class MpvOutput:
             else sub.start_s
         )
         show_from = speech_start
+        log.debug(
+            "subtitle timing: audio_start=%.3f vad_onset=%.3f "
+            "mpv_show=%.3f preroll=%.3fs",
+            sub.start_s,
+            speech_start,
+            show_from,
+            max(0.0, speech_start - sub.start_s),
+        )
         until = (
             max(sub.end_s, show_from + cfg.min_display_s)
             + cfg.hold_s

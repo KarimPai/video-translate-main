@@ -1,7 +1,7 @@
 # auto-translate
 
 Live **Japanese → English subtitles** for YouTube streams (VTubers, gamers), running locally on your GPU.
-Japanese speech can be transcribed with **Haas-ja-v1.0 through speech.cpp/Vulkan** or faster-whisper/CUDA,
+Japanese speech is transcribed with **Haas-ja-v1.0 through speech.cpp/Vulkan**,
 then translated by a local NMT model or a local LLM (Ollama). Subtitles can be shown in three places:
 
 - **Terminal**: Japanese + English lines with timings and latency.
@@ -9,7 +9,7 @@ then translated by a local NMT model or a local LLM (Ollama). Subtitles can be s
 - **mpv**: the video plays a few seconds behind, so each subtitle appears exactly when the line is spoken.
 
 ```
-yt-dlp → ffmpeg → VAD (Silero) → ASR (Haas/Vulkan or faster-whisper/CUDA) → glossary + translator → terminal / browser / mpv
+yt-dlp → ffmpeg → VAD (Silero) → ASR (Haas/Vulkan) → glossary + translator → terminal / browser / mpv
 ```
 
 Works with **live streams** and **VODs** (past streams, normal videos), and with **local audio/video files**.
@@ -47,9 +47,9 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
 CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
-don't need the CUDA Toolkit. Haas runs separately through speech.cpp's Windows Vulkan build; faster-whisper,
-VAD and local CTranslate2 translation use CUDA. Optional separation and diarization features also use CUDA. FFmpeg decoding, resampling and pipeline
-coordination remain CPU tasks.
+don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; VAD,
+local CTranslate2 translation, and optional separation and diarization features use CUDA. FFmpeg decoding,
+resampling and pipeline coordination remain CPU tasks.
 
 ## Installation
 
@@ -68,13 +68,14 @@ uv sync --extra diarization                   # pyannote speaker diarization
 ollama pull qwen3:4b-instruct-2507-q4_K_M
 ```
 
-Haas is the default ASR backend. With speech.cpp on `PATH`, its `haas-ja-v1.0` GGUF is fetched automatically
-by the worker on first use. The optional faster-whisper model and NMT models are downloaded from Hugging Face.
+Haas is the only ASR backend. With speech.cpp on `PATH`, its `haas-ja-v1.0` GGUF is fetched automatically
+by the worker on first use. NMT models are downloaded from Hugging Face.
 
 Check that the GPU works:
 
 ```powershell
-uv run python scripts/m0_cuda_test.py some_japanese_clip.wav
+speech info haas-ja-v1.0
+speech devices
 ```
 
 ## Quick start
@@ -359,27 +360,18 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 | `speech_pad_ms` | `200` | Audio kept before/after the speech. |
 | `min_speech_ms` | `250` | Drop lines with less speech than this (coughs, clicks). |
 | `max_utterance_s` | `6.0` (code default 9) | Force-split long speech after this many seconds, at the quietest point in the last 2 s. Keep below `[mpv] delay_s` − 3. |
-| `fallback_s` | `5.0` | The VAD misses voices mixed with loud music (narrated videos, trailers, singing). Audio it calls non-speech is still sent to Whisper in pieces of up to this many seconds, and Whisper decides (with the stricter `probe_*` filters in `[asr]`). `0` = off (VAD only). Keep below `[mpv] delay_s` − 3. |
+| `fallback_s` | `5.0` | The VAD misses voices mixed with loud music (narrated videos, trailers, singing). Audio it calls non-speech is still sent to Haas in pieces of up to this many seconds. `0` = off (VAD only). Keep below `[mpv] delay_s` − 3. |
 | `fallback_min_s` | `1.5` | Skip non-speech pieces shorter than this (short bits of music often come back as a random word). |
-| `fallback_min_db` | `-45.0` | Skip non-speech pieces quieter than this (RMS, dBFS), so silence never reaches Whisper. |
+| `fallback_min_db` | `-45.0` | Skip non-speech pieces quieter than this (RMS, dBFS), so silence is not sent to Haas. |
 
 ### `[asr]`: speech recognition
 
 | Key | Default | Description |
 |---|---|---|
-| `backend` | `"haas"` | `"haas"` uses speech.cpp/Vulkan; `"faster-whisper"` uses CUDA. |
 | `haas_model` | `"haas-ja-v1.0"` | speech.cpp model name or GGUF file path. |
 | `haas_device` | `"Vulkan0"` | speech.cpp device selected for Haas. |
 | `haas_decode_on_cpu` | `false` | `false` keeps Haas decoding on Vulkan; `true` decodes on CPU. |
-| `model` | `"kotoba-tech/kotoba-whisper-v2.0-faster"` | faster-whisper HF repo id or local CTranslate2 model folder. |
-| `device` | `"cuda"` | faster-whisper device: `"cuda"` or `"cpu"`. |
-| `compute_type` | `"int8_float16"` | faster-whisper compute type. |
-| `beam_size` | `5` | 1 = fastest; 5 = more accurate. |
-| `no_speech_threshold` | `0.6` | A segment is dropped when no-speech probability is above this **and**… |
-| `log_prob_threshold` | `-1.0` | …the average log-probability is below this (Whisper's hallucination filter). |
-| `probe_no_speech_max` | `0.5` | For VAD-fallback pieces only: drop a segment whose no-speech probability is above this… |
-| `probe_log_prob_min` | `-0.7` | …or whose average log-probability is below this. Lower `probe_no_speech_max` if music turns into made-up lines; raise it if narration under music goes missing. |
-| `blocklist` | see config | Lines containing any of these are dropped (known Whisper hallucinations on silence/music, e.g. 「ご視聴ありがとうございました」). |
+| `blocklist` | see config | Lines containing any of these are dropped (known ASR false positives on silence/music, e.g. 「ご視聴ありがとうございました」). |
 
 ### `[translate]`
 
@@ -427,7 +419,7 @@ Every `stats_interval_s` the app logs something like:
 12:00:30 INFO  auto_translate.pipeline: [30s] queues {...} | 12 lines · asr avg 0.33s max 0.52s · mt avg 0.49s max 0.81s · latency avg 1.31s max 2.10s · max queue ...
 ```
 
-- **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; use a lighter preset, `beam_size = 1`, or close other GPU apps if it persists.
+- **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; use a lighter preset or close other GPU apps if it persists.
 - **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
 - **latency**: end of speech → subtitle ready. ~1–1.5 s with `balanced`.
 - A summary is printed when the app stops.
@@ -436,7 +428,6 @@ Every `stats_interval_s` the app logs something like:
 
 | Script | Use |
 |---|---|
-| `uv run python scripts/m0_cuda_test.py clip.wav [--model ID] [--compute-type float16]` | Check that Whisper runs on the GPU; prints the text and real-time factor. |
 | `uv run python scripts/m2_compare.py scripts/sample_ja.txt light light-sugoi balanced quality` | Translate the same Japanese lines with several presets and compare output and speed. |
 | `uv run python scripts/mpv_jump_probe.py [RIGHT LEFT ...]` | Debug: while `--mpv` plays a VOD, press jump keys and log the audio state after each jump. |
 
@@ -453,10 +444,10 @@ Every `stats_interval_s` the app logs something like:
 | mpv video stutters / drops frames (esp. with `quality`) | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
 | Local file with `--mpv`: no video/sound in mpv, or yt-dlp errors | Check the path. Otherwise the codec isn't supported (e.g. VP9/AV1/FLAC): see [Local files](#local-files) to convert it. |
 | `--mpv` can't be combined with `--fast` | mpv plays at 1x; drop one of them. |
-| Out of VRAM / CUDA errors | Close other GPU apps; use `compute_type = "int8_float16"`; use `light`/`light-sugoi` instead of an LLM preset. |
-| Lines missing when someone talks over loud music (narration, trailers) | The VAD doesn't hear it; `[vad] fallback_s` (on by default) sends that audio to Whisper anyway. Run with `-v` to see `dropped probe` lines; raise `[asr] probe_no_speech_max` if real speech is dropped. |
-| Made-up lines during music or quiet gaps | Lower `[asr] probe_no_speech_max`, raise `[vad] fallback_min_s`, or set `[vad] fallback_s = 0` to turn the fallback off. |
-| Odd lines like 「ご視聴ありがとうございました」 during music | Whisper hallucination; add the phrase to `[asr] blocklist`. |
+| Out of VRAM / CUDA errors | Close other GPU apps; use `light`/`light-sugoi` instead of an LLM preset. |
+| Lines missing when someone talks over loud music (narration, trailers) | The VAD doesn't hear it; `[vad] fallback_s` (on by default) sends that audio to Haas anyway. Run with `-v` to inspect probe-related logs. |
+| Made-up lines during music or quiet gaps | Raise `[vad] fallback_min_s`, or set `[vad] fallback_s = 0` to turn the fallback off. |
+| Odd lines like 「ご視聴ありがとうございました」 during music | ASR false positive; add the phrase to `[asr] blocklist`. |
 | Names / game titles wrong | Add them (and their misheard forms) to `glossary.toml`. |
 | Very slow everything | Laptop on battery? Plug it in. |
 

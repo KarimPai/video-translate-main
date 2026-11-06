@@ -377,12 +377,15 @@ class MpvOutput:
         if sub.end_s < self._session_start:
             return
 
+        # Delay the subtitle onset slightly to compensate for early ASR/VAD
+        # timestamps relative to the audible start of speech.
+        show_from = sub.start_s + cfg.start_delay_s
         until = (
-            max(sub.end_s, sub.start_s + cfg.min_display_s)
+            max(sub.end_s, show_from + cfg.min_display_s)
             + cfg.hold_s
         )
 
-        line = _Line(sub, sub.start_s, until)
+        line = _Line(sub, show_from, until)
         now = self._now
 
         if sub.generation not in self._logged_subtitle_generations:

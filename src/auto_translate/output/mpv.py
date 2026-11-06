@@ -39,7 +39,6 @@ IPC_PATH = (
 WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
 INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
-SEEKBAR_SCRIPT = Path(__file__).with_name("mpv_seekbar.lua")
 
 JUMP_MESSAGE = "auto-translate-jump"
 
@@ -734,12 +733,6 @@ class MpvOutput:
                 )
                 if self.ingest.source.duration is not None:
                     self._now = min(self._now, self.ingest.source.duration)
-                    self.ipc.command(
-                        "script-message",
-                        "auto-translate-seekbar-update",
-                        f"{self._now:.3f}",
-                        f"{self.ingest.source.duration:.3f}",
-                    )
 
                 sample_now = time.monotonic()
                 if (
@@ -884,14 +877,6 @@ class MpvOutput:
             target = min(
                 target,
                 max(0.0, src.duration - 5),
-            )
-
-        if src.duration is not None:
-            self.ipc.command(
-                "script-message",
-                "auto-translate-seekbar-update",
-                f"{target:.3f}",
-                f"{src.duration:.3f}",
             )
 
         log.info(

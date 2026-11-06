@@ -105,16 +105,18 @@ local function render()
     local progress_width = track_width * fraction
 
     -- Draw one thick track: grey remainder with a white elapsed section.
+    local bar_x = seek_left - left
+    local bar_local_y = bar_y - top
     local ass = string.format(
-        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H707070&\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}",
-        math.floor(seek_left), math.floor(bar_y),
+        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H707070&\\p1}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
+        math.floor(bar_x), math.floor(bar_local_y),
         math.floor(track_width), math.floor(track_width),
         bar_height, bar_height
     )
     if progress_width > 0 then
         ass = ass .. string.format(
             "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&HFFFFFF&\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}",
-            math.floor(seek_left), math.floor(bar_y),
+            math.floor(bar_x), math.floor(bar_local_y),
             math.floor(progress_width), math.floor(progress_width),
             bar_height, bar_height
         )
@@ -124,7 +126,7 @@ local function render()
     local total = fmt_time(duration)
     ass = ass .. string.format(
         "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
-        math.floor(center_x), bottom - 8, elapsed, total
+        math.floor(center_x - left), bottom - top - 8, elapsed, total
     )
 
     if ass ~= last_ass or not visible then

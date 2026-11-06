@@ -291,7 +291,7 @@ class MpvOutput:
 
             "--force-window=yes",
             "--title=auto-translate",
-            "--keep-open=no",
+            "--keep-open=yes",
             "--idle=yes",
             "--rebase-start-time=no",
 
@@ -449,15 +449,20 @@ class MpvOutput:
             self._buffer_condition.notify_all()
 
     def drain(self) -> None:
-        """Let MPV finish playback before closing."""
+        """Keep MPV open on the final frame until the user closes it."""
         while not self.stop.is_set():
             if self._proc.poll() is not None:
-                break
+                return
 
-            if self.ipc.get("idle-active"):
-                break
+            if self.ipc.get("eof-reached"):
+                log.info(
+                    "VOD playback finished; MPV will remain open until closed"
+                )
+                while not self.stop.is_set() and self._proc.poll() is None:
+                    time.sleep(0.25)
+                return
 
-            time.sleep(0.5)
+            time.sleep(0.25)
 
     def close(self) -> None:
         """Cleanly stop MPV and release its automatic cleanup protection."""

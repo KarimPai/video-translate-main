@@ -477,8 +477,12 @@ class Ingest:
 
         assert self.video_out is not None
 
-        playlist = Path(self.video_playlist)
-        segment_pattern = str(playlist.parent / "segment_%06d.m4s")
+        # The writer runs with cwd set to the session directory. Keep every
+        # HLS output URI relative to that directory so FFmpeg's nested HLS
+        # output handling does not need to reinterpret absolute Windows
+        # drive paths for the playlist and media fragments.
+        playlist_name = "index.m3u8"
+        segment_pattern = "segment_%06d.m4s"
 
         hls_options = [
             "-f", "hls",
@@ -509,7 +513,7 @@ class Ingest:
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",
             "-progress", "pipe:2",
-            self.video_playlist,
+            playlist_name,
         ]
 
     def _video_audio_command(self) -> list[str]:

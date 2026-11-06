@@ -10,6 +10,8 @@ Vocal separation mode:
 MPV video/audio stream-copy output is kept separate from audio processing.
 """
 
+import functools
+import http.server
 import logging
 import queue
 import re
@@ -30,6 +32,14 @@ from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
 
 log = logging.getLogger(__name__)
+
+
+class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
+    """Serve the local fMP4 cache without noisy per-request logging."""
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
 
 CHUNK_SAMPLES = 4096
 SEPARATION_READ_FRAMES = 8192
@@ -209,6 +219,8 @@ class Ingest:
             Path(self._cache_temp.name) if self._cache_temp else None
         )
         self._cache_sequence = 0
+        self._http_server: http.server.ThreadingHTTPServer | None = None
+        self._http_thread: threading.Thread | None = None
         self._cache_source_start_s = source.start_s
         self.video_out = (
             str(self._new_video_playlist(source.start_s))
@@ -258,6 +270,36 @@ class Ingest:
         directory = self._cache_root / f"session-{self._cache_sequence:04d}"
         directory.mkdir(parents=True, exist_ok=True)
         return directory / "index.m3u8"
+
+    def _start_cache_server(self) -> None:
+        """Serve HLS files over loopback HTTP so Windows readers do not lock the playlist."""
+        if self._http_server is not None:
+            return
+        if self._cache_root is None:
+            raise RuntimeError("fMP4 cache is not enabled")
+
+        handler = functools.partial(
+            _QuietHLSHandler,
+            directory=str(self._cache_root),
+        )
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server.daemon_threads = True
+        self._http_server = server
+        self._http_thread = threading.Thread(
+            target=server.serve_forever,
+            name="fmp4-cache-http",
+            daemon=True,
+        )
+        self._http_thread.start()
+        log.info("local fMP4 cache HTTP server listening on 127.0.0.1:%d", server.server_port)
+
+    @property
+    def video_playlist_url(self) -> str:
+        """HTTP URL for the current playlist and its relative fMP4 assets."""
+        if self._http_server is None or self._cache_root is None:
+            raise RuntimeError("fMP4 cache HTTP server is not running")
+        relative = Path(self.video_playlist).relative_to(self._cache_root).as_posix()
+        return f"http://127.0.0.1:{self._http_server.server_port}/{relative}"
 
     @property
     def cache_source_start_s(self) -> float:
@@ -378,6 +420,7 @@ class Ingest:
             # FFmpeg resolves the fMP4 init filename relative to its
             # working directory. Keep that file inside this session's cache
             # directory instead of the repository/launcher working directory.
+            self._start_cache_server()
             proc = subprocess.Popen(
                 self._video_command(start_s=start_s),
                 cwd=str(Path(self.video_playlist).parent),
@@ -514,8 +557,8 @@ class Ingest:
         else:
             hls_options += [
                 "-hls_list_size", "0",
-                "-hls_playlist_type", "vod",
-                "-hls_flags", "independent_segments",
+                "-hls_playlist_type", "event",
+                "-hls_flags", "temp_file+independent_segments",
             ]
 
         # YouTube's separate HLS video rendition can deliver H.264 packets
@@ -570,7 +613,7 @@ class Ingest:
         ffmpeg += ["-live_start_index", "0"]
         if not self.source.live and offset > 0.001:
             ffmpeg += ["-ss", f"{offset:.3f}"]
-        ffmpeg += ["-i", self.video_playlist]
+        ffmpeg += ["-i", self.video_playlist_url]
 
         if self.separation_enabled:
             output_rate = SEPARATION_INPUT_RATE
@@ -1230,6 +1273,12 @@ class Ingest:
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     log.warning("could not fully stop FFmpeg process %s", proc.pid)
+
+        if self._http_server is not None:
+            self._http_server.shutdown()
+            self._http_server.server_close()
+            self._http_server = None
+            self._http_thread = None
 
         if self._cache_temp is not None:
             # Preserve FFmpeg -report output before TemporaryDirectory removes

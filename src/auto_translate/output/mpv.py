@@ -301,13 +301,11 @@ class MpvOutput:
             "--demuxer-lavf-o=live_start_index=0",
             "--input-default-bindings=no",
 
-            # Disable unsafe on-screen controls.
-            "--osc=no",
+            # Use MPV's built-in OSC and native seekbar.
+            "--osc=yes",
             "--osd-on-seek=no",
-            "--osd-bar=no",
             "--no-input-default-bindings",
             f"--input-conf={INPUT_CONF}",
-            f"--script={SEEKBAR_SCRIPT}",
 
             # Hardware video decoding.
             f"--hwdec={cfg.hwdec}",

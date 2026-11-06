@@ -910,10 +910,11 @@ class MpvOutput:
         used_rows = 0
 
         for ln in reversed(active):
-            row_count = (
-                (1 if self.cfg.ja_size > 0 else 0)
-                + bool(ln.sub.en)
-            )
+            # The limit counts subtitle entries, not individual language rows.
+            # Each entry may contain Japanese above its English translation.
+            row_count = int(bool(
+                ln.sub.en or (self.cfg.ja_size > 0 and ln.sub.ja)
+            ))
 
             if (
                 selected

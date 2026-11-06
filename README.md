@@ -360,10 +360,6 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 
 | Key | Default | Description |
 |---|---|---|
-
-| `context_lines` | `8` | Previous JA/EN lines supplied to PLaMo as context. |
-| `glossary` | `"glossary.toml"` | Glossary file. |
-
 | `plamo_base_url` | `"http://127.0.0.1:8000/v1"` | OpenAI-compatible llama.cpp server endpoint. |
 | `plamo_model` | `"plamo-3-translate"` | Model alias passed to llama.cpp. |
 | `plamo_hf_model` | `"pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"` | Hugging Face GGUF model and quantization. |

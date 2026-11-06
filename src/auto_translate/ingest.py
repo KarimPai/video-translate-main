@@ -417,8 +417,7 @@ class Ingest:
         """Set when the current MPV video FFmpeg process stalls or exits badly."""
         return self._video_failed
 
-    def prepare_video_retry(self) -> bool:
-        """Stop a failed video sender and refresh signed source URLs for retry."""
+    def prepare_video_retry(self) -> bool:        """Stop a failed video sender and refresh signed source URLs for retry."""
         with self._proc_lock:
             if self._stopped:
                 return False
@@ -518,10 +517,25 @@ class Ingest:
                 "-hls_flags", "temp_file+independent_segments",
             ]
 
+        # YouTube's separate HLS video rendition can deliver H.264 packets
+        # without PTS/DTS. Stream-copying those packets into fragmented MP4
+        # fails because the muxer requires valid timestamps. Decode the video,
+        # regenerate a constant-frame-rate timeline from the detected input
+        # frame rate, and encode with NVENC to keep the repair GPU-accelerated.
+        # The AAC rendition is already compressed; only convert ADTS framing
+        # to the MPEG-4 AudioSpecificConfig required by MP4/fMP4.
         return ffmpeg + [
             "-map", "0:v:0?",
             "-map", audio,
-            "-c", "copy",
+            "-vf", "setpts=N/(FRAME_RATE*TB)",
+            "-c:v", "h264_nvenc",
+            "-preset", "p1",
+            "-tune", "ull",
+            "-rc", "vbr",
+            "-cq", "18",
+            "-b:v", "0",
+            "-c:a", "copy",
+            "-bsf:a", "aac_adtstoasc",
             *hls_options,
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",
@@ -837,8 +851,7 @@ class Ingest:
             return [ffmpeg + ["-i", src.location] + out]
 
         ytdlp = [
-            "yt-dlp",
-            "-f",
+            "yt-dlp",            "-f",
             self.cfg.ytdlp_format,
             "--quiet",
             "--no-warnings",

@@ -502,7 +502,9 @@ class Ingest:
             hls_options += [
                 "-hls_list_size", "0",
                 "-hls_playlist_type", "event",
-                "-hls_flags", "temp_file+independent_segments",
+                # Avoid Windows temp-file rename failures when finalizing fMP4 fragments.
+                # The EVENT playlist is still published atomically by the HLS muxer.
+                "-hls_flags", "independent_segments",
             ]
 
         return ffmpeg + [

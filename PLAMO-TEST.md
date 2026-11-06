@@ -15,7 +15,11 @@ Use a Windows build that includes GPU support (CUDA or Vulkan). The RTX 3070 sho
 
 ## 2. Start the model server
 
-The translator starts this server automatically when needed and stops only the process it launched when the translator exits. You no longer need a separate CMD window. If a server is already responding at the configured URL, it is reused and left running.\n\nThe server writes its output to `logs\\plamo-server.log`.\n\nThe equivalent manual command is:
+The translator starts this server automatically when needed and stops only the process it launched when the translator exits. You no longer need a separate CMD window. If a server is already responding at the configured URL, it is reused and left running.
+
+The server writes its output to `logs\plamo-server.log`.
+
+The equivalent manual command is:
 
 ```cmd
 llama-server -hf pfnet/plamo-3-translate-2b-GGUF:Q4_K_M -c 8192 --port 8000 --alias plamo-3-translate --jinja --no-prefill-assistant -ngl 99

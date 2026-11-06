@@ -50,6 +50,18 @@ local function video_rect()
     return left, top, right, bottom, width, height
 end
 
+local function track_bounds(width)
+    -- Match the clickable range to the rendered text track, rather than the
+    -- full video width. ASS monospace-like box glyphs average about 0.55 em.
+    local font_size = 35
+    local left, right = video_rect()
+    local available = math.max(1, right - left)
+    local bar_chars = math.max(24, math.floor(available / (font_size * 0.55)))
+    local track_width = bar_chars * font_size * 0.55
+    local center = width / 2
+    return center - track_width / 2, center + track_width / 2, bar_chars
+end
+
 local function seek_from_mouse(mouse, left, right)
     if mouse.x < left or mouse.x > right or right <= left then
         return nil
@@ -88,23 +100,23 @@ local function render()
         return
     end
 
-    local bar_y = bottom - 46
-    local bar_chars = 48
+    local bar_left, bar_right, bar_chars = track_bounds(width)
+    local bar_y = bottom - 52
     local fraction = math.max(0, math.min(1, position / duration))
     local filled = math.floor(bar_chars * fraction + 0.5)
     local empty = bar_chars - filled
     local bar = "{\\1c&HFFFFFF&}" .. string.rep("━", filled)
         .. "{\\1c&H808080&}" .. string.rep("─", empty)
     local ass = string.format(
-        "{\\an2\\pos(%d,%d)\\bord2\\3c&HFFFFFF&\\shad0\\fs28\\1c&HFFFFFF&}%s",
+        "{\\an2\\pos(%d,%d)\\bord3\\3c&HFFFFFF&\\shad0\\fs35\\1c&HFFFFFF&}%s",
         math.floor(width / 2), bar_y, bar
     )
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)
     ass = ass .. string.format(
-        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s/%s",
-        math.floor(width / 2), bottom - 70, elapsed, total
+        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
+        math.floor(width / 2), bottom - 105, elapsed, total
     )
 
     if ass ~= last_ass or not visible then
@@ -126,9 +138,10 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
     if event.event == "down" then
         local mouse = mouse_position()
         local left, top, right, bottom = video_rect()
-        if mouse and mouse.x >= left and mouse.x <= right
+        local seek_left, seek_right = track_bounds(video_rect())
+        if mouse and mouse.x >= seek_left and mouse.x <= seek_right
             and mouse.y >= bottom - 105 and mouse.y <= bottom
-            and seek_from_mouse(mouse, left, right) then
+            and seek_from_mouse(mouse, seek_left, seek_right) then
             dragging = true
             render()
         end
@@ -136,8 +149,9 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
         dragging = false
         local mouse = mouse_position()
         local left, top, right, bottom = video_rect()
-        local target = mouse and mouse.x >= left and mouse.x <= right
-            and seek_from_mouse(mouse, left, right) or nil
+        local seek_left, seek_right = track_bounds(video_rect())
+        local target = mouse and mouse.x >= seek_left and mouse.x <= seek_right
+            and seek_from_mouse(mouse, seek_left, seek_right) or nil
         if target then
             mp.commandv("script-message", "auto-translate-jump", tostring(target - position))
         end

@@ -2,7 +2,7 @@
 
 Live **Japanese → English subtitles** for YouTube streams (VTubers, gamers), running locally on your GPU.
 Japanese speech is transcribed with **Haas-ja-v1.0 through speech.cpp/Vulkan**,
-then translated by **HY-MT2 1.8B** through a local OpenAI-compatible model endpoint. Subtitles can be shown in three places:
+then translated by **PLaMo 3 Translate 2B (Q4_K_M)** using a locally managed llama.cpp server. Subtitles can be shown in three places:
 
 - **Terminal**: Japanese + English lines with timings and latency.
 - **Browser viewer**: big captions on any device on your LAN (phone, Mac, tablet).
@@ -42,7 +42,7 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [uv](https://docs.astral.sh/uv/) | Python package/project manager. Installs Python 3.12 and all dependencies. |
 | [ffmpeg](https://ffmpeg.org/) | On `PATH`. Decodes audio, and streams the video to mpv. |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | On `PATH`. **Keep it updated** (`yt-dlp -U` or `winget upgrade yt-dlp`): YouTube changes break old versions. |
-| Local HY-MT2 runtime | Serves `kaelri/hy-mt2:1.8b-q4_K_M` through the configured local chat endpoint. |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | A CUDA- or Vulkan-enabled Windows build with `llama-server.exe` on `PATH`. PLaMo 3 Translate 2B is downloaded automatically from Hugging Face on first launch. |
 | [speech.cpp](https://github.com/nyosegawa/speech.cpp) | Required for Haas ASR; use the Windows x64 Vulkan release and put `speech.exe` on `PATH`. |
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
@@ -64,12 +64,11 @@ uv sync --extra separation                    # UVR vocal separation
 uv sync --extra deepfilter                    # DeepFilterNet enhancement
 uv sync --extra diarization                   # pyannote speaker diarization
 
-# HY-MT2 translator for the default engine
-ollama pull kaelri/hy-mt2:1.8b-q4_K_M
+
 ```
 
 Haas is the only ASR backend. With speech.cpp on `PATH`, its `haas-ja-v1.0` GGUF is fetched automatically
-by the worker on first use. HY-MT2 is loaded by the configured local model runtime.
+by the worker on first use. PLaMo 3 Translate is downloaded from Hugging Face and loaded by `llama-server`.
 
 Check that the GPU works:
 
@@ -95,7 +94,7 @@ uv run auto-translate recording.mp4 --fast --engine none
 ```
 
 Stop with **Ctrl+C** (or by closing the mpv window). The first run takes longer: models are downloaded,
-and the local HY-MT2 runtime loads the model into VRAM (the initial warm-up).
+and `llama-server` downloads and loads PLaMo 3 Translate into VRAM (the initial warm-up).
 
 Then open the browser viewer at **http://127.0.0.1:8765/** on this PC. LAN access is disabled by default; see [Browser viewer](#browser-viewer) to opt in for phone/tablet access.
 
@@ -112,7 +111,6 @@ uv run auto-translate SOURCE [--mode auto|live|vod] [--start TIME] [--fast]
 | `--mode auto\|live\|vod` | `auto` | `auto` asks yt-dlp whether the URL is live right now (~4 s). `live` / `vod` skip that check. Local files are always `vod`. |
 | `--start TIME` | URL's `t=` or 0 | VOD only: where to start. Formats: `962`, `16:02`, `1:02:03`, `16m2s`, `1h2m3s`. If omitted, the URL's `t=` / `start=` value is used (`…&t=962s`). Ignored for live streams (they always start at the live edge). A start past the end of the video is rejected. |
 | `--fast` | off | VOD only: process faster than real time (no 1x pacing). Useful for transcribing a whole video. Can't be combined with `--mpv`. |
-| `--engine NAME` | HY-MT2 is always used | Translation engine: `hymt2` (HY-MT2) or `none` (Japanese only, no translator loaded). See [Translation](#translation). |
 | `--mpv` | off (`[mpv] enabled`) | Watch the video in mpv, delayed so subtitles appear exactly when each line is spoken. |
 | `--delay SECONDS` | `[mpv] delay_s` (9) | mpv only: how far playback stays behind the pipeline. Raise it if subtitles come late (see [Tuning the delay](#tuning-the-delay)). |
 | `--no-web` | web on | Don't start the browser viewer. |
@@ -124,7 +122,6 @@ Examples:
 ```powershell
 uv run auto-translate "https://youtu.be/VIDEO_ID?t=3725"               # VOD from 1:02:05
 uv run auto-translate "https://youtu.be/VIDEO_ID" --start 1h2m5s       # same
-uv run auto-translate "https://youtu.be/VIDEO_ID" --engine hymt2 # HY-MT2 (default)
 uv run auto-translate "https://youtu.be/VIDEO_ID" --mode live --no-web # skip the live check, terminal only
 uv run auto-translate "https://youtu.be/VIDEO_ID" --config my.toml -v
 ```
@@ -168,25 +165,28 @@ a black window). For local files, a `--start` past the end of the file isn't det
 
 ## Translation
 
-HY-MT2 1.8B Q4_K_M is the application's **only translation engine**. There are no translation
-engines or alternative translator backends. To change the local model endpoint or generation
-settings, edit the single `[translate]` table in `config.toml`.
+PLaMo 3 Translate 2B Q4_K_M is the application's **only translation model**. The app starts
+`llama-server` automatically when the configured local endpoint is not already responding.
+The model is fetched from Hugging Face on first launch. Edit `[translate]` in `config.toml`
+to change the server endpoint or model-loading settings.
 
 ```toml
 [translate]
-model = "kaelri/hy-mt2:1.8b-q4_K_M"
-base_url = "http://127.0.0.1:11434/v1"
-temperature = 0.2
+plamo_base_url = "http://127.0.0.1:8000/v1"
+plamo_model = "plamo-3-translate"
+plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
+plamo_context = 8192
+plamo_gpu_layers = 99
 max_tokens = 120
 timeout_s = 20.0
 load_timeout_s = 300.0
-min_request_interval_s = 3.0
 context_lines = 8
 glossary = "glossary.toml"
 ```
 
-HY-MT2 receives the previous 8 JA/EN lines and matching glossary entries as reference translations.
-The configured local endpoint must expose `/v1/chat/completions`.
+PLaMo receives the previous 8 JA/EN lines as context. Matching glossary entries are passed
+through PLaMo's Japanese-to-English chat-template options. The local server exposes
+`/v1/chat/completions`.
 
 ---
 
@@ -284,7 +284,7 @@ they were spoken.
 
 | Preset | Latency max | Delay used |
 |---|---|---|
-| `hymt2` | Measure on your machine | 9 s (`[mpv] delay_s`) |
+| `plamo` | Measure on your machine | 9 s (`[mpv] delay_s`) |
 
 Where the delay comes from, highest priority first:
 
@@ -309,7 +309,7 @@ At the end the log prints a sync summary, e.g.
 "ヴァロ" = "Valorant"
 ```
 
-- **HY-MT2:** matching entries are added to the prompt as reference translations.
+- **PLaMo 3:** matching entries are passed as glossary pairs to the model's chat template.
 - Longer terms win over shorter ones. Avoid single-kanji terms when possible (they match inside other words).
 - Useful for streamer names, game names, and ASR mishearings (add the misheard form too, e.g. `"バロ" = "Valorant"`).
 
@@ -361,12 +361,12 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 | Key | Default | Description |
 |---|---|---|
 
-| `context_lines` | `8` | Previous JA/EN lines supplied to HY-MT2 as context. |
+| `context_lines` | `8` | Previous JA/EN lines supplied to PLaMo as context. |
 | `glossary` | `"glossary.toml"` | Glossary file. |
 
 `[translate.engines.NAME]` tables define engines (see [Translation](#translation)).
-HY-MT2 engine keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120),
-`timeout_s` (20), `load_timeout_s` (300), `min_request_interval_s` (3), and `extra_body` (additional local-server request fields).
+PLaMo settings: `plamo_base_url`, `plamo_model`, `plamo_hf_model`, `plamo_context`,
+`plamo_gpu_layers`, `max_tokens`, `timeout_s`, `load_timeout_s`, `context_lines`, and `glossary`.
 
 ### `[output]`
 
@@ -386,7 +386,7 @@ HY-MT2 engine keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120)
 | `delay_s` | `9.0` | How far playback stays behind the pipeline. Must exceed `max_utterance_s` + max latency. `--delay` overrides it. |
 | `start_wait_s` | `3.0` | VOD: wait before playing after start or a jump. |
 | `port` | `9137` | Legacy setting; the fMP4 cache uses local playlist files instead of a TCP listener. |
-| `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while HY-MT2 uses the GPU. `"no"` = CPU decoding. |
+| `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while PLaMo uses the GPU. `"no"` = CPU decoding. |
 | `ytdlp_format` | ≤1080p H.264 HLS | yt-dlp format selector for the video and audio streams used to build the fMP4 cache. |
 | `en_size` / `ja_size` | `44` / `28` | Subtitle font sizes (on a 720-line canvas). |
 | `min_display_s` | `1.5` | Show short lines at least this long. |
@@ -402,7 +402,7 @@ Every `stats_interval_s` the app logs something like:
 
 - **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; close other GPU apps or reduce the audio workload if it persists.
 - **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
-- **latency**: end of speech → subtitle ready. ~1–1.5 s with HY-MT2.
+- **latency**: end of speech → subtitle ready. Measure on your GPU; PLaMo latency depends on llama.cpp build and GPU offload.
 - A summary is printed when the app stops.
 
 ## Helper scripts
@@ -415,16 +415,16 @@ Every `stats_interval_s` the app logs something like:
 
 | Symptom | Fix |
 |---|---|
-| `HTTP Error 404: Not Found` at startup | The configured HY-MT2 model is not available in the local model runtime. Check its model name and download it there. |
-| `Connection refused` at startup | The local HY-MT2 endpoint is not running. Start the configured local model runtime. |
-| First start hangs after "ASR ready" | HY-MT2 is loading into VRAM; subsequent requests reuse the loaded model. |
+| `llama-server` not found | Install a CUDA- or Vulkan-enabled llama.cpp build and add the directory containing `llama-server.exe` to `PATH`, then reopen CMD. |
+| `llama-server` startup fails | Check `logs\\plamo-server.log`; confirm the selected port is free and the model can be downloaded from Hugging Face. |
+| First start takes a while after "ASR ready" | llama.cpp is downloading/loading PLaMo into VRAM; later runs reuse the downloaded model. |
 | yt-dlp errors / "Sign in to confirm" / format not available | Update yt-dlp. For members-only streams set `cookies_from_browser`. |
 | Phone can't open the viewer | Same Wi-Fi? Allow `python.exe` on Private networks in Windows Firewall; check the network is set to "Private". |
 | Subtitles late in mpv | Raise the delay (`--delay 15`) or lower `[vad] max_utterance_s`. |
 | mpv video stutters / drops frames | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
 | Local file with `--mpv`: no video/sound in mpv, or yt-dlp errors | Check the path. Otherwise the codec isn't supported (e.g. VP9/AV1/FLAC): see [Local files](#local-files) to convert it. |
 | `--mpv` can't be combined with `--fast` | mpv plays at 1x; drop one of them. |
-| Out of VRAM / CUDA errors | Close other GPU apps and verify the HY-MT2 model's GPU allocation. |
+| Out of VRAM / CUDA errors | Close other GPU apps and verify PLaMo's GPU allocation and reduce `plamo_gpu_layers` if necessary. |
 | Lines missing when someone talks over loud music (narration, trailers) | The VAD doesn't hear it; `[vad] fallback_s` (on by default) sends that audio to Haas anyway. Run with `-v` to inspect probe-related logs. |
 | Made-up lines during music or quiet gaps | Raise `[vad] fallback_min_s`, or set `[vad] fallback_s = 0` to turn the fallback off. |
 | Odd lines like 「ご視聴ありがとうございました」 during music | ASR false positive; add the phrase to `[asr] blocklist`. |

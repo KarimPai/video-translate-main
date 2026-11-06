@@ -109,8 +109,14 @@ def main() -> None:
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
     translator = create_translator(cfg.translate, glossary)
+    translator_name = (
+        "PLaMo 3 Translate"
+        if cfg.translate.backend.strip().lower() == "plamo"
+        else "HY-MT2"
+    )
     log.info(
-        "HY-MT2 translator ready (%d glossary terms) in %.1fs",
+        "%s translator ready (%d glossary terms) in %.1fs",
+        translator_name,
         len(glossary.terms),
         time.perf_counter() - t0,
     )

@@ -112,6 +112,7 @@ def run_asr(
                 utt.timings,
                 speaker_id,
                 generation=utt.generation,
+                speech_start_s=utt.speech_start_s,
             )
         )
 
@@ -176,6 +177,7 @@ def run_translate(
                 tr.timings,
                 tr.speaker_id,
                 generation=tr.generation,
+                speech_start_s=tr.speech_start_s,
             )
         )
 
@@ -424,9 +426,10 @@ def run(
         log.info("stopping (Ctrl+C)")
 
     finally:
-        ingest.stop()
-
+        # Close MPV before deleting its temporary fMP4 cache files. On Windows,
+        # MPV may still hold segment files open until its process has exited.
         for out in outputs:
             out.close()
 
+        ingest.stop()
         log.info("done: %s", stats.summary())

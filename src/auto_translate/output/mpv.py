@@ -258,8 +258,6 @@ class MpvOutput:
         self.ingest = ingest
         self.stop = stop
 
-        self.listen_url = f"tcp://127.0.0.1:{cfg.port}"
-
         self._lines: list[_Line] = []
         self._lock = threading.Lock()
         self._now: float | None = None
@@ -272,23 +270,21 @@ class MpvOutput:
         self._job = None
         self._closed = False
         self._video_retries = 0
+        self._pending_seek_offset: float | None = None
         self._clock_sample_logged = False
         self._clock_last_sample_at = 0.0
         self._clock_last_sample_pos: float | None = None
-        self._clock_offset = 0.0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
         self._logged_subtitle_generations: set[int] = set()
         self._logged_displayed_subtitles: set[tuple[int, float, float]] = set()
-        self._overlay_diagnostic_done = False
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
-            f"{self.listen_url}?listen=1",
 
             "--pause",
             f"--input-ipc-server={IPC_PATH}",
@@ -299,12 +295,14 @@ class MpvOutput:
             "--idle=yes",
             "--rebase-start-time=no",
 
-            # Keep a modest forward cache to absorb brief FFmpeg/YouTube
-            # delivery interruptions. VOD seeking still restarts ingest.
+            # Keep a modest forward/backward demux cache while reading the
+            # progressive local fMP4 HLS playlist.
             "--cache=yes",
             "--demuxer-readahead-secs=12",
             "--demuxer-max-bytes=128MiB",
             "--demuxer-max-back-bytes=32MiB",
+            # Match FFmpeg's live HLS reader: begin at the oldest retained segment.
+            "--demuxer-lavf-o=live_start_index=0",
             "--input-default-bindings=no",
 
             # Disable unsafe on-screen controls.
@@ -330,11 +328,11 @@ class MpvOutput:
         try:
             self.ipc = MpvIpc(IPC_PATH)
 
-            # Wait for mpv to open its listening socket.
+            # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
 
             while (
-                self.ipc.get("path") is None
+                self.ipc.get("idle-active") is None
                 and time.monotonic() < deadline
             ):
                 if self._proc.poll() is not None:
@@ -357,8 +355,8 @@ class MpvOutput:
             raise
 
         log.info(
-            "mpv ready on %s (live delay %.1fs, VOD translation lead %.1fs)",
-            self.listen_url,
+            "mpv ready for progressive fMP4 HLS playback "
+            "(live delay %.1fs, VOD translation lead %.1fs)",
             cfg.delay_s,
             self.PAUSE_LEAD_SECONDS,
         )
@@ -370,38 +368,6 @@ class MpvOutput:
         )
         self._thread.start()
 
-    def _diagnose_overlay(self) -> None:
-        """Run a short, visible ASS overlay self-test and log MPV OSD state."""
-        try:
-            osd_level = self.ipc.get("osd-level")
-            video_osd = self.ipc.get("video-osd")
-            log.info(
-                "MPV OSD diagnostics: osd-level=%s video-osd=%s",
-                osd_level,
-                video_osd,
-            )
-
-            result = self.ipc.command(
-                "osd-overlay",
-                id=OVERLAY_ID,
-                format="ass-events",
-                data=r"{\an2\fs36\bord3\shad1\1c&HFFFFFF&}SUBTITLE OVERLAY TEST",
-                res_x=0,
-                res_y=720,
-                z=10,
-                hidden=False,
-                compute_bounds=True,
-            )
-            log.info("MPV ASS overlay test command result: %s", result)
-            time.sleep(2.5)
-            self.ipc.command(
-                "osd-overlay",
-                id=OVERLAY_ID,
-                format="none",
-            )
-        except (ConnectionError, OSError, MpvError):
-            log.exception("MPV ASS overlay self-test failed")
-
     # ---- Output interface ----
 
     def show(self, sub: Subtitle) -> None:
@@ -410,12 +376,28 @@ class MpvOutput:
         if sub.end_s < self._session_start:
             return
 
+        # Use the first speech-positive VAD frame, not the earlier padded
+        # audio start used to preserve context for ASR.
+        speech_start = (
+            sub.speech_start_s
+            if sub.speech_start_s is not None
+            else sub.start_s
+        )
+        show_from = speech_start + cfg.start_delay_s
+        log.debug(
+            "subtitle timing: audio_start=%.3f vad_onset=%.3f "
+            "mpv_show=%.3f preroll=%.3fs",
+            sub.start_s,
+            speech_start,
+            show_from,
+            max(0.0, speech_start - sub.start_s),
+        )
         until = (
-            max(sub.end_s, sub.start_s + cfg.min_display_s)
+            max(sub.end_s, show_from + cfg.min_display_s)
             + cfg.hold_s
         )
 
-        line = _Line(sub, sub.start_s, until)
+        line = _Line(sub, show_from, until)
         now = self._now
 
         if sub.generation not in self._logged_subtitle_generations:
@@ -558,42 +540,68 @@ class MpvOutput:
 
         assert self.ingest.first_pts is not None
 
+        # The cache writer has already produced its initialization segment and
+        # first media fragment. MPV reads the same growing event playlist as
+        # the ASR audio extractor.
+        playlist = self.ingest.video_playlist
+        self.ipc.command("loadfile", playlist, "replace")
+        if not self._wait_for_event("start-file", timeout_s=10.0):
+            log.error("MPV did not start loading the fMP4 HLS playlist")
+            self.stop.set()
+            return
+        if not self._wait_for_event("file-loaded", timeout_s=15.0):
+            log.error("MPV could not load the initial fMP4 HLS fragments")
+            self.stop.set()
+            return
+
         self._session_start = self.ingest.source.start_s
 
-        if self.ingest.source.live:
-            self._clock_offset = (
-                self.ingest.first_pts - self._session_start
+        # Audio extraction and MPV read the same fMP4 playlist, so both
+        # use its media timeline. Measure MPV's local time-pos origin rather
+        # than estimating it from the upstream YouTube audio PTS.
+        self._mpv_anchor = None
+        self._clock_source_anchor = self._session_start
+        self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
+        mapping = "measured MPV session anchor against shared fMP4 source timeline"
+
+        if self._pending_seek_offset is not None:
+            seek_offset = self._pending_seek_offset
+            self.ipc.command("seek", seek_offset, "absolute+exact")
+            deadline = time.monotonic() + 5.0
+            measured_pos = None
+            while time.monotonic() < deadline:
+                pos = self.ipc.get("time-pos")
+                if pos is not None:
+                    measured_pos = float(pos)
+                    if abs(measured_pos - seek_offset) <= 0.75:
+                        break
+                time.sleep(0.05)
+            # The HLS playlist's time-pos is relative to its first segment;
+            # keep the requested fragment offset as the source-clock anchor.
+            self._mpv_anchor = seek_offset
+            record_session_anchor(
+                self.ingest.source.timeline,
+                self._clock_source_anchor,
+                self._mpv_anchor,
+                self._anchor_reason,
             )
-            self._mpv_anchor = None
-            mapping = "live: mpv_time_pos - (ffmpeg_first_pts - source_start)"
-        else:
-            # Anchor MPV's actual session clock to the requested source
-            # position. This avoids assuming time-pos starts at exactly zero.
-            self._mpv_anchor = None
-            self._clock_source_anchor = self._session_start
-            self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-            mapping = "vod: measured MPV session anchor against source timeline"
+            log.info(
+                "reused cached fMP4 fragments: playlist_offset=%.3fs observed_mpv_pos=%s",
+                seek_offset,
+                f"{measured_pos:.3f}" if measured_pos is not None else "unavailable",
+            )
+            self._pending_seek_offset = None
 
         self._clock_sample_logged = False
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
-        if self.ingest.source.live:
-            log.info(
-                "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
-                "offset=%.3f; %s",
-                self._session_start,
-                self.ingest.first_pts,
-                self._clock_offset,
-                mapping,
-            )
-        else:
-            log.info(
-                "MPV clock mapping: VOD source_start=%.3f; waiting for "
-                "measured MPV session anchor; %s",
-                self._session_start,
-                mapping,
-            )
+        log.info(
+            "MPV clock mapping: source_start=%.3f; waiting for measured "
+            "MPV session anchor; %s",
+            self._clock_source_anchor,
+            mapping,
+        )
 
         if self.ingest.source.live:
             unpause_at = (
@@ -609,7 +617,6 @@ class MpvOutput:
             # translator has built a small lead. This is translation waiting,
             # not video prebuffering.
             self._now = self._session_start
-            self.ingest.start_video()
             unpause_at = None
 
             log.info(
@@ -627,8 +634,8 @@ class MpvOutput:
 
             if self.ingest.video_failed.is_set():
                 if self._recover_video_stream():
-                    paused = True
-                    unpause_at = None
+                    return
+                return
 
             if (
                 not self.ingest.source.live
@@ -673,19 +680,6 @@ class MpvOutput:
                     )
 
             if paused and should_unpause:
-                # Run after the video stream has loaded, but before playback
-                # starts, so the test is visible without consuming subtitle time.
-                if not self._overlay_diagnostic_done:
-                    self._diagnose_overlay()
-                    self._overlay_diagnostic_done = True
-
-                if unpause_at is not None and show_hint:
-                    if self.ingest.first_pts > 0.05:
-                        self.ipc.command(
-                            "seek",
-                            self.ingest.first_pts,
-                            "absolute+exact",
-                        )
 
                 self.ipc.command(
                     "set_property",
@@ -717,34 +711,31 @@ class MpvOutput:
                 )
 
             if (pos := self.ipc.get("time-pos")) is not None:
-                if self.ingest.source.live:
-                    self._now = pos - self._clock_offset
-                else:
-                    if self._mpv_anchor is None:
-                        self._mpv_anchor = float(pos)
-                        record_session_anchor(
-                            self.ingest.source.timeline,
-                            self._clock_source_anchor,
-                            self._mpv_anchor,
-                            self._anchor_reason,
-                        )
-                        log.info(
-                            "VOD timeline anchor: source=%.3f mpv=%.3f "
-                            "reason=%s duration=%s",
-                            self._clock_source_anchor,
-                            self._mpv_anchor,
-                            self._anchor_reason,
-                            fmt_hms(self.ingest.source.duration)
-                            if self.ingest.source.duration is not None else "?",
-                        )
-
-                    self._now = (
-                        self._clock_source_anchor
-                        + float(pos)
-                        - self._mpv_anchor
+                if self._mpv_anchor is None:
+                    self._mpv_anchor = float(pos)
+                    record_session_anchor(
+                        self.ingest.source.timeline,
+                        self._clock_source_anchor,
+                        self._mpv_anchor,
+                        self._anchor_reason,
                     )
-                    if self.ingest.source.duration is not None:
-                        self._now = min(self._now, self.ingest.source.duration)
+                    log.info(
+                        "MPV timeline anchor: source=%.3f mpv=%.3f "
+                        "reason=%s duration=%s",
+                        self._clock_source_anchor,
+                        self._mpv_anchor,
+                        self._anchor_reason,
+                        fmt_hms(self.ingest.source.duration)
+                        if self.ingest.source.duration is not None else "?",
+                    )
+
+                self._now = (
+                    self._clock_source_anchor
+                    + float(pos)
+                    - self._mpv_anchor
+                )
+                if self.ingest.source.duration is not None:
+                    self._now = min(self._now, self.ingest.source.duration)
 
                 sample_now = time.monotonic()
                 if (
@@ -794,10 +785,10 @@ class MpvOutput:
             time.sleep(0.1)
 
     def _recover_video_stream(self) -> bool:
-        """Reload MPV's TCP listener and restart a failed VOD video sender."""
+        """Restart the shared fMP4 cache and audio reader at the current source position."""
         if self._video_retries >= 3:
-            self.ingest.video_failed.clear()
-            log.error("video recovery stopped after 3 attempts; seek manually to retry")
+            log.error("fMP4 cache recovery stopped after 3 attempts")
+            self.stop.set()
             return False
 
         restart_at = self._now
@@ -806,29 +797,24 @@ class MpvOutput:
 
         self._video_retries += 1
         log.warning(
-            "recovering MPV video stream (attempt %d/3) at %.2fs",
+            "restarting progressive fMP4 session (attempt %d/3) at %.2fs",
             self._video_retries,
             restart_at,
         )
 
         self.ipc.command("set_property", "pause", True)
+        self._now = None
+        self._shown = ""
+        with self._lock:
+            self._lines.clear()
 
-        if not self.ingest.prepare_video_retry():
-            return False
-
-        self.ipc.command(
-            "loadfile",
-            f"{self.listen_url}?listen=1",
-        )
-        self._wait_for_event("start-file")
-
-        self.ingest.start_video(start_s=restart_at)
+        self._pending_seek_offset = None
+        self.ingest.request_restart(restart_at)
+        self.ingest.go()
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
         self._anchor_reason = "video-recovery"
         self._clock_sample_logged = False
-        self._shown = ""
-        log.info("MPV video stream recovery started at %.2fs", restart_at)
         return True
 
     def _jump_request(self) -> float:
@@ -892,16 +878,29 @@ class MpvOutput:
             self._lines.clear()
 
         self._video_retries = 0
-        self.ingest.request_restart(target)
-
-        self.ipc.command(
-            "loadfile",
-            f"{self.listen_url}?listen=1",
+        cache_start = self.ingest.cache_source_start_s
+        cache_end = self.ingest.cache_end_s
+        can_reuse_cache = (
+            cache_start <= target <= cache_end - 1.0
         )
-
-        self._wait_for_event("start-file")
-
-        time.sleep(0.5)
+        preserved = self.ingest.request_restart(
+            target,
+            preserve_video_cache=can_reuse_cache,
+        )
+        self._pending_seek_offset = (
+            target - cache_start if preserved else None
+        )
+        if preserved:
+            log.info(
+                "seek will reuse local fMP4 fragments: %.2fs-%.2fs",
+                cache_start,
+                cache_end,
+            )
+        else:
+            log.info(
+                "seek requires a new progressive fMP4 fetch at %.2fs",
+                target,
+            )
 
         self.ipc.command(
             "show-text",
@@ -909,6 +908,8 @@ class MpvOutput:
             4000,
         )
 
+        # The next playback session waits for the new fMP4 playlist and then
+        # loads it. This avoids reconnecting MPV to a transient TCP stream.
         self.ingest.go()
         return True
 
@@ -916,7 +917,7 @@ class MpvOutput:
         self,
         name: str,
         timeout_s: float = 5.0,
-    ) -> None:
+    ) -> bool:
         deadline = time.monotonic() + timeout_s
 
         while time.monotonic() < deadline:
@@ -924,9 +925,11 @@ class MpvOutput:
 
             while not self.ipc.events.empty():
                 if self.ipc.events.get().get("event") == name:
-                    return
+                    return True
 
             time.sleep(0.05)
+
+        return False
 
     def _render(self, now: float) -> None:
         with self._lock:
@@ -948,10 +951,11 @@ class MpvOutput:
         used_rows = 0
 
         for ln in reversed(active):
-            row_count = (
-                (1 if self.cfg.ja_size > 0 else 0)
-                + bool(ln.sub.en)
-            )
+            # The limit counts subtitle entries, not individual language rows.
+            # Each entry may contain Japanese above its English translation.
+            row_count = int(bool(
+                ln.sub.en or (self.cfg.ja_size > 0 and ln.sub.ja)
+            ))
 
             if (
                 selected

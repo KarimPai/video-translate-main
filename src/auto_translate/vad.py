@@ -28,7 +28,7 @@ class StreamingFireRedVAD:
 
     WINDOW_SAMPLES = 400  # 25 ms model window
 
-    def __init__(self) -> None:
+    def __init__(self, speech_threshold: float) -> None:
         from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
@@ -52,7 +52,7 @@ class StreamingFireRedVAD:
         config = FireRedStreamVadConfig(
             use_gpu=True,
             smooth_window_size=1,
-            speech_threshold=0.4,
+            speech_threshold=speech_threshold,
             pad_start_frame=1,
             min_speech_frame=1,
             max_speech_frame=2000,
@@ -106,7 +106,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD()
+        self.vad = StreamingFireRedVAD(cfg.threshold)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:
@@ -121,6 +121,7 @@ class Segmenter:
         self._frames: list[np.ndarray] = []  # current utterance
         self._probs: list[float] = []
         self._start_sample = 0
+        self._speech_start_sample = 0
         self._silence = 0  # consecutive silent frames at the end of the utterance
         self._in_speech = False
         self._read_at = 0.0
@@ -189,6 +190,9 @@ class Segmenter:
                 self._frames = [*self._preroll, frame]
                 self._probs = [0.0] * len(self._preroll) + [prob]
                 self._start_sample = self._next_frame_sample - len(self._preroll) * FRAME
+                # Keep pre-roll in the ASR audio, but timestamp subtitles from
+                # the first frame that actually crossed the speech threshold.
+                self._speech_start_sample = self._next_frame_sample
                 self._silence = 0
             else:
                 self._preroll.append(frame)
@@ -222,6 +226,7 @@ class Segmenter:
                 end / SAMPLE_RATE,
                 np.concatenate(frames),
                 generation=self._generation,
+                speech_start_s=self._speech_start_sample / SAMPLE_RATE,
             )
             # Estimate when the utterance's last sample arrived: the current chunk's read time,
             # minus the audio processed after it (the trailing silence we waited for).
@@ -233,6 +238,10 @@ class Segmenter:
         if keep_rest:
             self._frames, self._probs = rest_frames, rest_probs
             self._start_sample = end
+            self._speech_start_sample = end + next(
+                (i for i, p in enumerate(rest_probs) if p >= self.cfg.threshold),
+                0,
+            ) * FRAME
         else:
             self._in_speech = False
             self._frames, self._probs = [], []

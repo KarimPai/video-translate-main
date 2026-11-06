@@ -14,6 +14,7 @@ import logging
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -191,8 +192,20 @@ class Ingest:
         self.source = source
         self.cfg = cfg
         self.pitch_semitones = cfg.pitch_semitones
-        self.video_out = video_out
         self.video_format = video_format
+        self._cache_temp = (
+            tempfile.TemporaryDirectory(prefix="auto-translate-fmp4-")
+            if video_out else None
+        )
+        self._cache_root = (
+            Path(self._cache_temp.name) if self._cache_temp else None
+        )
+        self._cache_sequence = 0
+        self._cache_source_start_s = source.start_s
+        self.video_out = (
+            str(self._new_video_playlist(source.start_s))
+            if self._cache_root else None
+        )
         self.burst_s = burst_s
 
         self.separation_cfg = separation_cfg
@@ -228,29 +241,104 @@ class Ingest:
         self._restart_at: float | None = None
         self._go = threading.Event()
 
+    def _new_video_playlist(self, source_start_s: float) -> Path:
+        """Create a new HLS event playlist while retaining prior session fragments."""
+        if self._cache_root is None:
+            raise RuntimeError("fMP4 cache is not enabled")
+        self._cache_sequence += 1
+        self._cache_source_start_s = float(source_start_s)
+        directory = self._cache_root / f"session-{self._cache_sequence:04d}"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / "index.m3u8"
+
+    @property
+    def cache_source_start_s(self) -> float:
+        return self._cache_source_start_s
+
+    @property
+    def cache_end_s(self) -> float:
+        """Latest source timestamp present in the current fMP4 playlist."""
+        try:
+            content = Path(self.video_playlist).read_text(encoding="utf-8")
+        except OSError:
+            return self._cache_source_start_s
+        duration = 0.0
+        for line in content.splitlines():
+            if line.startswith("#EXTINF:"):
+                try:
+                    duration += float(line.split(":", 1)[1].split(",", 1)[0])
+                except ValueError:
+                    continue
+        return self._cache_source_start_s + duration
+
+    @property
+    def video_playlist(self) -> str:
+        """Current progressive fMP4 HLS playlist consumed by MPV and audio ingest."""
+        if self.video_out is None:
+            raise RuntimeError("MPV fMP4 cache is not enabled")
+        return self.video_out
+
+    def wait_video_ready(self, timeout_s: float = 45.0) -> bool:
+        """Wait until the current playlist contains a complete initial fMP4 segment."""
+        playlist = Path(self.video_playlist)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            proc = self._video_proc
+            if proc is not None and proc.poll() not in (None, 0):
+                log.error("fMP4 cache writer exited before producing a segment")
+                return False
+            try:
+                content = playlist.read_text(encoding="utf-8")
+                if "#EXTINF:" in content and ".m4s" in content:
+                    init_file = playlist.parent / "init.mp4"
+                    segments = list(playlist.parent.glob("segment_*.m4s"))
+                    if init_file.exists() and any(p.stat().st_size > 0 for p in segments):
+                        return True
+            except OSError:
+                pass
+            time.sleep(0.1)
+        log.error("timed out waiting for initial fMP4 HLS segment: %s", playlist)
+        return False
+
     @property
     def generation(self) -> int:
         with self._proc_lock:
             return self._generation
 
-    def request_restart(self, start_s: float) -> None:
-        """Invalidate the current generation and stop its FFmpeg processes."""
+    def request_restart(
+        self,
+        start_s: float,
+        preserve_video_cache: bool = False,
+    ) -> bool:
+        """Restart audio processing, optionally reusing already-downloaded fMP4 fragments."""
         with self._proc_lock:
             if self._stopped:
-                return
+                return False
+
+            preserve_video_cache = bool(
+                preserve_video_cache
+                and self._video_proc is not None
+                and self._video_proc.poll() is None
+                and not self._video_failed.is_set()
+            )
 
             self._generation += 1
             self._session += 1
 
-            self._inputs = None
-            self._video_proc = None
-            self._video_failed.clear()
             self._go.clear()
             self.first_pts = None
             self._restart_at = start_s
             self.first_pts_ready.clear()
 
-            self._terminate_locked()
+            if not preserve_video_cache:
+                self._inputs = None
+                self._video_proc = None
+                if self._cache_root is not None:
+                    self.video_out = str(self._new_video_playlist(start_s))
+                self._video_failed.clear()
+
+            self._terminate_locked(preserve_video=preserve_video_cache)
+            return preserve_video_cache
 
     def go(self) -> None:
         self._go.set()
@@ -307,7 +395,10 @@ class Ingest:
             daemon=True,
         ).start()
 
-        log.info("video stream started after translation buffer")
+        log.info(
+            "progressive fMP4 cache writer started: %s",
+            self.video_playlist,
+        )
 
     @property
     def video_failed(self) -> threading.Event:
@@ -342,9 +433,8 @@ class Ingest:
     def _video_command(self, start_s: float | None = None) -> list[str]:
         """Build the paced video stream sent to MPV.
 
-        Do not preserve YouTube's source timestamps here: MPV receives a
-        fresh TCP/MPEG-TS session after each seek, so its time-pos is elapsed
-        session time. The subtitle clock adds start_s to that elapsed time.
+        Fetch source audio/video once and package them into a local fMP4 HLS
+        playlist. MPV and the ASR audio reader consume this same growing cache.
         """
         src = self.source
         start_s = src.start_s if start_s is None else max(0.0, start_s)
@@ -386,23 +476,45 @@ class Ingest:
 
         assert self.video_out is not None
 
+        playlist = Path(self.video_playlist)
+        segment_pattern = str(playlist.parent / "segment_%06d.m4s")
+
+        hls_options = [
+            "-f", "hls",
+            "-hls_time", "2",
+            "-hls_segment_type", "fmp4",
+            "-hls_fmp4_init_filename", "init.mp4",
+            "-hls_segment_filename", segment_pattern,
+        ]
+        if src.live:
+            # Live sessions retain a bounded rolling cache; VOD sessions keep
+            # every fragment so backward seeking within the session is possible.
+            hls_options += [
+                "-hls_list_size", "30",
+                "-hls_flags", "delete_segments+temp_file+independent_segments",
+            ]
+        else:
+            hls_options += [
+                "-hls_list_size", "0",
+                "-hls_playlist_type", "event",
+                "-hls_flags", "temp_file+independent_segments",
+            ]
+
         return ffmpeg + [
             "-map", "0:v:0?",
             "-map", audio,
             "-c", "copy",
-            "-f", "mpegts",
-            "-muxdelay", "0",
-            "-muxpreload", "0",
+            *hls_options,
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",
             "-progress", "pipe:2",
-            self.video_out,
+            self.video_playlist,
         ]
 
     def _video_audio_command(self) -> list[str]:
-        """Build the unpaced FFmpeg audio-processing stream."""
-        src = self.source
-        inputs = self._resolve_video_inputs()
+        """Extract ASR audio from the same progressive fMP4 cache MPV plays."""
+        if not self.video_out:
+            raise RuntimeError("MPV fMP4 cache is not enabled")
 
         ffmpeg = [
             "ffmpeg",
@@ -414,13 +526,13 @@ class Ingest:
             "-copyts",
         ]
 
-        for url in inputs:
-            if not src.live and src.start_s:
-                ffmpeg += ["-ss", f"{src.start_s:.3f}"]
-
-            ffmpeg += ["-http_persistent", "0", "-i", url]
-
-        audio = f"{len(inputs) - 1}:a:0"
+        offset = max(0.0, self.source.start_s - self._cache_source_start_s)
+        # The growing VOD EVENT playlist is also treated as live until its
+        # writer closes. Match MPV by starting at the oldest retained segment.
+        ffmpeg += ["-live_start_index", "0"]
+        if not self.source.live and offset > 0.001:
+            ffmpeg += ["-ss", f"{offset:.3f}"]
+        ffmpeg += ["-i", self.video_playlist]
 
         if self.separation_enabled:
             output_rate = SEPARATION_INPUT_RATE
@@ -430,8 +542,21 @@ class Ingest:
             output_rate = SAMPLE_RATE
 
         audio_filters = self._pitch_filter(output_rate)
-        audio_filters.append("ashowinfo")
-        ffmpeg += ["-map", audio, "-af", ",".join(audio_filters)]
+        output_layout = "stereo" if self.separation_enabled else "mono"
+        # Put diagnostics after resampling/format conversion so nb_samples
+        # is measured at the same rate used by the PCM sample clock.
+        audio_filters += [
+            f"aresample={output_rate}",
+            f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
+            "ashowinfo",
+        ]
+        log.info(
+            "ASR audio from fMP4 cache: source_start=%.3fs playlist_offset=%.3fs rate=%dHz",
+            self.source.start_s,
+            offset,
+            output_rate,
+        )
+        ffmpeg += ["-map", "0:a:0", "-af", ",".join(audio_filters)]
 
         if self.separation_enabled:
             ffmpeg += [
@@ -764,11 +889,20 @@ class Ingest:
         generation = self.generation
         first_chunk_after_seek = generation > 0
 
-        cmds = (
-            [self._video_audio_command()]
-            if self.video_out
-            else self._commands()
-        )
+        if self.video_out:
+            # One FFmpeg process fetches and muxes the YouTube audio/video
+            # into a growing fMP4 HLS event playlist. Both MPV and ASR then
+            # consume this same local media timeline.
+            self.start_video(start_s=self.source.start_s)
+            if not self.wait_video_ready():
+                # A concurrent seek deliberately terminates this generation's
+                # cache writer. Let the ingest loop advance to the new session.
+                if generation != self.generation or self._stopped:
+                    return
+                raise RuntimeError("could not initialize progressive fMP4 cache")
+            cmds = [self._video_audio_command()]
+        else:
+            cmds = self._commands()
 
         procs: list[subprocess.Popen] = []
         stdin = None
@@ -781,7 +915,6 @@ class Ingest:
 
             self._session += 1
             session = self._session
-            self._video_proc = None
 
             try:
                 for cmd in cmds:
@@ -1047,11 +1180,30 @@ class Ingest:
             self._video_proc = None
             self._video_failed.clear()
             self._go.set()
+            processes = list(self._procs)
             self._terminate_locked()
 
-    def _terminate_locked(self) -> None:
-        """Terminate all registered processes while holding _proc_lock."""
+        # Wait for FFmpeg to release its files before removing the temporary
+        # cache. Windows does not allow deleting files still held open.
+        for proc in processes:
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    log.warning("could not fully stop FFmpeg process %s", proc.pid)
+
+        if self._cache_temp is not None:
+            self._cache_temp.cleanup()
+            self._cache_temp = None
+
+    def _terminate_locked(self, preserve_video: bool = False) -> None:
+        """Terminate registered processes, optionally keeping the cache writer alive."""
         for p in self._procs:
+            if preserve_video and p is self._video_proc:
+                continue
             if p.poll() is None:
                 try:
                     p.terminate()

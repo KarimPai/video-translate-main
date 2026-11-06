@@ -576,13 +576,13 @@ class MpvOutput:
                     if abs(measured_pos - seek_offset) <= 0.75:
                         break
                 time.sleep(0.05)
-            self._mpv_anchor = (
-                measured_pos if measured_pos is not None else seek_offset
-            )
+            # The HLS playlist's time-pos is relative to its first segment;
+            # keep the requested fragment offset as the source-clock anchor.
+            self._mpv_anchor = seek_offset
             log.info(
-                "reused cached fMP4 fragments: playlist_offset=%.3fs mpv_anchor=%.3fs",
+                "reused cached fMP4 fragments: playlist_offset=%.3fs observed_mpv_pos=%s",
                 seek_offset,
-                self._mpv_anchor,
+                f"{measured_pos:.3f}" if measured_pos is not None else "unavailable",
             )
             self._pending_seek_offset = None
 

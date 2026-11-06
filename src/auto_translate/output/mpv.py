@@ -258,8 +258,6 @@ class MpvOutput:
         self.ingest = ingest
         self.stop = stop
 
-        self.listen_url = f"tcp://127.0.0.1:{cfg.port}"
-
         self._lines: list[_Line] = []
         self._lock = threading.Lock()
         self._now: float | None = None
@@ -287,7 +285,6 @@ class MpvOutput:
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
-            f"{self.listen_url}?listen=1",
 
             "--pause",
             f"--input-ipc-server={IPC_PATH}",
@@ -298,8 +295,8 @@ class MpvOutput:
             "--idle=yes",
             "--rebase-start-time=no",
 
-            # Keep a modest forward cache to absorb brief FFmpeg/YouTube
-            # delivery interruptions. VOD seeking still restarts ingest.
+            # Keep a modest forward/backward demux cache while reading the
+            # progressive local fMP4 HLS playlist.
             "--cache=yes",
             "--demuxer-readahead-secs=12",
             "--demuxer-max-bytes=128MiB",
@@ -329,11 +326,11 @@ class MpvOutput:
         try:
             self.ipc = MpvIpc(IPC_PATH)
 
-            # Wait for mpv to open its listening socket.
+            # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
 
             while (
-                self.ipc.get("path") is None
+                self.ipc.get("idle-active") is None
                 and time.monotonic() < deadline
             ):
                 if self._proc.poll() is not None:
@@ -356,8 +353,8 @@ class MpvOutput:
             raise
 
         log.info(
-            "mpv ready on %s (live delay %.1fs, VOD translation lead %.1fs)",
-            self.listen_url,
+            "mpv ready for progressive fMP4 HLS playback "
+            "(live delay %.1fs, VOD translation lead %.1fs)",
             cfg.delay_s,
             self.PAUSE_LEAD_SECONDS,
         )
@@ -541,6 +538,14 @@ class MpvOutput:
 
         assert self.ingest.first_pts is not None
 
+        # The cache writer has already produced its initialization segment and
+        # first media fragment. MPV reads the same growing event playlist as
+        # the ASR audio extractor.
+        playlist = self.ingest.video_playlist
+        self.ipc.command("loadfile", playlist, "replace")
+        self._wait_for_event("start-file", timeout_s=10.0)
+        self._wait_for_event("file-loaded", timeout_s=15.0)
+
         self._session_start = self.ingest.source.start_s
 
         if self.ingest.source.live:
@@ -592,7 +597,6 @@ class MpvOutput:
             # translator has built a small lead. This is translation waiting,
             # not video prebuffering.
             self._now = self._session_start
-            self.ingest.start_video()
             unpause_at = None
 
             log.info(
@@ -610,8 +614,8 @@ class MpvOutput:
 
             if self.ingest.video_failed.is_set():
                 if self._recover_video_stream():
-                    paused = True
-                    unpause_at = None
+                    return
+                return
 
             if (
                 not self.ingest.source.live
@@ -772,10 +776,10 @@ class MpvOutput:
             time.sleep(0.1)
 
     def _recover_video_stream(self) -> bool:
-        """Reload MPV's TCP listener and restart a failed VOD video sender."""
+        """Restart the shared fMP4 cache and audio reader at the current source position."""
         if self._video_retries >= 3:
-            self.ingest.video_failed.clear()
-            log.error("video recovery stopped after 3 attempts; seek manually to retry")
+            log.error("fMP4 cache recovery stopped after 3 attempts")
+            self.stop.set()
             return False
 
         restart_at = self._now
@@ -784,29 +788,23 @@ class MpvOutput:
 
         self._video_retries += 1
         log.warning(
-            "recovering MPV video stream (attempt %d/3) at %.2fs",
+            "restarting progressive fMP4 session (attempt %d/3) at %.2fs",
             self._video_retries,
             restart_at,
         )
 
         self.ipc.command("set_property", "pause", True)
+        self._now = None
+        self._shown = ""
+        with self._lock:
+            self._lines.clear()
 
-        if not self.ingest.prepare_video_retry():
-            return False
-
-        self.ipc.command(
-            "loadfile",
-            f"{self.listen_url}?listen=1",
-        )
-        self._wait_for_event("start-file")
-
-        self.ingest.start_video(start_s=restart_at)
+        self.ingest.request_restart(restart_at)
+        self.ingest.go()
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
         self._anchor_reason = "video-recovery"
         self._clock_sample_logged = False
-        self._shown = ""
-        log.info("MPV video stream recovery started at %.2fs", restart_at)
         return True
 
     def _jump_request(self) -> float:
@@ -873,20 +871,13 @@ class MpvOutput:
         self.ingest.request_restart(target)
 
         self.ipc.command(
-            "loadfile",
-            f"{self.listen_url}?listen=1",
-        )
-
-        self._wait_for_event("start-file")
-
-        time.sleep(0.5)
-
-        self.ipc.command(
             "show-text",
             f"Jumping to {fmt_hms(target)}…",
             4000,
         )
 
+        # The next playback session waits for the new fMP4 playlist and then
+        # loads it. This avoids reconnecting MPV to a transient TCP stream.
         self.ingest.go()
         return True
 

@@ -544,8 +544,14 @@ class MpvOutput:
         # the ASR audio extractor.
         playlist = self.ingest.video_playlist
         self.ipc.command("loadfile", playlist, "replace")
-        self._wait_for_event("start-file", timeout_s=10.0)
-        self._wait_for_event("file-loaded", timeout_s=15.0)
+        if not self._wait_for_event("start-file", timeout_s=10.0):
+            log.error("MPV did not start loading the fMP4 HLS playlist")
+            self.stop.set()
+            return
+        if not self._wait_for_event("file-loaded", timeout_s=15.0):
+            log.error("MPV could not load the initial fMP4 HLS fragments")
+            self.stop.set()
+            return
 
         self._session_start = self.ingest.source.start_s
 
@@ -931,7 +937,7 @@ class MpvOutput:
         self,
         name: str,
         timeout_s: float = 5.0,
-    ) -> None:
+    ) -> bool:
         deadline = time.monotonic() + timeout_s
 
         while time.monotonic() < deadline:
@@ -939,9 +945,11 @@ class MpvOutput:
 
             while not self.ipc.events.empty():
                 if self.ipc.events.get().get("event") == name:
-                    return
+                    return True
 
             time.sleep(0.05)
+
+        return False
 
     def _render(self, now: float) -> None:
         with self._lock:

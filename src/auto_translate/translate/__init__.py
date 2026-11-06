@@ -17,6 +17,7 @@ def create_translator(cfg: TranslateConfig, glossary: Glossary) -> Translator | 
     settings = dict(cfg.presets.get("hymt2", {}))
     backend = settings.pop("backend", "hymt2")
     settings.pop("mpv_delay_s", None)
+    settings.pop("api_key_env", None)  # HY-MT2 is local-only; no cloud API keys.
 
     # Accept the previous backend label in existing local config files,
     # but never permit a non-HY-MT2 model.

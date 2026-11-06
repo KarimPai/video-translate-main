@@ -22,12 +22,6 @@ local function fmt_time(value)
     return string.format("%02d:%02d", minutes, seconds)
 end
 
-local function rect(x, y, w, h, color, alpha)
-    return string.format(
-        "{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\alpha&H%02X&\\p1}m %d %d l %d %d %d %d %d %d c{\\p0}",
-        color, alpha, x, y, x + w, y, x + w, y + h, x, y + h
-    )
-end
 
 local function mouse_position()
     local mouse = mp.get_property_native("mouse-pos")
@@ -79,11 +73,15 @@ local function render()
     local left = 70
     local right = width - 70
     local bar_y = height - 46
-    local bar_h = 7
+    local bar_chars = 72
     local fraction = math.max(0, math.min(1, position / duration))
-    local fill_w = math.floor((right - left) * fraction)
-    local ass = rect(left, bar_y, right - left, bar_h, "FFFFFF", 105)
-    ass = ass .. rect(left, bar_y, fill_w, bar_h, "FFFFFF", 0)
+    local filled = math.floor(bar_chars * fraction + 0.5)
+    local empty = bar_chars - filled
+    local bar = string.rep("━", filled) .. string.rep("─", empty)
+    local ass = string.format(
+        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s",
+        math.floor(width / 2), bar_y, bar
+    )
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)

@@ -543,7 +543,7 @@ class MpvOutput:
         # The cache writer has already produced its initialization segment and
         # first media fragment. MPV reads the same growing event playlist as
         # the ASR audio extractor.
-        playlist = self.ingest.video_playlist
+        playlist = self.ingest.video_playlist_url
         self.ipc.command("loadfile", playlist, "replace")
         if not self._wait_for_event("start-file", timeout_s=10.0):
             log.error("MPV did not start loading the fMP4 HLS playlist")

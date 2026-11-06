@@ -149,17 +149,13 @@ Which formats work depends on whether you use mpv:
 
 - **Without `--mpv`**, any audio or video file that ffmpeg can read works (`.mp4`, `.mkv`, `.webm`, `.mov`,
   `.ts`, `.flv`, `.mp3`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.opus`, …). Only the first audio track is used.
-- **With `--mpv`**, the video and audio are copied as-is (not re-encoded) into MPEG-TS for mpv, so the
-  **codecs** inside the file matter, not the file extension:
+- **With `--mpv`**, FFmpeg stream-copies the selected video and audio into a temporary fMP4 HLS cache.
+  No re-encoding is performed. The streams therefore need codecs supported by FFmpeg's fragmented-MP4
+  muxer. The YouTube format selector prefers H.264 video and HLS audio; arbitrary local files may use
+  codecs that cannot be muxed into fMP4 without conversion.
 
-| | Works with `--mpv` | Doesn't work with `--mpv` |
-|---|---|---|
-| Video | H.264, H.265/HEVC, MPEG-4 Part 2 | VP9, AV1 |
-| Audio | AAC, MP3, AC-3, Opus | FLAC, PCM/WAV, Vorbis, ALAC |
-
-Most `.mp4` files and OBS/ShadowPlay recordings use H.264 + AAC, so they work. YouTube downloads in
-`.webm`/`.mkv` often use VP9 or AV1 with Opus, so they don't. Check a file with
-`ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 FILE`, and convert it if needed.
+Check a local file with
+`ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 FILE` before using `--mpv`.
 The audio-only version is fast; the full version re-encodes the video, which is slow:
 
 ```powershell
@@ -389,9 +385,9 @@ HY-MT2 engine keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120)
 | `path` | `""` | mpv executable. `""` = `PATH`, then `C:\Program Files\MPV Player\mpv.exe`. |
 | `delay_s` | `9.0` | How far playback stays behind the pipeline. Must exceed `max_utterance_s` + max latency. `--delay` overrides it. |
 | `start_wait_s` | `3.0` | VOD: wait before playing after start or a jump. |
-| `port` | `9137` | Local TCP port ffmpeg streams the video to mpv on. Change if it's in use. |
+| `port` | `9137` | Legacy setting; the fMP4 cache uses local playlist files instead of a TCP listener. |
 | `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while HY-MT2 uses the GPU. `"no"` = CPU decoding. |
-| `ytdlp_format` | ≤480p H.264 HLS | yt-dlp format for the video. Raise `height<=480` for better picture (more bandwidth/decoding). |
+| `ytdlp_format` | ≤1080p H.264 HLS | yt-dlp format selector for the video and audio streams used to build the fMP4 cache. |
 | `en_size` / `ja_size` | `44` / `28` | Subtitle font sizes (on a 720-line canvas). |
 | `min_display_s` | `1.5` | Show short lines at least this long. |
 | `hold_s` | `1.0` | Keep a line on screen this long after it ends (unless the next line starts). |

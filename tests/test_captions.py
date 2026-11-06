@@ -46,6 +46,14 @@ class EmptyASR:
         return ""
 
 
+class TextASR:
+    def __init__(self, text):
+        self.text = text
+
+    def transcribe(self, audio, probe=False):
+        return self.text
+
+
 class CaptionFallbackTests(unittest.TestCase):
     def test_aligned_caption_fills_empty_haas_result(self):
         index = CaptionIndex.from_vtt(VTT)
@@ -59,6 +67,24 @@ class CaptionFallbackTests(unittest.TestCase):
         result = out_q.get_nowait()
         self.assertIsInstance(result, Transcript)
         self.assertEqual(result.ja, "今日はゲームをします")
+        self.assertIsNone(out_q.get_nowait())
+
+    def test_haas_remains_primary_when_both_sources_disagree(self):
+        index = CaptionIndex.from_vtt(VTT)
+        in_q = queue.Queue()
+        out_q = queue.Queue()
+        in_q.put(Utterance(1.2, 2.2, np.zeros(16000, dtype=np.float32)))
+        in_q.put(None)
+
+        run_asr(
+            TextASR("ハースの認識結果"),
+            in_q,
+            out_q,
+            captions=index,
+        )
+
+        result = out_q.get_nowait()
+        self.assertEqual(result.ja, "ハースの認識結果")
         self.assertIsNone(out_q.get_nowait())
 
 

@@ -56,6 +56,7 @@ local function track_bounds()
     local font_size = 35
     local bar_chars = 32
     local track_width = bar_chars * font_size * 0.55
+    local video_left, _, video_right = video_rect()
     local center = (video_left + video_right) / 2
     return center - track_width / 2, center + track_width / 2, bar_chars
 end

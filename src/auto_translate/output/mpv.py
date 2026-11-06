@@ -39,10 +39,8 @@ IPC_PATH = (
 WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
 INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
-OSC_SCRIPT = Path(__file__).with_name("mpv_osc.lua")
 
 JUMP_MESSAGE = "auto-translate-jump"
-ABSOLUTE_SEEK_MESSAGE = "auto-translate-seek-absolute"
 
 
 def _create_kill_job(proc: subprocess.Popen) -> Any:
@@ -303,10 +301,8 @@ class MpvOutput:
             "--demuxer-lavf-o=live_start_index=0",
             "--input-default-bindings=no",
 
-            # Use MPV's stock OSC script with a VOD-duration/seek bridge.
-            # Its appearance and controls remain the native MPV OSC.
-            "--osc=no",
-            f"--script={OSC_SCRIPT}",
+            # Use MPV's built-in native on-screen controller.
+            "--osc=yes",
             "--osd-on-seek=no",
             "--no-input-default-bindings",
             f"--input-conf={INPUT_CONF}",
@@ -546,21 +542,6 @@ class MpvOutput:
 
         assert self.ingest.first_pts is not None
 
-        # Give the stock OSC the full source duration, not the duration of
-        # the currently downloaded HLS cache. Its seek clicks are routed back
-        # through _jump(), which restarts ingest at the requested source time.
-        source_duration = self.ingest.source.duration
-        self.ipc.command(
-            "set_property",
-            "user-data/auto-translate/duration",
-            float(source_duration or 0.0),
-        )
-        self.ipc.command(
-            "set_property",
-            "user-data/auto-translate/position-offset",
-            float(self._session_start),
-        )
-
         # The cache writer has already produced its initialization segment and
         # first media fragment. MPV reads the same growing event playlist as
         # the ASR audio extractor.
@@ -600,11 +581,6 @@ class MpvOutput:
             # The HLS playlist's time-pos is relative to its first segment;
             # keep the requested fragment offset as the source-clock anchor.
             self._mpv_anchor = seek_offset
-            self.ipc.command(
-                "set_property",
-                "user-data/auto-translate/position-offset",
-                self._clock_source_anchor - self._mpv_anchor,
-            )
             record_session_anchor(
                 self.ingest.source.timeline,
                 self._clock_source_anchor,
@@ -732,11 +708,6 @@ class MpvOutput:
             if (pos := self.ipc.get("time-pos")) is not None:
                 if self._mpv_anchor is None:
                     self._mpv_anchor = float(pos)
-                    self.ipc.command(
-                        "set_property",
-                        "user-data/auto-translate/position-offset",
-                        self._clock_source_anchor - self._mpv_anchor,
-                    )
                     record_session_anchor(
                         self.ingest.source.timeline,
                         self._clock_source_anchor,
@@ -860,7 +831,7 @@ class MpvOutput:
                 requested = True
             elif (
                 ev.get("event") == "client-message"
-                and args[:1] in ([JUMP_MESSAGE], [ABSOLUTE_SEEK_MESSAGE])
+                and args[:1] == [JUMP_MESSAGE]
             ):
                 # Preserve seek requests for the normal jump handler.
                 self.ipc.events.put(ev)
@@ -879,8 +850,6 @@ class MpvOutput:
                 continue
             if args[0] == JUMP_MESSAGE:
                 delta += float(args[1])
-            elif args[0] == ABSOLUTE_SEEK_MESSAGE and self._now is not None:
-                delta = float(args[1]) - self._now
 
         return delta
 

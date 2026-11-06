@@ -171,25 +171,38 @@ def run_translate(
 
 @dataclass
 class Stats:
+    """Constant-memory, whole-run timing aggregates."""
     lines: int = 0
-    asr_s: list[float] = field(default_factory=list)
-    mt_s: list[float] = field(default_factory=list)
-    total_s: list[float] = field(default_factory=list)
+    asr_sum_s: float = 0.0
+    mt_sum_s: float = 0.0
+    total_sum_s: float = 0.0
+    asr_max_s: float = 0.0
+    mt_max_s: float = 0.0
+    total_max_s: float = 0.0
     max_q: dict[str, int] = field(default_factory=dict)
 
     def add(self, sub: Subtitle) -> None:
         tm = sub.timings
+        asr_s = max(0.0, tm.asr_end - tm.asr_start)
+        mt_s = max(0.0, tm.mt_end - tm.mt_start)
+        total_s = max(0.0, tm.mt_end - tm.audio_read)
         self.lines += 1
-        self.asr_s.append(tm.asr_end - tm.asr_start)
-        self.mt_s.append(tm.mt_end - tm.mt_start)
-        self.total_s.append(tm.mt_end - tm.audio_read)
+        self.asr_sum_s += asr_s
+        self.mt_sum_s += mt_s
+        self.total_sum_s += total_s
+        self.asr_max_s = max(self.asr_max_s, asr_s)
+        self.mt_max_s = max(self.mt_max_s, mt_s)
+        self.total_max_s = max(self.total_max_s, total_s)
 
     def summary(self) -> str:
         if not self.lines:
             return "no lines yet"
 
-        def fmt(name: str, xs: list[float]) -> str:
-            return f"{name} avg {sum(xs) / len(xs):.2f}s max {max(xs):.2f}s"
+        def fmt(name: str, total: float, maximum: float) -> str:
+            return (
+                f"{name} avg {total / self.lines:.2f}s "
+                f"max {maximum:.2f}s"
+            )
 
         maxq = " ".join(
             f"{k}={v}" for k, v in self.max_q.items()
@@ -197,9 +210,9 @@ class Stats:
 
         return (
             f"{self.lines} lines ┬╖ "
-            f"{fmt('asr', self.asr_s)} ┬╖ "
-            f"{fmt('mt', self.mt_s)} ┬╖ "
-            f"{fmt('latency', self.total_s)} ┬╖ "
+            f"{fmt('asr', self.asr_sum_s, self.asr_max_s)} ┬╖ "
+            f"{fmt('mt', self.mt_sum_s, self.mt_max_s)} ┬╖ "
+            f"{fmt('latency', self.total_sum_s, self.total_max_s)} ┬╖ "
             f"max queue {maxq}"
         )
 
@@ -215,13 +228,18 @@ def run(
 ) -> None:
     """Run ingestion, VAD, diarization, ASR and translation."""
 
-    audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue()
-    utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue()
-    text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue()
-    sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue()
+    # Bounded queues cap queued audio/work during slow ASR, translation, or
+    # diarization. Blocking puts apply backpressure upstream instead of
+    # allowing memory use and subtitle age to grow without limit.
+    # 64 audio chunks ~= 16.4 s at 4096 samples / 16 kHz; work queues hold
+    # at most 16 complete utterances/transcripts/subtitles each.
+    audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
+    utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
+    text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=16)
+    sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
 
     diarization_q = (
-        queue.Queue() if diarizer is not None else None
+        queue.Queue(maxsize=64) if diarizer is not None else None
     )
 
     # Ingest audio is copied to VAD and pyannote.
@@ -235,6 +253,7 @@ def run(
         "audio": audio_q,
         "utt": utt_q,
         "text": text_q,
+        "subtitle": sub_q,
     }
 
     if diarization_q is not None:

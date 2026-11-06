@@ -96,32 +96,16 @@ local function render()
     local bar = "{\\1c&HFFFFFF&}" .. string.rep("━", filled)
         .. "{\\1c&H808080&}" .. string.rep("─", empty)
     local ass = string.format(
-        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs24\\1c&HFFFFFF&}%s",
+        "{\\an2\\pos(%d,%d)\\bord2\\3c&HFFFFFF&\\shad0\\fs28\\1c&HFFFFFF&}%s",
         math.floor(width / 2), bar_y, bar
     )
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)
     ass = ass .. string.format(
-        "{\\an1\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&} %s",
-        left, bottom - 70, elapsed
+        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s/%s",
+        math.floor(width / 2), bottom - 70, elapsed, total
     )
-    ass = ass .. string.format(
-        "{\\an3\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s ",
-        right, bottom - 70, total
-    )
-
-    if mouse and mouse.y >= bottom - 90
-        and mouse.x >= left and mouse.x <= right then
-        local preview = seek_from_mouse(mouse, left, right)
-        if preview then
-            local px = left + (right - left) * (preview / duration)
-            ass = ass .. string.format(
-                "{\\an2\\pos(%.1f,%d)\\bord2\\3c&H000000&\\shad0\\fs16\\1c&HFFFFFF&}%s",
-                px, height - 96, fmt_time(preview)
-            )
-        end
-    end
 
     if ass ~= last_ass or not visible then
         overlay.data = ass

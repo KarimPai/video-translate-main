@@ -97,7 +97,7 @@ class TranslateConfig:
 class OutputConfig:
     terminal: bool = True
     web: bool = True
-    web_host: str = "0.0.0.0"
+    web_host: str = "127.0.0.1"
     web_port: int = 8765
 
 
@@ -152,9 +152,6 @@ def load_config(path: Path) -> Config:
         asr_data.pop(key, None)
 
     mpv_data = dict(data.get("mpv", {}))
-    # Temporarily disable diarization to avoid GPU contention during playback.
-    # An explicit true in an older config.toml must not re-enable it.
-    mpv_data["speaker_diarization"] = False
 
     return Config(
         ingest=IngestConfig(**data.get("ingest", {})),

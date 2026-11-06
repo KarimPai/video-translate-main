@@ -40,10 +40,6 @@ WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
 INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
 
-KEYS_HINT = (
-    "←/→: jump 30s · shift+←/→: 5 min · space: pause · m: mute · "
-    "↑/↓: volume · f: fullscreen · q: quit"
-)
 JUMP_MESSAGE = "auto-translate-jump"
 
 
@@ -692,13 +688,6 @@ class MpvOutput:
                     False,
                 )
 
-                if show_hint:
-                    self.ipc.command(
-                        "show-text",
-                        KEYS_HINT,
-                        6000,
-                    )
-
                 paused = False
                 unpause_at = None
 
@@ -932,12 +921,6 @@ class MpvOutput:
                 "seek requires a new progressive fMP4 fetch at %.2fs",
                 target,
             )
-
-        self.ipc.command(
-            "show-text",
-            f"Jumping to {fmt_hms(target)}…",
-            4000,
-        )
 
         # The next playback session waits for the new fMP4 playlist and then
         # loads it. This avoids reconnecting MPV to a transient TCP stream.

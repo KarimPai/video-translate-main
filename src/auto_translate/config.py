@@ -49,23 +49,10 @@ class AsrConfig:
 
 
 @dataclass
-class Ct2NmtConfig:
-    """A CTranslate2 seq2seq model + SentencePiece tokenizers."""
+class HyMt2Config:
+    """HY-MT2 served through a local OpenAI-compatible chat endpoint."""
 
-    model: str
-    source_spm: str
-    target_spm: str
-    device: str = "cuda"
-    compute_type: str = "float16"
-    beam_size: int = 4
-
-
-@dataclass
-class OpenAICompatConfig:
-    """Any server with an OpenAI-style /v1/chat/completions endpoint."""
-
-    model: str
-    api_key_env: str = ""
+    model: str = "kaelri/hy-mt2:1.8b-q4_K_M"
     base_url: str = "http://127.0.0.1:11434/v1"
     temperature: float = 0.2
     max_tokens: int = 120
@@ -77,10 +64,15 @@ class OpenAICompatConfig:
 
 @dataclass
 class TranslateConfig:
-    preset: str = "balanced"
-    context_lines: int = 4
+    preset: str = "hymt2"
+    context_lines: int = 8
     glossary: str = "glossary.toml"
-    presets: dict[str, dict] = field(default_factory=dict)
+    presets: dict[str, dict] = field(default_factory=lambda: {
+        "hymt2": {
+            "backend": "hymt2",
+            "model": "kaelri/hy-mt2:1.8b-q4_K_M",
+        }
+    })
 
 
 @dataclass

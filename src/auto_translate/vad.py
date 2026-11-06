@@ -1,6 +1,6 @@
-"""Silero VAD segmenter: AudioChunk stream → Utterance on each pause (or at max length).
+"""FireRed VAD segmenter: AudioChunk stream → Utterance on each pause (or at max length).
 
-Loads the Silero ONNX model from the repository's assets directory (no PyTorch needed)
+Loads the FireRed ONNX model from the repository's assets directory (no PyTorch needed)
 and keeps the model's recurrent state across calls so it works on a live stream.
 
 Silero misses voices mixed with loud music (narrated videos, singing). Audio it calls
@@ -15,105 +15,71 @@ from pathlib import Path
 
 import numpy as np
 
-from . import cuda_dlls
 from .config import VadConfig
 from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
 
 log = logging.getLogger(__name__)
 
-FRAME = 512  # samples per VAD decision (32 ms)
-CONTEXT = 64  # samples of the previous frame the model also sees
+FRAME = 160  # FireRed streaming VAD uses a 10 ms frame shift (16 kHz)
 
 
-class StreamingSileroVAD:
+class StreamingFireRedVAD:
+    """FireRedStreamVad adapter returning one speech probability per 10 ms."""
+
+    WINDOW_SAMPLES = 400  # 25 ms model window
+
     def __init__(self) -> None:
-        # Prefer CUDA when its runtime dependencies are available, but keep VAD
-        # operational on CPU when the CUDA provider cannot be loaded.
-        cuda_dlls.setup()
-        import onnxruntime as ort
+        from huggingface_hub import snapshot_download
+        import torch
+        from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
 
-        # Load CUDA/cuDNN DLLs from the installed NVIDIA Python packages before
-        # ONNX Runtime attempts to create the CUDA execution provider.
-        try:
-            ort.preload_dlls(directory="")
-        except Exception as exc:
-            log.warning("Could not preload ONNX Runtime CUDA dependencies: %s", exc)
-
-        options = ort.SessionOptions()
-        options.inter_op_num_threads = 1
-        options.intra_op_num_threads = 1
-        options.enable_cpu_mem_arena = False
-        options.log_severity_level = 4
-
-        model_path = str(Path(__file__).resolve().parents[2] / "assets" / "silero_vad_v6.onnx")
-        available = ort.get_available_providers()
-        self.device = "cpu"
-
-        if "CUDAExecutionProvider" in available:
-            try:
-                session = ort.InferenceSession(
-                    model_path,
-                    providers=["CUDAExecutionProvider"],
-                    sess_options=options,
-                )
-                providers = session.get_providers()
-                if providers and providers[0] == "CUDAExecutionProvider":
-                    self._session = session
-                    self.device = "cuda"
-                else:
-                    log.warning(
-                        "Silero VAD CUDA provider did not activate (%s); falling back to CPU",
-                        providers,
-                    )
-            except Exception as exc:
-                log.warning(
-                    "Silero VAD CUDA initialization failed; falling back to CPU: %s",
-                    exc,
-                )
-        else:
-            log.warning(
-                "Silero VAD CUDA provider is unavailable (%s); falling back to CPU",
-                available,
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "FireRedVAD requires CUDA, but torch.cuda.is_available() is false. "
+                "Install a CUDA-enabled PyTorch build and verify the NVIDIA driver."
             )
 
-        if self.device == "cpu":
-            if "CPUExecutionProvider" not in available:
-                raise RuntimeError(
-                    "Silero VAD cannot initialize: neither CUDAExecutionProvider "
-                    f"nor CPUExecutionProvider is available ({available})."
-                )
-            self._session = ort.InferenceSession(
-                model_path,
-                providers=["CPUExecutionProvider"],
-                sess_options=options,
+        assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad"
+        model_dir = assets / "Stream-VAD"
+        if not (model_dir / "cmvn.ark").is_file() or not (model_dir / "model.pth.tar").is_file():
+            log.info("Downloading FireRedVAD streaming model from Hugging Face...")
+            snapshot_download(
+                repo_id="FireRedTeam/FireRedVAD",
+                allow_patterns=["Stream-VAD/*"],
+                local_dir=str(assets),
             )
-            providers = self._session.get_providers()
-            if not providers or providers[0] != "CPUExecutionProvider":
-                raise RuntimeError(
-                    f"Silero VAD failed to initialize on CPU: {providers}"
-                )
-            log.info("Silero VAD initialized on CPU (%s)", providers)
-        else:
-            log.info("Silero VAD initialized on CUDA (%s)", providers)
-        self.reset()
+
+        config = FireRedStreamVadConfig(
+            use_gpu=True,
+            smooth_window_size=1,
+            speech_threshold=0.4,
+            pad_start_frame=1,
+            min_speech_frame=1,
+            max_speech_frame=2000,
+            min_silence_frame=1,
+            chunk_max_frame=30000,
+        )
+        self._stream = FireRedStreamVad.from_pretrained(str(model_dir), config)
+        self._history = np.zeros(self.WINDOW_SAMPLES - FRAME, dtype=np.int16)
+        self.device = torch.cuda.get_device_name(0)
+        log.info("FireRed VAD initialized on CUDA (%s)", self.device)
 
     def reset(self) -> None:
-        """Clear recurrent state without reloading the ONNX model/session."""
-        self._h = np.zeros((1, 1, 128), dtype=np.float32)
-        self._c = np.zeros((1, 1, 128), dtype=np.float32)
-        self._context = np.zeros(CONTEXT, dtype=np.float32)
+        """Reset streaming caches at a VOD seek without reloading model weights."""
+        self._stream.reset()
+        self._history.fill(0)
 
     def __call__(self, audio: np.ndarray) -> np.ndarray:
-        """audio: float32, length a multiple of FRAME. Returns one speech probability per frame."""
-        frames = audio.reshape(-1, FRAME)
-        # Each model input row = last 64 samples of the previous frame + the frame itself.
-        prev_tails = np.concatenate([self._context[None, :], frames[:-1, -CONTEXT:]])
-        batch = np.concatenate([prev_tails, frames], axis=1)
-        probs, self._h, self._c = self._session.run(
-            None, {"input": batch, "h": self._h, "c": self._c}
-        )
-        self._context = frames[-1, -CONTEXT:].copy()
-        return probs
+        """Accept float32 mono audio and return one raw speech probability per 10 ms."""
+        pcm = np.clip(audio * 32768.0, -32768, 32767).astype(np.int16, copy=False)
+        frames = pcm.reshape(-1, FRAME)
+        probs: list[float] = []
+        for frame in frames:
+            window = np.concatenate((self._history, frame))
+            result = self._stream.detect_frame(window)
+            probs.append(float(result.raw_prob))
+            self._history = window[-(self.WINDOW_SAMPLES - FRAME):].copy()
+        return np.asarray(probs, dtype=np.float32)
 
 
 def _ms_to_frames(ms: float) -> int:
@@ -121,7 +87,7 @@ def _ms_to_frames(ms: float) -> int:
 
 
 class Segmenter:
-    """State machine over 32 ms frames: idle → speech → (pause | max length) → emit."""
+    """State machine over 10 ms frames: idle → speech → (pause | max length) → emit."""
 
     def __init__(self, cfg: VadConfig) -> None:
         self.cfg = cfg
@@ -135,7 +101,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one ONNX Runtime session for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload the model.
-        self.vad = StreamingSileroVAD()
+        self.vad = StreamingFireRedVAD()
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:
@@ -313,7 +279,7 @@ def run_segmenter(
     try:
         seg = Segmenter(cfg)
     except Exception:
-        log.exception("Could not initialize the Silero VAD segmenter")
+        log.exception("Could not initialize the FireRed VAD segmenter")
         out_q.put(None)
         return
 

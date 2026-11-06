@@ -886,6 +886,14 @@ class MpvOutput:
                 max(0.0, src.duration - 5),
             )
 
+        if src.duration is not None:
+            self.ipc.command(
+                "script-message",
+                "auto-translate-seekbar-update",
+                f"{target:.3f}",
+                f"{src.duration:.3f}",
+            )
+
         log.info(
             "jump %+.0fs → %s",
             delta,

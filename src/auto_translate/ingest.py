@@ -393,9 +393,8 @@ class Ingest:
     def _video_command(self, start_s: float | None = None) -> list[str]:
         """Build the paced video stream sent to MPV.
 
-        Do not preserve YouTube's source timestamps here: MPV receives a
-        fresh TCP/MPEG-TS session after each seek, so its time-pos is elapsed
-        session time. The subtitle clock adds start_s to that elapsed time.
+        Fetch source audio/video once and package them into a local fMP4 HLS
+        playlist. MPV and the ASR audio reader consume this same growing cache.
         """
         src = self.source
         start_s = src.start_s if start_s is None else max(0.0, start_s)
@@ -440,18 +439,32 @@ class Ingest:
         playlist = Path(self.video_playlist)
         segment_pattern = str(playlist.parent / "segment_%06d.m4s")
 
+        hls_options = [
+            "-f", "hls",
+            "-hls_time", "2",
+            "-hls_segment_type", "fmp4",
+            "-hls_fmp4_init_filename", "init.mp4",
+            "-hls_segment_filename", segment_pattern,
+        ]
+        if src.live:
+            # Live sessions retain a bounded rolling cache; VOD sessions keep
+            # every fragment so backward seeking within the session is possible.
+            hls_options += [
+                "-hls_list_size", "30",
+                "-hls_flags", "delete_segments+temp_file+independent_segments",
+            ]
+        else:
+            hls_options += [
+                "-hls_list_size", "0",
+                "-hls_playlist_type", "event",
+                "-hls_flags", "temp_file+independent_segments",
+            ]
+
         return ffmpeg + [
             "-map", "0:v:0?",
             "-map", audio,
             "-c", "copy",
-            "-f", "hls",
-            "-hls_time", "2",
-            "-hls_list_size", "0",
-            "-hls_playlist_type", "event",
-            "-hls_segment_type", "fmp4",
-            "-hls_fmp4_init_filename", "init.mp4",
-            "-hls_segment_filename", segment_pattern,
-            "-hls_flags", "temp_file+independent_segments",
+            *hls_options,
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",
             "-progress", "pipe:2",
@@ -838,7 +851,6 @@ class Ingest:
 
             self._session += 1
             session = self._session
-            self._video_proc = None
 
             try:
                 for cmd in cmds:
@@ -1104,7 +1116,21 @@ class Ingest:
             self._video_proc = None
             self._video_failed.clear()
             self._go.set()
+            processes = list(self._procs)
             self._terminate_locked()
+
+        # Wait for FFmpeg to release its files before removing the temporary
+        # cache. Windows does not allow deleting files still held open.
+        for proc in processes:
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    log.warning("could not fully stop FFmpeg process %s", proc.pid)
+
         if self._cache_temp is not None:
             self._cache_temp.cleanup()
             self._cache_temp = None

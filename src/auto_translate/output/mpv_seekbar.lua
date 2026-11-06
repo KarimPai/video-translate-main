@@ -31,10 +31,27 @@ local function mouse_position()
     return mouse
 end
 
-local function seek_from_mouse(mouse, width)
-    local left = 70
-    local right = width - 70
-    if mouse.x < left or mouse.x > right then
+local function video_rect()
+    local dims = mp.get_property_native("osd-dimensions") or {}
+    local width = tonumber(dims.w) or mp.get_property_number("osd-width", 1280)
+    local height = tonumber(dims.h) or mp.get_property_number("osd-height", 720)
+    local left = math.max(0, tonumber(dims.ml) or 0)
+    local right = width - math.max(0, tonumber(dims.mr) or 0)
+    local top = math.max(0, tonumber(dims.mt) or 0)
+    local bottom = height - math.max(0, tonumber(dims.mb) or 0)
+
+    -- Fall back to the full OSD window if mpv has not reported video margins.
+    if right <= left then
+        left, right = 0, width
+    end
+    if bottom <= top then
+        top, bottom = 0, height
+    end
+    return left, top, right, bottom, width, height
+end
+
+local function seek_from_mouse(mouse, left, right)
+    if mouse.x < left or mouse.x > right or right <= left then
         return nil
     end
     local fraction = (mouse.x - left) / (right - left)
@@ -49,18 +66,19 @@ local function render()
         return
     end
 
-    local width = mp.get_property_number("osd-width", 1280)
-    local height = mp.get_property_number("osd-height", 720)
-    if width <= 0 or height <= 0 then
+    local left, top, right, bottom, width, height = video_rect()
+    if width <= 0 or height <= 0 or right <= left or bottom <= top then
         return
     end
     overlay.res_x = width
     overlay.res_y = height
 
     local mouse = mouse_position()
-    -- Reveal the bar only while the pointer is in the bottom seekbar zone.
-    -- Hovering elsewhere in the video window must not keep it visible.
-    local hovered = mouse ~= nil and mouse.y >= height - 105
+    -- Restrict the seekbar and its hover zone to the actual displayed video.
+    local hovered = mouse ~= nil
+        and mouse.x >= left and mouse.x <= right
+        and mouse.y >= math.max(top, bottom - 105)
+        and mouse.y <= bottom
     if not hovered and not dragging then
         if visible then
             overlay.hidden = true
@@ -70,9 +88,7 @@ local function render()
         return
     end
 
-    local left = 70
-    local right = width - 70
-    local bar_y = height - 46
+    local bar_y = bottom - 46
     local bar_chars = 48
     local fraction = math.max(0, math.min(1, position / duration))
     local filled = math.floor(bar_chars * fraction + 0.5)
@@ -88,15 +104,16 @@ local function render()
     local total = fmt_time(duration)
     ass = ass .. string.format(
         "{\\an1\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&} %s",
-        left, height - 70, elapsed
+        left, bottom - 70, elapsed
     )
     ass = ass .. string.format(
         "{\\an3\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s ",
-        right, height - 70, total
+        right, bottom - 70, total
     )
 
-    if mouse and mouse.y >= height - 90 then
-        local preview = seek_from_mouse(mouse, width)
+    if mouse and mouse.y >= bottom - 90
+        and mouse.x >= left and mouse.x <= right then
+        local preview = seek_from_mouse(mouse, left, right)
         if preview then
             local px = left + (right - left) * (preview / duration)
             ass = ass .. string.format(
@@ -124,17 +141,19 @@ end)
 mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(event)
     if event.event == "down" then
         local mouse = mouse_position()
-        local width = mp.get_property_number("osd-width", 1280)
-        if mouse and mouse.y >= mp.get_property_number("osd-height", 720) - 105
-            and seek_from_mouse(mouse, width) then
+        local left, top, right, bottom = video_rect()
+        if mouse and mouse.x >= left and mouse.x <= right
+            and mouse.y >= bottom - 105 and mouse.y <= bottom
+            and seek_from_mouse(mouse, left, right) then
             dragging = true
             render()
         end
     elseif event.event == "up" and dragging then
         dragging = false
         local mouse = mouse_position()
-        local width = mp.get_property_number("osd-width", 1280)
-        local target = mouse and seek_from_mouse(mouse, width) or nil
+        local left, top, right, bottom = video_rect()
+        local target = mouse and mouse.x >= left and mouse.x <= right
+            and seek_from_mouse(mouse, left, right) or nil
         if target then
             mp.commandv("script-message", "auto-translate-jump", tostring(target - position))
         end

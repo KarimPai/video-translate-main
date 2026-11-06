@@ -97,6 +97,7 @@ local function render()
     end
 
     local seek_left, seek_right = track_bounds()
+    local center_x = (left + right) / 2
     local bar_y = bottom - 62
     local bar_height = 10
     local track_width = seek_right - seek_left
@@ -105,14 +106,14 @@ local function render()
 
     -- Draw one thick track: grey remainder with a white elapsed section.
     local ass = string.format(
-        "{\\\\an7\\\\pos(%d,%d)\\\\bord0\\\\shad0\\\\1c&H707070&\\\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\\\p0}",
+        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H707070&\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}",
         math.floor(seek_left), math.floor(bar_y),
         math.floor(track_width), math.floor(track_width),
         bar_height, bar_height
     )
     if progress_width > 0 then
         ass = ass .. string.format(
-            "{\\\\an7\\\\pos(%d,%d)\\\\bord0\\\\shad0\\\\1c&HFFFFFF&\\\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\\\p0}",
+            "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&HFFFFFF&\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}",
             math.floor(seek_left), math.floor(bar_y),
             math.floor(progress_width), math.floor(progress_width),
             bar_height, bar_height

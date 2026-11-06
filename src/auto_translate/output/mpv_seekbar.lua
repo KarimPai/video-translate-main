@@ -64,7 +64,9 @@ local function render()
     overlay.res_y = height
 
     local mouse = mouse_position()
-    local hovered = mouse ~= nil
+    -- Reveal the bar only while the pointer is in the bottom seekbar zone.
+    -- Hovering elsewhere in the video window must not keep it visible.
+    local hovered = mouse ~= nil and mouse.y >= height - 105
     if not hovered and not dragging then
         if visible then
             overlay.hidden = true
@@ -125,7 +127,7 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
     if event.event == "down" then
         local mouse = mouse_position()
         local width = mp.get_property_number("osd-width", 1280)
-        if mouse and mouse.y >= mp.get_property_number("osd-height", 720) - 90
+        if mouse and mouse.y >= mp.get_property_number("osd-height", 720) - 105
             and seek_from_mouse(mouse, width) then
             dragging = true
             render()

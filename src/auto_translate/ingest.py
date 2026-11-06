@@ -677,6 +677,16 @@ class Ingest:
 
         return ffmpeg
 
+    @property
+    def video_source_url(self) -> str:
+        """Return the original video-only source URL for direct MPV playback."""
+        if Path(self.source.location).exists():
+            return self.source.location
+        inputs = self._resolve_video_inputs()
+        if not inputs:
+            raise RuntimeError("yt-dlp did not return a video stream URL")
+        return inputs[0]
+
     def _resolve_video_inputs(self) -> list[str]:
         """Resolve source URLs once for both FFmpeg processes."""
         if self._inputs is None:

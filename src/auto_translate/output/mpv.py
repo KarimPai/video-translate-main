@@ -383,7 +383,7 @@ class MpvOutput:
             if sub.speech_start_s is not None
             else sub.start_s
         )
-        show_from = speech_start + cfg.start_delay_s
+        show_from = speech_start
         log.debug(
             "subtitle timing: audio_start=%.3f vad_onset=%.3f "
             "mpv_show=%.3f preroll=%.3fs",

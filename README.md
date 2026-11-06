@@ -23,7 +23,7 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 - [Quick start](#quick-start)
 - [Command-line options](#command-line-options)
 - [Live vs VOD](#live-vs-vod)
-- [Translation presets](#translation-presets)
+- [Translation](#translation)
 - [Outputs](#outputs)
 - [mpv: synced video + subtitles](#mpv-synced-video--subtitles)
 - [Glossary](#glossary)
@@ -64,7 +64,7 @@ uv sync --extra separation                    # UVR vocal separation
 uv sync --extra deepfilter                    # DeepFilterNet enhancement
 uv sync --extra diarization                   # pyannote speaker diarization
 
-# HY-MT2 translator for the default preset
+# HY-MT2 translator for the default engine
 ollama pull kaelri/hy-mt2:1.8b-q4_K_M
 ```
 
@@ -91,7 +91,7 @@ uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv
 uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --start 16:02 --mpv
 
 # A local file, as fast as possible, Japanese only (no translation)
-uv run auto-translate recording.mp4 --fast --preset none
+uv run auto-translate recording.mp4 --fast --engine none
 ```
 
 Stop with **Ctrl+C** (or by closing the mpv window). The first run takes longer: models are downloaded,
@@ -103,7 +103,7 @@ Then open the browser viewer at **http://127.0.0.1:8765/** on this PC. LAN acces
 
 ```
 uv run auto-translate SOURCE [--mode auto|live|vod] [--start TIME] [--fast]
-                             [--preset NAME] [--mpv] [--delay SECONDS] [--no-web] [--config FILE] [-v]
+                             [--engine NAME] [--mpv] [--delay SECONDS] [--no-web] [--config FILE] [-v]
 ```
 
 | Option | Default | Description |
@@ -112,9 +112,9 @@ uv run auto-translate SOURCE [--mode auto|live|vod] [--start TIME] [--fast]
 | `--mode auto\|live\|vod` | `auto` | `auto` asks yt-dlp whether the URL is live right now (~4 s). `live` / `vod` skip that check. Local files are always `vod`. |
 | `--start TIME` | URL's `t=` or 0 | VOD only: where to start. Formats: `962`, `16:02`, `1:02:03`, `16m2s`, `1h2m3s`. If omitted, the URL's `t=` / `start=` value is used (`…&t=962s`). Ignored for live streams (they always start at the live edge). A start past the end of the video is rejected. |
 | `--fast` | off | VOD only: process faster than real time (no 1x pacing). Useful for transcribing a whole video. Can't be combined with `--mpv`. |
-| `--preset NAME` | `[translate] preset` in config (`hymt2`) | Translation preset: `hymt2` (HY-MT2) or `none` (Japanese only, no translator loaded). See [Translation presets](#translation-presets). |
+| `--engine NAME` | HY-MT2 is always used | Translation engine: `hymt2` (HY-MT2) or `none` (Japanese only, no translator loaded). See [Translation](#translation). |
 | `--mpv` | off (`[mpv] enabled`) | Watch the video in mpv, delayed so subtitles appear exactly when each line is spoken. |
-| `--delay SECONDS` | preset's `mpv_delay_s`, else `[mpv] delay_s` (9) | mpv only: how far playback stays behind the pipeline. Raise it if subtitles come late (see [Tuning the delay](#tuning-the-delay)). |
+| `--delay SECONDS` | `[mpv] delay_s` (9) | mpv only: how far playback stays behind the pipeline. Raise it if subtitles come late (see [Tuning the delay](#tuning-the-delay)). |
 | `--no-web` | web on | Don't start the browser viewer. |
 | `--config FILE` | `config.toml` | Use another config file. Missing keys fall back to built-in defaults; a missing file means all defaults. |
 | `-v`, `--verbose` | off | Debug logging (ffmpeg / yt-dlp details, per-stage events). |
@@ -124,7 +124,7 @@ Examples:
 ```powershell
 uv run auto-translate "https://youtu.be/VIDEO_ID?t=3725"               # VOD from 1:02:05
 uv run auto-translate "https://youtu.be/VIDEO_ID" --start 1h2m5s       # same
-uv run auto-translate "https://youtu.be/VIDEO_ID" --preset hymt2 # HY-MT2 (default)
+uv run auto-translate "https://youtu.be/VIDEO_ID" --engine hymt2 # HY-MT2 (default)
 uv run auto-translate "https://youtu.be/VIDEO_ID" --mode live --no-web # skip the live check, terminal only
 uv run auto-translate "https://youtu.be/VIDEO_ID" --config my.toml -v
 ```
@@ -164,48 +164,33 @@ The audio-only version is fast; the full version re-encodes the video, which is 
 
 ```powershell
 ffmpeg -i in.mkv -c:v copy -c:a aac out.mp4                    # only the audio is unsupported
-ffmpeg -i in.webm -c:v libx264 -preset fast -crf 20 -c:a aac out.mp4   # VP9/AV1 video
+ffmpeg -i in.webm -c:v libx264 -engine fast -crf 20 -c:a aac out.mp4   # VP9/AV1 video
 ```
 
 Audio-only files also work with `--mpv`, as long as the audio codec is supported (mpv shows the subtitles on
 a black window). For local files, a `--start` past the end of the file isn't detected: you just get no lines.
 
-## Translation presets
+## Translation
 
-The application supports one translation engine: **HY-MT2 1.8B Q4_K_M**. The default preset is
-`hymt2`; `none` disables translation for ASR-only diagnostics.
-
-| Preset | Translator | Runtime | Context |
-|---|---|---|---|
-| `hymt2` (default) | `kaelri/hy-mt2:1.8b-q4_K_M` | Local OpenAI-compatible chat endpoint | Previous 8 JA/EN lines plus matching glossary references |
-| `none` | No translator | n/a | Japanese transcription only |
-
-HY-MT2 receives the previous `context_lines` JA/EN lines and matching glossary entries as
-reference translations. The configured endpoint must expose `/v1/chat/completions`. The default
-endpoint is `http://127.0.0.1:11434/v1`.
-
-Example configuration:
+HY-MT2 1.8B Q4_K_M is the application's **only translation engine**. There are no translation
+engines or alternative translator backends. To change the local model endpoint or generation
+settings, edit the single `[translate]` table in `config.toml`.
 
 ```toml
 [translate]
-preset = "hymt2"
-context_lines = 8
-glossary = "glossary.toml"
-
-[translate.presets.hymt2]
-backend = "hymt2"
 model = "kaelri/hy-mt2:1.8b-q4_K_M"
 base_url = "http://127.0.0.1:11434/v1"
 temperature = 0.2
 max_tokens = 120
 timeout_s = 20.0
 load_timeout_s = 300.0
+min_request_interval_s = 3.0
+context_lines = 8
+glossary = "glossary.toml"
 ```
 
-Only HY-MT2 models are accepted. Other translator presets and backends have been removed.
-A future local runtime can replace the endpoint without changing the translation model or prompt.
-
-> Use `127.0.0.1`, not `localhost`, in `base_url`: on Windows `localhost` may try IPv6 first.
+HY-MT2 receives the previous 8 JA/EN lines and matching glossary entries as reference translations.
+The configured local endpoint must expose `/v1/chat/completions`.
 
 ---
 
@@ -367,12 +352,12 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 
 | Key | Default | Description |
 |---|---|---|
-| `preset` | `"hymt2"` | The only translation engine. `"none"` = transcription only. |
+
 | `context_lines` | `8` | Previous JA/EN lines supplied to HY-MT2 as context. |
 | `glossary` | `"glossary.toml"` | Glossary file. |
 
-`[translate.presets.NAME]` tables define presets (see [Translation presets](#translation-presets)).
-HY-MT2 preset keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120),
+`[translate.engines.NAME]` tables define engines (see [Translation](#translation)).
+HY-MT2 engine keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120),
 `timeout_s` (20), `load_timeout_s` (300), `min_request_interval_s` (3), and `extra_body` (additional local-server request fields).
 
 ### `[output]`
@@ -390,7 +375,7 @@ HY-MT2 preset keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120)
 |---|---|---|
 | `enabled` | `false` | Always use mpv (same as `--mpv`). |
 | `path` | `""` | mpv executable. `""` = `PATH`, then `C:\Program Files\MPV Player\mpv.exe`. |
-| `delay_s` | `9.0` | How far playback stays behind the pipeline. Must exceed `max_utterance_s` + max latency. A preset's `mpv_delay_s` or `--delay` overrides it. |
+| `delay_s` | `9.0` | How far playback stays behind the pipeline. Must exceed `max_utterance_s` + max latency. `--delay` overrides it. |
 | `start_wait_s` | `3.0` | VOD: wait before playing after start or a jump. |
 | `port` | `9137` | Local TCP port ffmpeg streams the video to mpv on. Change if it's in use. |
 | `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while HY-MT2 uses the GPU. `"no"` = CPU decoding. |
@@ -409,7 +394,7 @@ Every `stats_interval_s` the app logs something like:
 
 - **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; close other GPU apps or reduce the audio workload if it persists.
 - **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
-- **latency**: end of speech → subtitle ready. ~1–1.5 s with `hymt2`.
+- **latency**: end of speech → subtitle ready. ~1–1.5 s with HY-MT2.
 - A summary is printed when the app stops.
 
 ## Helper scripts

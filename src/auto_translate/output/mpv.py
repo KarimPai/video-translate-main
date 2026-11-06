@@ -568,14 +568,43 @@ class MpvOutput:
                 else "loading local source in MPV"
             )
             self.ipc.command("loadfile", video_url, "replace")
-            if not self._wait_for_event("start-file", timeout_s=10.0):
-                log.error("MPV did not start loading the original video stream")
-                self.stop.set()
-                return
-            if not self._wait_for_event("file-loaded", timeout_s=30.0):
-                log.error("MPV could not load the original video stream")
-                self.stop.set()
-                return
+            started = self._wait_for_event("start-file", timeout_s=10.0)
+            loaded = (
+                started
+                and self._wait_for_event("file-loaded", timeout_s=30.0)
+            )
+
+            if not loaded:
+                log.warning(
+                    "MPV could not load the original YouTube URL; "
+                    "falling back to the translator's local fMP4 video stream"
+                )
+                try:
+                    cache_url = self.ingest.video_playlist_url
+                except RuntimeError:
+                    log.exception("MPV fallback video cache is unavailable")
+                    self.stop.set()
+                    return
+
+                self.ipc.command("loadfile", cache_url, "replace")
+                cache_started = self._wait_for_event(
+                    "start-file",
+                    timeout_s=10.0,
+                )
+                cache_loaded = (
+                    cache_started
+                    and self._wait_for_event("file-loaded", timeout_s=30.0)
+                )
+                if not cache_loaded:
+                    log.error("MPV could not load the local fMP4 video fallback")
+                    self.stop.set()
+                    return
+
+                log.info(
+                    "MPV loaded local fMP4 fallback; seek range follows "
+                    "the currently cached video"
+                )
+
             self._direct_video_loaded = True
             if self._session_start > 0:
                 self.ipc.command("seek", self._session_start, "absolute+exact")

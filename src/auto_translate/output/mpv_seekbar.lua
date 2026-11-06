@@ -54,9 +54,7 @@ local function track_bounds()
     -- Match the clickable range to the rendered text track, rather than the
     -- full video width. ASS box glyphs are approximately 0.55 em wide.
     local font_size = 35
-    local video_left, _, video_right = video_rect()
-    local available = math.max(1, video_right - video_left)
-    local bar_chars = math.max(24, math.floor(available / (font_size * 0.55)))
+    local bar_chars = 32
     local track_width = bar_chars * font_size * 0.55
     local center = (video_left + video_right) / 2
     return center - track_width / 2, center + track_width / 2, bar_chars
@@ -117,7 +115,7 @@ local function render()
     local total = fmt_time(duration)
     ass = ass .. string.format(
         "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
-        math.floor(center_x), bottom - 105, elapsed, total
+        math.floor(center_x), bottom - 8, elapsed, total
     )
 
     if ass ~= last_ass or not visible then

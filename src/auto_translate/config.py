@@ -86,8 +86,8 @@ class MpvConfig:
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"
     )
-    en_size: int = 44
-    ja_size: int = 28
+    en_size: int = 28
+    ja_size: int = 0
     speaker_diarization: bool = False
     speaker_similarity_threshold: float = 0.72
     speaker_device: str = "cuda"

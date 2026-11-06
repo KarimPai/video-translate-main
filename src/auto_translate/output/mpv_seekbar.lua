@@ -2,8 +2,6 @@
 -- Position and duration are supplied by Python using the YouTube source timeline.
 local overlay = mp.create_osd_overlay("ass-events")
 overlay.z = 20
-overlay.res_x = 1280
-overlay.res_y = 720
 
 local position = 0
 local duration = 0
@@ -39,24 +37,23 @@ local function video_rect()
     local top = math.max(0, tonumber(dims.mt) or 0)
     local bottom = height - math.max(0, tonumber(dims.mb) or 0)
 
-    if right <= left then
-        left, right = 0, width
-    end
-    if bottom <= top then
-        top, bottom = 0, height
-    end
+    if right <= left then left, right = 0, width end
+    if bottom <= top then top, bottom = 0, height end
     return left, top, right, bottom, width, height
 end
 
 local function track_bounds()
-    local video_left, _, video_right = video_rect()
-    local track_width = (video_right - video_left) * 0.70
-    local center = (video_left + video_right) / 2
-    return center - track_width / 2, center + track_width / 2
+    local left, _, right = video_rect()
+    local width = math.max(1, right - left)
+    local track_width = width * 0.70
+    local center = left + width / 2
+    local x1 = math.max(left, center - track_width / 2)
+    local x2 = math.min(right, center + track_width / 2)
+    return x1, x2
 end
 
 local function seek_from_mouse(mouse, left, right)
-    if mouse.x < left or mouse.x > right or right <= left then
+    if not mouse or right <= left or mouse.x < left or mouse.x > right then
         return nil
     end
     local fraction = (mouse.x - left) / (right - left)
@@ -76,15 +73,16 @@ local function render()
         return
     end
 
-    -- ASS positions use the full OSD coordinate space, not video-local coordinates.
+    -- Use the complete OSD coordinate space consistently for rendering and hit testing.
     overlay.res_x = width
     overlay.res_y = height
 
     local mouse = mouse_position()
+    local hover_top = math.max(top, bottom - 90)
     local hovered = mouse ~= nil
         and mouse.x >= left and mouse.x <= right
-        and mouse.y >= math.max(top, bottom - 90)
-        and mouse.y <= bottom
+        and mouse.y >= hover_top and mouse.y <= bottom
+
     if not hovered and not dragging then
         if visible then
             overlay.hidden = true
@@ -95,33 +93,30 @@ local function render()
     end
 
     local seek_left, seek_right = track_bounds()
-    local center_x = (left + right) / 2
-    local bar_y = bottom - 62
+    local track_width = math.max(1, math.floor(seek_right - seek_left))
     local bar_height = 10
-    local track_width = seek_right - seek_left
+    local bar_y = math.max(top, math.min(bottom - bar_height - 30, bottom - 62))
     local fraction = math.max(0, math.min(1, position / duration))
-    local progress_width = math.floor(track_width * fraction)
+    local fill_width = math.max(0, math.min(track_width, math.floor(track_width * fraction)))
 
-    -- One track container, with the elapsed portion filled inside it.
-    -- Both rectangles share the exact same ASS origin and vertical bounds.
+    -- Exactly one ASS drawing event and one origin. The grey container and
+    -- white fill are two paths inside that same drawing, so they cannot drift.
+    local bar_x = math.floor(seek_left)
+    local bar_local_y = math.floor(bar_y)
     local ass = string.format(
-        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H505050&\\p1}"
-            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}"
-            .. "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&HFFFFFF&\\p1}"
-            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
-        math.floor(seek_left), math.floor(bar_y),
-        math.floor(track_width), math.floor(track_width),
-        bar_height, bar_height,
-        math.floor(seek_left), math.floor(bar_y),
-        progress_width, progress_width,
-        bar_height, bar_height
+        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\p1\\1c&H505050&}"
+            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0 "
+            .. "{\\1c&HFFFFFF&}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
+        bar_x, bar_local_y,
+        track_width, track_width, bar_height, bar_height,
+        fill_width, fill_width, bar_height, bar_height
     )
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)
     ass = ass .. string.format(
         "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
-        math.floor(center_x), bottom - 8, elapsed, total
+        math.floor((left + right) / 2), math.floor(bottom - 8), elapsed, total
     )
 
     if ass ~= last_ass or not visible then
@@ -144,8 +139,7 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
         local mouse = mouse_position()
         local _, _, _, bottom = video_rect()
         local seek_left, seek_right = track_bounds()
-        if mouse and mouse.x >= seek_left and mouse.x <= seek_right
-            and mouse.y >= bottom - 90 and mouse.y <= bottom
+        if mouse and mouse.y >= bottom - 90 and mouse.y <= bottom
             and seek_from_mouse(mouse, seek_left, seek_right) then
             dragging = true
             render()
@@ -154,8 +148,7 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
         dragging = false
         local mouse = mouse_position()
         local seek_left, seek_right = track_bounds()
-        local target = mouse and mouse.x >= seek_left and mouse.x <= seek_right
-            and seek_from_mouse(mouse, seek_left, seek_right) or nil
+        local target = seek_from_mouse(mouse, seek_left, seek_right)
         if target then
             mp.commandv("script-message", "auto-translate-jump", tostring(target - position))
         end

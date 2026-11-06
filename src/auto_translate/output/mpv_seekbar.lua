@@ -24,7 +24,7 @@ end
 
 local function rect(x, y, w, h, color, alpha)
     return string.format(
-        "{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\alpha&H%02X&\\p1}m %d %d l %d %d %d %d %d %d{\\p0}",
+        "{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\alpha&H%02X&\\p1}m %d %d l %d %d %d %d %d %d c{\\p0}",
         color, alpha, x, y, x + w, y, x + w, y + h, x, y + h
     )
 end

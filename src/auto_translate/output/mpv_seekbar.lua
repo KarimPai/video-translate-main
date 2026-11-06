@@ -100,7 +100,8 @@ local function render()
         return
     end
 
-    local bar_left, bar_right, bar_chars = track_bounds()
+    local center_x = (left + right) / 2
+    local _, _, bar_chars = track_bounds()
     local bar_y = bottom - 52
     local fraction = math.max(0, math.min(1, position / duration))
     local filled = math.floor(bar_chars * fraction + 0.5)
@@ -109,14 +110,14 @@ local function render()
         .. "{\\1c&H808080&}" .. string.rep("─", empty)
     local ass = string.format(
         "{\\an2\\pos(%d,%d)\\bord3\\3c&HFFFFFF&\\shad0\\fs35\\1c&HFFFFFF&}%s",
-        math.floor(width / 2), bar_y, bar
+        math.floor(center_x), bar_y, bar
     )
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)
     ass = ass .. string.format(
         "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
-        math.floor(width / 2), bottom - 105, elapsed, total
+        math.floor(center_x), bottom - 105, elapsed, total
     )
 
     if ass ~= last_ass or not visible then
@@ -149,7 +150,7 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
         dragging = false
         local mouse = mouse_position()
         local left, top, right, bottom = video_rect()
-        local seek_left, seek_right = track_bounds(video_rect())
+        local seek_left, seek_right = track_bounds()
         local target = mouse and mouse.x >= seek_left and mouse.x <= seek_right
             and seek_from_mouse(mouse, seek_left, seek_right) or nil
         if target then

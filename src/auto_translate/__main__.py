@@ -40,7 +40,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    for noisy in ("faster_whisper", "httpx"):
+    for noisy in ("httpx",):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -83,16 +83,10 @@ def main() -> None:
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
 
-    asr_model = (
-        cfg.asr.haas_model
-        if cfg.asr.backend == "haas"
-        else cfg.asr.model
-    )
-
+    asr_model = cfg.asr.haas_model
     log.info(
-        "ASR ready (%s, %s) in %.1fs",
+        "ASR ready (%s, Haas) in %.1fs",
         asr_model,
-        cfg.asr.backend,
         time.perf_counter() - t0,
     )
 

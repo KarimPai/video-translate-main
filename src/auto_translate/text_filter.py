@@ -11,7 +11,7 @@ _LAUGHTER = re.compile(
 )
 _NON_TEXT = re.compile(r"[\s、。，．・！？!?…〜～.,:;()（）「」『』【】\[\]{}<>]+")
 _JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
-_KANA = re.compile(r"[\u3040-\u30ff]")
+_KANA = re.compile(r"[\u3040-\u30ff]+")
 
 
 def _compact(text: str) -> str:

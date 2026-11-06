@@ -9,7 +9,7 @@ _LAUGHTER = re.compile(
     r"ｗ{2,}|w{3,}|笑+|草+",
     re.IGNORECASE,
 )
-_NON_TEXT = re.compile(r"[\s、。，．・！？!?…〜～ー.,:;()（）「」『』【】\[\]{}<>]+")
+_NON_TEXT = re.compile(r"[\s、。，．・！？!?…〜～.,:;()（）「」『』【】\[\]{}<>]+")
 _JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _KANA = re.compile(r"[\u3040-\u30ff]")
 
@@ -39,10 +39,10 @@ def rejection_reason(text: str) -> str | None:
     if len(compact) >= 6 and len(set(compact)) == 1:
         return "repeated_character"
 
-    # Detect obvious 1-2 character kana loops (e.g. あいあいあいあい).
+    # Detect obvious 1-3 character kana loops (e.g. あいあいあいあい).
     # Require at least four repetitions to avoid rejecting normal emphasis.
     if len(compact) >= 8 and _KANA.fullmatch(compact):
-        for width in (1, 2):
+        for width in (1, 2, 3):
             unit = compact[:width]
             if len(compact) % width == 0 and compact == unit * (len(compact) // width):
                 return "repeated_kana_loop"

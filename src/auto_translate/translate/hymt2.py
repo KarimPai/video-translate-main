@@ -5,12 +5,12 @@ import time
 import threading
 import urllib.request
 
-from ..config import HyMt2Config
+from ..config import TranslateConfig
 from ..glossary import Glossary
 
 
 class HyMt2Translator:
-    def __init__(self, cfg: HyMt2Config, glossary: Glossary) -> None:
+    def __init__(self, cfg: TranslateConfig, glossary: Glossary) -> None:
         self.cfg = cfg
         self.glossary = glossary
         self.url = cfg.base_url.rstrip("/") + "/chat/completions"

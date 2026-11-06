@@ -407,13 +407,18 @@ def run(
                     stats.summary(),
                 )
 
-                for name in ("utt", "text"):
-                    if queues[name].qsize() > 3:
+                # Warn once per stats interval when a bounded queue is
+                # nearing capacity. Producers block on full queues, applying
+                # backpressure rather than retaining unlimited stale work.
+                for name, q in queues.items():
+                    if q.maxsize and q.qsize() >= max(1, int(q.maxsize * 0.75)):
                         log.warning(
-                            "falling behind: %s queue = %d",
+                            "pipeline backpressure: %s queue = %d/%d",
                             name,
-                            queues[name].qsize(),
+                            q.qsize(),
+                            q.maxsize,
                         )
+
 
     except KeyboardInterrupt:
         log.info("stopping (Ctrl+C)")

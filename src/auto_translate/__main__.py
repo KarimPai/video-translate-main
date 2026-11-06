@@ -132,7 +132,9 @@ def main() -> None:
 
     # Any truthy value enables Ingest's temporary progressive fMP4 HLS cache.
     # MPV and the ASR audio reader consume the same local playlist.
-    video_out = "fmp4" if use_mpv else None
+    # MPV plays the original YouTube video stream directly. Ingest keeps
+    # its independent audio-only FFmpeg path for ASR and translation.
+    video_out = None
 
     burst_s = (
         cfg.mpv.delay_s

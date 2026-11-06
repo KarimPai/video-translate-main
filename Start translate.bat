@@ -1,6 +1,12 @@
 @echo off
 title Japanese Video Translator
-cd /d "C:\Games\video-translate-main"
+cd /d "%~dp0"
+
+if errorlevel 1 (
+    echo ERROR: Could not enter the project directory.
+    pause
+    exit /b 1
+)
 
 echo.
 echo ========================================

@@ -10,9 +10,12 @@ Vocal separation mode:
 MPV video/audio stream-copy output is kept separate from audio processing.
 """
 
+import functools
+import http.server
 import logging
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -29,6 +32,14 @@ from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
 
 log = logging.getLogger(__name__)
+
+
+class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
+    """Serve the local fMP4 cache without noisy per-request logging."""
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
 
 CHUNK_SAMPLES = 4096
 SEPARATION_READ_FRAMES = 8192
@@ -152,7 +163,21 @@ def resolve_source(
 
     if not is_file and timeline is None:
         timeline = load_vod_metadata(location, cfg)
-        duration = float(timeline["duration_s"])
+        status = str(timeline.get("live_status") or "not_live")
+
+        if status == "is_upcoming":
+            raise SystemExit("this stream hasn't started yet")
+
+        # The launcher may request VOD mode, but YouTube live URLs have no
+        # duration. Detect the actual source type before attempting VOD math.
+        if status == "is_live":
+            log.info("yt-dlp: detected live stream; using live ingest")
+            return Source(location, live=True)
+
+        raw_duration = timeline.get("duration_s")
+        duration = (
+            float(raw_duration) if raw_duration is not None else None
+        )
     start_s = (
         parse_time(start)
         if start
@@ -193,14 +218,23 @@ class Ingest:
         self.cfg = cfg
         self.pitch_semitones = cfg.pitch_semitones
         self.video_format = video_format
-        self._cache_temp = (
-            tempfile.TemporaryDirectory(prefix="auto-translate-fmp4-")
-            if video_out else None
-        )
+        # Keep the temporary fMP4 cache beside the project instead of
+        # using the per-user Windows TEMP directory. Each run still gets
+        # its own unique session directory and is removed during cleanup.
+        cache_parent = Path(__file__).resolve().parents[2] / "temp" / "fmp4"
+        self._cache_temp = None
+        if video_out:
+            cache_parent.mkdir(parents=True, exist_ok=True)
+            self._cache_temp = tempfile.TemporaryDirectory(
+                prefix="auto-translate-fmp4-",
+                dir=str(cache_parent),
+            )
         self._cache_root = (
             Path(self._cache_temp.name) if self._cache_temp else None
         )
         self._cache_sequence = 0
+        self._http_server: http.server.ThreadingHTTPServer | None = None
+        self._http_thread: threading.Thread | None = None
         self._cache_source_start_s = source.start_s
         self.video_out = (
             str(self._new_video_playlist(source.start_s))
@@ -250,6 +284,36 @@ class Ingest:
         directory = self._cache_root / f"session-{self._cache_sequence:04d}"
         directory.mkdir(parents=True, exist_ok=True)
         return directory / "index.m3u8"
+
+    def _start_cache_server(self) -> None:
+        """Serve HLS files over loopback HTTP so Windows readers do not lock the playlist."""
+        if self._http_server is not None:
+            return
+        if self._cache_root is None:
+            raise RuntimeError("fMP4 cache is not enabled")
+
+        handler = functools.partial(
+            _QuietHLSHandler,
+            directory=str(self._cache_root),
+        )
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server.daemon_threads = True
+        self._http_server = server
+        self._http_thread = threading.Thread(
+            target=server.serve_forever,
+            name="fmp4-cache-http",
+            daemon=True,
+        )
+        self._http_thread.start()
+        log.info("local fMP4 cache HTTP server listening on 127.0.0.1:%d", server.server_port)
+
+    @property
+    def video_playlist_url(self) -> str:
+        """HTTP URL for the current playlist and its relative fMP4 assets."""
+        if self._http_server is None or self._cache_root is None:
+            raise RuntimeError("fMP4 cache HTTP server is not running")
+        relative = Path(self.video_playlist).relative_to(self._cache_root).as_posix()
+        return f"http://127.0.0.1:{self._http_server.server_port}/{relative}"
 
     @property
     def cache_source_start_s(self) -> float:
@@ -367,8 +431,13 @@ class Ingest:
                 return
 
             session = self._session
+            # FFmpeg resolves the fMP4 init filename relative to its
+            # working directory. Keep that file inside this session's cache
+            # directory instead of the repository/launcher working directory.
+            self._start_cache_server()
             proc = subprocess.Popen(
                 self._video_command(start_s=start_s),
+                cwd=str(Path(self.video_playlist).parent),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
@@ -447,6 +516,9 @@ class Ingest:
             "-nostats",
             "-loglevel",
             "info",
+            # Write FFmpeg's complete debug report in the session directory.
+            # This captures the exact file operation behind HLS muxer errors.
+            "-report",
         ]
 
         for url in inputs:
@@ -469,6 +541,9 @@ class Ingest:
                 "-reconnect", "1",
                 "-reconnect_streamed", "1",
                 "-reconnect_delay_max", "10",
+                # Regenerate missing presentation timestamps and ignore
+                # potentially unreliable input indexes on YouTube HLS.
+                "-fflags", "+genpts+ignidx",
                 "-i", url,
             ]
 
@@ -491,7 +566,7 @@ class Ingest:
             # every fragment so backward seeking within the session is possible.
             hls_options += [
                 "-hls_list_size", "30",
-                "-hls_flags", "delete_segments+temp_file+independent_segments",
+                "-hls_flags", "delete_segments+independent_segments",
             ]
         else:
             hls_options += [
@@ -500,10 +575,30 @@ class Ingest:
                 "-hls_flags", "temp_file+independent_segments",
             ]
 
+        # YouTube's separate HLS video rendition can deliver H.264 packets
+        # without PTS/DTS. Stream-copying those packets into fragmented MP4
+        # fails because the muxer requires valid timestamps. Decode the video
+        # and regenerate its timeline, then use NVENC to keep the repair
+        # GPU-accelerated. Passthrough frame sync avoids CFR frame clipping;
+        # forced IDR keyframes let the HLS muxer cut complete 2-second chunks.
+        # The AAC rendition is already compressed; only convert ADTS framing
+        # to the MPEG-4 AudioSpecificConfig required by MP4/fMP4.
         return ffmpeg + [
             "-map", "0:v:0?",
             "-map", audio,
-            "-c", "copy",
+            "-vf", "setpts=N/(FRAME_RATE*TB)",
+            "-c:v", "h264_nvenc",
+            "-preset", "p1",
+            "-tune", "ull",
+            "-rc", "vbr",
+            "-cq", "18",
+            "-b:v", "0",
+            "-fps_mode", "passthrough",
+            "-g", "120",
+            "-forced-idr", "1",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-c:a", "copy",
+            "-bsf:a", "aac_adtstoasc",
             *hls_options,
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",
@@ -532,7 +627,7 @@ class Ingest:
         ffmpeg += ["-live_start_index", "0"]
         if not self.source.live and offset > 0.001:
             ffmpeg += ["-ss", f"{offset:.3f}"]
-        ffmpeg += ["-i", self.video_playlist]
+        ffmpeg += ["-i", self.video_playlist_url]
 
         if self.separation_enabled:
             output_rate = SEPARATION_INPUT_RATE
@@ -605,7 +700,6 @@ class Ingest:
                     text=True,
                     check=True,
                 ).stdout.split()
-
         return self._inputs
 
     def _read_stderr(
@@ -819,8 +913,7 @@ class Ingest:
             return [ffmpeg + ["-i", src.location] + out]
 
         ytdlp = [
-            "yt-dlp",
-            "-f",
+            "yt-dlp",            "-f",
             self.cfg.ytdlp_format,
             "--quiet",
             "--no-warnings",
@@ -1195,7 +1288,38 @@ class Ingest:
                 except subprocess.TimeoutExpired:
                     log.warning("could not fully stop FFmpeg process %s", proc.pid)
 
+        if self._http_server is not None:
+            self._http_server.shutdown()
+            self._http_server.server_close()
+            self._http_server = None
+            self._http_thread = None
+
         if self._cache_temp is not None:
+            # Preserve FFmpeg -report output before TemporaryDirectory removes
+            # the fMP4 session cache. The report is needed to diagnose muxer
+            # failures that are otherwise reduced to "Operation not permitted".
+            if self._cache_root is not None:
+                reports = list(self._cache_root.rglob("ffmpeg-*.log"))
+                if reports:
+                    report_dir = (
+                        Path(__file__).resolve().parents[2]
+                        / "logs"
+                        / "ffmpeg"
+                    )
+                    report_dir.mkdir(parents=True, exist_ok=True)
+                    for report in reports:
+                        destination = report_dir / (
+                            f"{report.parent.name}-{report.name}"
+                        )
+                        try:
+                            shutil.copy2(report, destination)
+                            log.info("saved FFmpeg diagnostic report: %s", destination)
+                        except OSError as exc:
+                            log.warning(
+                                "could not preserve FFmpeg report %s: %s",
+                                report,
+                                exc,
+                            )
             self._cache_temp.cleanup()
             self._cache_temp = None
 

@@ -86,14 +86,14 @@ class MpvConfig:
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"
     )
-    en_size: int = 44
-    ja_size: int = 28
+    en_size: int = 28
+    ja_size: int = 0
     speaker_diarization: bool = False
     speaker_similarity_threshold: float = 0.72
     speaker_device: str = "cuda"
     max_speakers: int = 3
     max_subtitle_rows: int = 3
-    start_delay_s: float = 0.0  # delay subtitle display after VAD speech onset
+    start_delay_s: float = 0.5  # delay subtitle display 500 ms after VAD speech onset
     min_display_s: float = 4.0
     hold_s: float = 2.0
 

@@ -543,7 +543,7 @@ class MpvOutput:
         # The cache writer has already produced its initialization segment and
         # first media fragment. MPV reads the same growing event playlist as
         # the ASR audio extractor.
-        playlist = self.ingest.video_playlist
+        playlist = self.ingest.video_playlist_url
         self.ipc.command("loadfile", playlist, "replace")
         if not self._wait_for_event("start-file", timeout_s=10.0):
             log.error("MPV did not start loading the fMP4 HLS playlist")
@@ -942,7 +942,7 @@ class MpvOutput:
             active = [
                 ln
                 for ln in self._lines
-                if ln.show_from <= now < ln.show_until
+                if ln.show_from <= now < ln.show_until and ln.sub.en
             ]
 
         active.sort(key=lambda ln: ln.show_from)
@@ -953,9 +953,8 @@ class MpvOutput:
         for ln in reversed(active):
             # The limit counts subtitle entries, not individual language rows.
             # Each entry may contain Japanese above its English translation.
-            row_count = int(bool(
-                ln.sub.en or (self.cfg.ja_size > 0 and ln.sub.ja)
-            ))
+            # Each visible utterance occupies one English-only row.
+            row_count = int(bool(ln.sub.en))
 
             if (
                 selected
@@ -1037,14 +1036,8 @@ def _ass_many(
     blocks: list[str] = []
 
     for sub in subtitles:
-        head = r"{\an2\bord2.5\shad0\3c&H000000&}"
+        head = r"{\an2\bord2.5\shad1\3c&H000000&\4c&H80000000&}"
         rows: list[str] = []
-
-        if cfg.ja_size > 0 and sub.ja:
-            rows.append(
-                rf"{{\fs{cfg.ja_size}\1c&HC8C8C8&}}"
-                + esc(sub.ja)
-            )
 
         if sub.en:
             rows.append(

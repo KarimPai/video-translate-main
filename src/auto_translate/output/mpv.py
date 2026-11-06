@@ -278,6 +278,9 @@ class MpvOutput:
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
+        self._direct_video_loaded = False
+        self._last_direct_pos: float | None = None
+        self._last_direct_sample_at = 0.0
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -299,6 +302,7 @@ class MpvOutput:
             "--demuxer-max-back-bytes=32MiB",
             # Match FFmpeg's live HLS reader: begin at the oldest retained segment.
             "--demuxer-lavf-o=live_start_index=0",
+            "--aid=no",
             "--input-default-bindings=no",
 
             # Use MPV's built-in native on-screen controller.
@@ -352,7 +356,7 @@ class MpvOutput:
             raise
 
         log.info(
-            "mpv ready for progressive fMP4 HLS playback "
+            "mpv ready for direct source video playback "
             "(live delay %.1fs, VOD translation lead %.1fs)",
             cfg.delay_s,
             self.PAUSE_LEAD_SECONDS,
@@ -542,57 +546,43 @@ class MpvOutput:
 
         assert self.ingest.first_pts is not None
 
-        # The cache writer has already produced its initialization segment and
-        # first media fragment. MPV reads the same growing event playlist as
-        # the ASR audio extractor.
-        playlist = self.ingest.video_playlist_url
-        self.ipc.command("loadfile", playlist, "replace")
-        if not self._wait_for_event("start-file", timeout_s=10.0):
-            log.error("MPV did not start loading the fMP4 HLS playlist")
-            self.stop.set()
-            return
-        if not self._wait_for_event("file-loaded", timeout_s=15.0):
-            log.error("MPV could not load the initial fMP4 HLS fragments")
-            self.stop.set()
-            return
-
         self._session_start = self.ingest.source.start_s
 
-        # Audio extraction and MPV read the same fMP4 playlist, so both
-        # use its media timeline. Measure MPV's local time-pos origin rather
-        # than estimating it from the upstream YouTube audio PTS.
+        if not self._direct_video_loaded:
+            video_url = self.ingest.video_source_url
+            log.info("loading original video stream directly in MPV")
+            self.ipc.command("loadfile", video_url, "replace")
+            if not self._wait_for_event("start-file", timeout_s=10.0):
+                log.error("MPV did not start loading the original video stream")
+                self.stop.set()
+                return
+            if not self._wait_for_event("file-loaded", timeout_s=30.0):
+                log.error("MPV could not load the original video stream")
+                self.stop.set()
+                return
+            self._direct_video_loaded = True
+            if self._session_start > 0:
+                self.ipc.command("seek", self._session_start, "absolute+exact")
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline:
+                    pos = self.ipc.get("time-pos")
+                    if pos is not None and abs(float(pos) - self._session_start) <= 1.0:
+                        break
+                    time.sleep(0.05)
+
+        # MPV plays the original VOD timeline; FFmpeg independently extracts
+        # audio for ASR. Anchor each audio generation to MPV's current position.
         self._mpv_anchor = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-        mapping = "measured MPV session anchor against shared fMP4 source timeline"
-
-        if self._pending_seek_offset is not None:
-            seek_offset = self._pending_seek_offset
-            self.ipc.command("seek", seek_offset, "absolute+exact")
-            deadline = time.monotonic() + 5.0
-            measured_pos = None
-            while time.monotonic() < deadline:
-                pos = self.ipc.get("time-pos")
-                if pos is not None:
-                    measured_pos = float(pos)
-                    if abs(measured_pos - seek_offset) <= 0.75:
-                        break
-                time.sleep(0.05)
-            # The HLS playlist's time-pos is relative to its first segment;
-            # keep the requested fragment offset as the source-clock anchor.
-            self._mpv_anchor = seek_offset
-            record_session_anchor(
-                self.ingest.source.timeline,
-                self._clock_source_anchor,
-                self._mpv_anchor,
-                self._anchor_reason,
-            )
-            log.info(
-                "reused cached fMP4 fragments: playlist_offset=%.3fs observed_mpv_pos=%s",
-                seek_offset,
-                f"{measured_pos:.3f}" if measured_pos is not None else "unavailable",
-            )
-            self._pending_seek_offset = None
+        mapping = "direct MPV source timeline against independently ingested audio"
+        current_pos = self.ipc.get("time-pos")
+        if current_pos is not None:
+            self._mpv_anchor = float(current_pos)
+        self._last_direct_pos = (
+            float(current_pos) if current_pos is not None else None
+        )
+        self._last_direct_sample_at = time.monotonic()
 
         self._clock_sample_logged = False
         self._audio_clock_diag_until = 0.0
@@ -706,6 +696,25 @@ class MpvOutput:
                 )
 
             if (pos := self.ipc.get("time-pos")) is not None:
+                if self._direct_video_loaded:
+                    sampled_at = time.monotonic()
+                    if self._last_direct_pos is not None:
+                        raw_step = float(pos) - self._last_direct_pos
+                        elapsed = sampled_at - self._last_direct_sample_at
+                        if (
+                            abs(raw_step) >= 2.0
+                            and abs(raw_step - elapsed) >= 1.5
+                        ):
+                            log.info(
+                                "native MPV seek detected: %.3fs -> %.3fs",
+                                self._last_direct_pos,
+                                float(pos),
+                            )
+                            self._restart_audio_at(float(pos), seek_video=False)
+                            return
+                    self._last_direct_pos = float(pos)
+                    self._last_direct_sample_at = sampled_at
+
                 if self._mpv_anchor is None:
                     self._mpv_anchor = float(pos)
                     record_session_anchor(
@@ -871,59 +880,45 @@ class MpvOutput:
         target = max(0.0, self._now + delta)
 
         if src.duration:
-            target = min(
-                target,
-                max(0.0, src.duration - 5),
-            )
+            target = min(target, max(0.0, src.duration - 5))
 
-        log.info(
-            "jump %+.0fs → %s",
-            delta,
-            fmt_hms(target),
-        )
+        log.info("jump %+.0fs -> %s", delta, fmt_hms(target))
+        return self._restart_audio_at(target, seek_video=True)
+
+    def _restart_audio_at(self, target: float, *, seek_video: bool) -> bool:
+        """Restart translation audio at a source timestamp without reloading video."""
+        src = self.ingest.source
+        target = max(0.0, target)
+        if src.duration:
+            target = min(target, max(0.0, src.duration - 1.0))
 
         self.ipc.command("set_property", "pause", True)
+        if seek_video:
+            self.ipc.command("seek", target, "absolute+exact")
 
         self._now = None
         self._shown = ""
-
         self.ipc.command(
             "osd-overlay",
             id=OVERLAY_ID,
             format="none",
             data="",
         )
-
         with self._lock:
             self._lines.clear()
 
-        self._video_retries = 0
-        cache_start = self.ingest.cache_source_start_s
-        cache_end = self.ingest.cache_end_s
-        can_reuse_cache = (
-            cache_start <= target <= cache_end - 1.0
+        self._pending_seek_offset = None
+        self._clock_source_anchor = target
+        self._mpv_anchor = None
+        self._anchor_reason = "seek"
+        self._clock_sample_logged = False
+        self._last_direct_pos = (
+            float(self.ipc.get("time-pos"))
+            if self.ipc.get("time-pos") is not None else None
         )
-        preserved = self.ingest.request_restart(
-            target,
-            preserve_video_cache=can_reuse_cache,
-        )
-        self._pending_seek_offset = (
-            target - cache_start if preserved else None
-        )
-        if preserved:
-            log.info(
-                "seek will reuse local fMP4 fragments: %.2fs-%.2fs",
-                cache_start,
-                cache_end,
-            )
-        else:
-            log.info(
-                "seek requires a new progressive fMP4 fetch at %.2fs",
-                target,
-            )
+        self._last_direct_sample_at = time.monotonic()
 
-        # The next playback session waits for the new fMP4 playlist and then
-        # loads it. This avoids reconnecting MPV to a transient TCP stream.
+        self.ingest.request_restart(target)
         self.ingest.go()
         return True
 

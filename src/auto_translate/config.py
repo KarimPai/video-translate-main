@@ -134,13 +134,25 @@ def load_config(path: Path) -> Config:
 
     mpv_data = dict(data.get("mpv", {}))
 
+    # Migrate old preset-based configs to the single flat HY-MT2 section.
+    # The selected HY-MT2 preset's values are retained; preset names are discarded.
+    translate_data = dict(data.get("translate", {}))
+    legacy_presets = translate_data.pop("presets", {})
+    translate_data.pop("preset", None)
+    hymt2_settings = dict(legacy_presets.get("hymt2", {}))
+    hymt2_settings.pop("backend", None)
+    hymt2_settings.pop("mpv_delay_s", None)
+    hymt2_settings.pop("api_key_env", None)
+    for key, value in hymt2_settings.items():
+        translate_data.setdefault(key, value)
+
     return Config(
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),
         asr=AsrConfig(**asr_data),
-        translate=TranslateConfig(**data.get("translate", {})),
+        translate=TranslateConfig(**translate_data),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),

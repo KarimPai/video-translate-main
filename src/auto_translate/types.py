@@ -43,7 +43,7 @@ class Utterance:
     start_s: float
     end_s: float
     audio: np.ndarray  # float32 mono 16 kHz
-    probe: bool = False  # VAD heard no speech; Whisper decides (stricter filters)
+    probe: bool = False  # VAD heard no speech; send fallback audio to Haas
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
 

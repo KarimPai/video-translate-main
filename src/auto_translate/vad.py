@@ -16,7 +16,6 @@ from pathlib import Path
 import numpy as np
 
 from . import cuda_dlls
-
 from .config import VadConfig
 from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
 

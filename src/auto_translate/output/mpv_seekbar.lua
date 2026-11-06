@@ -1,157 +1,91 @@
--- Hover-only VOD seekbar for auto-translate.
--- Position and duration are supplied by Python using the YouTube source timeline.
 local overlay = mp.create_osd_overlay("ass-events")
 overlay.z = 20
+local pos, dur, dragging, visible, last = 0, 0, false, false, ""
 
-local position = 0
-local duration = 0
-local dragging = false
-local visible = false
-local last_ass = ""
-
-local function fmt_time(value)
-    value = math.max(0, math.floor(value))
-    local hours = math.floor(value / 3600)
-    local minutes = math.floor((value % 3600) / 60)
-    local seconds = value % 60
-    if hours > 0 then
-        return string.format("%d:%02d:%02d", hours, minutes, seconds)
-    end
-    return string.format("%02d:%02d", minutes, seconds)
+local function rect()
+    local d = mp.get_property_native("osd-dimensions") or {}
+    local w, h = tonumber(d.w) or 1280, tonumber(d.h) or 720
+    local l, r = math.max(0, tonumber(d.ml) or 0), w - math.max(0, tonumber(d.mr) or 0)
+    local t, b = math.max(0, tonumber(d.mt) or 0), h - math.max(0, tonumber(d.mb) or 0)
+    if r <= l then l, r = 0, w end
+    if b <= t then t, b = 0, h end
+    return l, t, r, b, w, h
 end
 
-local function mouse_position()
-    local mouse = mp.get_property_native("mouse-pos")
-    if not mouse or not mouse.hover then
-        return nil
-    end
-    return mouse
+local function bounds()
+    local l, _, r = rect()
+    local width = math.max(1, r - l) * 0.70
+    local x = (l + r - width) / 2
+    return x, x + width
 end
 
-local function video_rect()
-    local dims = mp.get_property_native("osd-dimensions") or {}
-    local width = tonumber(dims.w) or mp.get_property_number("osd-width", 1280)
-    local height = tonumber(dims.h) or mp.get_property_number("osd-height", 720)
-    local left = math.max(0, tonumber(dims.ml) or 0)
-    local right = width - math.max(0, tonumber(dims.mr) or 0)
-    local top = math.max(0, tonumber(dims.mt) or 0)
-    local bottom = height - math.max(0, tonumber(dims.mb) or 0)
-
-    if right <= left then left, right = 0, width end
-    if bottom <= top then top, bottom = 0, height end
-    return left, top, right, bottom, width, height
+local function mouse()
+    local m = mp.get_property_native("mouse-pos")
+    if m and m.hover then return m end
 end
 
-local function track_bounds()
-    local left, _, right = video_rect()
-    local width = math.max(1, right - left)
-    local track_width = width * 0.70
-    local center = left + width / 2
-    local x1 = math.max(left, center - track_width / 2)
-    local x2 = math.min(right, center + track_width / 2)
-    return x1, x2
+local function timecode(v)
+    v = math.max(0, math.floor(v))
+    local h, m, s = math.floor(v / 3600), math.floor(v % 3600 / 60), v % 60
+    if h > 0 then return string.format("%d:%02d:%02d", h, m, s) end
+    return string.format("%02d:%02d", m, s)
 end
 
-local function seek_from_mouse(mouse, left, right)
-    if not mouse or right <= left or mouse.x < left or mouse.x > right then
-        return nil
-    end
-    local fraction = (mouse.x - left) / (right - left)
-    return math.max(0, math.min(duration, fraction * duration))
+local function target(m, x1, x2)
+    if not m or dur <= 0 or m.x < x1 or m.x > x2 then return nil end
+    return math.max(0, math.min(dur, (m.x - x1) / (x2 - x1) * dur))
 end
 
 local function render()
-    if duration <= 0 then
-        overlay.hidden = true
+    if dur <= 0 then overlay.hidden = true; overlay:update(); visible = false; return end
+    local l, t, r, b, w, h = rect()
+    if r <= l or b <= t then return end
+    overlay.res_x, overlay.res_y = w, h
+
+    local m = mouse()
+    if not dragging and not (m and m.x >= l and m.x <= r and m.y >= math.max(t, b - 90) and m.y <= b) then
+        if visible then overlay.hidden = true; overlay:update(); visible = false end
+        return
+    end
+
+    local x1, x2 = bounds()
+    x1, x2 = math.floor(x1), math.floor(x2)
+    local y = math.floor(math.max(t, math.min(b - 42, b - 62)))
+    local bh = math.max(4, math.min(10, math.floor(h * 0.014)))
+    local bw = x2 - x1
+    local fw = math.max(0, math.min(bw, math.floor(bw * pos / dur)))
+
+    -- Flat rectangular track and clipped fill: fixed height, same origin.
+    local base = string.format("{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H505050&\\p1}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}", x1, y, bw, bw, bh, bh)
+    local fill = ""
+    if fw > 0 then
+        fill = string.format("{\\an7\\pos(%d,%d)\\clip(%d,%d,%d,%d)\\bord0\\shad0\\1c&HFFFFFF&\\p1}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}", x1, y, x1, y, x1 + fw, y + bh, bw, bw, bh, bh)
+    end
+    local tc = string.format("{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s / %s", math.floor((l + r) / 2), math.floor(b - 8), timecode(pos), timecode(dur))
+    local data = base .. "\\N" .. fill .. "\\N" .. tc
+    if data ~= last or not visible then
+        overlay.data, overlay.hidden = data, false
         overlay:update()
-        visible = false
-        return
-    end
-
-    local left, top, right, bottom, width, height = video_rect()
-    if width <= 0 or height <= 0 or right <= left or bottom <= top then
-        return
-    end
-
-    -- Use the complete OSD coordinate space consistently for rendering and hit testing.
-    overlay.res_x = width
-    overlay.res_y = height
-
-    local mouse = mouse_position()
-    local hover_top = math.max(top, bottom - 90)
-    local hovered = mouse ~= nil
-        and mouse.x >= left and mouse.x <= right
-        and mouse.y >= hover_top and mouse.y <= bottom
-
-    if not hovered and not dragging then
-        if visible then
-            overlay.hidden = true
-            overlay:update()
-            visible = false
-        end
-        return
-    end
-
-    local seek_left, seek_right = track_bounds()
-    local track_width = math.max(1, math.floor(seek_right - seek_left))
-    local bar_height = 10
-    local bar_y = math.max(top, math.min(bottom - bar_height - 30, bottom - 62))
-    local fraction = math.max(0, math.min(1, position / duration))
-    local fill_width = math.max(0, math.min(track_width, math.floor(track_width * fraction)))
-
-    -- Exactly one ASS drawing event and one origin. The grey container and
-    -- white fill are two paths inside that same drawing, so they cannot drift.
-    local bar_x = math.floor(seek_left)
-    local bar_local_y = math.floor(bar_y)
-    local ass = string.format(
-        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\p1\\1c&H505050&}"
-            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0 "
-            .. "{\\1c&HFFFFFF&}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
-        bar_x, bar_local_y,
-        track_width, track_width, bar_height, bar_height,
-        fill_width, fill_width, bar_height, bar_height
-    )
-
-    local elapsed = fmt_time(position)
-    local total = fmt_time(duration)
-    ass = ass .. string.format(
-        "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
-        math.floor((left + right) / 2), math.floor(bottom - 8), elapsed, total
-    )
-
-    if ass ~= last_ass or not visible then
-        overlay.data = ass
-        overlay.hidden = false
-        overlay:update()
-        last_ass = ass
+        last = data
     end
     visible = true
 end
 
-mp.register_script_message("auto-translate-seekbar-update", function(pos, dur)
-    position = tonumber(pos) or position
-    duration = tonumber(dur) or 0
+mp.register_script_message("auto-translate-seekbar-update", function(p, d)
+    pos, dur = tonumber(p) or pos, tonumber(d) or 0
     render()
 end)
 
-mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(event)
-    if event.event == "down" then
-        local mouse = mouse_position()
-        local _, _, _, bottom = video_rect()
-        local seek_left, seek_right = track_bounds()
-        if mouse and mouse.y >= bottom - 90 and mouse.y <= bottom
-            and seek_from_mouse(mouse, seek_left, seek_right) then
-            dragging = true
-            render()
-        end
-    elseif event.event == "up" and dragging then
+mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(e)
+    local l, t, r, b = rect()
+    local x1, x2 = bounds()
+    if e.event == "down" then
+        local m = mouse()
+        if m and m.y >= b - 90 and m.y <= b and target(m, x1, x2) then dragging = true; render() end
+    elseif e.event == "up" and dragging then
         dragging = false
-        local mouse = mouse_position()
-        local seek_left, seek_right = track_bounds()
-        local target = seek_from_mouse(mouse, seek_left, seek_right)
-        if target then
-            mp.commandv("script-message", "auto-translate-jump", tostring(target - position))
-        end
+        local v = target(mouse(), x1, x2)
+        if v then mp.commandv("script-message", "auto-translate-jump", tostring(v - pos)) end
         render()
     end
 end, { complex = true })

@@ -714,7 +714,17 @@ class MpvOutput:
                                 self._last_direct_pos,
                                 float(pos),
                             )
-                            self._restart_audio_at(float(pos), seek_video=False)
+                            source_target = float(pos)
+                            if self._mpv_anchor is not None:
+                                source_target = (
+                                    self._clock_source_anchor
+                                    + float(pos)
+                                    - self._mpv_anchor
+                                )
+                            self._restart_audio_at(
+                                source_target,
+                                seek_video=False,
+                            )
                             return
                     self._last_direct_pos = float(pos)
                     self._last_direct_sample_at = sampled_at
@@ -898,7 +908,14 @@ class MpvOutput:
 
         self.ipc.command("set_property", "pause", True)
         if seek_video:
-            self.ipc.command("seek", target, "absolute+exact")
+            mpv_target = target
+            if self._mpv_anchor is not None:
+                mpv_target = (
+                    self._mpv_anchor
+                    + target
+                    - self._clock_source_anchor
+                )
+            self.ipc.command("seek", mpv_target, "absolute+exact")
 
         self._now = None
         self._shown = ""

@@ -48,7 +48,7 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 
 CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
 don't need the CUDA Toolkit. Haas runs separately through speech.cpp's Windows Vulkan build; faster-whisper,
-VAD, diarization and local CTranslate2 translation use CUDA. FFmpeg decoding, resampling and pipeline
+VAD and local CTranslate2 translation use CUDA. Optional separation and diarization features also use CUDA. FFmpeg decoding, resampling and pipeline
 coordination remain CPU tasks.
 
 ## Installation
@@ -58,7 +58,11 @@ coordination remain CPU tasks.
 $env:UV_CACHE_DIR = "X:\uv-cache"
 $env:HF_HOME      = "X:\hf-home"
 
-uv sync                                       # creates .venv and installs dependencies
+uv sync                                       # installs the core runtime only
+# Optional feature dependencies (install only what you use):
+uv sync --extra separation                    # UVR vocal separation
+uv sync --extra deepfilter                    # DeepFilterNet enhancement
+uv sync --extra diarization                   # pyannote speaker diarization
 
 # LLM translator for the default preset
 ollama pull qwen3:4b-instruct-2507-q4_K_M
@@ -464,10 +468,6 @@ The mpv output can stack up to `[mpv].max_subtitle_rows` rendered text rows inst
 
 Install the optional speaker-identification packages from the project root:
 
-```powershell
-pip install -e ".[diarization]"
-```
-
-Install the optional speaker-identification dependencies with `pip install -e ".[diarization]"` before enabling this feature. The first run downloads the public SpeechBrain ECAPA speaker-embedding model. No Hugging Face token is required. The default device is CUDA (`speaker_device = "cuda"`); use `"cpu"` if the torch CUDA runtime is unavailable. Tune `speaker_similarity_threshold` (default `0.72`): lower values merge more utterances into existing speakers; higher values create new speaker IDs more readily.
+ Install the optional pyannote dependencies with `uv sync --extra diarization` (or `pip install -e ".[diarization]"`) before enabling this feature. Set `HF_TOKEN` to a Hugging Face token that can access `pyannote/speaker-diarization-community-1`. The default device is CUDA (`speaker_device = "cuda"`).
 
 **Limitation:** this lightweight mode identifies the speaker for each VAD utterance and keeps IDs consistent across turns. It does not separate overlapping voices or split a single utterance containing two simultaneous speakers into separate tracks.

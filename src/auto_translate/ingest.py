@@ -929,23 +929,34 @@ class Ingest:
         if Path(src.location).exists():
             return [ffmpeg + ["-i", src.location] + out]
 
-        ytdlp = [
-            "yt-dlp",            "-f",
-            self.cfg.ytdlp_format,
-            "--quiet",
+        resolve_cmd = [
+            "yt-dlp",
             "--no-warnings",
-            "-o",
-            "-",
+            "--remote-components",
+            "ejs:github",
+            "-f",
+            self.cfg.ytdlp_format,
+            "-g",
         ]
-
-        if not src.live:
-            ytdlp += ["--http-chunk-size", "10M"]
-
-        ytdlp += _cookie_args(self.cfg) + [src.location]
+        resolve_cmd += _cookie_args(self.cfg) + [src.location]
+        audio_urls = subprocess.run(
+            resolve_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        if not audio_urls:
+            raise RuntimeError("yt-dlp did not return an audio stream URL")
 
         return [
-            ytdlp,
-            ffmpeg + ["-i", "pipe:0"] + out,
+            ffmpeg + [
+                "-http_persistent", "0",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "10",
+                "-i", audio_url,
+            ] + out
+            for audio_url in audio_urls[:1]
         ]
 
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:

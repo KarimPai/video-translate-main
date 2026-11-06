@@ -281,7 +281,6 @@ class MpvOutput:
         self._anchor_reason = "initial"
         self._logged_subtitle_generations: set[int] = set()
         self._logged_displayed_subtitles: set[tuple[int, float, float]] = set()
-        self._overlay_diagnostic_done = False
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
@@ -369,38 +368,6 @@ class MpvOutput:
             daemon=True,
         )
         self._thread.start()
-
-    def _diagnose_overlay(self) -> None:
-        """Run a short, visible ASS overlay self-test and log MPV OSD state."""
-        try:
-            osd_level = self.ipc.get("osd-level")
-            video_osd = self.ipc.get("video-osd")
-            log.info(
-                "MPV OSD diagnostics: osd-level=%s video-osd=%s",
-                osd_level,
-                video_osd,
-            )
-
-            result = self.ipc.command(
-                "osd-overlay",
-                id=OVERLAY_ID,
-                format="ass-events",
-                data=r"{\an2\fs36\bord3\shad1\1c&HFFFFFF&}SUBTITLE OVERLAY TEST",
-                res_x=0,
-                res_y=720,
-                z=10,
-                hidden=False,
-                compute_bounds=True,
-            )
-            log.info("MPV ASS overlay test command result: %s", result)
-            time.sleep(2.5)
-            self.ipc.command(
-                "osd-overlay",
-                id=OVERLAY_ID,
-                format="none",
-            )
-        except (ConnectionError, OSError, MpvError):
-            log.exception("MPV ASS overlay self-test failed")
 
     # ---- Output interface ----
 
@@ -673,11 +640,6 @@ class MpvOutput:
                     )
 
             if paused and should_unpause:
-                # Run after the video stream has loaded, but before playback
-                # starts, so the test is visible without consuming subtitle time.
-                if not self._overlay_diagnostic_done:
-                    self._diagnose_overlay()
-                    self._overlay_diagnostic_done = True
 
                 if unpause_at is not None and show_hint:
                     if self.ingest.first_pts > 0.05:

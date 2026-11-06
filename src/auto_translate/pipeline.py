@@ -2,6 +2,8 @@
 """Wire the stages together with threads and queues."""
 
 import logging
+import re
+from difflib import SequenceMatcher
 import queue
 import threading
 import time
@@ -10,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
+from .captions import CaptionIndex
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
@@ -61,8 +64,9 @@ def run_asr(
     out_q: "queue.Queue[Transcript | AudioProgress | None]",
     diarizer=None,
     get_generation: Callable[[], int] | None = None,
+    captions: CaptionIndex | None = None,
 ) -> None:
-    """Transcribe utterances, attach speaker IDs and forward progress."""
+    """Transcribe utterances, optionally using aligned captions as a fallback."""
     while True:
         item = in_q.get()
 
@@ -84,6 +88,32 @@ def run_asr(
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         utt.timings.asr_end = time.monotonic()
+
+        caption_match = (
+            captions.match(utt.start_s, utt.end_s)
+            if captions is not None
+            else None
+        )
+        if text and caption_match is not None:
+            haas_compact = re.sub(r"[^\\w]", "", text).casefold()
+            caption_compact = re.sub(r"[^\\w]", "", caption_match.text).casefold()
+            similarity = SequenceMatcher(
+                None, haas_compact, caption_compact
+            ).ratio() if haas_compact and caption_compact else 0.0
+            if similarity < 0.55:
+                log.debug(
+                    "Haas/caption disagreement at %.2f-%.2fs "
+                    "(similarity=%.2f): Haas=%r captions=%r",
+                    utt.start_s, utt.end_s, similarity, text, caption_match.text,
+                )
+
+        if not text and caption_match is not None and caption_match.reliable:
+            text = caption_match.text
+            log.info(
+                "using aligned YouTube caption because Haas returned no text "
+                "(%.2f-%.2fs, coverage=%.0f%%): %s",
+                utt.start_s, utt.end_s, caption_match.coverage * 100, text,
+            )
 
         if not text:
             continue
@@ -240,6 +270,7 @@ def run(
     outputs: list[Output],
     stop: threading.Event,
     diarizer=None,
+    captions: CaptionIndex | None = None,
 ) -> None:
     """Run ingestion, VAD, diarization, ASR and translation."""
 
@@ -313,6 +344,7 @@ def run(
                 text_q,
                 diarizer,
                 lambda: ingest.generation,
+                captions,
             ),
             name="asr",
             daemon=True,

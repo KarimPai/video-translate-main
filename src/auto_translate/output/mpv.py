@@ -300,8 +300,12 @@ class MpvOutput:
             "--demuxer-readahead-secs=12",
             "--demuxer-max-bytes=128MiB",
             "--demuxer-max-back-bytes=32MiB",
-            # Match FFmpeg's live HLS reader: begin at the oldest retained segment.
-            "--demuxer-lavf-o=live_start_index=0",
+            # Start live HLS at its oldest available segment; VOD keeps
+            # MPV's normal full-playlist timeline.
+            *(
+                ["--demuxer-lavf-o=live_start_index=0"]
+                if ingest.source.live else []
+            ),
             "--aid=no",
             "--input-default-bindings=no",
 

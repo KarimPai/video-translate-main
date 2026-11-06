@@ -13,6 +13,7 @@ MPV video/audio stream-copy output is kept separate from audio processing.
 import logging
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -1213,6 +1214,31 @@ class Ingest:
                     log.warning("could not fully stop FFmpeg process %s", proc.pid)
 
         if self._cache_temp is not None:
+            # Preserve FFmpeg -report output before TemporaryDirectory removes
+            # the fMP4 session cache. The report is needed to diagnose muxer
+            # failures that are otherwise reduced to "Operation not permitted".
+            if self._cache_root is not None:
+                reports = list(self._cache_root.rglob("ffmpeg-*.log"))
+                if reports:
+                    report_dir = (
+                        Path(__file__).resolve().parents[2]
+                        / "logs"
+                        / "ffmpeg"
+                    )
+                    report_dir.mkdir(parents=True, exist_ok=True)
+                    for report in reports:
+                        destination = report_dir / (
+                            f"{report.parent.name}-{report.name}"
+                        )
+                        try:
+                            shutil.copy2(report, destination)
+                            log.info("saved FFmpeg diagnostic report: %s", destination)
+                        except OSError as exc:
+                            log.warning(
+                                "could not preserve FFmpeg report %s: %s",
+                                report,
+                                exc,
+                            )
             self._cache_temp.cleanup()
             self._cache_temp = None
 

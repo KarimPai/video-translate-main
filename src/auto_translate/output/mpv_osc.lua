@@ -1,3 +1,7 @@
+-- Based on mpv-player/mpv player/lua/osc.lua (GPL-2.0-or-later).
+-- Upstream native OSC layout and controls are retained. The local changes
+-- supply the full VOD duration and route seekbar clicks through the
+-- auto-translate ingest restart handler.
 local assdraw = require 'mp.assdraw'
 local msg = require 'mp.msg'
 local opt = require 'mp.options'

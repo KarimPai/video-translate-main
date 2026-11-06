@@ -882,8 +882,10 @@ class Ingest:
         ffmpeg = [
             "ffmpeg",
             "-nostdin",
+            "-hide_banner",
+            "-nostats",
             "-loglevel",
-            "error",
+            "info",
         ]
 
         if not src.live:
@@ -915,9 +917,14 @@ class Ingest:
                 "-f", "s16le", "pipe:1",
             ]
 
+        output_layout = "stereo" if self.separation_enabled else "mono"
         filters = self._pitch_filter(output_rate)
-        if filters:
-            out = ["-af", ",".join(filters)] + out
+        filters += [
+            f"aresample={output_rate}",
+            f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
+            "ashowinfo",
+        ]
+        out = ["-af", ",".join(filters)] + out
 
         if Path(src.location).exists():
             return [ffmpeg + ["-i", src.location] + out]

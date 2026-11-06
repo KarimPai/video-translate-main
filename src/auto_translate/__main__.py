@@ -91,11 +91,9 @@ def main() -> None:
 
     use_mpv = args.mpv or cfg.mpv.enabled
 
-    video_out = (
-        f"tcp://127.0.0.1:{cfg.mpv.port}"
-        if use_mpv
-        else None
-    )
+    # Any truthy value enables Ingest's temporary progressive fMP4 HLS cache.
+    # MPV and the ASR audio reader consume the same local playlist.
+    video_out = "fmp4" if use_mpv else None
 
     burst_s = (
         cfg.mpv.delay_s

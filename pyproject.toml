@@ -8,23 +8,27 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "audio-separator>=0.48.0",
     "audioread>=3.1.0",
-    "deepfilternet-rs>=0.1.1",
     "faster-whisper>=1.2.1",
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12>=9.27.0.42",
     "onnxruntime-gpu[cuda,cudnn]>=1.31.1",
-    "pyannote-audio>=4.0.7",
     "sentencepiece>=0.2.2",
-    "torch==2.15.0",
-    "torchvision==0.29.2",
 ]
 
 [project.optional-dependencies]
+# Install only the heavy runtime packages for features you actually enable.
+separation = [
+    "audio-separator>=0.48.0",
+    "torch==2.15.0",
+]
+deepfilter = [
+    "deepfilternet-rs>=0.1.1",
+]
 diarization = [
-    "speechbrain>=1.0.3",
-    "torchaudio==2.11.1",
+    "pyannote-audio>=4.0.7",
+    "torch==2.15.0",
+    "torchvision==0.29.2",
 ]
 
 [project.scripts]

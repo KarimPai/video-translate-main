@@ -30,7 +30,7 @@ class PlamoTranslator:
         self._start_server()
         try:
             # Warm up before ingest starts so first subtitles do not pay load cost.
-            self._chat("こんにちは", [], timeout=cfg.load_timeout_s)
+            self._warmup()
         except Exception:
             self.close()
             raise
@@ -106,6 +106,25 @@ class PlamoTranslator:
             f"{self.cfg.load_timeout_s:.0f}s. See logs\\plamo-server.log."
         )
 
+    def _warmup(self) -> None:
+        """Retry transient 503 responses while llama.cpp finishes model setup."""
+        deadline = time.monotonic() + self.cfg.load_timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"PLaMo did not accept a warm-up request within "
+                    f"{self.cfg.load_timeout_s:.0f}s. See logs\\plamo-server.log."
+                )
+            try:
+                self._chat("こんにちは", [], timeout=min(10.0, remaining))
+                return
+            except urllib.error.HTTPError as exc:
+                if exc.code != 503:
+                    raise
+                log.info("PLaMo model is still loading; retrying warm-up...")
+            time.sleep(min(1.0, max(0.0, remaining)))
+
     def close(self) -> None:
         """Stop only the llama-server process started by this translator."""
         process = self.process
@@ -173,7 +192,8 @@ def _server_responds(base_url: str) -> bool:
         with urllib.request.urlopen(base_url + "/models", timeout=1.0):
             return True
     except urllib.error.HTTPError:
-        return True
+        # llama.cpp can return 503 while the model is still loading.
+        return False
     except (OSError, urllib.error.URLError):
         return False
 

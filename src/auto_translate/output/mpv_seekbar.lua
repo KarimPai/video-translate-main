@@ -84,7 +84,6 @@ local function render()
     local fill_w = math.floor((right - left) * fraction)
     local ass = rect(left, bar_y, right - left, bar_h, "FFFFFF", 105)
     ass = ass .. rect(left, bar_y, fill_w, bar_h, "FFFFFF", 0)
-    ass = ass .. rect(left + fill_w - 3, bar_y - 4, 6, bar_h + 8, "FFFFFF", 0)
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)

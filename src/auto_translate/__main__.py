@@ -22,7 +22,7 @@ def main() -> None:
                         help="vod: start here (962, 16:02, 1:02:03, 16m2s); default: the URL's t= value")
     parser.add_argument("--fast", action="store_true",
                         help="vod: process as fast as possible instead of at 1x speed")
-    parser.add_argument("--preset", help="translation preset from config.toml (e.g. light, balanced); 'none' = transcribe only")
+    parser.add_argument("--preset", choices=["hymt2", "none"], help="HY-MT2 (default) or none (transcribe only)")
     parser.add_argument("--no-web", action="store_true", help="don't start the browser viewer")
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")

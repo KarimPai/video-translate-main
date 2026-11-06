@@ -367,8 +367,12 @@ class Ingest:
                 return
 
             session = self._session
+            # FFmpeg resolves the fMP4 init filename relative to its
+            # working directory. Keep that file inside this session's cache
+            # directory instead of the repository/launcher working directory.
             proc = subprocess.Popen(
                 self._video_command(start_s=start_s),
+                cwd=str(Path(self.video_playlist).parent),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )

@@ -96,8 +96,7 @@ uv run auto-translate recording.mp4 --fast --preset none
 Stop with **Ctrl+C** (or by closing the mpv window). The first run takes longer: models are downloaded,
 and Ollama loads the LLM into VRAM (~1–2 min on the first start; that's the "warm-up").
 
-Then open the browser viewer: **http://127.0.0.1:8765/** on this PC, or `http://<this-PC's-LAN-IP>:8765/`
-on a phone (the address is printed at startup).
+Then open the browser viewer at **http://127.0.0.1:8765/** on this PC. LAN access is disabled by default; see [Browser viewer](#browser-viewer) to opt in for phone/tablet access.
 
 ## Command-line options
 
@@ -428,8 +427,8 @@ Every `stats_interval_s` the app logs something like:
 12:00:30 INFO  auto_translate.pipeline: [30s] queues {...} | 12 lines · asr avg 0.33s max 0.52s · mt avg 0.49s max 0.81s · latency avg 1.31s max 2.10s · max queue ...
 ```
 
-- **queues** should stay at 0–1. A growing queue (and a `falling behind` warning) means the GPU can't keep
-  up: use a lighter preset, `beam_size = 1`, or close other GPU apps.
+- **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; use a lighter preset, `beam_size = 1`, or close other GPU apps if it persists.
+- **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
 - **latency**: end of speech → subtitle ready. ~1–1.5 s with `balanced`.
 - A summary is printed when the app stops.
 

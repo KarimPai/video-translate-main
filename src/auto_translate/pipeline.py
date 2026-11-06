@@ -95,8 +95,8 @@ def run_asr(
             else None
         )
         if text and caption_match is not None:
-            haas_compact = re.sub(r"[^\\w]", "", text).casefold()
-            caption_compact = re.sub(r"[^\\w]", "", caption_match.text).casefold()
+            haas_compact = re.sub(r"[\\W_]+", "", text).casefold()
+            caption_compact = re.sub(r"[\\W_]+", "", caption_match.text).casefold()
             similarity = SequenceMatcher(
                 None, haas_compact, caption_compact
             ).ratio() if haas_compact and caption_compact else 0.0

@@ -556,12 +556,9 @@ class MpvOutput:
 
         lead = self.PAUSE_LEAD_SECONDS
 
-        while not self.ingest.first_pts_ready.wait(0.2):
-            if self.stop.is_set():
-                return
-
-        assert self.ingest.first_pts is not None
-
+        # Load the video immediately; audio timestamp readiness must not
+        # prevent MPV from opening the source. The audio pipeline can fail or
+        # be delayed independently of video playback.
         self._session_start = self.ingest.source.start_s
 
         if not self._direct_video_loaded:
@@ -624,6 +621,12 @@ class MpvOutput:
                     if pos is not None and abs(float(pos) - self._session_start) <= 1.0:
                         break
                     time.sleep(0.05)
+
+        while not self.ingest.first_pts_ready.wait(0.2):
+            if self.stop.is_set():
+                return
+
+        assert self.ingest.first_pts is not None
 
         # MPV plays the original VOD timeline; FFmpeg independently extracts
         # audio for ASR. Anchor each audio generation to MPV's current position.

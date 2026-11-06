@@ -1,11 +1,10 @@
 """Silero VAD segmenter: AudioChunk stream → Utterance on each pause (or at max length).
 
-Reuses the Silero ONNX model bundled with faster-whisper (no PyTorch needed), but keeps
-the model's recurrent state across calls so it works on a live stream.
+Loads the Silero ONNX model from the repository's assets directory (no PyTorch needed)
+and keeps the model's recurrent state across calls so it works on a live stream.
 
-Silero misses voices mixed with loud music (narrated videos, singing). So audio it calls
-non-speech isn't thrown away: every `fallback_s` it goes to Whisper as a "probe" utterance,
-and Whisper (with stricter filters, see asr) decides whether anyone is talking.
+Silero misses voices mixed with loud music (narrated videos, singing). Audio it calls
+non-speech isn't thrown away: every `fallback_s` it sends a "probe" utterance to Haas.
 """
 
 import logging
@@ -48,7 +47,7 @@ class StreamingSileroVAD:
         options.enable_cpu_mem_arena = False
         options.log_severity_level = 4
 
-        model_path = os.path.join(get_assets_path(), "silero_vad_v6.onnx")
+        model_path = Path(__file__).resolve().parents[2] / "assets" / "silero_vad_v6.onnx"
         available = ort.get_available_providers()
         self.device = "cpu"
 
@@ -215,7 +214,7 @@ class Segmenter:
         cfg = self.cfg
         if not self._in_speech:
             if prob >= cfg.threshold:
-                # Idle audio before the preroll goes to Whisper; the preroll joins the utterance.
+                # Idle audio before the preroll goes to Haas; the preroll joins the utterance.
                 self._emit_probe(len(self._idle) - len(self._preroll))
                 self._in_speech = True
                 self._frames = [*self._preroll, frame]
@@ -285,7 +284,7 @@ class Segmenter:
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
-        """Send the first `n` idle frames to Whisper as a probe (if long and loud enough)."""
+        """Send the first `n` idle frames to Haas as a probe (if long and loud enough)."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME
@@ -316,7 +315,7 @@ def run_segmenter(
     try:
         seg = Segmenter(cfg)
     except Exception:
-        log.exception("Could not initialize the CUDA Silero VAD segmenter")
+        log.exception("Could not initialize the Silero VAD segmenter")
         out_q.put(None)
         return
 

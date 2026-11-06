@@ -281,6 +281,7 @@ class MpvOutput:
         self._anchor_reason = "initial"
         self._logged_subtitle_generations: set[int] = set()
         self._logged_displayed_subtitles: set[tuple[int, float, float]] = set()
+        self._overlay_diagnostic_done = False
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -358,11 +359,6 @@ class MpvOutput:
             cfg.delay_s,
             self.PAUSE_LEAD_SECONDS,
         )
-
-        # Verify that MPV can render our custom ASS overlay before the
-        # translation scheduler starts. This separates OSD/rendering failures
-        # from subtitle timing or translation failures.
-        self._diagnose_overlay()
 
         self._thread = threading.Thread(
             target=self._run,
@@ -671,6 +667,12 @@ class MpvOutput:
                     )
 
             if paused and should_unpause:
+                # Run after the video stream has loaded, but before playback
+                # starts, so the test is visible without consuming subtitle time.
+                if not self._overlay_diagnostic_done:
+                    self._diagnose_overlay()
+                    self._overlay_diagnostic_done = True
+
                 if unpause_at is not None and show_hint:
                     if self.ingest.first_pts > 0.05:
                         self.ipc.command(

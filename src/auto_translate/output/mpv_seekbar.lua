@@ -51,14 +51,11 @@ local function video_rect()
 end
 
 local function track_bounds()
-    -- Match the clickable range to the rendered text track, rather than the
-    -- full video width. ASS box glyphs are approximately 0.55 em wide.
-    local font_size = 35
-    local bar_chars = 32
-    local track_width = bar_chars * font_size * 0.55
+    -- A single wide bar keeps the visual and clickable seek range identical.
     local video_left, _, video_right = video_rect()
+    local track_width = (video_right - video_left) * 0.70
     local center = (video_left + video_right) / 2
-    return center - track_width / 2, center + track_width / 2, bar_chars
+    return center - track_width / 2, center + track_width / 2
 end
 
 local function seek_from_mouse(mouse, left, right)
@@ -88,7 +85,7 @@ local function render()
     -- Restrict the seekbar and its hover zone to the actual displayed video.
     local hovered = mouse ~= nil
         and mouse.x >= left and mouse.x <= right
-        and mouse.y >= math.max(top, bottom - 105)
+        and mouse.y >= math.max(top, bottom - 90)
         and mouse.y <= bottom
     if not hovered and not dragging then
         if visible then
@@ -99,18 +96,28 @@ local function render()
         return
     end
 
-    local center_x = (left + right) / 2
-    local _, _, bar_chars = track_bounds()
-    local bar_y = bottom - 52
+    local seek_left, seek_right = track_bounds()
+    local bar_y = bottom - 62
+    local bar_height = 10
+    local track_width = seek_right - seek_left
     local fraction = math.max(0, math.min(1, position / duration))
-    local filled = math.floor(bar_chars * fraction + 0.5)
-    local empty = bar_chars - filled
-    local bar = "{\\1c&HFFFFFF&}" .. string.rep("━", filled)
-        .. "{\\1c&H808080&}" .. string.rep("─", empty)
+    local progress_width = track_width * fraction
+
+    -- Draw one thick track: grey remainder with a white elapsed section.
     local ass = string.format(
-        "{\\an2\\pos(%d,%d)\\bord3\\3c&HFFFFFF&\\shad0\\fs35\\1c&HFFFFFF&}%s",
-        math.floor(center_x), bar_y, bar
+        "{\\\\an7\\\\pos(%d,%d)\\\\bord0\\\\shad0\\\\1c&H707070&\\\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\\\p0}",
+        math.floor(seek_left), math.floor(bar_y),
+        math.floor(track_width), math.floor(track_width),
+        bar_height, bar_height
     )
+    if progress_width > 0 then
+        ass = ass .. string.format(
+            "{\\\\an7\\\\pos(%d,%d)\\\\bord0\\\\shad0\\\\1c&HFFFFFF&\\\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\\\p0}",
+            math.floor(seek_left), math.floor(bar_y),
+            math.floor(progress_width), math.floor(progress_width),
+            bar_height, bar_height
+        )
+    end
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)
@@ -140,7 +147,7 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
         local left, top, right, bottom = video_rect()
         local seek_left, seek_right = track_bounds()
         if mouse and mouse.x >= seek_left and mouse.x <= seek_right
-            and mouse.y >= bottom - 105 and mouse.y <= bottom
+            and mouse.y >= bottom - 90 and mouse.y <= bottom
             and seek_from_mouse(mouse, seek_left, seek_right) then
             dragging = true
             render()

@@ -270,6 +270,7 @@ class MpvOutput:
         self._job = None
         self._closed = False
         self._video_retries = 0
+        self._pending_seek_offset: float | None = None
         self._clock_sample_logged = False
         self._clock_last_sample_at = 0.0
         self._clock_last_sample_pos: float | None = None
@@ -562,6 +563,28 @@ class MpvOutput:
             self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
             mapping = "vod: measured MPV session anchor against source timeline"
 
+        if self._pending_seek_offset is not None:
+            seek_offset = self._pending_seek_offset
+            self.ipc.command("seek", seek_offset, "absolute+exact")
+            deadline = time.monotonic() + 5.0
+            measured_pos = None
+            while time.monotonic() < deadline:
+                pos = self.ipc.get("time-pos")
+                if pos is not None:
+                    measured_pos = float(pos)
+                    if abs(measured_pos - seek_offset) <= 0.75:
+                        break
+                time.sleep(0.05)
+            self._mpv_anchor = (
+                measured_pos if measured_pos is not None else seek_offset
+            )
+            log.info(
+                "reused cached fMP4 fragments: playlist_offset=%.3fs mpv_anchor=%.3fs",
+                seek_offset,
+                self._mpv_anchor,
+            )
+            self._pending_seek_offset = None
+
         self._clock_sample_logged = False
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
@@ -799,6 +822,7 @@ class MpvOutput:
         with self._lock:
             self._lines.clear()
 
+        self._pending_seek_offset = None
         self.ingest.request_restart(restart_at)
         self.ingest.go()
         self._clock_source_anchor = restart_at
@@ -868,7 +892,29 @@ class MpvOutput:
             self._lines.clear()
 
         self._video_retries = 0
-        self.ingest.request_restart(target)
+        cache_start = self.ingest.cache_source_start_s
+        cache_end = self.ingest.cache_end_s
+        can_reuse_cache = (
+            cache_start <= target <= cache_end - 1.0
+        )
+        preserved = self.ingest.request_restart(
+            target,
+            preserve_video_cache=can_reuse_cache,
+        )
+        self._pending_seek_offset = (
+            target - cache_start if preserved else None
+        )
+        if preserved:
+            log.info(
+                "seek will reuse local fMP4 fragments: %.2fs-%.2fs",
+                cache_start,
+                cache_end,
+            )
+        else:
+            log.info(
+                "seek requires a new progressive fMP4 fetch at %.2fs",
+                target,
+            )
 
         self.ipc.command(
             "show-text",

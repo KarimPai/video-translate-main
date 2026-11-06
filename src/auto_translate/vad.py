@@ -72,14 +72,19 @@ class StreamingFireRedVAD:
     def __call__(self, audio: np.ndarray) -> np.ndarray:
         """Accept float32 mono audio and return one raw speech probability per 10 ms."""
         pcm = np.clip(audio * 32768.0, -32768, 32767).astype(np.int16, copy=False)
-        frames = pcm.reshape(-1, FRAME)
-        probs: list[float] = []
-        for frame in frames:
-            window = np.concatenate((self._history, frame))
-            result = self._stream.detect_frame(window)
-            probs.append(float(result.raw_prob))
-            self._history = window[-(self.WINDOW_SAMPLES - FRAME):].copy()
-        return np.asarray(probs, dtype=np.float32)
+        # FireRed's detect_chunk batches all 10 ms frames into one model forward
+        # pass. Keep the preceding 15 ms so each 25 ms fbank window is continuous
+        # across AudioChunk boundaries.
+        window = np.concatenate((self._history, pcm))
+        results = self._stream.detect_chunk(window)
+        self._history = window[-(self.WINDOW_SAMPLES - FRAME):].copy()
+        probs = np.asarray([result.raw_prob for result in results], dtype=np.float32)
+        expected = len(pcm) // FRAME
+        if len(probs) != expected:
+            raise RuntimeError(
+                f"FireRed returned {len(probs)} frames for {expected} audio frames"
+            )
+        return probs
 
 
 def _ms_to_frames(ms: float) -> int:

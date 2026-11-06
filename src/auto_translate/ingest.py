@@ -527,7 +527,10 @@ class Ingest:
         ]
 
         offset = max(0.0, self.source.start_s - self._cache_source_start_s)
-        if offset > 0.001:
+        if self.source.live:
+            # Match MPV's HLS demuxer: begin at the oldest retained segment.
+            ffmpeg += ["-live_start_index", "0"]
+        elif offset > 0.001:
             ffmpeg += ["-ss", f"{offset:.3f}"]
         ffmpeg += ["-i", self.video_playlist]
 

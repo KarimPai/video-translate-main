@@ -879,6 +879,10 @@ class Ingest:
             # consume this same local media timeline.
             self.start_video(start_s=self.source.start_s)
             if not self.wait_video_ready():
+                # A concurrent seek deliberately terminates this generation's
+                # cache writer. Let the ingest loop advance to the new session.
+                if generation != self.generation or self._stopped:
+                    return
                 raise RuntimeError("could not initialize progressive fMP4 cache")
             cmds = [self._video_audio_command()]
         else:

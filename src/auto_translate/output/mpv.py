@@ -274,7 +274,6 @@ class MpvOutput:
         self._clock_sample_logged = False
         self._clock_last_sample_at = 0.0
         self._clock_last_sample_pos: float | None = None
-        self._clock_offset = 0.0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
@@ -302,6 +301,8 @@ class MpvOutput:
             "--demuxer-readahead-secs=12",
             "--demuxer-max-bytes=128MiB",
             "--demuxer-max-back-bytes=32MiB",
+            # Match FFmpeg's live HLS reader: begin at the oldest retained segment.
+            "--demuxer-lavf-o=live_start_index=0",
             "--input-default-bindings=no",
 
             # Disable unsafe on-screen controls.
@@ -555,19 +556,13 @@ class MpvOutput:
 
         self._session_start = self.ingest.source.start_s
 
-        if self.ingest.source.live:
-            self._clock_offset = (
-                self.ingest.first_pts - self._session_start
-            )
-            self._mpv_anchor = None
-            mapping = "live: mpv_time_pos - (ffmpeg_first_pts - source_start)"
-        else:
-            # Anchor MPV's actual session clock to the requested source
-            # position. This avoids assuming time-pos starts at exactly zero.
-            self._mpv_anchor = None
-            self._clock_source_anchor = self._session_start
-            self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-            mapping = "vod: measured MPV session anchor against source timeline"
+        # Audio extraction and MPV read the same fMP4 playlist, so both
+        # use its media timeline. Measure MPV's local time-pos origin rather
+        # than estimating it from the upstream YouTube audio PTS.
+        self._mpv_anchor = None
+        self._clock_source_anchor = self._session_start
+        self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
+        mapping = "measured MPV session anchor against shared fMP4 source timeline"
 
         if self._pending_seek_offset is not None:
             seek_offset = self._pending_seek_offset
@@ -595,22 +590,12 @@ class MpvOutput:
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
-        if self.ingest.source.live:
-            log.info(
-                "MPV clock mapping: source_start=%.3f ffmpeg_first_pts=%.3f "
-                "offset=%.3f; %s",
-                self._session_start,
-                self.ingest.first_pts,
-                self._clock_offset,
-                mapping,
-            )
-        else:
-            log.info(
-                "MPV clock mapping: VOD source_start=%.3f; waiting for "
-                "measured MPV session anchor; %s",
-                self._session_start,
-                mapping,
-            )
+        log.info(
+            "MPV clock mapping: source_start=%.3f; waiting for measured "
+            "MPV session anchor; %s",
+            self._clock_source_anchor,
+            mapping,
+        )
 
         if self.ingest.source.live:
             unpause_at = (
@@ -690,14 +675,6 @@ class MpvOutput:
 
             if paused and should_unpause:
 
-                if unpause_at is not None and show_hint:
-                    if self.ingest.first_pts > 0.05:
-                        self.ipc.command(
-                            "seek",
-                            self.ingest.first_pts,
-                            "absolute+exact",
-                        )
-
                 self.ipc.command(
                     "set_property",
                     "pause",
@@ -728,34 +705,31 @@ class MpvOutput:
                 )
 
             if (pos := self.ipc.get("time-pos")) is not None:
-                if self.ingest.source.live:
-                    self._now = pos - self._clock_offset
-                else:
-                    if self._mpv_anchor is None:
-                        self._mpv_anchor = float(pos)
-                        record_session_anchor(
-                            self.ingest.source.timeline,
-                            self._clock_source_anchor,
-                            self._mpv_anchor,
-                            self._anchor_reason,
-                        )
-                        log.info(
-                            "VOD timeline anchor: source=%.3f mpv=%.3f "
-                            "reason=%s duration=%s",
-                            self._clock_source_anchor,
-                            self._mpv_anchor,
-                            self._anchor_reason,
-                            fmt_hms(self.ingest.source.duration)
-                            if self.ingest.source.duration is not None else "?",
-                        )
-
-                    self._now = (
-                        self._clock_source_anchor
-                        + float(pos)
-                        - self._mpv_anchor
+                if self._mpv_anchor is None:
+                    self._mpv_anchor = float(pos)
+                    record_session_anchor(
+                        self.ingest.source.timeline,
+                        self._clock_source_anchor,
+                        self._mpv_anchor,
+                        self._anchor_reason,
                     )
-                    if self.ingest.source.duration is not None:
-                        self._now = min(self._now, self.ingest.source.duration)
+                    log.info(
+                        "MPV timeline anchor: source=%.3f mpv=%.3f "
+                        "reason=%s duration=%s",
+                        self._clock_source_anchor,
+                        self._mpv_anchor,
+                        self._anchor_reason,
+                        fmt_hms(self.ingest.source.duration)
+                        if self.ingest.source.duration is not None else "?",
+                    )
+
+                self._now = (
+                    self._clock_source_anchor
+                    + float(pos)
+                    - self._mpv_anchor
+                )
+                if self.ingest.source.duration is not None:
+                    self._now = min(self._now, self.ingest.source.duration)
 
                 sample_now = time.monotonic()
                 if (

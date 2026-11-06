@@ -8,15 +8,14 @@ non-speech isn't thrown away: every `fallback_s` it sends a "probe" utterance to
 """
 
 import logging
-import os
 import queue
 import time
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 
 from . import cuda_dlls
-from faster_whisper.utils import get_assets_path
 
 from .config import VadConfig
 from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
@@ -47,7 +46,7 @@ class StreamingSileroVAD:
         options.enable_cpu_mem_arena = False
         options.log_severity_level = 4
 
-        model_path = Path(__file__).resolve().parents[2] / "assets" / "silero_vad_v6.onnx"
+        model_path = str(Path(__file__).resolve().parents[2] / "assets" / "silero_vad_v6.onnx")
         available = ort.get_available_providers()
         self.device = "cpu"
 

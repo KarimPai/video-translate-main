@@ -163,7 +163,21 @@ def resolve_source(
 
     if not is_file and timeline is None:
         timeline = load_vod_metadata(location, cfg)
-        duration = float(timeline["duration_s"])
+        status = str(timeline.get("live_status") or "not_live")
+
+        if status == "is_upcoming":
+            raise SystemExit("this stream hasn't started yet")
+
+        # The launcher may request VOD mode, but YouTube live URLs have no
+        # duration. Detect the actual source type before attempting VOD math.
+        if status == "is_live":
+            log.info("yt-dlp: detected live stream; using live ingest")
+            return Source(location, live=True)
+
+        raw_duration = timeline.get("duration_s")
+        duration = (
+            float(raw_duration) if raw_duration is not None else None
+        )
     start_s = (
         parse_time(start)
         if start

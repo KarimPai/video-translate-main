@@ -2538,7 +2538,11 @@ local function osc_init()
     --seekbar
     ne = new_element("seekbar", "slider")
 
-    ne.enabled = mp.get_property("percent-pos") ~= nil
+    local source_duration = mp.get_property_number("user-data/auto-translate/duration")
+    ne.enabled = (
+                    mp.get_property("percent-pos") ~= nil
+                    or (source_duration and source_duration > 0)
+                 )
                  and user_opts.layout ~= "slimbottombar"
                  and user_opts.layout ~= "slimtopbar"
     state.slider_element = ne.enabled and ne or nil  -- used for forced_title

@@ -317,8 +317,7 @@ class Ingest:
         self,
         start_s: float,
         preserve_video_cache: bool = False,
-    ) -> bool:
-        """Restart audio processing, optionally reusing already-downloaded fMP4 fragments."""
+    ) -> bool:        """Restart audio processing, optionally reusing already-downloaded fMP4 fragments."""
         with self._proc_lock:
             if self._stopped:
                 return False
@@ -520,9 +519,10 @@ class Ingest:
 
         # YouTube's separate HLS video rendition can deliver H.264 packets
         # without PTS/DTS. Stream-copying those packets into fragmented MP4
-        # fails because the muxer requires valid timestamps. Decode the video,
-        # regenerate a constant-frame-rate timeline from the detected input
-        # frame rate, and encode with NVENC to keep the repair GPU-accelerated.
+        # fails because the muxer requires valid timestamps. Decode the video
+        # and regenerate its timeline, then use NVENC to keep the repair
+        # GPU-accelerated. Passthrough frame sync avoids CFR frame clipping;
+        # forced IDR keyframes let the HLS muxer cut complete 2-second chunks.
         # The AAC rendition is already compressed; only convert ADTS framing
         # to the MPEG-4 AudioSpecificConfig required by MP4/fMP4.
         return ffmpeg + [
@@ -535,6 +535,10 @@ class Ingest:
             "-rc", "vbr",
             "-cq", "18",
             "-b:v", "0",
+            "-fps_mode", "passthrough",
+            "-g", "120",
+            "-forced-idr", "1",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
             "-c:a", "copy",
             "-bsf:a", "aac_adtstoasc",
             *hls_options,
@@ -638,7 +642,6 @@ class Ingest:
                     text=True,
                     check=True,
                 ).stdout.split()
-
         return self._inputs
 
     def _read_stderr(
@@ -957,8 +960,7 @@ class Ingest:
                         stderr=subprocess.PIPE if self.video_out else None,
                     )
 
-                    procs.append(p)
-                    self._procs.append(p)
+                    procs.append(p)                    self._procs.append(p)
 
                     if stdin is not None:
                         stdin.close()

@@ -2,7 +2,7 @@
 """Translation-synchronised MPV playback.
 
 mpv listens on a local TCP port (paused); ingest's ffmpeg streams video+audio into it.
-VOD playback starts as soon as translation is 10 seconds ahead, then pauses
+VOD playback starts as soon as translation is 5 seconds ahead, then pauses
 whenever translated coverage falls to that lead. No deliberate video prebuffer.
 For live streams, delay_s controls how far behind live playback starts.
 
@@ -246,7 +246,7 @@ def find_mpv(configured: str) -> str:
 
 class MpvOutput:
     # Keep playback this far behind completed translation.
-    PAUSE_LEAD_SECONDS = 10.0
+    PAUSE_LEAD_SECONDS = 5.0
 
     def __init__(
         self,

@@ -249,8 +249,7 @@ See the next section.
 uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv
 ```
 
-The app opens mpv, downloads the video (≤480p) along with the audio, and plays it **`delay_s` (9 s; 15 s
-with `hymt2`) behind**. That head start lets each line be transcribed and translated before it's spoken in the video,
+The app opens mpv, downloads the video (≤480p) along with the audio, and plays it **`delay_s` (9 s by default) behind**. That head start lets each line be transcribed and translated before it's spoken in the video,
 so subtitles appear exactly with the speech (measured: within ~0.1 s). English is drawn large, Japanese small above it.
 
 - **Live:** playback starts after 9 s, and stays 9 s behind the real live stream.
@@ -408,7 +407,7 @@ Every `stats_interval_s` the app logs something like:
 12:00:30 INFO  auto_translate.pipeline: [30s] queues {...} | 12 lines · asr avg 0.33s max 0.52s · mt avg 0.49s max 0.81s · latency avg 1.31s max 2.10s · max queue ...
 ```
 
-- **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; use a lighter preset or close other GPU apps if it persists.
+- **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; close other GPU apps or reduce the audio workload if it persists.
 - **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
 - **latency**: end of speech → subtitle ready. ~1–1.5 s with `hymt2`.
 - A summary is printed when the app stops.
@@ -417,7 +416,6 @@ Every `stats_interval_s` the app logs something like:
 
 | Script | Use |
 |---|---|
-| `uv run python (removed; the project now has one translation engine)` | Translate the same Japanese lines with several presets and compare output and speed. |
 | `uv run python scripts/mpv_jump_probe.py [RIGHT LEFT ...]` | Debug: while `--mpv` plays a VOD, press jump keys and log the audio state after each jump. |
 
 ## Troubleshooting
@@ -429,11 +427,11 @@ Every `stats_interval_s` the app logs something like:
 | First start hangs after "ASR ready" | HY-MT2 is loading into VRAM; subsequent requests reuse the loaded model. |
 | yt-dlp errors / "Sign in to confirm" / format not available | Update yt-dlp. For members-only streams set `cookies_from_browser`. |
 | Phone can't open the viewer | Same Wi-Fi? Allow `python.exe` on Private networks in Windows Firewall; check the network is set to "Private". |
-| Subtitles late in mpv | Raise the delay (`--delay 15`, or `mpv_delay_s` in the preset), lower `[vad] max_utterance_s`, or use a faster preset. |
-| mpv video stutters / drops frames (esp. with `hymt2`) | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
+| Subtitles late in mpv | Raise the delay (`--delay 15`) or lower `[vad] max_utterance_s`. |
+| mpv video stutters / drops frames | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
 | Local file with `--mpv`: no video/sound in mpv, or yt-dlp errors | Check the path. Otherwise the codec isn't supported (e.g. VP9/AV1/FLAC): see [Local files](#local-files) to convert it. |
 | `--mpv` can't be combined with `--fast` | mpv plays at 1x; drop one of them. |
-| Out of VRAM / CUDA errors | Close other GPU apps; check that only the HY-MT2 model is loaded and close other GPU apps. |
+| Out of VRAM / CUDA errors | Close other GPU apps and verify the HY-MT2 model's GPU allocation. |
 | Lines missing when someone talks over loud music (narration, trailers) | The VAD doesn't hear it; `[vad] fallback_s` (on by default) sends that audio to Haas anyway. Run with `-v` to inspect probe-related logs. |
 | Made-up lines during music or quiet gaps | Raise `[vad] fallback_min_s`, or set `[vad] fallback_s = 0` to turn the fallback off. |
 | Odd lines like 「ご視聴ありがとうございました」 during music | ASR false positive; add the phrase to `[asr] blocklist`. |

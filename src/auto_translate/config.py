@@ -49,8 +49,8 @@ class AsrConfig:
 
 
 @dataclass
-class HyMt2Config:
-    """HY-MT2 served through a local OpenAI-compatible chat endpoint."""
+class TranslateConfig:
+    """Single translation engine configuration: HY-MT2."""
 
     model: str = "kaelri/hy-mt2:1.8b-q4_K_M"
     base_url: str = "http://127.0.0.1:11434/v1"
@@ -60,19 +60,8 @@ class HyMt2Config:
     load_timeout_s: float = 300.0
     min_request_interval_s: float = 3.0
     extra_body: dict = field(default_factory=dict)
-
-
-@dataclass
-class TranslateConfig:
-    preset: str = "hymt2"
     context_lines: int = 8
     glossary: str = "glossary.toml"
-    presets: dict[str, dict] = field(default_factory=lambda: {
-        "hymt2": {
-            "backend": "hymt2",
-            "model": "kaelri/hy-mt2:1.8b-q4_K_M",
-        }
-    })
 
 
 @dataclass

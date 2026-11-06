@@ -28,6 +28,6 @@ echo.
 
 uv run --no-sync auto-translate "%VIDEO_URL%" --mode vod --mpv --no-web
 
- echo.
+echo.
 echo Translator stopped.
 pause

@@ -2,7 +2,7 @@
 
 Live **Japanese → English subtitles** for YouTube streams (VTubers, gamers), running locally on your GPU.
 Japanese speech is transcribed with **Haas-ja-v1.0 through speech.cpp/Vulkan**,
-then translated by a local NMT model or a local LLM (Ollama). Subtitles can be shown in three places:
+then translated by **HY-MT2 1.8B** through a local OpenAI-compatible model endpoint. Subtitles can be shown in three places:
 
 - **Terminal**: Japanese + English lines with timings and latency.
 - **Browser viewer**: big captions on any device on your LAN (phone, Mac, tablet).
@@ -42,13 +42,13 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [uv](https://docs.astral.sh/uv/) | Python package/project manager. Installs Python 3.12 and all dependencies. |
 | [ffmpeg](https://ffmpeg.org/) | On `PATH`. Decodes audio, and streams the video to mpv. |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | On `PATH`. **Keep it updated** (`yt-dlp -U` or `winget upgrade yt-dlp`): YouTube changes break old versions. |
-| [Ollama](https://ollama.com/) | Only for the LLM presets (`balanced`, `quality`). |
+| Local HY-MT2 runtime | Serves `kaelri/hy-mt2:1.8b-q4_K_M` through the configured local chat endpoint. |
 | [speech.cpp](https://github.com/nyosegawa/speech.cpp) | Required for Haas ASR; use the Windows x64 Vulkan release and put `speech.exe` on `PATH`. |
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
 FireRed streaming model weights (~2.3 MB) are downloaded from Hugging Face on first launch. CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
 don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; FireRed VAD uses CUDA-enabled PyTorch,
-and local CTranslate2 translation, and optional separation and diarization features use CUDA. FFmpeg decoding,
+and optional separation and diarization features use CUDA. FFmpeg decoding,
 resampling and pipeline coordination remain CPU tasks.
 
 ## Installation
@@ -64,12 +64,12 @@ uv sync --extra separation                    # UVR vocal separation
 uv sync --extra deepfilter                    # DeepFilterNet enhancement
 uv sync --extra diarization                   # pyannote speaker diarization
 
-# LLM translator for the default preset
-ollama pull qwen3:4b-instruct-2507-q4_K_M
+# HY-MT2 translator for the default preset
+ollama pull kaelri/hy-mt2:1.8b-q4_K_M
 ```
 
 Haas is the only ASR backend. With speech.cpp on `PATH`, its `haas-ja-v1.0` GGUF is fetched automatically
-by the worker on first use. NMT models are downloaded from Hugging Face.
+by the worker on first use. HY-MT2 is loaded by the configured local model runtime.
 
 Check that the GPU works:
 
@@ -95,7 +95,7 @@ uv run auto-translate recording.mp4 --fast --preset none
 ```
 
 Stop with **Ctrl+C** (or by closing the mpv window). The first run takes longer: models are downloaded,
-and Ollama loads the LLM into VRAM (~1–2 min on the first start; that's the "warm-up").
+and the local HY-MT2 runtime loads the model into VRAM (the initial warm-up).
 
 Then open the browser viewer at **http://127.0.0.1:8765/** on this PC. LAN access is disabled by default; see [Browser viewer](#browser-viewer) to opt in for phone/tablet access.
 
@@ -112,7 +112,7 @@ uv run auto-translate SOURCE [--mode auto|live|vod] [--start TIME] [--fast]
 | `--mode auto\|live\|vod` | `auto` | `auto` asks yt-dlp whether the URL is live right now (~4 s). `live` / `vod` skip that check. Local files are always `vod`. |
 | `--start TIME` | URL's `t=` or 0 | VOD only: where to start. Formats: `962`, `16:02`, `1:02:03`, `16m2s`, `1h2m3s`. If omitted, the URL's `t=` / `start=` value is used (`…&t=962s`). Ignored for live streams (they always start at the live edge). A start past the end of the video is rejected. |
 | `--fast` | off | VOD only: process faster than real time (no 1x pacing). Useful for transcribing a whole video. Can't be combined with `--mpv`. |
-| `--preset NAME` | `[translate] preset` in config (`balanced`) | Translation preset: `balanced`, `quality`, `light`, `light-sugoi`, or `none` (Japanese only, no translator loaded). See [Translation presets](#translation-presets). |
+| `--preset NAME` | `[translate] preset` in config (`hymt2`) | Translation preset: `hymt2` (HY-MT2) or `none` (Japanese only, no translator loaded). See [Translation presets](#translation-presets). |
 | `--mpv` | off (`[mpv] enabled`) | Watch the video in mpv, delayed so subtitles appear exactly when each line is spoken. |
 | `--delay SECONDS` | preset's `mpv_delay_s`, else `[mpv] delay_s` (9) | mpv only: how far playback stays behind the pipeline. Raise it if subtitles come late (see [Tuning the delay](#tuning-the-delay)). |
 | `--no-web` | web on | Don't start the browser viewer. |
@@ -124,7 +124,7 @@ Examples:
 ```powershell
 uv run auto-translate "https://youtu.be/VIDEO_ID?t=3725"               # VOD from 1:02:05
 uv run auto-translate "https://youtu.be/VIDEO_ID" --start 1h2m5s       # same
-uv run auto-translate "https://youtu.be/VIDEO_ID" --preset light-sugoi # fast NMT instead of the LLM
+uv run auto-translate "https://youtu.be/VIDEO_ID" --preset hymt2 # HY-MT2 (default)
 uv run auto-translate "https://youtu.be/VIDEO_ID" --mode live --no-web # skip the live check, terminal only
 uv run auto-translate "https://youtu.be/VIDEO_ID" --config my.toml -v
 ```
@@ -172,48 +172,42 @@ a black window). For local files, a `--start` past the end of the file isn't det
 
 ## Translation presets
 
-Chosen with `--preset` or `[translate] preset` in `config.toml`.
+The application supports one translation engine: **HY-MT2 1.8B Q4_K_M**. The default preset is
+`hymt2`; `none` disables translation for ASR-only diagnostics.
 
-| Preset | Translator | Runs on | Speed / quality | Setup |
-|---|---|---|---|---|
-| `balanced` (default) | Ollama `qwen3:4b-instruct-2507-q4_K_M` | GPU (~3 GB VRAM) | ~0.5 s/line; natural, uses the previous lines as context | `ollama pull qwen3:4b-instruct-2507-q4_K_M` |
-| `quality` | Ollama `qwen3.5:9b` | GPU + CPU (43% / 57%, doesn't fit in 6 GB) | ~2 s/line (max ~5 s); best wording. mpv delay 15 s. | `ollama pull qwen3.5:9b` |
-| `light-sugoi` | Sugoi v4 NMT (CTranslate2) | GPU (~300 MB) | ~45 ms/line; good for casual/game speech. **License: research use only.** | None (auto-download) |
-| `light` | Opus-MT ja-en (CTranslate2) | CPU | Fast; stiff, sometimes drops content | None (auto-download) |
-| `none` | None | n/a | Japanese only | None |
+| Preset | Translator | Runtime | Context |
+|---|---|---|---|
+| `hymt2` (default) | `kaelri/hy-mt2:1.8b-q4_K_M` | Local OpenAI-compatible chat endpoint | Previous 8 JA/EN lines plus matching glossary references |
+| `none` | No translator | n/a | Japanese transcription only |
 
-LLM presets get the previous `context_lines` (4) JA/EN lines and the matching glossary entries in the
-prompt, so they handle pronouns and running jokes better. NMT presets translate each line on its own.
+HY-MT2 receives the previous `context_lines` JA/EN lines and matching glossary entries as
+reference translations. The configured endpoint must expose `/v1/chat/completions`. The default
+endpoint is `http://127.0.0.1:11434/v1`.
 
-You can add your own presets in `config.toml`; any OpenAI-compatible server works (Ollama, llama.cpp
-`llama-server`, LM Studio, …):
+Example configuration:
 
 ```toml
-[translate.presets.my-llama]
-backend = "openai-compat"
-base_url = "http://127.0.0.1:8080/v1"   # llama-server
-model = "whatever-name"
+[translate]
+preset = "hymt2"
+context_lines = 8
+glossary = "glossary.toml"
+
+[translate.presets.hymt2]
+backend = "hymt2"
+model = "kaelri/hy-mt2:1.8b-q4_K_M"
+base_url = "http://127.0.0.1:11434/v1"
 temperature = 0.2
 max_tokens = 120
 timeout_s = 20.0
 load_timeout_s = 300.0
-extra_body = { }                        # extra JSON fields for the request
-mpv_delay_s = 12.0                      # optional: mpv delay when this preset is used
-
-[translate.presets.my-nmt]
-backend = "ct2"
-model = "some-user/some-ctranslate2-model"   # HF repo or local folder
-source_spm = "source.spm"                    # tokenizer paths inside the model folder
-target_spm = "target.spm"
-device = "cuda"
-compute_type = "float16"
-beam_size = 4
 ```
 
-Then: `uv run auto-translate URL --preset my-llama`.
+Only HY-MT2 models are accepted. Other translator presets and backends have been removed.
+A future local runtime can replace the endpoint without changing the translation model or prompt.
 
-> Use `127.0.0.1`, not `localhost`, in `base_url`: on Windows `localhost` tries IPv6 first and adds ~2 s
-> to every request.
+> Use `127.0.0.1`, not `localhost`, in `base_url`: on Windows `localhost` may try IPv6 first.
+
+---
 
 ## Outputs
 
@@ -256,7 +250,7 @@ uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv
 ```
 
 The app opens mpv, downloads the video (≤480p) along with the audio, and plays it **`delay_s` (9 s; 15 s
-with `quality`) behind**. That head start lets each line be transcribed and translated before it's spoken in the video,
+with `hymt2`) behind**. That head start lets each line be transcribed and translated before it's spoken in the video,
 so subtitles appear exactly with the speech (measured: within ~0.1 s). English is drawn large, Japanese small above it.
 
 - **Live:** playback starts after 9 s, and stays 9 s behind the real live stream.
@@ -296,16 +290,14 @@ The delay must be larger than the longest line (`[vad] max_utterance_s`) plus th
 to a finished subtitle (the `latency ... max` in the stats line). Otherwise late lines show up after
 they were spoken.
 
-| Preset | Latency max (measured) | Delay used |
+| Preset | Latency max | Delay used |
 |---|---|---|
-| `balanced` | ~2 s | 9 s (`[mpv] delay_s`) |
-| `quality` | ~8 s | 15 s (preset's `mpv_delay_s`) |
+| `hymt2` | Measure on your machine | 9 s (`[mpv] delay_s`) |
 
 Where the delay comes from, highest priority first:
 
 1. `--delay SECONDS` on the command line.
-2. `mpv_delay_s` in the active preset (`[translate.presets.NAME]`).
-3. `[mpv] delay_s` (9 s).
+2. `[mpv] delay_s` (9 s).
 
 A lower delay feels closer to live but risks late subtitles. For VODs the delay doesn't slow the start
 (still ~3 s); for live streams the video simply runs that many seconds behind the real stream.
@@ -325,8 +317,7 @@ At the end the log prints a sync summary, e.g.
 "ヴァロ" = "Valorant"
 ```
 
-- **LLM presets:** matching entries are added to the prompt ("use these translations").
-- **NMT presets:** the Japanese term is replaced by the English word before translating.
+- **HY-MT2:** matching entries are added to the prompt as reference translations.
 - Longer terms win over shorter ones. Avoid single-kanji terms when possible (they match inside other words).
 - Useful for streamer names, game names, and ASR mishearings (add the misheard form too, e.g. `"バロ" = "Valorant"`).
 
@@ -377,15 +368,13 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 
 | Key | Default | Description |
 |---|---|---|
-| `preset` | `"balanced"` | Preset name (overridden by `--preset`). `"none"` = no translation. |
-| `context_lines` | `4` | Previous JA/EN lines given to the LLM as context. |
+| `preset` | `"hymt2"` | The only translation engine. `"none"` = transcription only. |
+| `context_lines` | `8` | Previous JA/EN lines supplied to HY-MT2 as context. |
 | `glossary` | `"glossary.toml"` | Glossary file. |
 
 `[translate.presets.NAME]` tables define presets (see [Translation presets](#translation-presets)).
-Keys for `backend = "openai-compat"`: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120),
-`timeout_s` (20), `load_timeout_s` (300, first request that loads the model), `extra_body` (merged into the
-request, e.g. `{ reasoning_effort = "none" }` to stop a model from "thinking"), `mpv_delay_s` (optional, mpv delay for this preset).
-Keys for `backend = "ct2"`: `model`, `source_spm`, `target_spm`, `device` (`cpu`), `compute_type` (`int8`), `beam_size` (4).
+HY-MT2 preset keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120),
+`timeout_s` (20), `load_timeout_s` (300), `min_request_interval_s` (3), and `extra_body` (additional local-server request fields).
 
 ### `[output]`
 
@@ -405,7 +394,7 @@ Keys for `backend = "ct2"`: `model`, `source_spm`, `target_spm`, `device` (`cpu`
 | `delay_s` | `9.0` | How far playback stays behind the pipeline. Must exceed `max_utterance_s` + max latency. A preset's `mpv_delay_s` or `--delay` overrides it. |
 | `start_wait_s` | `3.0` | VOD: wait before playing after start or a jump. |
 | `port` | `9137` | Local TCP port ffmpeg streams the video to mpv on. Change if it's in use. |
-| `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while the LLM uses the CPU. `"no"` = CPU decoding. |
+| `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while HY-MT2 uses the GPU. `"no"` = CPU decoding. |
 | `ytdlp_format` | ≤480p H.264 HLS | yt-dlp format for the video. Raise `height<=480` for better picture (more bandwidth/decoding). |
 | `en_size` / `ja_size` | `44` / `28` | Subtitle font sizes (on a 720-line canvas). |
 | `min_display_s` | `1.5` | Show short lines at least this long. |
@@ -421,30 +410,30 @@ Every `stats_interval_s` the app logs something like:
 
 - **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; use a lighter preset or close other GPU apps if it persists.
 - **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
-- **latency**: end of speech → subtitle ready. ~1–1.5 s with `balanced`.
+- **latency**: end of speech → subtitle ready. ~1–1.5 s with `hymt2`.
 - A summary is printed when the app stops.
 
 ## Helper scripts
 
 | Script | Use |
 |---|---|
-| `uv run python scripts/m2_compare.py scripts/sample_ja.txt light light-sugoi balanced quality` | Translate the same Japanese lines with several presets and compare output and speed. |
+| `uv run python (removed; the project now has one translation engine)` | Translate the same Japanese lines with several presets and compare output and speed. |
 | `uv run python scripts/mpv_jump_probe.py [RIGHT LEFT ...]` | Debug: while `--mpv` plays a VOD, press jump keys and log the audio state after each jump. |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `HTTP Error 404: Not Found` at startup (LLM preset) | The model isn't pulled in Ollama. Run `ollama list`, then `ollama pull <model>` from the preset. |
-| `Connection refused` at startup (LLM preset) | Ollama isn't running. Start the Ollama app (or `ollama serve`). |
-| First start hangs ~1–2 min after "ASR ready" | Normal: Ollama is loading the LLM into VRAM. |
+| `HTTP Error 404: Not Found` at startup | The configured HY-MT2 model is not available in the local model runtime. Check its model name and download it there. |
+| `Connection refused` at startup | The local HY-MT2 endpoint is not running. Start the configured local model runtime. |
+| First start hangs after "ASR ready" | HY-MT2 is loading into VRAM; subsequent requests reuse the loaded model. |
 | yt-dlp errors / "Sign in to confirm" / format not available | Update yt-dlp. For members-only streams set `cookies_from_browser`. |
 | Phone can't open the viewer | Same Wi-Fi? Allow `python.exe` on Private networks in Windows Firewall; check the network is set to "Private". |
 | Subtitles late in mpv | Raise the delay (`--delay 15`, or `mpv_delay_s` in the preset), lower `[vad] max_utterance_s`, or use a faster preset. |
-| mpv video stutters / drops frames (esp. with `quality`) | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
+| mpv video stutters / drops frames (esp. with `hymt2`) | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
 | Local file with `--mpv`: no video/sound in mpv, or yt-dlp errors | Check the path. Otherwise the codec isn't supported (e.g. VP9/AV1/FLAC): see [Local files](#local-files) to convert it. |
 | `--mpv` can't be combined with `--fast` | mpv plays at 1x; drop one of them. |
-| Out of VRAM / CUDA errors | Close other GPU apps; use `light`/`light-sugoi` instead of an LLM preset. |
+| Out of VRAM / CUDA errors | Close other GPU apps; check that only the HY-MT2 model is loaded and close other GPU apps. |
 | Lines missing when someone talks over loud music (narration, trailers) | The VAD doesn't hear it; `[vad] fallback_s` (on by default) sends that audio to Haas anyway. Run with `-v` to inspect probe-related logs. |
 | Made-up lines during music or quiet gaps | Raise `[vad] fallback_min_s`, or set `[vad] fallback_s = 0` to turn the fallback off. |
 | Odd lines like 「ご視聴ありがとうございました」 during music | ASR false positive; add the phrase to `[asr] blocklist`. |

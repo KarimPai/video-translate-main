@@ -47,8 +47,8 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
 FireRed streaming model weights (~2.3 MB) are downloaded from Hugging Face on first launch. CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
-don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; FireRed VAD,
-local CTranslate2 translation, and optional separation and diarization features use CUDA. FFmpeg decoding,
+don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; FireRed VAD uses CUDA-enabled PyTorch,
+and local CTranslate2 translation, and optional separation and diarization features use CUDA. FFmpeg decoding,
 resampling and pipeline coordination remain CPU tasks.
 
 ## Installation
@@ -354,8 +354,8 @@ All keys are optional; missing ones use the defaults below. An unknown key is an
 
 | Key | Default | Description |
 |---|---|---|
-| `threshold` | `0.5` | Speech probability that starts a line. Raise if music/noise triggers lines. |
-| `neg_threshold` | `0.35` | Below this counts as silence. |
+| `threshold` | `0.4` | FireRed speech probability that starts a line. Raise if music/noise triggers lines. |
+| `neg_threshold` | `0.25` | Below this counts as silence. |
 | `min_silence_ms` | `500` | Pause length that ends a line. Lower = shorter lines and lower latency; higher = fuller sentences. |
 | `speech_pad_ms` | `200` | Audio kept before/after the speech. |
 | `min_speech_ms` | `250` | Drop lines with less speech than this (coughs, clicks). |

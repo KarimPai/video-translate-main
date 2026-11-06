@@ -282,6 +282,9 @@ class MpvOutput:
         self._last_direct_pos: float | None = None
         self._last_direct_sample_at = 0.0
 
+        mpv_log = (Path.cwd() / "logs" / "mpv.log")
+        mpv_log.parent.mkdir(parents=True, exist_ok=True)
+
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
 
@@ -326,7 +329,8 @@ class MpvOutput:
             # Hardware video decoding.
             f"--hwdec={cfg.hwdec}",
 
-            "--msg-level=all=warn",
+            f"--log-file={mpv_log}",
+            "--msg-level=all=info",
         ])
 
         if sys.platform == "win32":
@@ -567,36 +571,42 @@ class MpvOutput:
                 if not Path(video_url).exists()
                 else "loading local source in MPV"
             )
-            self.ipc.command("loadfile", video_url, "replace")
-            started = self._wait_for_event("start-file", timeout_s=10.0)
-            loaded = (
-                started
-                and self._wait_for_event("file-loaded", timeout_s=30.0)
-            )
+            loaded = False
+            try:
+                self.ipc.command("loadfile", video_url, "replace")
+                started = self._wait_for_event("start-file", timeout_s=10.0)
+                loaded = (
+                    started
+                    and self._wait_for_event("file-loaded", timeout_s=30.0)
+                )
+            except (MpvError, ConnectionError, OSError):
+                log.exception(
+                    "MPV rejected the original source; trying local fMP4 fallback"
+                )
 
             if not loaded:
                 log.warning(
-                    "MPV could not load the original YouTube URL; "
+                    "MPV could not load the original source; "
                     "falling back to the translator's local fMP4 video stream"
                 )
                 try:
                     cache_url = self.ingest.video_playlist_url
-                except RuntimeError:
-                    log.exception("MPV fallback video cache is unavailable")
+                    self.ipc.command("loadfile", cache_url, "replace")
+                    cache_started = self._wait_for_event(
+                        "start-file",
+                        timeout_s=10.0,
+                    )
+                    cache_loaded = (
+                        cache_started
+                        and self._wait_for_event("file-loaded", timeout_s=30.0)
+                    )
+                except (MpvError, ConnectionError, OSError, RuntimeError):
+                    log.exception("MPV could not start the local fMP4 video fallback")
                     self.stop.set()
                     return
 
-                self.ipc.command("loadfile", cache_url, "replace")
-                cache_started = self._wait_for_event(
-                    "start-file",
-                    timeout_s=10.0,
-                )
-                cache_loaded = (
-                    cache_started
-                    and self._wait_for_event("file-loaded", timeout_s=30.0)
-                )
                 if not cache_loaded:
-                    log.error("MPV could not load the local fMP4 video fallback")
+                    log.error("MPV did not finish loading the local fMP4 video fallback")
                     self.stop.set()
                     return
 

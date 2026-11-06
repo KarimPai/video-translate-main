@@ -9,7 +9,7 @@ then translated by a local NMT model or a local LLM (Ollama). Subtitles can be s
 - **mpv**: the video plays a few seconds behind, so each subtitle appears exactly when the line is spoken.
 
 ```
-yt-dlp → ffmpeg → VAD (Silero) → ASR (Haas/Vulkan) → glossary + translator → terminal / browser / mpv
+yt-dlp → ffmpeg → VAD (FireRed streaming, CUDA) → ASR (Haas/Vulkan) → glossary + translator → terminal / browser / mpv
 ```
 
 Works with **live streams** and **VODs** (past streams, normal videos), and with **local audio/video files**.
@@ -46,8 +46,8 @@ Works with **live streams** and **VODs** (past streams, normal videos), and with
 | [speech.cpp](https://github.com/nyosegawa/speech.cpp) | Required for Haas ASR; use the Windows x64 Vulkan release and put `speech.exe` on `PATH`. |
 | [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
 
-CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
-don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; VAD,
+FireRed streaming model weights (~2.3 MB) are downloaded from Hugging Face on first launch. CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
+don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; FireRed VAD,
 local CTranslate2 translation, and optional separation and diarization features use CUDA. FFmpeg decoding,
 resampling and pipeline coordination remain CPU tasks.
 

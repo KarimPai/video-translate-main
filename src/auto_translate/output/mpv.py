@@ -359,12 +359,49 @@ class MpvOutput:
             self.PAUSE_LEAD_SECONDS,
         )
 
+        # Verify that MPV can render our custom ASS overlay before the
+        # translation scheduler starts. This separates OSD/rendering failures
+        # from subtitle timing or translation failures.
+        self._diagnose_overlay()
+
         self._thread = threading.Thread(
             target=self._run,
             name="mpv",
             daemon=True,
         )
         self._thread.start()
+
+    def _diagnose_overlay(self) -> None:
+        """Run a short, visible ASS overlay self-test and log MPV OSD state."""
+        try:
+            osd_level = self.ipc.get("osd-level")
+            video_osd = self.ipc.get("video-osd")
+            log.info(
+                "MPV OSD diagnostics: osd-level=%s video-osd=%s",
+                osd_level,
+                video_osd,
+            )
+
+            result = self.ipc.command(
+                "osd-overlay",
+                id=OVERLAY_ID,
+                format="ass-events",
+                data=r"{\\an2\\fs36\\bord3\\shad1\\1c&HFFFFFF&}SUBTITLE OVERLAY TEST",
+                res_x=0,
+                res_y=720,
+                z=10,
+                hidden=False,
+                compute_bounds=True,
+            )
+            log.info("MPV ASS overlay test command result: %s", result)
+            time.sleep(2.5)
+            self.ipc.command(
+                "osd-overlay",
+                id=OVERLAY_ID,
+                format="none",
+            )
+        except (ConnectionError, OSError, MpvError):
+            log.exception("MPV ASS overlay self-test failed")
 
     # ---- Output interface ----
 
@@ -939,6 +976,8 @@ class MpvOutput:
                 data=text,
                 res_x=0,
                 res_y=720,
+                z=10,
+                hidden=False,
             )
 
 

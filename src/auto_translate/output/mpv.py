@@ -942,7 +942,7 @@ class MpvOutput:
             active = [
                 ln
                 for ln in self._lines
-                if ln.show_from <= now < ln.show_until
+                if ln.show_from <= now < ln.show_until and ln.sub.en
             ]
 
         active.sort(key=lambda ln: ln.show_from)
@@ -953,9 +953,8 @@ class MpvOutput:
         for ln in reversed(active):
             # The limit counts subtitle entries, not individual language rows.
             # Each entry may contain Japanese above its English translation.
-            row_count = int(bool(
-                ln.sub.en or (self.cfg.ja_size > 0 and ln.sub.ja)
-            ))
+            # Each visible utterance occupies one English-only row.
+            row_count = int(bool(ln.sub.en))
 
             if (
                 selected
@@ -1039,12 +1038,6 @@ def _ass_many(
     for sub in subtitles:
         head = r"{\an2\bord2.5\shad0\3c&H000000&}"
         rows: list[str] = []
-
-        if cfg.ja_size > 0 and sub.ja:
-            rows.append(
-                rf"{{\fs{cfg.ja_size}\1c&HC8C8C8&}}"
-                + esc(sub.ja)
-            )
 
         if sub.en:
             rows.append(

@@ -22,7 +22,6 @@ def main() -> None:
                         help="vod: start here (962, 16:02, 1:02:03, 16m2s); default: the URL's t= value")
     parser.add_argument("--fast", action="store_true",
                         help="vod: process as fast as possible instead of at 1x speed")
-    parser.add_argument("--preset", choices=["hymt2", "none"], help="HY-MT2 (default) or none (transcribe only)")
     parser.add_argument("--no-web", action="store_true", help="don't start the browser viewer")
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
@@ -58,17 +57,8 @@ def main() -> None:
 
     cfg = load_config(args.config)
 
-    if args.preset:
-        cfg.translate.preset = args.preset
-
-    preset_delay = cfg.translate.presets.get(
-        cfg.translate.preset, {}
-    ).get("mpv_delay_s")
-
     if args.delay is not None:
         cfg.mpv.delay_s = args.delay
-    elif preset_delay is not None:
-        cfg.mpv.delay_s = float(preset_delay)
 
     log = logging.getLogger("auto_translate")
     source = resolve_source(
@@ -94,8 +84,7 @@ def main() -> None:
     glossary = Glossary.load(Path(cfg.translate.glossary))
     translator = create_translator(cfg.translate, glossary)
     log.info(
-        "translator ready (preset %s, %d glossary terms) in %.1fs",
-        cfg.translate.preset,
+        "HY-MT2 translator ready (%d glossary terms) in %.1fs",
         len(glossary.terms),
         time.perf_counter() - t0,
     )

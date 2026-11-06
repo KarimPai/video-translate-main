@@ -229,18 +229,17 @@ Turn it off with `[output] terminal = false`.
 
 ### Browser viewer
 
-Starts by default on port **8765**, on all network interfaces, so other devices on your LAN can open it.
+Starts by default on port **8765**, bound to `127.0.0.1` so only this PC can connect. LAN access is opt-in.
 
 - **This PC:** http://127.0.0.1:8765/
-- **Phone / Mac:** `http://<PC's LAN IP>:8765/` (printed at startup).
+- **Phone / Mac:** only when LAN access is explicitly enabled (see below).
 - Buttons: **JA** (show/hide Japanese), **A− / A+** (text size). Choices are remembered in the browser.
 - `?lines=5` in the URL shows more lines (default 3).
 - If the connection drops (phone Wi-Fi), the page reconnects by itself and gets the missed lines.
 - The browser viewer is **not delayed**: lines appear ~1–3 s after they're spoken on the live stream.
   Use mpv for perfect sync.
 
-LAN access needs Windows Firewall to allow `python.exe` on **Private** networks (Windows asks the first
-time). Set `web_host = "127.0.0.1"` to keep it on this PC only. Disable with `--no-web` or `[output] web = false`.
+To enable LAN access, set `web_host = "0.0.0.0"` in `[output]` and allow `python.exe` through Windows Firewall on **Private** networks. This exposes live subtitles to other devices on your network; use it only on a trusted LAN. The startup log prints the LAN URL. Return to `127.0.0.1` for local-only access. Disable with `--no-web` or `[output] web = false`.
 
 ### mpv
 
@@ -399,7 +398,7 @@ Keys for `backend = "ct2"`: `model`, `source_spm`, `target_spm`, `device` (`cpu`
 |---|---|---|
 | `terminal` | `true` | Print lines to the terminal. |
 | `web` | `true` | Run the browser viewer (`--no-web` turns it off). |
-| `web_host` | `"0.0.0.0"` | `0.0.0.0` = reachable from the LAN; `127.0.0.1` = this PC only. |
+| `web_host` | `"127.0.0.1"` | `127.0.0.1` = this PC only (default); `0.0.0.0` = reachable from the LAN. LAN access exposes subtitles to other devices on the network. |
 | `web_port` | `8765` | Viewer port. |
 
 ### `[mpv]`
@@ -461,7 +460,7 @@ Every `stats_interval_s` the app logs something like:
 
 ## mpv: stacked subtitles and speaker labels
 
-The mpv output can stack up to `[mpv].max_subtitle_rows` rendered text rows instead of replacing the previous cue immediately. When `[mpv].speaker_diarization = true` (the supplied config enables it), each recognized speech turn is assigned a session-local `Speaker 1`, `Speaker 2`, etc. label. These labels and stacked rows are rendered in mpv; the browser page's layout is unchanged.
+The mpv output can stack up to `[mpv].max_subtitle_rows` rendered text rows instead of replacing the previous cue immediately. When `[mpv].speaker_diarization = true`, each recognized speech turn is assigned a session-local `Speaker 1`, `Speaker 2`, etc. label. It is disabled by default to avoid installing/loading optional speaker-identification dependencies and to reduce GPU contention. Enable it explicitly only if you need speaker labels. These labels and stacked rows are rendered in mpv; the browser page's layout is unchanged.
 
 Install the optional speaker-identification packages from the project root:
 
@@ -469,6 +468,6 @@ Install the optional speaker-identification packages from the project root:
 pip install -e ".[diarization]"
 ```
 
-The first run downloads the public SpeechBrain ECAPA speaker-embedding model. No Hugging Face token is required. The default device is CUDA (`speaker_device = "cuda"`); use `"cpu"` if the torch CUDA runtime is unavailable. Tune `speaker_similarity_threshold` (default `0.72`): lower values merge more utterances into existing speakers; higher values create new speaker IDs more readily.
+Install the optional speaker-identification dependencies with `pip install -e ".[diarization]"` before enabling this feature. The first run downloads the public SpeechBrain ECAPA speaker-embedding model. No Hugging Face token is required. The default device is CUDA (`speaker_device = "cuda"`); use `"cpu"` if the torch CUDA runtime is unavailable. Tune `speaker_similarity_threshold` (default `0.72`): lower values merge more utterances into existing speakers; higher values create new speaker IDs more readily.
 
 **Limitation:** this lightweight mode identifies the speaker for each VAD utterance and keeps IDs consistent across turns. It does not separate overlapping voices or split a single utterance containing two simultaneous speakers into separate tracks.

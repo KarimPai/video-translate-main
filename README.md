@@ -234,13 +234,25 @@ See the next section.
 uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv
 ```
 
-The app opens mpv, downloads the video (≤480p) along with the audio, and plays it **`delay_s` (9 s by default) behind**. That head start lets each line be transcribed and translated before it's spoken in the video,
-so subtitles appear exactly with the speech (measured: within ~0.1 s). English is drawn large, Japanese small above it.
+MPV mode uses an experimental **progressive fMP4 HLS cache**:
 
-- **Live:** playback starts after 9 s, and stays 9 s behind the real live stream.
-- **VOD:** playback starts after ~3 s (the first 9 s of audio are read at full speed).
-- Closing the mpv window stops the app.
+1. yt-dlp resolves the selected YouTube video and audio streams.
+2. One FFmpeg process stream-copies both streams into a temporary local HLS event playlist using fragmented MP4 (`.m4s`) segments. No re-encoding is performed.
+3. MPV plays that growing local playlist.
+4. A second FFmpeg process extracts ASR audio from the same playlist, so video playback and speech recognition share the same cached media timeline.
+5. The cache is removed when the application exits.
 
+Playback starts after the first complete media fragment is available. VOD download continues while watching; the complete VOD is not downloaded first.
+
+### Seeking and cache behavior
+
+- Backward and forward jumps **within already-downloaded fragments** reuse the local fMP4 cache.
+- A jump beyond the available cache starts a new progressive fetch at the requested position.
+- Each seek resets the translation generation and clock anchor, preventing subtitles from the previous position from being displayed.
+- Previous seek-session fragments remain in the temporary cache until shutdown, but are not yet indexed for reuse across different sessions.
+- Live playback uses a rolling 30-segment cache; live seeking remains disabled.
+
+The cache is experimental on this branch. MPV/FFmpeg behavior with a growing local HLS event playlist, codec compatibility, and repeated seeks must be tested on Windows before merging.
 ### VOD timeline metadata
 
 For YouTube VODs, yt-dlp metadata is saved to

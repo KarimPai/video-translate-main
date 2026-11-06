@@ -137,6 +137,11 @@ def load_config(path: Path) -> Config:
         data = tomllib.load(f)
 
     # Ignore legacy fields so existing config.toml files remain compatible.
+    ingest_data = dict(data.get("ingest", {}))
+    # Older configs may contain a -3 semitone ASR pitch workaround. Natural pitch
+    # is the default for Haas Japanese recognition; ignore that legacy override.
+    ingest_data.pop("pitch_semitones", None)
+
     asr_data = dict(data.get("asr", {}))
     for key in (
         "backend", "model", "device", "compute_type", "beam_size",
@@ -149,7 +154,7 @@ def load_config(path: Path) -> Config:
     mpv_data = dict(data.get("mpv", {}))
 
     return Config(
-        ingest=IngestConfig(**data.get("ingest", {})),
+        ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),

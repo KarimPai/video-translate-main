@@ -483,7 +483,7 @@ class Ingest:
             "-f", "hls",
             "-hls_time", "2",
             "-hls_segment_type", "fmp4",
-            "-hls_fmp4_init_filename", "init.mp4",
+            "-hls_fmp4_init_filename", str(playlist.parent / "init.mp4"),
             "-hls_segment_filename", segment_pattern,
         ]
         if src.live:

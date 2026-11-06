@@ -77,7 +77,8 @@ local function render()
     local fraction = math.max(0, math.min(1, position / duration))
     local filled = math.floor(bar_chars * fraction + 0.5)
     local empty = bar_chars - filled
-    local bar = string.rep("━", filled) .. string.rep("─", empty)
+    local bar = "{\\1c&HFFFFFF&}" .. string.rep("━", filled)
+        .. "{\\1c&H808080&}" .. string.rep("─", empty)
     local ass = string.format(
         "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs18\\1c&HFFFFFF&}%s",
         math.floor(width / 2), bar_y, bar

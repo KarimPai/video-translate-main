@@ -1,10 +1,10 @@
 """FireRed VAD segmenter: AudioChunk stream → Utterance on each pause (or at max length).
 
-Loads the FireRed ONNX model from the repository's assets directory (no PyTorch needed)
-and keeps the model's recurrent state across calls so it works on a live stream.
+Loads the FireRed streaming model from Hugging Face on first use and keeps its
+recurrent model state across calls so it works on a live stream.
 
-Silero misses voices mixed with loud music (narrated videos, singing). Audio it calls
-non-speech isn't thrown away: every `fallback_s` it sends a "probe" utterance to Haas.
+Audio rejected by VAD isn't necessarily discarded: every `fallback_s` it can send a
+"probe" utterance to Haas, helping retain speech mixed with loud music or singing.
 """
 
 import logging
@@ -99,8 +99,8 @@ class Segmenter:
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
         self.fallback_min = _ms_to_frames(cfg.fallback_min_s * 1000)
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
-        # Keep one ONNX Runtime session for the lifetime of the segmenter.
-        # A seek only resets recurrent state; it must not reload the model.
+        # Keep one FireRed model instance for the lifetime of the segmenter.
+        # A seek only resets recurrent state; it must not reload model weights.
         self.vad = StreamingFireRedVAD()
         self._reset(0, generation=0)
 

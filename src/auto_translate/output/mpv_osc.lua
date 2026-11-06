@@ -418,7 +418,7 @@ local function auto_translate_source_position()
     return pos + (offset or 0)
 end
 
-mp.observe_property("user-data/auto-translate/duration", "number", function (_, value)
+mp.observe_property("user-data/auto-translate/duration", "native", function (_, value)
     if value and value > 0 then
         state.duration = value
     else
@@ -427,7 +427,7 @@ mp.observe_property("user-data/auto-translate/duration", "number", function (_, 
     state.has_duration = state.duration ~= nil and state.duration > 0
     request_init()
 end)
-mp.observe_property("user-data/auto-translate/position-offset", "number", function ()
+mp.observe_property("user-data/auto-translate/position-offset", "native", function ()
     if state.slider_element then update_slider(state.slider_element) end
     request_tick()
 end)
@@ -2575,9 +2575,10 @@ local function osc_init()
         end
         local nranges = {}
         for _, range in pairs(state.demuxer_cache_state["seekable-ranges"]) do
+            local offset = mp.get_property_number("user-data/auto-translate/position-offset", 0) or 0
             nranges[#nranges + 1] = {
-                ["start"] = 100 * range["start"] / state.duration,
-                ["end"] = 100 * range["end"] / state.duration,
+                ["start"] = 100 * (range["start"] + offset) / state.duration,
+                ["end"] = 100 * (range["end"] + offset) / state.duration,
             }
         end
         return nranges
@@ -2644,6 +2645,11 @@ local function osc_init()
     ne = new_element("tc_left", "button")
 
     ne.content = function ()
+        local duration = mp.get_property_number("user-data/auto-translate/duration")
+        if duration and duration > 0 then
+            local pos = auto_translate_source_position() or 0
+            return mp.format_time(pos, state.tc_ms and "%H:%M:%S.%T" or "%H:%M:%S")
+        end
         if state.tc_ms then
             return (mp.get_property_osd("playback-time/full"))
         else
@@ -2661,6 +2667,13 @@ local function osc_init()
     ne.visible = state.duration and state.duration > 0
     ne.content = function ()
         if state.rightTC_trem then
+            local duration = mp.get_property_number("user-data/auto-translate/duration")
+            if duration and duration > 0 then
+                local pos = auto_translate_source_position() or 0
+                local remaining = math.max(0, duration - pos)
+                local minus = user_opts.unicodeminus and UNICODE_MINUS or "-"
+                return minus .. mp.format_time(remaining, state.tc_ms and "%H:%M:%S.%T" or "%H:%M:%S")
+            end
             local minus = user_opts.unicodeminus and UNICODE_MINUS or "-"
             local property = user_opts.remaining_playtime and "playtime-remaining"
                                                            or "time-remaining"

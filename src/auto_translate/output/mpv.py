@@ -386,7 +386,7 @@ class MpvOutput:
                 "osd-overlay",
                 id=OVERLAY_ID,
                 format="ass-events",
-                data=r"{\\an2\\fs36\\bord3\\shad1\\1c&HFFFFFF&}SUBTITLE OVERLAY TEST",
+                data=r"{\an2\fs36\bord3\shad1\1c&HFFFFFF&}SUBTITLE OVERLAY TEST",
                 res_x=0,
                 res_y=720,
                 z=10,

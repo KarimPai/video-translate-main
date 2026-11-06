@@ -104,23 +104,20 @@ local function render()
     local fraction = math.max(0, math.min(1, position / duration))
     local progress_width = track_width * fraction
 
-    -- Draw one thick track: grey remainder with a white elapsed section.
+    -- Render both colors in one ASS drawing at one shared origin.
+    -- This prevents separate positioned drawings from appearing as two bars.
     local bar_x = seek_left - left
     local bar_local_y = bar_y - top
     local ass = string.format(
-        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H707070&\\p1}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
+        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H707070&\\p1}"
+            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0"
+            .. "{\\1c&HFFFFFF&}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
         math.floor(bar_x), math.floor(bar_local_y),
         math.floor(track_width), math.floor(track_width),
+        bar_height, bar_height,
+        math.floor(progress_width), math.floor(progress_width),
         bar_height, bar_height
     )
-    if progress_width > 0 then
-        ass = ass .. string.format(
-            "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&HFFFFFF&\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}",
-            math.floor(bar_x), math.floor(bar_local_y),
-            math.floor(progress_width), math.floor(progress_width),
-            bar_height, bar_height
-        )
-    end
 
     local elapsed = fmt_time(position)
     local total = fmt_time(duration)

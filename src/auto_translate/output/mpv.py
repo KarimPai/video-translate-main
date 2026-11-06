@@ -784,6 +784,12 @@ class MpvOutput:
                     )
                     self._audio_clock_diag_last_at = sample_at
 
+            if self._replay_requested():
+                if self._now is not None and self.ipc.get("eof-reached"):
+                    log.info("replay requested after VOD end; restarting from beginning")
+                    if self._jump(self.ingest.source.start_s - self._now):
+                        return
+
             if (delta := self._jump_request()) and self._jump(delta):
                 return
 
@@ -821,6 +827,26 @@ class MpvOutput:
         self._anchor_reason = "video-recovery"
         self._clock_sample_logged = False
         return True
+
+    def _replay_requested(self) -> bool:
+        """Return whether the user pressed Play/Space."""
+        requested = False
+        while not self.ipc.events.empty():
+            ev = self.ipc.events.get()
+            args = ev.get("args") or []
+            if (
+                ev.get("event") == "client-message"
+                and args[:1] == ["auto-translate-replay"]
+            ):
+                requested = True
+            elif (
+                ev.get("event") == "client-message"
+                and args[:1] == [JUMP_MESSAGE]
+            ):
+                # Preserve jump requests for the normal jump handler.
+                self.ipc.events.put(ev)
+                break
+        return requested
 
     def _jump_request(self) -> float:
         """Collect jump-key requests from mpv."""

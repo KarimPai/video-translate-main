@@ -1036,7 +1036,7 @@ def _ass_many(
     blocks: list[str] = []
 
     for sub in subtitles:
-        head = r"{\an2\bord2.5\shad0\3c&H000000&}"
+        head = r"{\an2\bord3.5\shad1\3c&H000000&\4c&H80000000&}"
         rows: list[str] = []
 
         if sub.en:

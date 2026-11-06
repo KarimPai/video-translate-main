@@ -371,7 +371,6 @@ class Ingest:
                 self._video_command(start_s=start_s),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                cwd=str(Path(self.video_playlist).parent),
             )
 
             self._video_proc = proc
@@ -477,12 +476,8 @@ class Ingest:
 
         assert self.video_out is not None
 
-        # The writer runs with cwd set to the session directory. Keep every
-        # HLS output URI relative to that directory so FFmpeg's nested HLS
-        # output handling does not need to reinterpret absolute Windows
-        # drive paths for the playlist and media fragments.
-        playlist_name = "index.m3u8"
-        segment_pattern = "segment_%06d.m4s"
+        playlist = Path(self.video_playlist)
+        segment_pattern = str(playlist.parent / "segment_%06d.m4s")
 
         hls_options = [
             "-f", "hls",
@@ -502,9 +497,7 @@ class Ingest:
             hls_options += [
                 "-hls_list_size", "0",
                 "-hls_playlist_type", "event",
-                # Avoid Windows temp-file rename failures when finalizing fMP4 fragments.
-                # The EVENT playlist is still published atomically by the HLS muxer.
-                "-hls_flags", "independent_segments",
+                "-hls_flags", "temp_file+independent_segments",
             ]
 
         return ffmpeg + [
@@ -515,7 +508,7 @@ class Ingest:
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",
             "-progress", "pipe:2",
-            playlist_name,
+            self.video_playlist,
         ]
 
     def _video_audio_command(self) -> list[str]:

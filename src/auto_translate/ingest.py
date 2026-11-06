@@ -417,7 +417,8 @@ class Ingest:
         """Set when the current MPV video FFmpeg process stalls or exits badly."""
         return self._video_failed
 
-    def prepare_video_retry(self) -> bool:        """Stop a failed video sender and refresh signed source URLs for retry."""
+    def prepare_video_retry(self) -> bool:
+        """Stop a failed video sender and refresh signed source URLs for retry."""
         with self._proc_lock:
             if self._stopped:
                 return False

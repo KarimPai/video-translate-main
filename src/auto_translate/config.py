@@ -92,9 +92,9 @@ class MpvConfig:
     speaker_similarity_threshold: float = 0.72
     speaker_device: str = "cuda"
     max_speakers: int = 3
-    max_subtitle_rows: int = 6
-    min_display_s: float = 1.5
-    hold_s: float = 1.0
+    max_subtitle_rows: int = 3
+    min_display_s: float = 4.0
+    hold_s: float = 2.0
 
 
 @dataclass

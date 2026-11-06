@@ -317,7 +317,8 @@ class Ingest:
         self,
         start_s: float,
         preserve_video_cache: bool = False,
-    ) -> bool:        """Restart audio processing, optionally reusing already-downloaded fMP4 fragments."""
+    ) -> bool:
+        """Restart audio processing, optionally reusing already-downloaded fMP4 fragments."""
         with self._proc_lock:
             if self._stopped:
                 return False
@@ -960,7 +961,8 @@ class Ingest:
                         stderr=subprocess.PIPE if self.video_out else None,
                     )
 
-                    procs.append(p)                    self._procs.append(p)
+                    procs.append(p)
+                    self._procs.append(p)
 
                     if stdin is not None:
                         stdin.close()

@@ -306,8 +306,16 @@ class MpvOutput:
                 ["--demuxer-lavf-o=live_start_index=0"]
                 if ingest.source.live else []
             ),
-            "--aid=no",
             "--input-default-bindings=no",
+
+            # Let MPV's yt-dlp hook open the original YouTube page URL.
+            # This preserves the full VOD timeline and lets MPV select both
+            # video and audio tracks with the required HTTP headers.
+            *(
+                [f"--ytdl-format={cfg.ytdlp_format}"]
+                if not Path(ingest.source.location).exists()
+                else []
+            ),
 
             # Use MPV's built-in native on-screen controller.
             "--osc=yes",
@@ -553,8 +561,12 @@ class MpvOutput:
         self._session_start = self.ingest.source.start_s
 
         if not self._direct_video_loaded:
-            video_url = self.ingest.video_source_url
-            log.info("loading original video stream directly in MPV")
+            video_url = self.ingest.source.location
+            log.info(
+                "loading original source in MPV through its yt-dlp hook"
+                if not Path(video_url).exists()
+                else "loading local source in MPV"
+            )
             self.ipc.command("loadfile", video_url, "replace")
             if not self._wait_for_event("start-file", timeout_s=10.0):
                 log.error("MPV did not start loading the original video stream")

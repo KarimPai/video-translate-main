@@ -22,7 +22,6 @@ local function fmt_time(value)
     return string.format("%02d:%02d", minutes, seconds)
 end
 
-
 local function mouse_position()
     local mouse = mp.get_property_native("mouse-pos")
     if not mouse or not mouse.hover then
@@ -40,7 +39,6 @@ local function video_rect()
     local top = math.max(0, tonumber(dims.mt) or 0)
     local bottom = height - math.max(0, tonumber(dims.mb) or 0)
 
-    -- Fall back to the full OSD window if mpv has not reported video margins.
     if right <= left then
         left, right = 0, width
     end
@@ -51,7 +49,6 @@ local function video_rect()
 end
 
 local function track_bounds()
-    -- A single wide bar keeps the visual and clickable seek range identical.
     local video_left, _, video_right = video_rect()
     local track_width = (video_right - video_left) * 0.70
     local center = (video_left + video_right) / 2
@@ -78,11 +75,12 @@ local function render()
     if width <= 0 or height <= 0 or right <= left or bottom <= top then
         return
     end
+
+    -- ASS positions use the full OSD coordinate space, not video-local coordinates.
     overlay.res_x = width
     overlay.res_y = height
 
     local mouse = mouse_position()
-    -- Restrict the seekbar and its hover zone to the actual displayed video.
     local hovered = mouse ~= nil
         and mouse.x >= left and mouse.x <= right
         and mouse.y >= math.max(top, bottom - 90)
@@ -102,20 +100,20 @@ local function render()
     local bar_height = 10
     local track_width = seek_right - seek_left
     local fraction = math.max(0, math.min(1, position / duration))
-    local progress_width = track_width * fraction
+    local progress_width = math.floor(track_width * fraction)
 
-    -- Render both colors in one ASS drawing at one shared origin.
-    -- This prevents separate positioned drawings from appearing as two bars.
-    local bar_x = seek_left - left
-    local bar_local_y = bar_y - top
+    -- One track container, with the elapsed portion filled inside it.
+    -- Both rectangles share the exact same ASS origin and vertical bounds.
     local ass = string.format(
-        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H707070&\\p1}"
-            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0"
-            .. "{\\1c&HFFFFFF&}m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
-        math.floor(bar_x), math.floor(bar_local_y),
+        "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H505050&\\p1}"
+            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}"
+            .. "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&HFFFFFF&\\p1}"
+            .. "m 0 0 l %d 0 l %d %d l 0 %d l 0 0{\\p0}",
+        math.floor(seek_left), math.floor(bar_y),
         math.floor(track_width), math.floor(track_width),
         bar_height, bar_height,
-        math.floor(progress_width), math.floor(progress_width),
+        math.floor(seek_left), math.floor(bar_y),
+        progress_width, progress_width,
         bar_height, bar_height
     )
 
@@ -123,7 +121,7 @@ local function render()
     local total = fmt_time(duration)
     ass = ass .. string.format(
         "{\\an2\\pos(%d,%d)\\bord0\\shad0\\fs35\\1c&HFFFFFF&}%s/%s",
-        math.floor(center_x - left), bottom - top - 8, elapsed, total
+        math.floor(center_x), bottom - 8, elapsed, total
     )
 
     if ass ~= last_ass or not visible then
@@ -144,7 +142,7 @@ end)
 mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(event)
     if event.event == "down" then
         local mouse = mouse_position()
-        local left, top, right, bottom = video_rect()
+        local _, _, _, bottom = video_rect()
         local seek_left, seek_right = track_bounds()
         if mouse and mouse.x >= seek_left and mouse.x <= seek_right
             and mouse.y >= bottom - 90 and mouse.y <= bottom
@@ -155,7 +153,6 @@ mp.add_forced_key_binding("MBTN_LEFT", "auto-translate-seekbar-click", function(
     elseif event.event == "up" and dragging then
         dragging = false
         local mouse = mouse_position()
-        local left, top, right, bottom = video_rect()
         local seek_left, seek_right = track_bounds()
         local target = mouse and mouse.x >= seek_left and mouse.x <= seek_right
             and seek_from_mouse(mouse, seek_left, seek_right) or nil

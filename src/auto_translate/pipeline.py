@@ -192,8 +192,18 @@ def run_translate(
             if get_generation is not None and tr.generation != get_generation():
                 continue
 
-            if en != "[translation failed]":
+            if en and en != "[translation failed]":
                 history.append((tr.ja, en))
+
+            if not en.strip():
+                log.error(
+                    "translator returned an empty English result "
+                    "(generation=%d, %.2f-%.2fs, Japanese=%r)",
+                    tr.generation,
+                    tr.start_s,
+                    tr.end_s,
+                    tr.ja,
+                )
 
         tr.timings.mt_end = time.monotonic()
 

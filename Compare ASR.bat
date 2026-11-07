@@ -28,11 +28,14 @@ uv run --no-sync python tools\compare_asr.py "%VIDEO_URL%" --seconds 120
 set "EXITCODE=%ERRORLEVEL%"
 echo.
 if not "%EXITCODE%"=="0" (
-  echo The comparison ended with an error, see the error above.
+  echo Benchmark incomplete. Open compare_finetune.txt and check Status / ERROR lines.
 ) else (
-  echo Results: logs\asr_benchmark\VIDEO_ID\compare_finetune.txt
-  echo Search within the folder using your YouTube ID.
+  echo Benchmark completed. Open compare_finetune.txt in the video's benchmark folder.
 )
+echo.
+echo Default sample report:
+echo "%~dp0logs\asr_benchmark\LE8iGHrakAc\compare_finetune.txt"
+echo For a different video, use the absolute path printed by Python.
 echo.
 pause
 exit /b %EXITCODE%

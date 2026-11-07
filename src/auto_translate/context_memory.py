@@ -160,7 +160,7 @@ def build_recent_context(
     # Older JP provides scene continuity, without reinforcing mistranslated
     # English pronouns. Keep it short to minimize tokens and latency.
     older = recent[:-context_lines] if context_lines > 0 else recent
-    older_ja = [ja.strip()[:64] for ja, _ in older[-3:] if ja.strip()]
+    older_ja = [ja.strip()[:64] for ja, _ in older[-5:] if ja.strip()]
     if older_ja:
         lines.append("Earlier Japanese for scene continuity (do not translate): " + " / ".join(older_ja)[:195])
     return "\n".join(lines)

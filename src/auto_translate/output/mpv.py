@@ -1,7 +1,7 @@
 
 """Translation-synchronised MPV playback.
 
-mpv listens on a local TCP port (paused); ingest's ffmpeg streams video+audio into it.
+MPV plays the original media while FFmpeg reads audio independently.
 VOD playback starts after a five-second translation lead, including after
 seeks. Once started, playback is uninterrupted even if translation falls behind.
 No deliberate video prebuffer.
@@ -362,7 +362,6 @@ class MpvOutput:
         self._lock = threading.Lock()
         self._now: float | None = None
         self._shown = ""
-        self._lags: list[float] = []
         self._session_start = ingest.source.start_s
         self._buffer_condition = threading.Condition()
         self._translated_until = ingest.source.start_s
@@ -370,18 +369,9 @@ class MpvOutput:
         self._job = None
         self._closed = False
         self._video_retries = 0
-        self._pending_seek_offset: float | None = None
-        self._clock_sample_logged = False
-        self._clock_last_sample_at = 0.0
-        self._clock_last_sample_pos: float | None = None
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
-        self._logged_subtitle_generations: set[int] = set()
-        self._logged_displayed_subtitles: set[tuple[int, float, float]] = set()
-        self._audio_clock_diag_until = 0.0
-        self._audio_clock_diag_last_at = 0.0
-        self._audio_clock_diag_done = False
         self._direct_video_loaded = False
         # The original VOD's mpv time-pos is the source timestamp. Do not
         # derive a new offset from the restarted FFmpeg audio reader on seek.
@@ -444,7 +434,6 @@ class MpvOutput:
         if sys.platform == "win32":
             try:
                 self._job = _create_kill_job(self._proc)
-                log.info("mpv automatic process cleanup enabled")
             except OSError:
                 log.exception(
                     "Could not enable automatic mpv process cleanup"
@@ -518,30 +507,10 @@ class MpvOutput:
             else sub.start_s
         )
         show_from = speech_start
-        log.debug(
-            "subtitle timing: audio_start=%.3f vad_onset=%.3f "
-            "mpv_show=%.3f preroll=%.3fs",
-            sub.start_s,
-            speech_start,
-            show_from,
-            max(0.0, speech_start - sub.start_s),
-        )
         until = sub.end_s
 
         line = _Line(sub, show_from, until)
         now = self._now
-
-        if sub.generation not in self._logged_subtitle_generations:
-            self._logged_subtitle_generations.add(sub.generation)
-            log.info(
-                "first subtitle received: generation=%d speech=%.3f-%.3f "
-                "mpv_clock=%.3f delta=%+.3fs",
-                sub.generation,
-                sub.start_s,
-                sub.end_s,
-                now if now is not None else float("nan"),
-                (now - sub.start_s) if now is not None else float("nan"),
-            )
 
         if now is not None and now > until:
             log.warning(
@@ -627,18 +596,6 @@ class MpvOutput:
 
         with self._buffer_condition:
             self._buffer_condition.notify_all()
-
-        if self._lags:
-            on_time = sum(abs(x) <= 0.5 for x in self._lags)
-
-            log.info(
-                "mpv sync: %d lines shown, %d within 0.5s of speech, "
-                "avg %+.2fs, worst %+.2fs",
-                len(self._lags),
-                on_time,
-                sum(self._lags) / len(self._lags),
-                max(self._lags, key=abs),
-            )
 
         if hasattr(self, "_thread") and self._thread.is_alive():
             self._thread.join(timeout=2)
@@ -730,9 +687,12 @@ class MpvOutput:
                     and self._wait_for_event("file-loaded", timeout_s=30.0)
                 )
             except (MpvError, ConnectionError, OSError):
-                log.exception(
-                    "MPV rejected the original source; trying local fMP4 fallback"
-                )
+                log.exception("MPV rejected the original source")
+
+            if not loaded and not self.ingest.video_out:
+                log.error("MPV could not load the source; see logs/mpv.log")
+                self.stop.set()
+                return
 
             if not loaded:
                 log.warning(
@@ -791,11 +751,6 @@ class MpvOutput:
         self._mpv_anchor = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-        mapping = (
-            "original MPV source timeline (identity; no per-seek rebasing)"
-            if getattr(self, "_uses_original_timeline", False)
-            else "local video fallback timeline with source/session anchor"
-        )
         current_pos = self.ipc.get("time-pos")
         if current_pos is not None:
             self._mpv_anchor = float(current_pos)
@@ -803,17 +758,6 @@ class MpvOutput:
             float(current_pos) if current_pos is not None else None
         )
         self._last_direct_sample_at = time.monotonic()
-
-        self._clock_sample_logged = False
-        self._audio_clock_diag_until = 0.0
-        self._audio_clock_diag_last_at = 0.0
-        self._audio_clock_diag_done = False
-        log.info(
-            "MPV clock mapping: source_start=%.3f; waiting for measured "
-            "MPV session anchor; %s",
-            self._clock_source_anchor,
-            mapping,
-        )
 
         if self.ingest.source.live:
             unpause_at = (
@@ -880,15 +824,6 @@ class MpvOutput:
                 paused = False
                 unpause_at = None
 
-                if (
-                    self._anchor_reason == "seek"
-                    and not self._audio_clock_diag_done
-                    and log.isEnabledFor(logging.DEBUG)
-                ):
-                    self._audio_clock_diag_until = time.monotonic() + 12.0
-                    self._audio_clock_diag_done = True
-                    log.debug("MPV audio-clock diagnostics started after seek")
-
                 log.info(
                     "mpv playing from %s",
                     fmt_hms(self._session_start),
@@ -947,47 +882,7 @@ class MpvOutput:
                 if self.ingest.source.duration is not None:
                     self._now = min(self._now, self.ingest.source.duration)
 
-                sample_now = time.monotonic()
-                if (
-                    not self._clock_sample_logged
-                    or sample_now - self._clock_last_sample_at >= 10.0
-                ):
-                    raw_delta = (
-                        float(pos) - self._clock_last_sample_pos
-                        if self._clock_last_sample_pos is not None
-                        else 0.0
-                    )
-                    log.debug(
-                        "MPV clock sample: raw=%.3f mapped=%.3f "
-                        "session_elapsed=%+.3fs raw_step=%+.3fs",
-                        pos,
-                        self._now,
-                        self._now - self._session_start,
-                        raw_delta,
-                    )
-                    self._clock_sample_logged = True
-                    self._clock_last_sample_at = sample_now
-                    self._clock_last_sample_pos = float(pos)
-
                 self._render(self._now)
-
-                sample_at = time.monotonic()
-                if (
-                    sample_at < self._audio_clock_diag_until
-                    and sample_at - self._audio_clock_diag_last_at >= 0.5
-                ):
-                    audio_pts = self.ipc.get("audio-pts")
-                    avsync = self.ipc.get("avsync")
-                    mpv_paused = self.ipc.get("pause")
-                    log.debug(
-                        "MPV audio clock: time_pos=%s audio_pts=%s "
-                        "avsync=%s pause=%s",
-                        pos,
-                        audio_pts,
-                        avsync,
-                        mpv_paused,
-                    )
-                    self._audio_clock_diag_last_at = sample_at
 
             if self._replay_requested():
                 if self._now is not None and self.ipc.get("eof-reached"):
@@ -1032,14 +927,12 @@ class MpvOutput:
         with self._lock:
             self._lines.clear()
 
-        self._pending_seek_offset = None
         self.ingest.request_restart(restart_at)
         self.reset_buffer(restart_at)
         self.ingest.go()
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
         self._anchor_reason = "video-recovery"
-        self._clock_sample_logged = False
         return True
 
     def _replay_requested(self) -> bool:
@@ -1192,11 +1085,9 @@ class MpvOutput:
         with self._lock:
             self._lines.clear()
 
-        self._pending_seek_offset = None
         self._clock_source_anchor = target
         self._mpv_anchor = None
         self._anchor_reason = "seek"
-        self._clock_sample_logged = False
         self.ingest.request_restart(target)
         # The queued reset marker may arrive after the MPV thread restarts.
         self.reset_buffer(target)
@@ -1316,32 +1207,6 @@ class MpvOutput:
             else ""
         )
 
-        # Log each subtitle only on its first visible scheduler tick.
-        # Overlay changes can be caused by an older overlapping line, so
-        # logging active[0] on every text change does not measure new lines.
-        for ln in active:
-            key = (
-                ln.sub.generation,
-                ln.sub.start_s,
-                ln.sub.end_s,
-            )
-            if key in self._logged_displayed_subtitles:
-                continue
-
-            self._logged_displayed_subtitles.add(key)
-            delta = now - ln.show_from
-            self._lags.append(delta)
-            log.debug(
-                "subtitle first visible: generation=%d speech=%.3f-%.3f "
-                "mpv_clock=%.3f start_delta=%+.3fs active=%d",
-                ln.sub.generation,
-                ln.sub.start_s,
-                ln.sub.end_s,
-                now,
-                delta,
-                len(active),
-            )
-
         if text != self._shown:
             self.ipc.command(
                 "osd-overlay",
@@ -1354,13 +1219,6 @@ class MpvOutput:
                 hidden=False,
             )
             self._shown = text
-
-            if text:
-                log.debug(
-                    "MPV subtitle overlay updated: active=%d chars=%d",
-                    len(active),
-                    len(text),
-                )
 
 
 def _ass_many(
@@ -1398,8 +1256,3 @@ def _ass_many(
         )
 
     return r"\N".join(blocks)
-
-
-def _ass(sub: Subtitle, cfg: MpvConfig) -> str:
-    """Backward-compatible single-subtitle renderer."""
-    return _ass_many([sub], cfg)

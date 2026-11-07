@@ -48,7 +48,7 @@ If no `[translate]` configuration is supplied, PLaMo 3 Translate 2B Q4_K_M is se
 
 PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up to `memory_lines` recent pairs for brief terminology and earlier Japanese scene hints. Exact glossary spellings remain authoritative; learned short-term word hints are tentative. A conservative no-model-pass repair can fix one-edit repetitions of short Katakana words (for example `シャッター` / `シャッタ`) from adjacent subtitles, or from two matching words on either side of a misheard word in one subtitle. It cannot resolve unrelated ASR misrecognitions. Memory is limited to the current video segment and is cleared on seeks; set `memory_lines = 0` to disable the extra memory and repetition repair. Larger memory may add prompt tokens and translation time.
 
-Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
+Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for additional pipeline diagnostics.
 
 ## Detection and subtitles
 
@@ -65,58 +65,3 @@ A separate **RAM-only session subtitle cache** stores translated cues and proces
 ## Optional processing
 
 Vocal separation and DeepFilterNet are **disabled by default** and require their respective optional dependencies.
-
-## Optional: compare Japanese ASR models
-
-In the `test` branch, double-click `Compare ASR.bat` from the project
-folder and press Enter to benchmark the supplied short YouTube sample
-(`https://www.youtube.com/watch?v=LE8iGHrakAc`). You can also paste a
-different YouTube URL. The launcher downloads the source audio once, converts
-its first 120 seconds to 16 kHz mono, then uses speech.cpp Silero VAD to
-produce the **same short speech regions** for:
-
-1. Haas-ja-v1.0 Q8 with the app's GPU-decoding setting;
-2. Haas-ja-v1.0 Q8 with this clip's bread-name vocabulary hints;
-3. Qwen3-ASR 1.7B with Japanese-language selection and **no prompt**;
-4. `neosophie/Qwen3-ASR-1.7B-JA` fine-tune, using
-   `kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF` Q8_0 and **no prompt**.
-
-The same audio and VAD segments are reused for all four models. The new report is
-`logs/asr_benchmark/VIDEO_ID/compare_finetune.txt`. Earlier `compare.txt`
-and `compare_clean.txt` results are preserved. The first run may download the
-Japanese fine-tune GGUF (~2.18 GB) through the existing `huggingface-hub`
-dependency; Hugging Face caches it for subsequent runs. The base Qwen
-model and Silero VAD use speech.cpp's normal cache. Model downloads happen
-*before* recognition timing; timings still include model startup. The
-original prompted Qwen run hallucinated its prompt on six segments, so both
-Qwen variants intentionally use no prompt. The third-party speech.cpp
-conversion is separate from the original BF16 safetensors and has not been
-validated against this specific stream yet. **This does not produce an accuracy score without a manually verified
-Japanese reference transcript.** Compare the transcriptions by listening to
-each WAV segment in `segments`. The benchmark uses speech.cpp's Silero
-segmentation, whereas the normal MPV translator uses FireRedVAD, so inference
-times and text may differ from live playback. `Start translate.bat` and the
-default Haas backend are unchanged.
-
-## Tests
-
-Run the retained regression tests from the project folder:
-
-```cmd
-uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
-```
-
-The `tests/test_*.py` files are development tests; they do not run during normal VOD playback. Temporary manual MPV probe scripts have been removed.
-
-## Troubleshooting
-
-- **No English subtitle:** Check `logs\run.log` for ASR, translation, and seek errors; captions and ASR may not cover every utterance.
-- **A name is misrecognized:** Update `glossary.toml`; name corrections require supporting Japanese/context, not unconditional word replacement.
-- **Translation lags:** Review the pipeline queue/backpressure and ASR/MT timings in `logs\run.log`. GPU contention and long translation prompts can reduce throughput.
-- **Seeking to uncached content:** MPV may need to fetch video data and the pipeline may have to transcribe/translate new audio.
-- **PLaMo startup errors:** Check whether `llama-server` is on PATH and read `logs\plamo-server.log`. Reusing a previously running server is supported.
-
-## Branches
-
-- `main`: saved working baseline.
-- `test`: development and cleanup branch. Validate changes here before promoting them to `main`.

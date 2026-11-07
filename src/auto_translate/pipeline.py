@@ -5,7 +5,6 @@ import logging
 import queue
 import threading
 import time
-from difflib import SequenceMatcher
 from collections import deque
 from dataclasses import replace
 from dataclasses import dataclass, field
@@ -91,20 +90,8 @@ def run_asr(
             if captions is not None
             else None
         )
-        if text and caption_match is not None:
-            if caption_match.reliable:
-                text = reconcile_caption(text, caption_match.text)
-            haas_compact = "".join(ch for ch in text if ch.isalnum()).casefold()
-            caption_compact = "".join(ch for ch in caption_match.text if ch.isalnum()).casefold()
-            similarity = SequenceMatcher(
-                None, haas_compact, caption_compact
-            ).ratio() if haas_compact and caption_compact else 0.0
-            if similarity < 0.55:
-                log.debug(
-                    "Haas/caption disagreement at %.2f-%.2fs "
-                    "(similarity=%.2f): Haas=%r captions=%r",
-                    utt.start_s, utt.end_s, similarity, text, caption_match.text,
-                )
+        if text and caption_match is not None and caption_match.reliable:
+            text = reconcile_caption(text, caption_match.text)
 
         if (
             not text and caption_match is not None and caption_match.reliable
@@ -291,10 +278,10 @@ class Stats:
         )
 
         return (
-            f"{self.lines} lines ┬╖ "
-            f"{fmt('asr', self.asr_sum_s, self.asr_max_s)} ┬╖ "
-            f"{fmt('mt', self.mt_sum_s, self.mt_max_s)} ┬╖ "
-            f"{fmt('latency', self.total_sum_s, self.total_max_s)} ┬╖ "
+            f"{self.lines} lines | "
+            f"{fmt('asr', self.asr_sum_s, self.asr_max_s)} | "
+            f"{fmt('mt', self.mt_sum_s, self.mt_max_s)} | "
+            f"{fmt('latency', self.total_sum_s, self.total_max_s)} | "
             f"max queue {maxq}"
         )
 
@@ -374,7 +361,7 @@ def run(
         thread.start()
 
     stats = Stats()
-    logged_subtitle_generations: set[int] = set()
+    last_subtitle_generation: int | None = None
     processed_generation = ingest.generation
     processed_from = ingest.source.start_s
     started = time.monotonic()
@@ -423,8 +410,8 @@ def run(
                                 advance(progress_s)
                     continue
 
-                if item.generation not in logged_subtitle_generations:
-                    logged_subtitle_generations.add(item.generation)
+                if item.generation != last_subtitle_generation:
+                    last_subtitle_generation = item.generation
                     log.info(
                         "first translated subtitle for generation=%d at %.2fs",
                         item.generation,

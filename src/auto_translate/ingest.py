@@ -100,16 +100,6 @@ def _cookie_args(cfg: IngestConfig) -> list[str]:
     )
 
 
-def probe(url: str, cfg: IngestConfig) -> tuple[str, float | None]:
-    """Fetch VOD metadata and return live status and duration."""
-    metadata = load_vod_metadata(url, cfg)
-    duration = metadata.get("duration_s")
-    return (
-        str(metadata.get("live_status") or "not_live"),
-        float(duration) if duration is not None else None,
-    )
-
-
 def fmt_hms(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -311,26 +301,6 @@ class Ingest:
             raise RuntimeError("fMP4 cache HTTP server is not running")
         relative = Path(self.video_playlist).relative_to(self._cache_root).as_posix()
         return f"http://127.0.0.1:{self._http_server.server_port}/{relative}"
-
-    @property
-    def cache_source_start_s(self) -> float:
-        return self._cache_source_start_s
-
-    @property
-    def cache_end_s(self) -> float:
-        """Latest source timestamp present in the current fMP4 playlist."""
-        try:
-            content = Path(self.video_playlist).read_text(encoding="utf-8")
-        except OSError:
-            return self._cache_source_start_s
-        duration = 0.0
-        for line in content.splitlines():
-            if line.startswith("#EXTINF:"):
-                try:
-                    duration += float(line.split(":", 1)[1].split(",", 1)[0])
-                except ValueError:
-                    continue
-        return self._cache_source_start_s + duration
 
     @property
     def video_playlist(self) -> str:
@@ -673,16 +643,6 @@ class Ingest:
             ]
 
         return ffmpeg
-
-    @property
-    def video_source_url(self) -> str:
-        """Return the original video-only source URL for direct MPV playback."""
-        if Path(self.source.location).exists():
-            return self.source.location
-        inputs = self._resolve_video_inputs()
-        if not inputs:
-            raise RuntimeError("yt-dlp did not return a video stream URL")
-        return inputs[0]
 
     def _resolve_video_inputs(self) -> list[str]:
         """Resolve source URLs once for both FFmpeg processes."""
@@ -1142,12 +1102,6 @@ class Ingest:
                         self.first_pts = self.source.start_s
                         self.first_pts_at = time.monotonic()
                         self.first_pts_ready.set()
-                        log.warning(
-                            "first audio PTS unavailable; using first decoded "
-                            "audio arrival as clock readiness (source_start=%.3fs)",
-                            self.source.start_s,
-                        )
-
                 if first_chunk_after_seek:
                     log.info(
                         "first audio data after seek: generation=%d position=%.2fs",

@@ -139,16 +139,9 @@ def main() -> None:
         log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
 
     # MPV plays the original video stream; Ingest handles audio only.
-    # No local video transcode or fMP4 cache is created.
-    video_out = None
-    burst_s = 0.0
-
     ingest = Ingest(
         source,
         cfg.ingest,
-        video_out,
-        cfg.mpv.ytdlp_format,
-        burst_s,
         separation_cfg=cfg.separation,
         deepfilter_cfg=cfg.deepfilter,
     )

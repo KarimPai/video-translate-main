@@ -29,9 +29,3 @@ class Glossary:
                 hits.append((term, en))
                 ja = ja.replace(term, "\0")  # mask it so shorter terms can't match inside
         return tuple(hits)
-
-    def substitute(self, ja: str) -> str:
-        """Replace terms with their English text inline (NMT models copy Latin words through)."""
-        for term, en in self.find(ja):
-            ja = ja.replace(term, f" {en} ")
-        return ja

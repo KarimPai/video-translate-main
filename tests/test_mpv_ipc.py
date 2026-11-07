@@ -90,6 +90,10 @@ class OverlayTests(unittest.TestCase):
     def test_overlay_is_committed_only_after_acknowledgement(self):
         out = object.__new__(MpvOutput)
         out.cfg = MpvConfig()
+        # Match the production MpvOutput fields; _render logs the first live
+        # overlay only for live sources, after MPV acknowledges it.
+        out.ingest = SimpleNamespace(source=SimpleNamespace(live=False))
+        out._live_overlay_confirmed = False
         out._lock = threading.Lock()
         out._lines = [_Line(Subtitle(1, 3, '日本語', 'Visible translation'), 1, 3)]
         out._shown = ''
@@ -113,6 +117,39 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(calls[-1][1]['format'], 'none')
         self.assertEqual(out._shown, '')
 
+
+
+    def test_live_first_overlay_is_logged_only_after_successful_ack(self):
+        out = object.__new__(MpvOutput)
+        out.cfg = MpvConfig()
+        out.ingest = SimpleNamespace(source=SimpleNamespace(live=True))
+        out._live_overlay_confirmed = False
+        out._lock = threading.Lock()
+        out._lines = [_Line(Subtitle(1, 3, "日本語", "Visible translation"), 1, 3)]
+        out._shown = ""
+        out._logged_displayed_subtitles = set()
+        out._lags = []
+        attempts = []
+
+        def command(*args, **named):
+            attempts.append((args, named))
+            if len(attempts) == 1:
+                raise MpvError("overlay rejected")
+
+        out.ipc = SimpleNamespace(command=command)
+        with patch("auto_translate.output.mpv.log") as log:
+            with self.assertRaises(MpvError):
+                out._render(2)
+            self.assertFalse(out._live_overlay_confirmed)
+            log.info.assert_not_called()
+
+            out._render(2)
+            self.assertTrue(out._live_overlay_confirmed)
+            self.assertIn("Visible translation", out._shown)
+            log.info.assert_called_once()
+
+            out._render(2)
+            log.info.assert_called_once()
 
 
 class MpvShutdownTests(unittest.TestCase):
@@ -162,7 +199,9 @@ class TranslationBufferTests(unittest.TestCase):
         out._session_start = 0.0
         self.assertFalse(out._live_playback_ready(107.9))
         self.assertFalse(out._live_playback_ready(108.1))
-        out.advance(0.5)
+        out.advance(4.99)
+        self.assertFalse(out._live_playback_ready(108.1))
+        out.advance(5.0)
         self.assertTrue(out._live_playback_ready(108.1))
         out._translated_until = 0.0
         self.assertTrue(out._live_playback_ready(110.0))

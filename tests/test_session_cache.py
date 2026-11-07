@@ -92,6 +92,8 @@ class SessionCacheTests(unittest.TestCase):
     def test_mpv_uses_cache_to_display_cues_even_without_current_lines(self):
         self.cache.add(self.line)
         out = object.__new__(MpvOutput)
+        out.ingest = SimpleNamespace(source=SimpleNamespace(live=False))
+        out._live_overlay_confirmed = False
         out._subtitle_cache = self.cache
         out._lock = threading.Lock()
         out._lines = []

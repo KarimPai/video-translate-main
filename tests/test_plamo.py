@@ -154,7 +154,8 @@ class PlamoTranslatorTests(unittest.TestCase):
         context = payload["chat_template_kwargs"]["context"]
         self.assertIn("Video title: 【ホロGTA】大空スバル視点", context)
         self.assertIn("subject-neutral English", context)
-        self.assertIn("The driving is bad", context)
+        self.assertIn("Translate meaningful Japanese to natural English", context)
+        self.assertEqual(payload["messages"][1]["content"], "Thanks for yesterday.")
         self.assertEqual(len(payload["messages"]), 3)
 
 

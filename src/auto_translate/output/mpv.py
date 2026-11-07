@@ -341,6 +341,7 @@ def find_mpv(configured: str) -> str:
 class MpvOutput:
     # Keep playback this far behind completed translation.
     PAUSE_LEAD_SECONDS = 5.0
+    PAUSE_LOW_WATERMARK_SECONDS = 0.5
 
     def __init__(
         self,
@@ -558,6 +559,14 @@ class MpvOutput:
             )
             self._buffer_condition.notify_all()
 
+    def _translation_ready(self) -> bool:
+        """Only resume a VOD when the current audio generation is translated ahead."""
+        with self._buffer_condition:
+            return self._source_finished or (
+                self._now is not None
+                and self._translated_until >= self._now + self.PAUSE_LEAD_SECONDS
+            )
+
     def reset_buffer(self, progress_s: float) -> None:
         """Reset translated coverage after a VOD seek."""
         with self._buffer_condition:
@@ -734,6 +743,10 @@ class MpvOutput:
 
         assert self.ingest.first_pts is not None
 
+        # Ingest updates source.start_s asynchronously after a restart. Never
+        # anchor a seek to the previous audio session's source.start_s.
+        self._session_start = self.ingest.source.start_s
+
         # MPV plays the original VOD timeline; FFmpeg independently extracts
         # audio for ASR. Anchor each audio generation to MPV's current position.
         self._mpv_anchor = None
@@ -803,7 +816,7 @@ class MpvOutput:
                     translated_lead = self._translated_until - self._now
                     should_pause = (
                         not self._source_finished
-                        and translated_lead <= lead
+                        and translated_lead <= self.PAUSE_LOW_WATERMARK_SECONDS
                     )
 
                 if should_pause:
@@ -816,7 +829,8 @@ class MpvOutput:
                     unpause_at = None
 
                     log.info(
-                        "playback paused: translation lead %.1fs (target %.1fs)",
+                        "playback paused: translation lead drained to %.1fs "
+                        "(resume at %.1fs)",
                         translated_lead,
                         lead,
                     )
@@ -827,14 +841,12 @@ class MpvOutput:
             )
 
             if paused and unpause_at is None:
-                with self._buffer_condition:
-                    should_unpause = (
-                        self._source_finished
-                        or (
-                            self._now is not None
-                            and self._translated_until >= self._now + lead
-                        )
-                    )
+                should_unpause = self._translation_ready()
+
+            # Ignore MPV's Play toggle while a seek is still rebuffering.
+            # Otherwise manual playback can outrun the new subtitle queue.
+            if paused and not should_unpause and self.ipc.get("pause") is False:
+                self.ipc.command("set_property", "pause", True)
 
             if paused and should_unpause:
 
@@ -1003,6 +1015,7 @@ class MpvOutput:
 
         self._pending_seek_offset = None
         self.ingest.request_restart(restart_at)
+        self.reset_buffer(restart_at)
         self.ingest.go()
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
@@ -1085,6 +1098,20 @@ class MpvOutput:
                     - self._clock_source_anchor
                 )
             self.ipc.command("seek", mpv_target, "absolute+exact")
+            # MPV acknowledges seek before it necessarily reaches that time.
+            # Sampling the prior time-pos here would corrupt the new anchor.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and not self.stop.is_set():
+                landed = self.ipc.get("time-pos")
+                if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
+                    break
+                time.sleep(0.05)
+            else:
+                log.warning(
+                    "MPV seek position not confirmed at %.3fs; "
+                    "rechecking the anchor after audio restarts",
+                    mpv_target,
+                )
 
         self._now = None
         self._shown = ""
@@ -1109,6 +1136,9 @@ class MpvOutput:
         self._last_direct_sample_at = time.monotonic()
 
         self.ingest.request_restart(target)
+        # The queued reset marker may arrive after the MPV thread restarts.
+        # Clear old translated coverage immediately so seek cannot autoplay.
+        self.reset_buffer(target)
         self.ingest.go()
         return True
 

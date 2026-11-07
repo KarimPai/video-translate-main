@@ -123,14 +123,8 @@ def main() -> None:
     translator = create_translator(
         cfg.translate, glossary, vod_title=vod_context,
     )
-    translator_name = (
-        "PLaMo 3 Translate"
-        if cfg.translate.backend.strip().lower() == "plamo"
-        else "HY-MT2"
-    )
     log.info(
-        "%s translator ready (%d glossary terms) in %.1fs",
-        translator_name,
+        "PLaMo 3 Translate 2B ready (%d glossary terms) in %.1fs",
         len(glossary.terms),
         time.perf_counter() - t0,
     )

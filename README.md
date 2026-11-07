@@ -42,10 +42,13 @@ plamo_model = "plamo-3-translate"
 plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
 plamo_gpu_layers = 99
 context_lines = 8
+memory_lines = 24  # additional recent subtitle pairs for term and scene memory
 glossary = "glossary.toml"
 ```
 
 If no `[translate]` configuration is supplied, the code's current default is `hymt2`, which requires its local service. The PLaMo backend uses a managed `llama-server` when no server is already running at the configured URL; its log is `logs\plamo-server.log`. Configure `[asr]`, `[vad]`, and `[mpv]` via `src/auto_translate/config.py`.
+
+PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up to `memory_lines` recent pairs for brief terminology and earlier Japanese scene hints. Exact glossary spellings remain authoritative; learned short-term word hints are tentative. A conservative no-model-pass repair can fix one-edit repetitions of short Katakana words (for example `シャッター` / `シャッタ`) from adjacent subtitles, or from two matching words on either side of a misheard word in one subtitle. It cannot resolve unrelated ASR misrecognitions. Memory is limited to the current video segment and is cleared on seeks; set `memory_lines = 0` to disable the extra memory and repetition repair. Larger memory may add prompt tokens and translation time.
 
 Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 

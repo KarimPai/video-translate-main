@@ -52,6 +52,21 @@ _UNSUPPORTED_COLLISION_CLAUSE = re.compile(
 )
 
 
+# PLaMO may express unsupported attribution as a predicate ("I'm bad at
+# driving") instead of a possessive ("my driving is bad").
+_DRIVING_SKILL_CLAUSE = re.compile(
+    r"\b(?P<agent>I'm|I am|you're|you are)\s+"
+    r"(?:bad|terrible|awful|not\s+(?:very\s+|that\s+)?good|not\s+great)"
+    r"\s+at\s+driving\b",
+    re.IGNORECASE,
+)
+_DRIVING_ACTION_CLAUSE = re.compile(
+    r"\b(?P<agent>I|you)\s+(?:can't|cannot|don't|do not)"
+    r"\s+drive\s+(?:well|properly)\b",
+    re.IGNORECASE,
+)
+
+
 def _explicit_owner(japanese: str, owner: str) -> bool:
     """Is this English possessor overtly supported by the Japanese words?"""
     owner = owner.casefold()
@@ -91,6 +106,19 @@ def neutralize_unsupported_subjects(japanese: str, english: str) -> str:
         return f"{replacement} {match.group('activity')}"
 
     english = _ACTIVITY_POSSESSIVE.sub(replace_owner, english)
+
+    if "運転" in japanese:
+        def replace_skill(match: re.Match[str]) -> str:
+            agent = match.group("agent")
+            if _explicit_agent(japanese, "i" if agent.casefold().startswith("i") else "you"):
+                return match.group(0)
+            prefix = english[:match.start()]
+            at_start = not prefix.strip() or bool(re.search(r"[.!?]\s*$", prefix))
+            return "The driving isn't very good" if at_start else "the driving isn't very good"
+
+        english = _DRIVING_SKILL_CLAUSE.sub(replace_skill, english)
+        if re.search(r"下手|上手くない|うまくない|苦手|へた|ヘタ", japanese):
+            english = _DRIVING_ACTION_CLAUSE.sub(replace_skill, english)
 
     if not _COLLISION_IN_JAPANESE.search(japanese):
         return english

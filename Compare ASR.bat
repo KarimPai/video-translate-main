@@ -10,7 +10,7 @@ if errorlevel 1 (
 echo.
 echo ===========================================
 echo   Japanese ASR Comparison - Test Only
-echo   Haas / scene vocabulary / Qwen3 unprompted
+echo   Haas / Qwen3 base / Japanese fine-tune
 echo ===========================================
 echo.
 set "VIDEO_URL=https://www.youtube.com/watch?v=LE8iGHrakAc"
@@ -21,7 +21,7 @@ echo.
 echo Processing first 120 seconds of:
 echo %VIDEO_URL%
 echo.
-echo First run may download models; the video is downloaded only once.
+echo First run may download the Japanese fine-tune model (about 2.18 GB).
 echo This does NOT change the normal Start translate.bat.
 echo.
 uv run --no-sync python tools\compare_asr.py "%VIDEO_URL%" --seconds 120
@@ -30,7 +30,7 @@ echo.
 if not "%EXITCODE%"=="0" (
   echo The comparison ended with an error, see the error above.
 ) else (
-  echo Results: logs\asr_benchmark\VIDEO_ID\compare_clean.txt
+  echo Results: logs\asr_benchmark\VIDEO_ID\compare_finetune.txt
   echo Search within the folder using your YouTube ID.
 )
 echo.

@@ -20,7 +20,7 @@ From CMD in the project directory:
 "Start translate.bat"
 ```
 
-Paste a YouTube URL. The launcher runs MPV and displays **JP:** and **EN:** lines in CMD. Diagnostic messages go to `logs\run.log`, rather than flooding the terminal.
+Paste a YouTube URL. The launcher runs a **single translator process** with `--simple-terminal`, displays **JP:** and **EN:** lines directly in CMD, and writes diagnostics to `logs\run.log`. There is no second `uv` process or stdout pipe. On startup failure, the launcher prints the exit code and matching error lines.
 
 Equivalent direct command:
 

@@ -139,7 +139,7 @@ def run_asr(
             and is_usable_transcript(caption_match.text)
         ):
             text = caption_match.text
-            log.info(
+            log.debug(
                 "using aligned YouTube caption because Haas returned no text "
                 "(%.2f-%.2fs, coverage=%.0f%%): %s",
                 utt.start_s, utt.end_s, caption_match.coverage * 100, text,
@@ -156,7 +156,7 @@ def run_asr(
             caption=caption_match.text if caption_match else "",
         )
         if corrected != text:
-            log.info("Watame ASR name correction: %s -> %s", text, corrected)
+            log.debug("Watame ASR name correction: %s -> %s", text, corrected)
             text = corrected
 
         if get_generation is not None and utt.generation != get_generation():

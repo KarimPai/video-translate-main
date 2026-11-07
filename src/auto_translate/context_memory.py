@@ -128,6 +128,41 @@ def repair_near_repeated_word(
     return "".join(parts)
 
 
+
+def reuse_recent_short_term(
+    japanese: str,
+    history: list[tuple[str, str]],
+) -> str | None:
+    """Reuse an identical isolated Katakana term's recent one-word English.
+
+    This prevents e.g. シャッター -> Shutter / shutter / shudder on adjacent
+    cues. Never reuse entire dialogue, names inferred from other Japanese,
+    or multiword model guesses. A bad first translation may still persist
+    briefly, so this memory is deliberately limited to the last two cues.
+    """
+    source = _word(japanese)
+    if not _KATAKANA_TERM.fullmatch(source):
+        return None
+
+    for previous_ja, previous_en in reversed(history[-2:]):
+        if _word(previous_ja) != source:
+            continue
+        target = previous_en.strip(_TRIM).strip("'\"“”")
+        if (
+            not _EN_TERM.fullmatch(target)
+            or len(target.split()) != 1
+            or target.casefold() in _IGNORE_EN
+        ):
+            return None
+        punctuation = ""
+        if japanese.rstrip().endswith(("？", "?")):
+            punctuation = "?"
+        elif japanese.rstrip().endswith(("！", "!")):
+            punctuation = "!"
+        return target + punctuation
+    return None
+
+
 def build_recent_context(
     history: list[tuple[str, str]],
     glossary,

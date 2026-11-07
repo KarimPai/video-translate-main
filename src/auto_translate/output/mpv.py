@@ -975,13 +975,9 @@ class MpvOutput:
         self._shown = ""
         self.ipc.command(
             "osd-overlay",
-            OVERLAY_ID,
-            "none",
-            "",
-            0,
-            720,
-            10,
-            False,
+            id=OVERLAY_ID,
+            format="none",
+            data="",
         )
         with self._lock:
             self._lines.clear()
@@ -1096,13 +1092,13 @@ class MpvOutput:
 
             self.ipc.command(
                 "osd-overlay",
-                OVERLAY_ID,
-                "ass-events" if text else "none",
-                text,
-                0,
-                720,
-                10,
-                False,
+                id=OVERLAY_ID,
+                format="ass-events" if text else "none",
+                data=text,
+                res_x=0,
+                res_y=720,
+                z=10,
+                hidden=False,
             )
 
 

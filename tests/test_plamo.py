@@ -15,9 +15,13 @@ class FakeGlossary:
 class PlamoTranslatorTests(unittest.TestCase):
     def test_context_without_video_title_keeps_subject_neutrality(self):
         context = _translation_context("")
-        self.assertIn("Japanese often omits the subject or possessor", context)
-        self.assertIn("instead of guessing I, you, my, your", context)
-        self.assertIn("Preserve people and possessives explicitly stated", context)
+        self.assertIn("clear, concise, neutral English", context)
+        self.assertIn("neither slangy nor overly formal", context)
+        self.assertIn("Preserve the original meaning, tone, negation", context)
+        self.assertIn("Lightly trim filler or needless repetition", context)
+        self.assertIn("do not guess who acts or owns something", context)
+        self.assertIn("Do not add facts, change sentiment", context)
+        self.assertIn("output exactly [SKIP]", context)
         self.assertNotIn("Video title:", context)
 
     def test_clean_removes_prefix_and_quotes(self):
@@ -153,8 +157,9 @@ class PlamoTranslatorTests(unittest.TestCase):
         )
         context = payload["chat_template_kwargs"]["context"]
         self.assertIn("Video title: 【ホロGTA】大空スバル視点", context)
-        self.assertIn("subject-neutral English", context)
-        self.assertIn("Translate meaningful Japanese to natural English", context)
+        self.assertIn("clear, concise, neutral English", context)
+        self.assertIn("do not guess who acts or owns something", context)
+        self.assertIn("Output only the English translation.", context)
         self.assertEqual(payload["messages"][1]["content"], "Thanks for yesterday.")
         self.assertEqual(len(payload["messages"]), 3)
 
@@ -279,6 +284,7 @@ class SelectiveRecheckTests(unittest.TestCase):
         )
         self.assertIn("Video title: Hololive livestream", body["chat_template_kwargs"]["context"])
         self.assertIn("untranslated_japanese", body["chat_template_kwargs"]["context"])
+        self.assertIn("Use clear, concise, neutral English", body["chat_template_kwargs"]["context"])
         self.assertEqual(len(body["messages"]), 3)
 
 

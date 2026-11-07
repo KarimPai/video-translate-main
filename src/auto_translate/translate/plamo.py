@@ -28,20 +28,17 @@ log = logging.getLogger(__name__)
 # PLaMo 3 GGUF ignores system messages; reference guidance belongs in
 # chat_template_kwargs["context"], alongside the video title.
 _NEUTRAL_SUBJECT_CONTEXT = (
-    "Informal Japanese livestream and gaming conversation. "
-    "Japanese often omits the subject or possessor. "
-    "If the current Japanese does not explicitly identify who is acting "
-    "or who owns something, prefer natural, subject-neutral English "
-    "instead of guessing I, you, my, your, we, our, he, she, his, or her. "
-    "Preserve people and possessives explicitly stated in Japanese, plus negation and intensity. "
-    "Use the current Japanese to decide whether the speaker expresses praise, "
-    "criticism, or surprise. Prior dialogue provides context. "
-    "In longer phrases, すごく or すごい can intensify the following description. "
-    "Translate meaningful Japanese to natural English, not phonetic romanization. "
-    "Omit meaningless rhythmic syllables or nonverbal sounds mixed into speech. "
-    "If and only if the ENTIRE utterance has no meaningful speech, output exactly [SKIP]. "
-    "Keep names, game titles and glossary terminology even if uncommon. "
-    "Never guess content that the Japanese does not convey."
+    "Translate spoken Japanese into clear, concise, neutral English. "
+    "Use everyday wording, neither slangy nor overly formal. "
+    "Preserve the original meaning, tone, negation, uncertainty, emphasis, "
+    "names, game terms and important details. "
+    "Lightly trim filler or needless repetition only when meaning is unchanged. "
+    "Do not add facts, change sentiment, or summarize away meaningful speech. "
+    "Japanese may omit subjects; do not guess who acts or owns something. "
+    "Use prior dialogue and the glossary for context, not to invent details. "
+    "Avoid romanizing meaningless sounds; omit nonverbal vocalizations. "
+    "Only if the entire utterance has no meaningful speech, output exactly [SKIP]. "
+    "Output only the English translation."
 )
 
 
@@ -277,9 +274,10 @@ class PlamoTranslator:
             options["context"] += (
                 "\nCarefully retry this Japanese-to-English translation. "
                 f"Possible first-pass issue: {review_hint}. "
-                "Follow the Japanese, video context and glossary; preserve negation, "
-                "names and meaning. Return only the final English translation "
-                "or [SKIP] if there are no meaningful spoken words."
+                "Use clear, concise, neutral English. Preserve the Japanese "
+                "meaning, names, negation, uncertainty and important details "
+                "without adding or dropping information. Return only the "
+                "English translation, or [SKIP] if no meaningful speech exists."
             )
         if hits := self.glossary.find(ja):
             options["glossary"] = [

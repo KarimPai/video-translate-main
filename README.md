@@ -50,6 +50,15 @@ PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up 
 
 Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 
+### Translation style
+
+PLaMo's default prompt produces **clear, concise, neutral English** rather than
+overly casual/slangy or stiff/formal prose. It can lightly trim fillers and
+needless repetition, but must preserve meaning, sentiment, negation, uncertainty,
+emphasis, names and relevant details. It should not invent subjects or turn a
+translation into a loose summary. The model may not follow every instruction
+perfectly; Japanese ASR errors still affect the result.
+
 ### Selective PLaMo quality recheck
 
 The translator uses its existing video-title context, recent dialogue and Hololive

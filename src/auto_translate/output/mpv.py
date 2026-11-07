@@ -164,7 +164,7 @@ class _WindowsPipe:
         self._handle = _winapi.CreateFile(
             path,
             _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
-            0, None, _winapi.OPEN_EXISTING,
+            0, 0, _winapi.OPEN_EXISTING,
             _winapi.FILE_FLAG_OVERLAPPED, 0,
         )
         self._buffer = bytearray()

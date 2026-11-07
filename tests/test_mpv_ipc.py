@@ -38,6 +38,7 @@ class WindowsPipeTests(unittest.TestCase):
         )
         with patch.dict(sys.modules, {'_winapi': api}):
             pipe = _WindowsPipe('test-pipe')
+        self.assertEqual(pipe._handle[3], 0)  # NULL security attributes must be an integer.
         self.assertEqual(pipe._handle[-2], api.FILE_FLAG_OVERLAPPED)
         pipe.write(b'command\n')
         self.assertEqual(json.loads(pipe.readline()), {'event': 'start-file'})

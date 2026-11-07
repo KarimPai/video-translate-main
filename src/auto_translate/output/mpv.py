@@ -382,6 +382,10 @@ class MpvOutput:
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
         self._direct_video_loaded = False
+        # The original VOD's mpv time-pos is the source timestamp. Do not
+        # derive a new offset from the restarted FFmpeg audio reader on seek.
+        # Local fMP4 fallback retains its separate anchored timeline.
+        self._uses_original_timeline = False
         self._last_direct_pos: float | None = None
         self._last_direct_sample_at = 0.0
 
@@ -755,6 +759,7 @@ class MpvOutput:
                     "the currently cached video"
                 )
 
+            self._uses_original_timeline = loaded
             self._direct_video_loaded = True
             if self._session_start > 0:
                 self.ipc.command("seek", self._session_start, "absolute+exact")
@@ -780,7 +785,11 @@ class MpvOutput:
         self._mpv_anchor = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-        mapping = "direct MPV source timeline against independently ingested audio"
+        mapping = (
+            "original MPV source timeline (identity; no per-seek rebasing)"
+            if self._uses_original_timeline
+            else "local video fallback timeline with source/session anchor"
+        )
         current_pos = self.ipc.get("time-pos")
         if current_pos is not None:
             self._mpv_anchor = float(current_pos)
@@ -894,13 +903,7 @@ class MpvOutput:
                                 self._last_direct_pos,
                                 float(pos),
                             )
-                            source_target = float(pos)
-                            if self._mpv_anchor is not None:
-                                source_target = (
-                                    self._clock_source_anchor
-                                    + float(pos)
-                                    - self._mpv_anchor
-                                )
+                            source_target = self._source_time_from_mpv(float(pos))
                             if self._cached_seek_ready(source_target):
                                 log.info(
                                     "native MPV seek %.3fs: using cached translations "
@@ -934,11 +937,7 @@ class MpvOutput:
                         if self.ingest.source.duration is not None else "?",
                     )
 
-                self._now = (
-                    self._clock_source_anchor
-                    + float(pos)
-                    - self._mpv_anchor
-                )
+                self._now = self._source_time_from_mpv(float(pos))
                 if self.ingest.source.duration is not None:
                     self._now = min(self._now, self.ingest.source.duration)
 
@@ -1099,6 +1098,27 @@ class MpvOutput:
             return False
         return self._restart_audio_at(target, seek_video=True)
 
+    def _source_time_from_mpv(self, mpv_pos: float) -> float:
+        """Map MPV clock to absolute audio/subtitle timestamp.
+
+        Direct YouTube/local VOD playback already exposes the real video
+        timeline; anchoring again on each audio restart accumulates drift
+        after repeated seeks. Only the fMP4 fallback needs a relative clock.
+        """
+        if getattr(self, "_uses_original_timeline", False):
+            return mpv_pos
+        if self._mpv_anchor is None:
+            return mpv_pos
+        return self._clock_source_anchor + mpv_pos - self._mpv_anchor
+
+    def _mpv_time_from_source(self, source_pos: float) -> float:
+        """Inverse of _source_time_from_mpv, including for repeated seeks."""
+        if getattr(self, "_uses_original_timeline", False):
+            return source_pos
+        if self._mpv_anchor is None:
+            return source_pos
+        return self._mpv_anchor + source_pos - self._clock_source_anchor
+
     def _cached_seek_ready(self, target: float) -> bool:
         """Only skip an audio restart when the next 5s is fully translated."""
         cache = getattr(self, "_subtitle_cache", None)
@@ -1117,10 +1137,7 @@ class MpvOutput:
         if not self._cached_seek_ready(target):
             return False
 
-        mpv_target = target
-        if self._mpv_anchor is not None:
-            mpv_target = self._mpv_anchor + target - self._clock_source_anchor
-
+        mpv_target = self._mpv_time_from_source(target)
         self.ipc.command("seek", mpv_target, "absolute+exact")
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline and not self.stop.is_set():
@@ -1156,13 +1173,7 @@ class MpvOutput:
 
         self.ipc.command("set_property", "pause", True)
         if seek_video:
-            mpv_target = target
-            if self._mpv_anchor is not None:
-                mpv_target = (
-                    self._mpv_anchor
-                    + target
-                    - self._clock_source_anchor
-                )
+            mpv_target = self._mpv_time_from_source(target)
             self.ipc.command("seek", mpv_target, "absolute+exact")
             # MPV acknowledges seek before it necessarily reaches that time.
             # Sampling the prior time-pos here would corrupt the new anchor.

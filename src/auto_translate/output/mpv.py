@@ -2,8 +2,9 @@
 """Translation-synchronised MPV playback.
 
 mpv listens on a local TCP port (paused); ingest's ffmpeg streams video+audio into it.
-VOD playback starts as soon as translation is 10 seconds ahead, then pauses
-whenever translated coverage falls to that lead. No deliberate video prebuffer.
+VOD playback starts after a five-second translation lead, including after
+seeks. Once started, playback is uninterrupted even if translation falls behind.
+No deliberate video prebuffer.
 For live streams, delay_s controls how far behind live playback starts.
 
 A scheduler polls mpv's time-pos over JSON IPC (~10x/s) and draws subtitles
@@ -27,6 +28,7 @@ from typing import Any
 from ..config import MpvConfig
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
+from ..session_cache import SessionSubtitleCache
 from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
@@ -40,10 +42,6 @@ WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
 INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
 
-KEYS_HINT = (
-    "←/→: jump 30s · shift+←/→: 5 min · space: pause · m: mute · "
-    "↑/↓: volume · f: fullscreen · q: quit"
-)
 JUMP_MESSAGE = "auto-translate-jump"
 
 
@@ -154,8 +152,75 @@ class MpvError(Exception):
     pass
 
 
+class _WindowsPipe:
+    """Raw newline IPC over a duplex, overlapped Windows pipe.
+
+    A blocking CRT file read can serialize writes on the same descriptor.
+    Keep the reader independent so it can wait while commands are sent.
+    """
+
+    def __init__(self, path: str) -> None:
+        import _winapi
+
+        self._api = _winapi
+        self._handle = _winapi.CreateFile(
+            path,
+            _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+            0, 0, _winapi.OPEN_EXISTING,
+            _winapi.FILE_FLAG_OVERLAPPED, 0,
+        )
+        self._buffer = bytearray()
+
+    def readline(self) -> bytes:
+        api = self._api
+        while b"\n" not in self._buffer:
+            try:
+                ov, _ = api.ReadFile(self._handle, 65536, overlapped=True)
+                _, error = ov.GetOverlappedResult(True)
+            except OSError as exc:
+                if exc.winerror == api.ERROR_BROKEN_PIPE:
+                    return b""
+                raise
+            if error:
+                raise ctypes.WinError(error)
+            data = ov.getbuffer()
+            if not data:
+                return b""
+            self._buffer.extend(data)
+        end = self._buffer.index(b"\n") + 1
+        line = bytes(self._buffer[:end])
+        del self._buffer[:end]
+        return line
+
+    def write(self, data: bytes) -> None:
+        ov, _ = self._api.WriteFile(self._handle, data, overlapped=True)
+        try:
+            # Bound writes as well as response waits if MPV stops reading.
+            if self._api.WaitForSingleObject(ov.event, 5000) != 0:
+                raise TimeoutError("mpv IPC pipe write timed out")
+        except BaseException:
+            ov.cancel()
+            ov.GetOverlappedResult(True)
+            raise
+        written, error = ov.GetOverlappedResult(True)
+        if error:
+            raise ctypes.WinError(error)
+        if written != len(data):
+            raise ConnectionError("incomplete mpv IPC pipe write")
+
+    def close(self) -> None:
+        # Cancel a pending reader before releasing the handle.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CancelIoEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        kernel32.CancelIoEx.restype = wintypes.BOOL
+        kernel32.CancelIoEx(self._handle, None)
+        self._api.CloseHandle(self._handle)
+
+
 class MpvIpc:
-    """mpv's JSON IPC: one JSON object per line."""
+    """mpv JSON IPC with a dedicated reader and bounded command waits."""
+
+    COMMAND_TIMEOUT_S = 5.0
 
     def __init__(self, path: str, timeout_s: float = 15.0) -> None:
         deadline = time.monotonic() + timeout_s
@@ -163,7 +228,7 @@ class MpvIpc:
         while True:
             try:
                 if sys.platform == "win32":
-                    self._f = open(path, "r+b", buffering=0)
+                    self._f = _WindowsPipe(path)
                 else:
                     sock = socket.socket(socket.AF_UNIX)
                     sock.connect(path)
@@ -177,38 +242,69 @@ class MpvIpc:
         self._lock = threading.Lock()
         self._next_id = 0
         self.events: queue.Queue[dict] = queue.Queue()
+        self._responses: queue.Queue[dict] = queue.Queue()
+        self._reader = threading.Thread(
+            target=self._read_messages,
+            name="mpv-ipc-reader",
+            daemon=True,
+        )
+        self._reader.start()
 
-    def command(self, *args: Any, **named: Any) -> Any:
-        """Send one command and wait for its response."""
-        with self._lock:
-            self._next_id += 1
-            rid = self._next_id
-
-            cmd = {"name": args[0], **named} if named else list(args)
-
-            self._f.write(
-                (
-                    json.dumps(
-                        {"command": cmd, "request_id": rid}
-                    ) + "\n"
-                ).encode()
-            )
-
+    def _read_messages(self) -> None:
+        """Read IPC continuously so command waits can have real timeouts."""
+        try:
             while True:
                 line = self._f.readline()
-
                 if not line:
                     raise ConnectionError("mpv closed the IPC connection")
 
                 msg = json.loads(line)
-
-                if msg.get("request_id") == rid:
-                    if msg.get("error") != "success":
-                        raise MpvError(msg.get("error"))
-                    return msg.get("data")
-
                 if "event" in msg:
                     self.events.put(msg)
+                elif "request_id" in msg:
+                    self._responses.put(msg)
+        except (OSError, ValueError, ConnectionError) as exc:
+            self._responses.put({"_reader_error": str(exc)})
+
+    def command(self, *args: Any, **named: Any) -> Any:
+        """Send one command and wait no longer than COMMAND_TIMEOUT_S."""
+        with self._lock:
+            self._next_id += 1
+            rid = self._next_id
+            cmd = {"name": args[0], **named} if named else list(args)
+
+            self._f.write(
+                (
+                    json.dumps({"command": cmd, "request_id": rid}) + "\n"
+                ).encode()
+            )
+
+            deadline = time.monotonic() + self.COMMAND_TIMEOUT_S
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MpvError(
+                        f"mpv IPC command timed out after "
+                        f"{self.COMMAND_TIMEOUT_S:.1f}s: {cmd!r}"
+                    )
+
+                try:
+                    msg = self._responses.get(timeout=remaining)
+                except queue.Empty:
+                    raise MpvError(
+                        f"mpv IPC command timed out after "
+                        f"{self.COMMAND_TIMEOUT_S:.1f}s: {cmd!r}"
+                    ) from None
+
+                if "_reader_error" in msg:
+                    raise ConnectionError(
+                        f"mpv IPC reader stopped: {msg['_reader_error']}"
+                    )
+                if msg.get("request_id") != rid:
+                    continue
+                if msg.get("error") != "success":
+                    raise MpvError(f"{cmd!r}: {msg.get('error')}")
+                return msg.get("data")
 
     def get(self, prop: str) -> Any:
         """Return a property's value, or None if unavailable."""
@@ -245,20 +341,23 @@ def find_mpv(configured: str) -> str:
 
 
 class MpvOutput:
-    # Keep playback this far behind completed translation.
-    PAUSE_LEAD_SECONDS = 10.0
+    # Minimum translated lead before starting/resuming after a seek.
+    PAUSE_LEAD_SECONDS = 5.0
 
     def __init__(
         self,
         cfg: MpvConfig,
         ingest: Ingest,
         stop: threading.Event,
+        subtitle_cache: SessionSubtitleCache | None = None,
     ) -> None:
         self.cfg = cfg
         self.ingest = ingest
         self.stop = stop
+        self._subtitle_cache = subtitle_cache
 
         self._lines: list[_Line] = []
+        self._subtitle_ready = threading.Event()
         self._lock = threading.Lock()
         self._now: float | None = None
         self._shown = ""
@@ -282,6 +381,12 @@ class MpvOutput:
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
+        self._direct_video_loaded = False
+        self._last_direct_pos: float | None = None
+        self._last_direct_sample_at = 0.0
+
+        mpv_log = (Path.cwd() / "logs" / "mpv.log")
+        mpv_log.parent.mkdir(parents=True, exist_ok=True)
 
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
@@ -291,29 +396,44 @@ class MpvOutput:
 
             "--force-window=yes",
             "--title=auto-translate",
-            "--keep-open=no",
+            "--keep-open=yes",
             "--idle=yes",
             "--rebase-start-time=no",
 
-            # Keep a modest forward/backward demux cache while reading the
-            # progressive local fMP4 HLS playlist.
+            # Keep a modest forward/backward demux cache for the direct
+            # YouTube video stream.
             "--cache=yes",
-            "--demuxer-readahead-secs=12",
-            "--demuxer-max-bytes=128MiB",
-            "--demuxer-max-back-bytes=32MiB",
-            # Match FFmpeg's live HLS reader: begin at the oldest retained segment.
-            "--demuxer-lavf-o=live_start_index=0",
+            "--demuxer-readahead-secs=120",
+            "--demuxer-max-bytes=1GiB",
+            "--demuxer-max-back-bytes=1GiB",
+            # Start live HLS at its oldest available segment; VOD keeps
+            # MPV's normal full-playlist timeline.
+            *(
+                ["--demuxer-lavf-o=live_start_index=0"]
+                if ingest.source.live else []
+            ),
             "--input-default-bindings=no",
 
-            # Disable unsafe on-screen controls.
-            "--osc=no",
+            # Let MPV's yt-dlp hook open the original YouTube page URL.
+            # This preserves the full VOD timeline and lets MPV select both
+            # video and audio tracks with the required HTTP headers.
+            *(
+                [f"--ytdl-format={cfg.ytdlp_format}"]
+                if not Path(ingest.source.location).exists()
+                else []
+            ),
+
+            # Use MPV's built-in native on-screen controller.
+            "--osc=yes",
+            "--osd-on-seek=no",
             "--no-input-default-bindings",
             f"--input-conf={INPUT_CONF}",
 
             # Hardware video decoding.
             f"--hwdec={cfg.hwdec}",
 
-            "--msg-level=all=warn",
+            f"--log-file={mpv_log}",
+            "--msg-level=all=info",
         ])
 
         if sys.platform == "win32":
@@ -355,7 +475,7 @@ class MpvOutput:
             raise
 
         log.info(
-            "mpv ready for progressive fMP4 HLS playback "
+            "mpv ready for direct source video playback "
             "(live delay %.1fs, VOD translation lead %.1fs)",
             cfg.delay_s,
             self.PAUSE_LEAD_SECONDS,
@@ -371,9 +491,18 @@ class MpvOutput:
     # ---- Output interface ----
 
     def show(self, sub: Subtitle) -> None:
-        cfg = self.cfg
-
         if sub.end_s < self._session_start:
+            return
+
+        if not sub.en.strip():
+            log.error(
+                "subtitle not queued because English translation is empty "
+                "(generation=%d, %.2f-%.2fs, Japanese=%r)",
+                sub.generation,
+                sub.start_s,
+                sub.end_s,
+                sub.ja,
+            )
             return
 
         # Use the first speech-positive VAD frame, not the earlier padded
@@ -392,10 +521,7 @@ class MpvOutput:
             show_from,
             max(0.0, speech_start - sub.start_s),
         )
-        until = (
-            max(sub.end_s, show_from + cfg.min_display_s)
-            + cfg.hold_s
-        )
+        until = sub.end_s
 
         line = _Line(sub, show_from, until)
         now = self._now
@@ -425,6 +551,7 @@ class MpvOutput:
 
         with self._lock:
             self._lines.append(line)
+        self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
         """Record the latest audio position safely processed for translation."""
@@ -434,6 +561,22 @@ class MpvOutput:
                 progress_s,
             )
             self._buffer_condition.notify_all()
+
+    def _translation_ready(self) -> bool:
+        """Start after a 5s lead from new work or previously cached audio."""
+        with self._buffer_condition:
+            ready = self._source_finished or (
+                self._now is not None
+                and self._translated_until >= self._now + self.PAUSE_LEAD_SECONDS
+            )
+        if ready:
+            return True
+        cache = getattr(self, "_subtitle_cache", None)
+        now = self._now
+        return (
+            cache is not None and now is not None
+            and cache.covered_until(now) >= now + self.PAUSE_LEAD_SECONDS
+        )
 
     def reset_buffer(self, progress_s: float) -> None:
         """Reset translated coverage after a VOD seek."""
@@ -449,15 +592,20 @@ class MpvOutput:
             self._buffer_condition.notify_all()
 
     def drain(self) -> None:
-        """Let MPV finish playback before closing."""
+        """Keep MPV open on the final frame until the user closes it."""
         while not self.stop.is_set():
             if self._proc.poll() is not None:
-                break
+                return
 
-            if self.ipc.get("idle-active"):
-                break
+            if self.ipc.get("eof-reached"):
+                log.info(
+                    "VOD playback finished; MPV will remain open until closed"
+                )
+                while not self.stop.is_set() and self._proc.poll() is None:
+                    time.sleep(0.25)
+                return
 
-            time.sleep(0.5)
+            time.sleep(0.25)
 
     def close(self) -> None:
         """Cleanly stop MPV and release its automatic cleanup protection."""
@@ -530,9 +678,75 @@ class MpvOutput:
                 self.stop.set()
 
     def _play_session(self, show_hint: bool) -> None:
-        """Play only while translated subtitles remain sufficiently ahead."""
+        """Buffer before start/seeks; never stutter-pause during playback."""
 
         lead = self.PAUSE_LEAD_SECONDS
+
+        # Load the video immediately; audio timestamp readiness must not
+        # prevent MPV from opening the source. The audio pipeline can fail or
+        # be delayed independently of video playback.
+        self._session_start = self.ingest.source.start_s
+
+        if not self._direct_video_loaded:
+            video_url = self.ingest.source.location
+            log.info(
+                "loading original source in MPV through its yt-dlp hook"
+                if not Path(video_url).exists()
+                else "loading local source in MPV"
+            )
+            loaded = False
+            try:
+                self.ipc.command("loadfile", video_url, "replace")
+                started = self._wait_for_event("start-file", timeout_s=10.0)
+                loaded = (
+                    started
+                    and self._wait_for_event("file-loaded", timeout_s=30.0)
+                )
+            except (MpvError, ConnectionError, OSError):
+                log.exception(
+                    "MPV rejected the original source; trying local fMP4 fallback"
+                )
+
+            if not loaded:
+                log.warning(
+                    "MPV could not load the original source; "
+                    "falling back to the translator's local fMP4 video stream"
+                )
+                try:
+                    cache_url = self.ingest.video_playlist_url
+                    self.ipc.command("loadfile", cache_url, "replace")
+                    cache_started = self._wait_for_event(
+                        "start-file",
+                        timeout_s=10.0,
+                    )
+                    cache_loaded = (
+                        cache_started
+                        and self._wait_for_event("file-loaded", timeout_s=30.0)
+                    )
+                except (MpvError, ConnectionError, OSError, RuntimeError):
+                    log.exception("MPV could not start the local fMP4 video fallback")
+                    self.stop.set()
+                    return
+
+                if not cache_loaded:
+                    log.error("MPV did not finish loading the local fMP4 video fallback")
+                    self.stop.set()
+                    return
+
+                log.info(
+                    "MPV loaded local fMP4 fallback; seek range follows "
+                    "the currently cached video"
+                )
+
+            self._direct_video_loaded = True
+            if self._session_start > 0:
+                self.ipc.command("seek", self._session_start, "absolute+exact")
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline:
+                    pos = self.ipc.get("time-pos")
+                    if pos is not None and abs(float(pos) - self._session_start) <= 1.0:
+                        break
+                    time.sleep(0.05)
 
         while not self.ingest.first_pts_ready.wait(0.2):
             if self.stop.is_set():
@@ -540,57 +754,23 @@ class MpvOutput:
 
         assert self.ingest.first_pts is not None
 
-        # The cache writer has already produced its initialization segment and
-        # first media fragment. MPV reads the same growing event playlist as
-        # the ASR audio extractor.
-        playlist = self.ingest.video_playlist_url
-        self.ipc.command("loadfile", playlist, "replace")
-        if not self._wait_for_event("start-file", timeout_s=10.0):
-            log.error("MPV did not start loading the fMP4 HLS playlist")
-            self.stop.set()
-            return
-        if not self._wait_for_event("file-loaded", timeout_s=15.0):
-            log.error("MPV could not load the initial fMP4 HLS fragments")
-            self.stop.set()
-            return
-
+        # Ingest updates source.start_s asynchronously after a restart. Never
+        # anchor a seek to the previous audio session's source.start_s.
         self._session_start = self.ingest.source.start_s
 
-        # Audio extraction and MPV read the same fMP4 playlist, so both
-        # use its media timeline. Measure MPV's local time-pos origin rather
-        # than estimating it from the upstream YouTube audio PTS.
+        # MPV plays the original VOD timeline; FFmpeg independently extracts
+        # audio for ASR. Anchor each audio generation to MPV's current position.
         self._mpv_anchor = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-        mapping = "measured MPV session anchor against shared fMP4 source timeline"
-
-        if self._pending_seek_offset is not None:
-            seek_offset = self._pending_seek_offset
-            self.ipc.command("seek", seek_offset, "absolute+exact")
-            deadline = time.monotonic() + 5.0
-            measured_pos = None
-            while time.monotonic() < deadline:
-                pos = self.ipc.get("time-pos")
-                if pos is not None:
-                    measured_pos = float(pos)
-                    if abs(measured_pos - seek_offset) <= 0.75:
-                        break
-                time.sleep(0.05)
-            # The HLS playlist's time-pos is relative to its first segment;
-            # keep the requested fragment offset as the source-clock anchor.
-            self._mpv_anchor = seek_offset
-            record_session_anchor(
-                self.ingest.source.timeline,
-                self._clock_source_anchor,
-                self._mpv_anchor,
-                self._anchor_reason,
-            )
-            log.info(
-                "reused cached fMP4 fragments: playlist_offset=%.3fs observed_mpv_pos=%s",
-                seek_offset,
-                f"{measured_pos:.3f}" if measured_pos is not None else "unavailable",
-            )
-            self._pending_seek_offset = None
+        mapping = "direct MPV source timeline against independently ingested audio"
+        current_pos = self.ipc.get("time-pos")
+        if current_pos is not None:
+            self._mpv_anchor = float(current_pos)
+        self._last_direct_pos = (
+            float(current_pos) if current_pos is not None else None
+        )
+        self._last_direct_sample_at = time.monotonic()
 
         self._clock_sample_logged = False
         self._audio_clock_diag_until = 0.0
@@ -632,37 +812,11 @@ class MpvOutput:
 
         while not self.stop.is_set():
 
+            self._subtitle_ready.clear()
             if self.ingest.video_failed.is_set():
                 if self._recover_video_stream():
                     return
                 return
-
-            if (
-                not self.ingest.source.live
-                and not paused
-                and self._now is not None
-            ):
-                with self._buffer_condition:
-                    translated_lead = self._translated_until - self._now
-                    should_pause = (
-                        not self._source_finished
-                        and translated_lead <= lead
-                    )
-
-                if should_pause:
-                    self.ipc.command(
-                        "set_property",
-                        "pause",
-                        True,
-                    )
-                    paused = True
-                    unpause_at = None
-
-                    log.info(
-                        "playback paused: translation lead %.1fs (target %.1fs)",
-                        translated_lead,
-                        lead,
-                    )
 
             should_unpause = (
                 unpause_at is not None
@@ -670,14 +824,18 @@ class MpvOutput:
             )
 
             if paused and unpause_at is None:
-                with self._buffer_condition:
-                    should_unpause = (
-                        self._source_finished
-                        or (
-                            self._now is not None
-                            and self._translated_until >= self._now + lead
-                        )
-                    )
+                should_unpause = self._translation_ready()
+
+            # User input overrides the optional translation prebuffer. Never
+            # force MPV back to pause immediately after its Play button is used.
+            # Once manually playing, do not auto-pause for low translation lead.
+            if paused and self.ipc.get("pause") is False:
+                paused = False
+                unpause_at = None
+                log.info(
+                    "MPV manually started; continuing playback without "
+                    "waiting for the translation buffer"
+                )
 
             if paused and should_unpause:
 
@@ -686,13 +844,6 @@ class MpvOutput:
                     "pause",
                     False,
                 )
-
-                if show_hint:
-                    self.ipc.command(
-                        "show-text",
-                        KEYS_HINT,
-                        6000,
-                    )
 
                 paused = False
                 unpause_at = None
@@ -711,6 +862,35 @@ class MpvOutput:
                 )
 
             if (pos := self.ipc.get("time-pos")) is not None:
+                if self._direct_video_loaded and not self.ingest.source.live:
+                    sampled_at = time.monotonic()
+                    if self._last_direct_pos is not None:
+                        raw_step = float(pos) - self._last_direct_pos
+                        elapsed = sampled_at - self._last_direct_sample_at
+                        if (
+                            abs(raw_step) >= 2.0
+                            and abs(raw_step - elapsed) >= 1.5
+                        ):
+                            log.info(
+                                "native MPV seek detected: %.3fs -> %.3fs",
+                                self._last_direct_pos,
+                                float(pos),
+                            )
+                            source_target = float(pos)
+                            if self._mpv_anchor is not None:
+                                source_target = (
+                                    self._clock_source_anchor
+                                    + float(pos)
+                                    - self._mpv_anchor
+                                )
+                            self._restart_audio_at(
+                                source_target,
+                                seek_video=False,
+                            )
+                            return
+                    self._last_direct_pos = float(pos)
+                    self._last_direct_sample_at = sampled_at
+
                 if self._mpv_anchor is None:
                     self._mpv_anchor = float(pos)
                     record_session_anchor(
@@ -779,10 +959,24 @@ class MpvOutput:
                     )
                     self._audio_clock_diag_last_at = sample_at
 
+            if self._replay_requested():
+                if self._now is not None and self.ipc.get("eof-reached"):
+                    log.info("replay requested after VOD end; restarting from beginning")
+                    if self._jump(self.ingest.source.start_s - self._now):
+                        return
+
             if (delta := self._jump_request()) and self._jump(delta):
                 return
 
-            time.sleep(0.1)
+            # Wake for newly translated text or the next queued cue boundary.
+            wait_s = 0.1
+            if not paused and self._now is not None:
+                with self._lock:
+                    for line in self._lines:
+                        for boundary in (line.show_from, line.show_until):
+                            if self._now < boundary < self._now + wait_s:
+                                wait_s = boundary - self._now
+            self._subtitle_ready.wait(max(0.005, wait_s))
 
     def _recover_video_stream(self) -> bool:
         """Restart the shared fMP4 cache and audio reader at the current source position."""
@@ -810,12 +1004,33 @@ class MpvOutput:
 
         self._pending_seek_offset = None
         self.ingest.request_restart(restart_at)
+        self.reset_buffer(restart_at)
         self.ingest.go()
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
         self._anchor_reason = "video-recovery"
         self._clock_sample_logged = False
         return True
+
+    def _replay_requested(self) -> bool:
+        """Return whether the user pressed Play/Space."""
+        requested = False
+        while not self.ipc.events.empty():
+            ev = self.ipc.events.get()
+            args = ev.get("args") or []
+            if (
+                ev.get("event") == "client-message"
+                and args[:1] == ["auto-translate-replay"]
+            ):
+                requested = True
+            elif (
+                ev.get("event") == "client-message"
+                and args[:1] == [JUMP_MESSAGE]
+            ):
+                # Preserve seek requests for the normal jump handler.
+                self.ipc.events.put(ev)
+                break
+        return requested
 
     def _jump_request(self) -> float:
         """Collect jump-key requests from mpv."""
@@ -825,10 +1040,9 @@ class MpvOutput:
             ev = self.ipc.events.get()
             args = ev.get("args") or []
 
-            if (
-                ev.get("event") == "client-message"
-                and args[:1] == [JUMP_MESSAGE]
-            ):
+            if ev.get("event") != "client-message" or not args:
+                continue
+            if args[0] == JUMP_MESSAGE:
                 delta += float(args[1])
 
         return delta
@@ -851,66 +1065,75 @@ class MpvOutput:
         target = max(0.0, self._now + delta)
 
         if src.duration:
-            target = min(
-                target,
-                max(0.0, src.duration - 5),
-            )
+            target = min(target, max(0.0, src.duration - 5))
 
-        log.info(
-            "jump %+.0fs → %s",
-            delta,
-            fmt_hms(target),
-        )
+        log.info("jump %+.0fs -> %s", delta, fmt_hms(target))
+        return self._restart_audio_at(target, seek_video=True)
+
+    def _restart_audio_at(self, target: float, *, seek_video: bool) -> bool:
+        """Restart translation audio at a source timestamp without reloading video."""
+        src = self.ingest.source
+        target = max(0.0, target)
+        if src.duration:
+            target = min(target, max(0.0, src.duration - 1.0))
 
         self.ipc.command("set_property", "pause", True)
+        if seek_video:
+            mpv_target = target
+            if self._mpv_anchor is not None:
+                mpv_target = (
+                    self._mpv_anchor
+                    + target
+                    - self._clock_source_anchor
+                )
+            self.ipc.command("seek", mpv_target, "absolute+exact")
+            # MPV acknowledges seek before it necessarily reaches that time.
+            # Sampling the prior time-pos here would corrupt the new anchor.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and not self.stop.is_set():
+                landed = self.ipc.get("time-pos")
+                if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
+                    break
+                time.sleep(0.05)
+            else:
+                log.warning(
+                    "MPV seek position not confirmed at %.3fs; "
+                    "rechecking the anchor after audio restarts",
+                    mpv_target,
+                )
 
         self._now = None
         self._shown = ""
-
         self.ipc.command(
             "osd-overlay",
             id=OVERLAY_ID,
             format="none",
             data="",
         )
-
         with self._lock:
             self._lines.clear()
 
-        self._video_retries = 0
-        cache_start = self.ingest.cache_source_start_s
-        cache_end = self.ingest.cache_end_s
-        can_reuse_cache = (
-            cache_start <= target <= cache_end - 1.0
+        self._pending_seek_offset = None
+        self._clock_source_anchor = target
+        self._mpv_anchor = None
+        self._anchor_reason = "seek"
+        self._clock_sample_logged = False
+        self._last_direct_pos = (
+            float(self.ipc.get("time-pos"))
+            if self.ipc.get("time-pos") is not None else None
         )
-        preserved = self.ingest.request_restart(
-            target,
-            preserve_video_cache=can_reuse_cache,
-        )
-        self._pending_seek_offset = (
-            target - cache_start if preserved else None
-        )
-        if preserved:
-            log.info(
-                "seek will reuse local fMP4 fragments: %.2fs-%.2fs",
-                cache_start,
-                cache_end,
-            )
-        else:
-            log.info(
-                "seek requires a new progressive fMP4 fetch at %.2fs",
-                target,
-            )
+        self._last_direct_sample_at = time.monotonic()
 
-        self.ipc.command(
-            "show-text",
-            f"Jumping to {fmt_hms(target)}…",
-            4000,
-        )
-
-        # The next playback session waits for the new fMP4 playlist and then
-        # loads it. This avoids reconnecting MPV to a transient TCP stream.
+        self.ingest.request_restart(target)
+        # The queued reset marker may arrive after the MPV thread restarts.
+        self.reset_buffer(target)
         self.ingest.go()
+
+        # Previously translated captions should be visible immediately, even
+        # while FFmpeg restarts audio extraction for uncached sections.
+        if getattr(self, "_subtitle_cache", None) is not None:
+            self._now = target
+            self._render(target)
         return True
 
     def _wait_for_event(
@@ -919,30 +1142,53 @@ class MpvOutput:
         timeout_s: float = 5.0,
     ) -> bool:
         deadline = time.monotonic() + timeout_s
+        deferred: list[dict] = []
+        found = False
 
-        while time.monotonic() < deadline:
-            self.ipc.get("pause")
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    ev = self.ipc.events.get(
+                        timeout=min(0.05, max(0.001, deadline - time.monotonic()))
+                    )
+                except queue.Empty:
+                    continue
 
-            while not self.ipc.events.empty():
-                if self.ipc.events.get().get("event") == name:
-                    return True
+                if ev.get("event") == name:
+                    found = True
+                    break
 
-            time.sleep(0.05)
+                # Keep unrelated events (including a quickly-following
+                # file-loaded event) available to the next event consumer.
+                deferred.append(ev)
+        finally:
+            for ev in deferred:
+                self.ipc.events.put(ev)
 
-        return False
+        return found
 
     def _render(self, now: float) -> None:
         with self._lock:
             self._lines = [
-                ln
-                for ln in self._lines
-                if ln.show_until > now - 60
+                ln for ln in self._lines if ln.show_until > now - 60
+            ]
+            active = [
+                ln for ln in self._lines
+                if ln.show_from <= now < ln.show_until and ln.sub.en
             ]
 
+        # The per-video text cache survives seek resets and the rolling
+        # in-memory display list. Ask it for cues at the current timestamp.
+        cache = getattr(self, "_subtitle_cache", None)
+        if cache is not None:
             active = [
-                ln
-                for ln in self._lines
-                if ln.show_from <= now < ln.show_until and ln.sub.en
+                _Line(
+                    sub,
+                    sub.speech_start_s
+                    if sub.speech_start_s is not None else sub.start_s,
+                    sub.end_s,
+                )
+                for sub in cache.active_at(now)
             ]
 
         active.sort(key=lambda ln: ln.show_from)
@@ -1004,8 +1250,6 @@ class MpvOutput:
             )
 
         if text != self._shown:
-            self._shown = text
-
             self.ipc.command(
                 "osd-overlay",
                 id=OVERLAY_ID,
@@ -1016,6 +1260,14 @@ class MpvOutput:
                 z=10,
                 hidden=False,
             )
+            self._shown = text
+
+            if text:
+                log.info(
+                    "MPV subtitle overlay updated: active=%d chars=%d",
+                    len(active),
+                    len(text),
+                )
 
 
 def _ass_many(

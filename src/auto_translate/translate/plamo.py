@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
+from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
 
@@ -20,9 +21,10 @@ log = logging.getLogger(__name__)
 class PlamoTranslator:
     """Japanese-to-English PLaMo translator; inference stays on the local machine."""
 
-    def __init__(self, cfg: TranslateConfig, glossary: Glossary) -> None:
+    def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, vod_title: str = "") -> None:
         self.cfg = cfg
         self.glossary = glossary
+        self.vod_title = " ".join(vod_title.split())[:200]
         self.url = cfg.plamo_base_url.rstrip("/") + "/chat/completions"
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.process: subprocess.Popen | None = None
@@ -143,7 +145,8 @@ class PlamoTranslator:
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
-        return _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        return correct_translation(ja, english)
 
     def _chat(
         self,
@@ -161,6 +164,8 @@ class PlamoTranslator:
             "source_lang": "ja",
             "target_lang": "en",
         }
+        if self.vod_title:
+            options["context"] = f"Video title: {self.vod_title}"
         if hits := self.glossary.find(ja):
             options["glossary"] = [
                 {"source": source, "target": target}

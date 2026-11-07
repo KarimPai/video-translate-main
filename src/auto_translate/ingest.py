@@ -677,6 +677,16 @@ class Ingest:
 
         return ffmpeg
 
+    @property
+    def video_source_url(self) -> str:
+        """Return the original video-only source URL for direct MPV playback."""
+        if Path(self.source.location).exists():
+            return self.source.location
+        inputs = self._resolve_video_inputs()
+        if not inputs:
+            raise RuntimeError("yt-dlp did not return a video stream URL")
+        return inputs[0]
+
     def _resolve_video_inputs(self) -> list[str]:
         """Resolve source URLs once for both FFmpeg processes."""
         if self._inputs is None:
@@ -872,8 +882,10 @@ class Ingest:
         ffmpeg = [
             "ffmpeg",
             "-nostdin",
+            "-hide_banner",
+            "-nostats",
             "-loglevel",
-            "error",
+            "info",
         ]
 
         if not src.live:
@@ -905,30 +917,45 @@ class Ingest:
                 "-f", "s16le", "pipe:1",
             ]
 
+        output_layout = "stereo" if self.separation_enabled else "mono"
         filters = self._pitch_filter(output_rate)
-        if filters:
-            out = ["-af", ",".join(filters)] + out
+        filters += [
+            f"aresample={output_rate}",
+            f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
+            "ashowinfo",
+        ]
+        out = ["-af", ",".join(filters)] + out
 
         if Path(src.location).exists():
             return [ffmpeg + ["-i", src.location] + out]
 
-        ytdlp = [
-            "yt-dlp",            "-f",
-            self.cfg.ytdlp_format,
-            "--quiet",
+        resolve_cmd = [
+            "yt-dlp",
             "--no-warnings",
-            "-o",
-            "-",
+            "--remote-components",
+            "ejs:github",
+            "-f",
+            self.cfg.ytdlp_format,
+            "-g",
         ]
-
-        if not src.live:
-            ytdlp += ["--http-chunk-size", "10M"]
-
-        ytdlp += _cookie_args(self.cfg) + [src.location]
+        resolve_cmd += _cookie_args(self.cfg) + [src.location]
+        audio_urls = subprocess.run(
+            resolve_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        if not audio_urls:
+            raise RuntimeError("yt-dlp did not return an audio stream URL")
 
         return [
-            ytdlp,
-            ffmpeg + ["-i", "pipe:0"] + out,
+            ffmpeg + [
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "10",
+                "-i", audio_url,
+            ] + out
+            for audio_url in audio_urls[:1]
         ]
 
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
@@ -1131,6 +1158,23 @@ class Ingest:
 
                 if not data:
                     break
+
+                # PTS logging can be absent or report N/A for fMP4 audio.
+                # The decoded PCM stream itself is proof that the audio clock
+                # is available, so never leave MPV blocked waiting for stderr.
+                with self._proc_lock:
+                    if (
+                        generation == self._generation
+                        and self.first_pts is None
+                    ):
+                        self.first_pts = self.source.start_s
+                        self.first_pts_at = time.monotonic()
+                        self.first_pts_ready.set()
+                        log.warning(
+                            "first audio PTS unavailable; using first decoded "
+                            "audio arrival as clock readiness (source_start=%.3fs)",
+                            self.source.start_s,
+                        )
 
                 if first_chunk_after_seek:
                     log.info(

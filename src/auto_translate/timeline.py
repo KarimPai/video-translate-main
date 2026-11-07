@@ -85,6 +85,9 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
         "schema_version": 1,
         "video_id": str(data.get("id") or ""),
         "title": str(data.get("title") or ""),
+        # Channel/uploader identifies the talent even when their name is
+        # absent from a gaming VOD's title.
+        "channel": str(data.get("channel") or data.get("uploader") or ""),
         "extractor": str(data.get("extractor_key") or data.get("extractor") or ""),
         "duration_s": float(duration) if duration is not None else None,
         "upload_timestamp": data.get("release_timestamp") or data.get("timestamp"),

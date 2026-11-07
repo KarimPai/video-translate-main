@@ -50,16 +50,22 @@ class AsrConfig:
 
 @dataclass
 class TranslateConfig:
-    """PLaMo 3 Translate served locally by llama.cpp."""
+    """Translation backend and model settings."""
 
+    backend: str = "hymt2"
     plamo_base_url: str = "http://127.0.0.1:8000/v1"
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
     plamo_context: int = 8192
     plamo_gpu_layers: int = 99
+    model: str = "kaelri/hy-mt2:1.8b-q4_K_M"
+    base_url: str = "http://127.0.0.1:11434/v1"
+    temperature: float = 0.2
     max_tokens: int = 120
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
+    min_request_interval_s: float = 3.0
+    extra_body: dict = field(default_factory=dict)
     context_lines: int = 8
     glossary: str = "glossary.toml"
 
@@ -93,8 +99,6 @@ class MpvConfig:
     speaker_device: str = "cuda"
     max_speakers: int = 3
     max_subtitle_rows: int = 3
-    min_display_s: float = 4.0
-    hold_s: float = 2.0
 
 
 @dataclass
@@ -134,20 +138,20 @@ def load_config(path: Path) -> Config:
 
     mpv_data = dict(data.get("mpv", {}))
     # Ignore the removed subtitle start-delay setting in older configs.
-    mpv_data.pop("start_delay_s", None)
+    for obsolete in ("start_delay_s", "min_display_s", "hold_s"):
+        mpv_data.pop(obsolete, None)
 
-    # Keep only PLaMo settings and shared translation options. Legacy
-    # HY-MT2/Ollama endpoint and model settings are intentionally ignored.
+    # Migrate old preset-based configs to the single flat HY-MT2 section.
+    # The selected HY-MT2 preset's values are retained; preset names are discarded.
     translate_data = dict(data.get("translate", {}))
-    allowed_translate_keys = {
-        "plamo_base_url", "plamo_model", "plamo_hf_model",
-        "plamo_context", "plamo_gpu_layers", "max_tokens",
-        "timeout_s", "load_timeout_s", "context_lines", "glossary",
-    }
-    translate_data = {
-        key: value for key, value in translate_data.items()
-        if key in allowed_translate_keys
-    }
+    legacy_presets = translate_data.pop("presets", {})
+    translate_data.pop("preset", None)
+    hymt2_settings = dict(legacy_presets.get("hymt2", {}))
+    hymt2_settings.pop("backend", None)
+    hymt2_settings.pop("mpv_delay_s", None)
+    hymt2_settings.pop("api_key_env", None)
+    for key, value in hymt2_settings.items():
+        translate_data.setdefault(key, value)
 
     return Config(
         ingest=IngestConfig(**ingest_data),

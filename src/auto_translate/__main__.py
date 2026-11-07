@@ -46,6 +46,7 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .asr import create_asr
+    from .captions import download_vod_captions
     from .config import load_config
     from .glossary import Glossary
     from .ingest import Ingest, resolve_source
@@ -53,6 +54,7 @@ def main() -> None:
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
     from .pipeline import run
+    from .session_cache import SessionSubtitleCache
     from .translate import create_translator
 
     cfg = load_config(args.config)
@@ -69,6 +71,40 @@ def main() -> None:
         cfg.ingest,
     )
 
+    # Fetch VOD captions in parallel with model loading. Captions are optional:
+    # any download/parse failure leaves the Haas-only pipeline unchanged.
+    caption_result = {}
+    caption_thread = None
+    video_id = (
+        source.timeline.get("video_id")
+        if not source.live and source.timeline
+        else None
+    )
+    if video_id:
+        def load_captions() -> None:
+            try:
+                caption_result["index"] = download_vod_captions(
+                    str(video_id), source.location, cfg.ingest
+                )
+            except Exception:
+                log.exception("caption preparation failed; continuing with Haas")
+
+        caption_thread = threading.Thread(
+            target=load_captions,
+            name="youtube-captions",
+            daemon=True,
+        )
+        caption_thread.start()
+
+    # Include the channel for proper-name disambiguation on streams whose
+    # titles omit the talent's name (e.g. many Watame gaming VODs).
+    vod_context = " - ".join(
+        part for part in (
+            (source.timeline or {}).get("title", ""),
+            (source.timeline or {}).get("channel", ""),
+        ) if part
+    ) if not source.live else ""
+
     # Load models before starting ingest.
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
@@ -82,24 +118,40 @@ def main() -> None:
 
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
-    translator = create_translator(cfg.translate, glossary)
+    translator = create_translator(
+        cfg.translate, glossary, vod_title=vod_context,
+    )
+    translator_name = (
+        "PLaMo 3 Translate"
+        if cfg.translate.backend.strip().lower() == "plamo"
+        else "HY-MT2"
+    )
     log.info(
-        "PLaMo 3 Translate ready (%d glossary terms) in %.1fs",
+        "%s translator ready (%d glossary terms) in %.1fs",
+        translator_name,
         len(glossary.terms),
         time.perf_counter() - t0,
     )
 
+    captions = None
+    if caption_thread is not None:
+        caption_thread.join()
+        captions = caption_result.get("index")
+        if captions is None:
+            log.info("caption assistance unavailable; using Haas transcription only")
+
     use_mpv = args.mpv or cfg.mpv.enabled
+    if use_mpv and not source.live and source.paced:
+        # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
+        # buffer promptly after seeking. MPV itself keeps real-time playback.
+        from dataclasses import replace
+        source = replace(source, paced=False)
+        log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
 
-    # Any truthy value enables Ingest's temporary progressive fMP4 HLS cache.
-    # MPV and the ASR audio reader consume the same local playlist.
-    video_out = "fmp4" if use_mpv else None
-
-    burst_s = (
-        cfg.mpv.delay_s
-        if use_mpv and not source.live
-        else 0.0
-    )
+    # MPV plays the original video stream; Ingest handles audio only.
+    # No local video transcode or fMP4 cache is created.
+    video_out = None
+    burst_s = 0.0
 
     ingest = Ingest(
         source,
@@ -113,6 +165,9 @@ def main() -> None:
 
     stop = threading.Event()
     outputs: list[Output] = []
+    # Cache only this MPV VOD in RAM. Never reuse it for another video,
+    # and never persist translated text on disk.
+    subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
 
     if cfg.output.terminal:
         outputs.append(TerminalOutput())
@@ -127,7 +182,7 @@ def main() -> None:
 
     if use_mpv:
         from .output.mpv import MpvOutput
-        outputs.append(MpvOutput(cfg.mpv, ingest, stop))
+        outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
 
     diarizer = None
 
@@ -160,6 +215,9 @@ def main() -> None:
         outputs,
         stop,
         diarizer=diarizer,
+        captions=captions,
+        vod_title=vod_context,
+        session_cache=subtitle_cache,
     )
 
 

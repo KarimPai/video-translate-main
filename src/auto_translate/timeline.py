@@ -36,7 +36,6 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     cmd = [
         "yt-dlp",
         "--no-warnings",
-        "--no-call-home",
         "--remote-components", "ejs:github",
         "--skip-download",
         "--dump-single-json",

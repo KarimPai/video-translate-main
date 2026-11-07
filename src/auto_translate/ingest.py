@@ -211,6 +211,7 @@ class Ingest:
         deepfilter_cfg: DeepFilterConfig | None = None,
     ):
         self.source = source
+        self._vod_audio_url: str | None = None
         self.cfg = cfg
         self.pitch_semitones = cfg.pitch_semitones
         self.video_format = video_format
@@ -878,6 +879,20 @@ class Ingest:
         if Path(src.location).exists():
             return [ffmpeg + ["-i", src.location] + out]
 
+        audio_url = self._vod_audio_url
+        if audio_url is None:
+            audio_url = self._resolve_audio_url()
+            if not src.live:
+                self._vod_audio_url = audio_url
+
+        return [ffmpeg + [
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "10",
+            "-i", audio_url,
+        ] + out]
+
+    def _resolve_audio_url(self) -> str:
         resolve_cmd = [
             "yt-dlp",
             "--no-warnings",
@@ -887,7 +902,7 @@ class Ingest:
             self.cfg.ytdlp_format,
             "-g",
         ]
-        resolve_cmd += _cookie_args(self.cfg) + [src.location]
+        resolve_cmd += _cookie_args(self.cfg) + [self.source.location]
         audio_urls = subprocess.run(
             resolve_cmd,
             capture_output=True,
@@ -897,21 +912,26 @@ class Ingest:
         if not audio_urls:
             raise RuntimeError("yt-dlp did not return an audio stream URL")
 
-        return [
-            ffmpeg + [
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "10",
-                "-i", audio_url,
-            ] + out
-            for audio_url in audio_urls[:1]
-        ]
+        return audio_urls[0]
 
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
         try:
             while True:
-                self._read_session(out_q)
+                with self._proc_lock:
+                    generation = self._generation
+                    reuse_url = self._vod_audio_url is not None and not self.video_out
+                failed_to_open = self._read_session(out_q)
+                with self._proc_lock:
+                    refresh = (
+                        reuse_url and failed_to_open and not self._stopped
+                        and self._restart_at is None and generation == self._generation
+                    )
+                    if refresh:
+                        self._vod_audio_url = None
+                if refresh:
+                    log.info("cached VOD audio failed to open; resolving again")
+                    self._read_session(out_q)
 
                 with self._proc_lock:
                     if self._stopped or self._restart_at is None:
@@ -953,9 +973,12 @@ class Ingest:
     def _read_session(
         self,
         out_q: "queue.Queue[AudioChunk | None]",
-    ) -> None:
-        """Read FFmpeg PCM and optionally enhance or separate speech."""
-        generation = self.generation
+    ) -> bool:
+        """Read a session. Return True if FFmpeg failed before producing audio."""
+        with self._proc_lock:
+            if self._stopped or self._restart_at is not None:
+                return False
+            generation = self._generation
         first_chunk_after_seek = generation > 0
 
         if self.video_out:
@@ -967,7 +990,7 @@ class Ingest:
                 # A concurrent seek deliberately terminates this generation's
                 # cache writer. Let the ingest loop advance to the new session.
                 if generation != self.generation or self._stopped:
-                    return
+                    return False
                 raise RuntimeError("could not initialize progressive fMP4 cache")
             cmds = [self._video_audio_command()]
         else:
@@ -980,7 +1003,7 @@ class Ingest:
         # therefore cannot miss a process that has just been spawned.
         with self._proc_lock:
             if generation != self._generation or self._stopped:
-                return
+                return False
 
             self._session += 1
             session = self._session
@@ -1247,6 +1270,8 @@ class Ingest:
                     "no audio after %s: is the start time past the end of the video?",
                     fmt_hms(self.source.start_s),
                 )
+
+        return processed_seconds == 0 and any(p.returncode for p in procs)
 
     def _describe(self) -> str:
         src = self.source

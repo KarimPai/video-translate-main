@@ -401,7 +401,7 @@ def run(
         ),
         threading.Thread(
             target=run_segmenter,
-            args=(cfg.vad, audio_q, utt_q),
+            args=(cfg.vad, audio_q, utt_q, lambda: ingest.generation),
             name="vad",
             daemon=True,
         ),

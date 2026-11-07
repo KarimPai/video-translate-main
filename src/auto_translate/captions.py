@@ -7,7 +7,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from itertools import accumulate
 from pathlib import Path
 
 from .config import IngestConfig
@@ -63,6 +65,9 @@ class CaptionIndex:
 
     def __init__(self, cues: list[CaptionCue]) -> None:
         self.cues = sorted(cues, key=lambda cue: (cue.start_s, cue.end_s))
+        self._starts = [cue.start_s for cue in self.cues]
+        # Ends can be out of order when a long cue overlaps shorter ones.
+        self._latest_ends = list(accumulate((cue.end_s for cue in self.cues), max))
 
     @classmethod
     def from_vtt(cls, content: str) -> "CaptionIndex":
@@ -100,11 +105,12 @@ class CaptionIndex:
     ) -> CaptionMatch | None:
         duration = max(0.01, end_s - start_s)
         matched: list[tuple[CaptionCue, float]] = []
-        for cue in self.cues:
+        first = bisect_left(self._latest_ends, start_s - tolerance_s)
+        stop = bisect_right(self._starts, end_s + tolerance_s)
+        for index in range(first, stop):
+            cue = self.cues[index]
             if cue.end_s < start_s - tolerance_s:
                 continue
-            if cue.start_s > end_s + tolerance_s:
-                break
             overlap = max(
                 0.0,
                 min(end_s, cue.end_s) - max(start_s, cue.start_s),

@@ -12,6 +12,7 @@ import queue
 import time
 from collections import deque
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -139,6 +140,7 @@ class Segmenter:
         self._read_at = chunk.read_at
         if self._next_frame_sample == 0:
             self._next_frame_sample = chunk.start_sample  # VOD may start mid-video
+            self._idle_start = chunk.start_sample
         audio = np.concatenate([self._leftover, chunk.pcm])
         whole = len(audio) // FRAME * FRAME
         self._leftover = audio[whole:]
@@ -158,10 +160,10 @@ class Segmenter:
         out, self._out = self._out, []
         return out
 
-    def advance_progress(self, sample: int) -> AudioProgress | None:
+    def advance_progress(self, sample: int, *, force: bool = False) -> AudioProgress | None:
         """Advance only past audio that cannot belong to a future utterance."""
         self._pending_progress = max(self._pending_progress, sample)
-        return self.release_progress()
+        return self.release_progress(force=force)
 
     def release_progress(self, force: bool = False) -> AudioProgress | None:
         if force:
@@ -170,6 +172,10 @@ class Segmenter:
             safe_sample = self._start_sample
         else:
             safe_sample = self._next_frame_sample - len(self._preroll) * FRAME
+
+        # Idle frames may still produce a fallback ASR probe.
+        if not force and not self._in_speech and self.fallback_frames and self._idle:
+            safe_sample = min(safe_sample, self._idle_start)
 
         target = min(self._pending_progress, safe_sample)
 
@@ -288,6 +294,7 @@ def run_segmenter(
     cfg: VadConfig,
     in_q: "queue.Queue[AudioChunk | AudioProgress | None]",
     out_q: "queue.Queue[Utterance | AudioProgress | None]",
+    get_generation: Callable[[], int] | None = None,
 ) -> None:
     """Thread body."""
     try:
@@ -306,14 +313,16 @@ def run_segmenter(
             for utt in seg.flush():
                 out_q.put(utt)
 
-            progress = seg.advance_progress(seg._next_frame_sample)
-            progress = seg.release_progress(force=True)
+            progress = seg.advance_progress(seg._next_frame_sample, force=True)
 
             if progress is not None:
                 out_q.put(progress)
 
             out_q.put(None)
             break
+
+        if get_generation is not None and item.generation != get_generation():
+            continue
 
         if isinstance(item, AudioProgress):
             if item.generation != seg._generation:
@@ -352,6 +361,6 @@ def run_segmenter(
                 awaiting_first_utterance = False
             out_q.put(utt)
 
-        progress = seg.release_progress()
+        progress = seg.advance_progress(seg._next_frame_sample)
         if progress is not None:
             out_q.put(progress)

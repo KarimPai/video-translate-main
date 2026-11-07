@@ -17,7 +17,7 @@ echo ========================================
 echo.
 
 set "VIDEO_URL="
-set /p "VIDEO_URL=Paste YouTube VOD URL: "
+set /p "VIDEO_URL=Paste YouTube live or VOD URL: "
 
 if not defined VIDEO_URL (
     echo No URL entered.
@@ -33,7 +33,7 @@ echo.
 
 rem Run a single translator process. The previous two-uv pipe could exit
 rem early and hide MPV startup errors; the CLI now prints JP/EN directly.
-uv run --no-sync auto-translate "%VIDEO_URL%" --mode vod --mpv --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync auto-translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

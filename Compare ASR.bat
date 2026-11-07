@@ -10,7 +10,7 @@ if errorlevel 1 (
 echo.
 echo ===========================================
 echo   Japanese ASR Comparison - Test Only
-echo   Haas / Haas vocabulary / Qwen3 1.7B
+echo   Haas / scene vocabulary / Qwen3 unprompted
 echo ===========================================
 echo.
 set "VIDEO_URL=https://www.youtube.com/watch?v=LE8iGHrakAc"
@@ -30,7 +30,7 @@ echo.
 if not "%EXITCODE%"=="0" (
   echo The comparison ended with an error, see the error above.
 ) else (
-  echo Results: logs\asr_benchmark\VIDEO_ID\compare.txt
+  echo Results: logs\asr_benchmark\VIDEO_ID\compare_clean.txt
   echo Search within the folder using your YouTube ID.
 )
 echo.

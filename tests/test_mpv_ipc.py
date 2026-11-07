@@ -296,6 +296,7 @@ class CachedSeekTests(unittest.TestCase):
         out = object.__new__(MpvOutput)
         out.stop = threading.Event()
         out._direct_video_loaded = True
+        out._uses_original_timeline = True
         out._subtitle_cache = SimpleNamespace(
             covered_until=lambda position: cached_until
         )
@@ -332,6 +333,44 @@ class CachedSeekTests(unittest.TestCase):
         self.assertEqual(out._last_direct_pos, 102.0)
         self.assertEqual(renders, [102.0])
 
+    def test_original_video_does_not_accumulate_offset_across_seeks(self):
+        out, calls, renders, restarts = self.make_output(cached_until=500.0)
+        # A previous audio restart can create unrelated anchor values.
+        out._clock_source_anchor = 110.0
+        out._mpv_anchor = 112.5
+        self.assertEqual(out._source_time_from_mpv(112.0), 112.0)
+        self.assertEqual(out._mpv_time_from_source(112.0), 112.0)
+
+        # Simulate MPV landing each native cached seek immediately.
+        position = [112.0]
+        out.ipc.get = lambda name: position[0] if name == "time-pos" else None
+
+        def command(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args[0] == "seek":
+                position[0] = float(args[1])
+
+        out.ipc.command = command
+        for step, expected in [(-10, 102.0), (-10, 92.0), (10, 102.0),
+                               (-10, 92.0), (20, 112.0), (10, 122.0)]:
+            self.assertFalse(out._jump(step))
+            self.assertAlmostEqual(position[0], expected)
+            self.assertAlmostEqual(out._now, expected)
+            self.assertAlmostEqual(out._source_time_from_mpv(position[0]), expected)
+        self.assertEqual(restarts, [])
+        self.assertEqual(renders, [102.0, 92.0, 102.0, 92.0, 112.0, 122.0])
+        self.assertFalse(
+            any(args[:2] == ("set_property", "pause") for args, _ in calls)
+        )
+
+    def test_uncached_original_seek_uses_absolute_video_timestamp(self):
+        out, calls, renders, restarts = self.make_output(cached_until=103.0)
+        out._clock_source_anchor = 100.0
+        out._mpv_anchor = 110.0
+        self.assertTrue(out._jump(-10))
+        self.assertEqual(restarts, [(102.0, True)])
+        self.assertEqual(out._mpv_time_from_source(102.0), 102.0)
+
     def test_uncached_backseek_still_restarts_audio(self):
         out, calls, renders, restarts = self.make_output(cached_until=105.0)
         self.assertTrue(out._jump(-10))
@@ -344,6 +383,8 @@ class CachedSeekTests(unittest.TestCase):
         out._now = 410.0
         out._clock_source_anchor = 400.0
         out._mpv_anchor = 450.0
+        # Only the fMP4 fallback has a non-identity source/MPV clock.
+        out._uses_original_timeline = False
         # Source 400 maps to MPV 450, not absolute 400.
         out.ipc.get = lambda name: 450.0 if name == "time-pos" else None
         self.assertFalse(out._jump(-10))

@@ -64,6 +64,10 @@ class TranslateConfig:
     # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
     memory_lines: int = 24
     glossary: str = "glossary.toml"
+    # Only dubious outputs receive a bounded second pass through the SAME PLaMo.
+    quality_recheck_enabled: bool = True
+    quality_recheck_timeout_s: float = 3.0
+    quality_recheck_min_interval_s: float = 10.0
 
 
 @dataclass

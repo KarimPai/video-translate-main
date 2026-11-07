@@ -227,6 +227,10 @@ def run_translate(
             if get_generation is not None and tr.generation != get_generation():
                 continue
 
+            if en.strip().upper() == "[SKIP]":
+                log.debug("Skipping nonverbal translated utterance: %r", tr.ja)
+                continue
+
             if en and en != "[translation failed]":
                 history.append((tr.ja, en))
 

@@ -17,6 +17,9 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.plamo_hf_model, "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M")
         self.assertEqual(cfg.context_lines, 8)
         self.assertEqual(cfg.memory_lines, 24)
+        self.assertTrue(cfg.quality_recheck_enabled)
+        self.assertEqual(cfg.quality_recheck_timeout_s, 3.0)
+        self.assertEqual(cfg.quality_recheck_min_interval_s, 10.0)
         for obsolete in ("backend", "model", "base_url", "extra_body", "min_request_interval_s"):
             self.assertFalse(hasattr(cfg, obsolete), obsolete)
 

@@ -50,6 +50,32 @@ PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up 
 
 Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 
+### Selective PLaMo quality recheck
+
+The translator uses its existing video-title context, recent dialogue and Hololive
+glossary on every request. A short instruction asks PLaMo not to romanize
+meaningless vocalizations; obvious repeated Japanese syllables are suppressed
+before inference. If a translation contains suspicious phonetic repetition,
+untranslated Japanese, a possible missing explicit negation, or an unexpected
+`[SKIP]` token, it can receive **one** additional request through the same
+PLaMo model. Ordinary subtitles use a single request; no separate reasoning model
+or ASR pass is used. Rechecks are throttled and time-limited to avoid persistent
+live-stream backlogs. Proper names and meaningful speech are preserved by
+conservative validation. These checks cannot prove semantic correctness or
+recover words that Haas did not recognize.
+
+Optional local settings:
+
+```toml
+[translate]
+quality_recheck_enabled = true
+quality_recheck_timeout_s = 3.0
+quality_recheck_min_interval_s = 10.0
+```
+
+Use `quality_recheck_enabled = false` to turn off only the second-pass requests.
+`config.toml` is git-ignored and existing local values take precedence.
+
 ### FireRedVAD defaults
 
 The recommended default values for both live streams and VODs are:

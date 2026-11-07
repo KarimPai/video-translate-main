@@ -17,6 +17,10 @@ from ..context_memory import build_recent_context, reuse_recent_short_term
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
+from .quality import (
+    SKIP_TOKEN, is_obvious_nonverbal_japanese, is_skip_token,
+    translation_review_reason,
+)
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +33,15 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "If the current Japanese does not explicitly identify who is acting "
     "or who owns something, prefer natural, subject-neutral English "
     "instead of guessing I, you, my, your, we, our, he, she, his, or her. "
-    "Preserve explicitly stated people, possessives, negation, and intensity. "
+    "Preserve people and possessives explicitly stated in Japanese, plus negation and intensity. "
     "Use the current Japanese to decide whether the speaker expresses praise, "
     "criticism, or surprise. Prior dialogue provides context. "
-    "In longer phrases, すごく or すごい can intensify the following description."
+    "In longer phrases, すごく or すごい can intensify the following description. "
+    "Translate meaningful Japanese to natural English, not phonetic romanization. "
+    "Omit meaningless rhythmic syllables or nonverbal sounds mixed into speech. "
+    "If and only if the ENTIRE utterance has no meaningful speech, output exactly [SKIP]. "
+    "Keep names, game titles and glossary terminology even if uncommon. "
+    "Never guess content that the Japanese does not convey."
 )
 
 
@@ -179,7 +188,55 @@ class PlamoTranslator:
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 return reused
+        # A clear rhythmic-syllable loop can be skipped without paying for
+        # translation or a review. A glossary hit always protects names/terms.
+        glossary = getattr(self, "glossary", None)
+        hits = glossary.find(ja) if glossary is not None else []
+        if not hits and is_obvious_nonverbal_japanese(ja):
+            log.debug("Suppressing nonverbal syllable loop: %r", ja)
+            return SKIP_TOKEN
+
         english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        reason = translation_review_reason(ja, english)
+
+        # Only questionable output gets a second request. It goes through
+        # the same local PLaMo, with identical video context and glossary.
+        if reason and getattr(self.cfg, "quality_recheck_enabled", True):
+            now = time.monotonic()
+            gap = max(0.0, getattr(self.cfg, "quality_recheck_min_interval_s", 10.0))
+            if now - getattr(self, "_last_recheck_at", float("-inf")) >= gap:
+                self._last_recheck_at = now
+                timeout = min(
+                    self.cfg.timeout_s,
+                    max(0.5, getattr(self.cfg, "quality_recheck_timeout_s", 3.0)),
+                )
+                try:
+                    revised = _clean(self._chat(
+                        ja, history, timeout=timeout, review_hint=reason,
+                    ))
+                except Exception as exc:
+                    log.debug("PLaMo selective recheck failed (%s): %s", reason, exc)
+                else:
+                    if revised and not is_skip_token(revised):
+                        # Do not trade a dubious output for another dubious
+                        # output or lose a proper name the first pass retained.
+                        preserved_names = all(
+                            target.casefold() in revised.casefold()
+                            for _, target in hits
+                            if target.casefold() in english.casefold()
+                        )
+                        if preserved_names and translation_review_reason(ja, revised) is None:
+                            log.debug("PLaMo selective recheck accepted (%s)", reason)
+                            english = revised
+                        else:
+                            log.debug("PLaMo selective recheck rejected (%s)", reason)
+
+        # Treat model-produced [SKIP] as a request for review, NEVER as
+        # permission to silently discard ordinary Japanese speech.
+        if is_skip_token(english):
+            log.warning("PLaMo returned [SKIP] for meaningful Japanese: %r", ja)
+            return "[translation failed]"
+
         english = correct_translation(ja, english)
         corrected = neutralize_unsupported_subjects(ja, english)
         if corrected != english:
@@ -191,6 +248,7 @@ class PlamoTranslator:
         ja: str,
         history: list[tuple[str, str]],
         timeout: float,
+        review_hint: str = "",
     ) -> str:
         messages: list[dict[str, str]] = []
         dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
@@ -215,6 +273,14 @@ class PlamoTranslator:
                 "\n" + memory if memory else ""
             ),
         }
+        if review_hint:
+            options["context"] += (
+                "\nCarefully retry this Japanese-to-English translation. "
+                f"Possible first-pass issue: {review_hint}. "
+                "Follow the Japanese, video context and glossary; preserve negation, "
+                "names and meaning. Return only the final English translation "
+                "or [SKIP] if there are no meaningful spoken words."
+            )
         if hits := self.glossary.find(ja):
             options["glossary"] = [
                 {"source": source, "target": target}

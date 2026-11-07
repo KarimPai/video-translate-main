@@ -158,5 +158,128 @@ class PlamoTranslatorTests(unittest.TestCase):
         self.assertEqual(len(payload["messages"]), 3)
 
 
+class SelectiveRecheckTests(unittest.TestCase):
+    @staticmethod
+    def translator(**settings):
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = SimpleNamespace(
+            timeout_s=10.0, quality_recheck_enabled=True,
+            quality_recheck_timeout_s=3.0,
+            quality_recheck_min_interval_s=0.0, **settings,
+        )
+        translator.memory_lines = 0
+        translator.glossary = FakeGlossary()
+        return translator
+
+    def test_clean_translation_uses_only_one_model_call(self):
+        translator = self.translator()
+        with patch.object(PlamoTranslator, "_chat", return_value="Watame is here.") as chat:
+            self.assertEqual(translator.translate("わためが来た", []), "Watame is here.")
+        chat.assert_called_once()
+
+    def test_nonverbal_loop_needs_no_model_call(self):
+        translator = self.translator()
+        with patch.object(PlamoTranslator, "_chat") as chat:
+            self.assertEqual(translator.translate("タタタタあっとたっとと", []), "[SKIP]")
+        chat.assert_not_called()
+
+    def test_possible_negation_loss_gets_one_bounded_second_pass(self):
+        translator = self.translator()
+        with patch.object(
+            PlamoTranslator, "_chat", side_effect=["It's sunny!", "It's not sunny!"],
+        ) as chat:
+            self.assertEqual(translator.translate("晴れてないわ", []), "It's not sunny!")
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(chat.call_args.kwargs["timeout"], 3.0)
+        self.assertEqual(
+            chat.call_args.kwargs["review_hint"], "possible_missing_negation"
+        )
+
+    def test_nonenglish_gibberish_gets_one_retry(self):
+        translator = self.translator()
+        with patch.object(
+            PlamoTranslator, "_chat", side_effect=["Ta-ta-ta-ta!", "The police are here!"],
+        ) as chat:
+            self.assertEqual(translator.translate("警察が来た", []), "The police are here!")
+        self.assertEqual(chat.call_count, 2)
+
+    def test_repeated_bad_second_pass_keeps_initial_output(self):
+        translator = self.translator()
+        with patch.object(
+            PlamoTranslator, "_chat", side_effect=["Ta-ta-ta-ta!", "Ta-ta-ta-ta!"],
+        ) as chat:
+            self.assertEqual(translator.translate("警察が来た", []), "Ta-ta-ta-ta!")
+        self.assertEqual(chat.call_count, 2)
+
+    def test_failed_recheck_does_not_fail_first_translation(self):
+        translator = self.translator()
+        with patch.object(
+            PlamoTranslator, "_chat", side_effect=["It's sunny!", TimeoutError("slow")],
+        ) as chat:
+            self.assertEqual(translator.translate("晴れてないわ", []), "It's sunny!")
+        self.assertEqual(chat.call_count, 2)
+
+    def test_meaningful_japanese_skip_requires_retry(self):
+        translator = self.translator()
+        with patch.object(
+            PlamoTranslator, "_chat", side_effect=["[SKIP]", "Good morning."],
+        ) as chat:
+            self.assertEqual(translator.translate("おはよう", []), "Good morning.")
+        self.assertEqual(chat.call_count, 2)
+
+    def test_false_skip_is_not_silently_suppressed(self):
+        translator = self.translator()
+        with patch.object(
+            PlamoTranslator, "_chat", side_effect=["[SKIP]", "[SKIP]"],
+        ):
+            self.assertEqual(translator.translate("おはよう", []), "[translation failed]")
+
+    def test_can_disable_second_pass(self):
+        translator = self.translator()
+        translator.cfg.quality_recheck_enabled = False
+        with patch.object(PlamoTranslator, "_chat", return_value="It's sunny!") as chat:
+            self.assertEqual(translator.translate("晴れてないわ", []), "It's sunny!")
+        chat.assert_called_once()
+
+    def test_recheck_respects_minimum_interval(self):
+        translator = self.translator()
+        translator.cfg.quality_recheck_min_interval_s = 3600
+        with patch.object(PlamoTranslator, "_chat", side_effect=[
+            "It's sunny!", "It's not sunny!", "It's sunny!"
+        ]) as chat:
+            self.assertEqual(translator.translate("晴れてないわ", []), "It's not sunny!")
+            self.assertEqual(translator.translate("晴れてないわ", []), "It's sunny!")
+        self.assertEqual(chat.call_count, 3)
+
+    def test_review_context_keeps_title_glossary_and_japanese_history(self):
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = SimpleNamespace(
+            context_lines=2, memory_lines=0, plamo_model="plamo-3-translate",
+            max_tokens=120,
+        )
+        translator.glossary = FakeGlossary()
+        translator.vod_title = "Hololive livestream"
+        translator.url = "http://127.0.0.1:8000/v1/chat/completions"
+        response = io.BytesIO(json.dumps({
+            "choices": [{"message": {"content": "Pekora is here."}}]
+        }).encode("utf-8"))
+        with patch(
+            "auto_translate.translate.plamo.urllib.request.urlopen",
+            return_value=response,
+        ) as open_url:
+            translator._chat(
+                "ぺこらが来た", [("昨日", "Yesterday")],
+                timeout=3.0, review_hint="untranslated_japanese",
+            )
+        body = json.loads(open_url.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(
+            body["chat_template_kwargs"]["glossary"],
+            [{"source": "ぺこら", "target": "Pekora"}],
+        )
+        self.assertIn("Video title: Hololive livestream", body["chat_template_kwargs"]["context"])
+        self.assertIn("untranslated_japanese", body["chat_template_kwargs"]["context"])
+        self.assertEqual(len(body["messages"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

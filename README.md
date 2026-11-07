@@ -50,6 +50,38 @@ PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up 
 
 Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 
+### Haas custom vocabulary (Hololive + general gaming)
+
+The `test` branch includes an optional small Haas-ja-v1.0 **ASR** vocabulary,
+disabled by default until you benchmark it against the unboosted pipeline.
+Unlike `glossary.toml`, which helps PLaMo translate recognized Japanese to
+English, `haas_vocabulary.toml` boosts selected Japanese names and cross-genre
+gaming words during speech recognition. It does **not** add another model.
+The default list contains 29 entries (Hololive names, FPS/RPG/MMO/gacha terms),
+not game-specific GTA or casino vocabulary. Edit the top-level `keywords` array
+to add/remove entries, one `written form=reading` per string. Keep the list
+small to avoid false positives and slowdowns.
+
+Optional overrides in your git-ignored `config.toml`:
+
+```toml
+[asr]
+haas_keywords_enabled = true  # opt in; set false to restore unboosted Haas
+haas_keywords_file = "haas_vocabulary.toml"
+haas_keywords_alpha = 2.0
+haas_keywords_guard = true
+```
+
+This uses speech.cpp 0.10+ worker's `keywords`, `keywords_alpha`, and
+`keywords_guard` options. Boosted speech is decoded twice (the guard compares
+against unboosted recognition), so ASR may take longer; fallback VAD probes use
+unboosted recognition to limit overhead. If the installed speech.cpp/model
+rejects keyword options, the first affected utterance is retried unboosted and
+keyword boosting is disabled for that session with a warning in
+`logs\\run.log`. Older Haas GGUF files from before speech.cpp 0.9.4 may need
+re-fetching to support vocabulary. No speech accuracy improvement is asserted
+until tested on the same audio.
+
 ### Translation style
 
 PLaMo's default prompt produces **clear, concise, neutral English** rather than

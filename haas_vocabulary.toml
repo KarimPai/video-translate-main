@@ -1,0 +1,38 @@
+# Optional Haas Japanese vocabulary (speech.cpp 0.10+).
+# Top-level keywords are passed to Haas ASR, not to PLaMo.
+# Prefer a short list of unusual Hololive names and cross-genre gaming terms.
+# Format: preferred Japanese spelling=hiragana reading
+# Avoid generic reactions, ordinary words, and game-specific terms from one VOD.
+keywords = [
+    # Hololive names and common nickname
+    "角巻わため=つのまきわため",
+    "わため=わため",
+    "音乃瀬奏=おとのせかなで",
+    "大空スバル=おおぞらすばる",
+    "鷹嶺ルイ=たかねるい",
+    "風真いろは=かざまいろは",
+    "白銀ノエル=しろがねのえる",
+    "さくらみこ=さくらみこ",
+    "兎田ぺこら=うさだぺこら",
+    "宝鐘マリン=ほうしょうまりん",
+    "博衣こより=はくいこより",
+    "獅白ぼたん=ししろぼたん",
+    "一条莉々華=いちじょうりりか",
+    # General gaming across FPS, RPG, MMO, gacha and co-op
+    "エイムアシスト=えいむあしすと",
+    "ヘッドショット=へっどしょっと",
+    "リスポーン=りすぽーん",
+    "リロード=りろーど",
+    "クールダウン=くーるだうん",
+    "クールタイム=くーるたいむ",
+    "ノックバック=のっくばっく",
+    "ソロキュー=そろきゅー",
+    "リセマラ=りせまら",
+    "デバフ=でばふ",
+    "ギミック=ぎみっく",
+    "レイド=れいど",
+    "ガチャ=がちゃ",
+    "マッチング=まっちんぐ",
+    "エイム=えいむ",
+    "ナーフ=なーふ",
+]

@@ -116,6 +116,54 @@ class OverlayTests(unittest.TestCase):
 
 
 class TranslationBufferTests(unittest.TestCase):
+    def test_manual_play_bypasses_prebuffer_without_forced_pause(self):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out.cfg = MpvConfig()
+        out._direct_video_loaded = True
+        out._subtitle_ready = threading.Event()
+        out._lock = threading.Lock()
+        out._lines = []
+        out._buffer_condition = threading.Condition()
+        out._source_finished = False
+        out._translated_until = 0.0
+        out._now = None
+        out._clock_last_sample_at = 0.0
+        out._clock_last_sample_pos = None
+        out._logged_displayed_subtitles = set()
+        out._lags = []
+        out.ingest = SimpleNamespace(
+            source=SimpleNamespace(
+                start_s=0.0, live=False, duration=200.0, timeline=None
+            ),
+            generation=0,
+            first_pts=0.0,
+            first_pts_ready=SimpleNamespace(wait=lambda timeout: True),
+            video_failed=threading.Event(),
+        )
+
+        commands = []
+        out.ipc = SimpleNamespace(
+            command=lambda *args, **kwargs: commands.append(args),
+            get=lambda key: False if key == 'pause' else (
+                0.0 if key == 'time-pos' else None
+            ),
+        )
+        out._translation_ready = lambda: False
+        out._render = lambda now: None
+        out._replay_requested = lambda: False
+        out._jump_request = lambda: 0
+
+        def exit_after_tick(timeout):
+            out.stop.set()
+
+        out._subtitle_ready.wait = exit_after_tick
+        out._play_session(show_hint=False)
+        self.assertFalse(
+            any(args[:3] == ('set_property', 'pause', True) for args in commands),
+            'Manual Play must not be immediately reversed by MPV controller',
+        )
+
     def test_vod_never_has_a_continuous_playback_low_watermark(self):
         # Fast ingest and the initial/seek buffer should not force recurring
         # stop/start playback when translation runs slower than real-time.

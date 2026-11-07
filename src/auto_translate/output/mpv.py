@@ -151,7 +151,9 @@ class MpvError(Exception):
 
 
 class MpvIpc:
-    """mpv's JSON IPC: one JSON object per line."""
+    """mpv JSON IPC with a dedicated reader and bounded command waits."""
+
+    COMMAND_TIMEOUT_S = 5.0
 
     def __init__(self, path: str, timeout_s: float = 15.0) -> None:
         deadline = time.monotonic() + timeout_s
@@ -173,38 +175,69 @@ class MpvIpc:
         self._lock = threading.Lock()
         self._next_id = 0
         self.events: queue.Queue[dict] = queue.Queue()
+        self._responses: queue.Queue[dict] = queue.Queue()
+        self._reader = threading.Thread(
+            target=self._read_messages,
+            name="mpv-ipc-reader",
+            daemon=True,
+        )
+        self._reader.start()
 
-    def command(self, *args: Any, **named: Any) -> Any:
-        """Send one command and wait for its response."""
-        with self._lock:
-            self._next_id += 1
-            rid = self._next_id
-
-            cmd = {"name": args[0], **named} if named else list(args)
-
-            self._f.write(
-                (
-                    json.dumps(
-                        {"command": cmd, "request_id": rid}
-                    ) + "\n"
-                ).encode()
-            )
-
+    def _read_messages(self) -> None:
+        """Read IPC continuously so command waits can have real timeouts."""
+        try:
             while True:
                 line = self._f.readline()
-
                 if not line:
                     raise ConnectionError("mpv closed the IPC connection")
 
                 msg = json.loads(line)
-
-                if msg.get("request_id") == rid:
-                    if msg.get("error") != "success":
-                        raise MpvError(msg.get("error"))
-                    return msg.get("data")
-
                 if "event" in msg:
                     self.events.put(msg)
+                elif "request_id" in msg:
+                    self._responses.put(msg)
+        except (OSError, ValueError, ConnectionError) as exc:
+            self._responses.put({"_reader_error": str(exc)})
+
+    def command(self, *args: Any, **named: Any) -> Any:
+        """Send one command and wait no longer than COMMAND_TIMEOUT_S."""
+        with self._lock:
+            self._next_id += 1
+            rid = self._next_id
+            cmd = {"name": args[0], **named} if named else list(args)
+
+            self._f.write(
+                (
+                    json.dumps({"command": cmd, "request_id": rid}) + "\\n"
+                ).encode()
+            )
+
+            deadline = time.monotonic() + self.COMMAND_TIMEOUT_S
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MpvError(
+                        f"mpv IPC command timed out after "
+                        f"{self.COMMAND_TIMEOUT_S:.1f}s: {cmd!r}"
+                    )
+
+                try:
+                    msg = self._responses.get(timeout=remaining)
+                except queue.Empty:
+                    raise MpvError(
+                        f"mpv IPC command timed out after "
+                        f"{self.COMMAND_TIMEOUT_S:.1f}s: {cmd!r}"
+                    ) from None
+
+                if "_reader_error" in msg:
+                    raise ConnectionError(
+                        f"mpv IPC reader stopped: {msg['_reader_error']}"
+                    )
+                if msg.get("request_id") != rid:
+                    continue
+                if msg.get("error") != "success":
+                    raise MpvError(msg.get("error"))
+                return msg.get("data")
 
     def get(self, prop: str) -> Any:
         """Return a property's value, or None if unavailable."""
@@ -1014,17 +1047,30 @@ class MpvOutput:
         timeout_s: float = 5.0,
     ) -> bool:
         deadline = time.monotonic() + timeout_s
+        deferred: list[dict] = []
+        found = False
 
-        while time.monotonic() < deadline:
-            self.ipc.get("pause")
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    ev = self.ipc.events.get(
+                        timeout=min(0.05, max(0.001, deadline - time.monotonic()))
+                    )
+                except queue.Empty:
+                    continue
 
-            while not self.ipc.events.empty():
-                if self.ipc.events.get().get("event") == name:
-                    return True
+                if ev.get("event") == name:
+                    found = True
+                    break
 
-            time.sleep(0.05)
+                # Keep unrelated events (including a quickly-following
+                # file-loaded event) available to the next event consumer.
+                deferred.append(ev)
+        finally:
+            for ev in deferred:
+                self.ipc.events.put(ev)
 
-        return False
+        return found
 
     def _render(self, now: float) -> None:
         with self._lock:

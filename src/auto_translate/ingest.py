@@ -29,6 +29,7 @@ import numpy as np
 
 from .config import IngestConfig, SeparationConfig, DeepFilterConfig
 from .types import SAMPLE_RATE, AudioChunk
+from .auth import cookie_args as _cookie_args
 from .timeline import load_vod_metadata
 
 log = logging.getLogger(__name__)
@@ -91,13 +92,6 @@ def start_from_url(url: str) -> float:
             return parse_time(params[key][0])
 
     return 0.0
-
-
-def _cookie_args(cfg: IngestConfig) -> list[str]:
-    return (
-        ["--cookies-from-browser", cfg.cookies_from_browser]
-        if cfg.cookies_from_browser else []
-    )
 
 
 def probe(url: str, cfg: IngestConfig) -> tuple[str, float | None]:

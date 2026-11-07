@@ -1,11 +1,11 @@
-"""Benchmark the same YouTube audio and speech segments with 3 ASR settings.
+"""Benchmark the same YouTube audio and speech segments with 4 ASR settings.
 
 Run from the project folder:
     python tools/compare_asr.py "https://www.youtube.com/watch?v=LE8iGHrakAc"
 
 This is an inference comparison, NOT a ground-truth accuracy score. Inspect
-the speech/terms in compare.txt and judge by listening to the saved WAV clips.
-Only standard-library Python is required by this script.
+the speech/terms in compare_finetune.txt and listen to saved WAV clips.
+Uses the project's existing huggingface-hub dependency for the JA fine-tune.
 """
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_URL = "https://www.youtube.com/watch?v=LE8iGHrakAc"
+JA_REPO = "kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF"
+JA_FILENAME = "Qwen3-ASR-1.7B-JA-Q8_0.gguf"
 # Keep the baseline equivalent to the user's current application: Haas on Vulkan
 # with GPU decoding, without custom terms. Boosted Haas is a separate experiment.
 KEYWORDS = "顔パンパンパン=かおぱんぱんぱん\nパンパンパン=ぱんぱんぱん"
@@ -97,6 +99,25 @@ def benchmark(
     return elapsed, parse_lines(response.stdout, len(wavs))
 
 
+def fetch_japanese_finetune() -> str:
+    """Fetch the speech.cpp-compatible conversion of Neosophie's JA fine-tune.
+
+    The original neosophie safetensors checkpoint cannot be loaded by
+    speech.cpp. Use this separate, documented speech.cpp Q8_0 conversion,
+    not the different llama.cpp GGUF layout.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "huggingface-hub is required by the project; run uv sync "
+            "from the test project directory."
+        ) from exc
+    print(f"Checking Japanese fine-tune: {JA_REPO}/{JA_FILENAME}", flush=True)
+    print("First use downloads about 2.18 GB; existing downloads are cached.", flush=True)
+    return hf_hub_download(repo_id=JA_REPO, filename=JA_FILENAME)
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -170,17 +191,29 @@ def main() -> None:
     print("Checking Qwen model cache (download progress, if needed, follows)...", flush=True)
     subprocess.run([speech, "pull", "qwen3-asr-1.7b"], check=True,
                    stdout=subprocess.DEVNULL)
+    finetune_path = None
+    finetune_error = None
+    try:
+        finetune_path = fetch_japanese_finetune()
+    except Exception as exc:
+        finetune_error = str(exc)
+        print("Fine-tune download failed:", exc, file=sys.stderr, flush=True)
     plans = [
         ("haas_baseline", "haas-ja-v1.0", ["--decode-on-cpu=false"]),
         ("haas_scene_keywords", "haas-ja-v1.0",
          ["--decode-on-cpu=false", "--keywords", KEYWORDS]),
         ("qwen3_unprompted", "qwen3-asr-1.7b", ["--language", "ja"]),
+        ("qwen3_ja_finetuned", finetune_path, ["--language", "ja"]),
     ]
     outputs: dict[str, list[str]] = {}
     timings: dict[str, float] = {}
     errors: dict[str, str] = {}
     for label, model, flags in plans:
         print(f"\nRunning {label}...", flush=True)
+        if not model:
+            errors[label] = finetune_error or "Fine-tuned model was not downloaded."
+            print(f"SKIPPED {label}: {errors[label]}", file=sys.stderr, flush=True)
+            continue
         try:
             elapsed, texts = benchmark(label, speech, model, segments, flags, folder)
             timings[label] = round(elapsed, 3)
@@ -197,7 +230,9 @@ def main() -> None:
         "Speech.cpp VAD differs from the production FireRedVAD.",
         "No CER/WER is calculated: manually verify the audio/JP reference.",
         "Haas keywords: " + KEYWORDS.replace("\n", " ; "),
-        "Qwen prompt: disabled (unprompted control)",
+        "Qwen prompt: disabled for both base and Japanese fine-tune",
+        "Fine-tune source: " + JA_REPO,
+        "Fine-tune quantization: speech.cpp Q8_0, not the original BF16 checkpoint",
         "",
     ]
     for label, _, _ in plans:
@@ -209,7 +244,7 @@ def main() -> None:
         for label, _, _ in plans:
             report.append(f"{label}: {outputs.get(label, ['N/A'] * len(segments))[i]}")
     final = "\n".join(report) + "\n"
-    location = folder / "compare_clean.txt"  # Keep the earlier prompted comparison.
+    location = folder / "compare_finetune.txt"  # Preserve previous reports.
     location.write_text(final, encoding="utf-8")
     print("\n" + "\n".join(report[:10]))
     print(f"\nReport saved to {location.resolve()}", flush=True)

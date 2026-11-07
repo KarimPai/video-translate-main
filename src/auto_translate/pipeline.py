@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
+from .watame import reconcile_caption
 from .captions import CaptionIndex
 from .text_filter import is_usable_transcript
 from .config import Config
@@ -95,6 +96,8 @@ def run_asr(
             else None
         )
         if text and caption_match is not None:
+            if caption_match.reliable:
+                text = reconcile_caption(text, caption_match.text)
             haas_compact = "".join(ch for ch in text if ch.isalnum()).casefold()
             caption_compact = "".join(ch for ch in caption_match.text if ch.isalnum()).casefold()
             similarity = SequenceMatcher(

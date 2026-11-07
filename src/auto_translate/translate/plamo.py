@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
+from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +145,8 @@ class PlamoTranslator:
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
-        return _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        return correct_translation(ja, english)
 
     def _chat(
         self,

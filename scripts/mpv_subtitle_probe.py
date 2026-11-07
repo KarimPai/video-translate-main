@@ -40,6 +40,7 @@ def main():
             out.cfg = MpvConfig()
             out._lock = threading.Lock()
             out._lines = []
+            out._subtitle_ready = threading.Event()
             out._shown = ''
             out._lags = []
             out._logged_displayed_subtitles = set()

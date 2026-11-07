@@ -353,6 +353,7 @@ class MpvOutput:
         self.stop = stop
 
         self._lines: list[_Line] = []
+        self._subtitle_ready = threading.Event()
         self._lock = threading.Lock()
         self._now: float | None = None
         self._shown = ""
@@ -486,8 +487,6 @@ class MpvOutput:
     # ---- Output interface ----
 
     def show(self, sub: Subtitle) -> None:
-        cfg = self.cfg
-
         if sub.end_s < self._session_start:
             return
 
@@ -518,10 +517,7 @@ class MpvOutput:
             show_from,
             max(0.0, speech_start - sub.start_s),
         )
-        until = (
-            max(sub.end_s, show_from + cfg.min_display_s)
-            + cfg.hold_s
-        )
+        until = sub.end_s
 
         line = _Line(sub, show_from, until)
         now = self._now
@@ -551,6 +547,7 @@ class MpvOutput:
 
         with self._lock:
             self._lines.append(line)
+        self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
         """Record the latest audio position safely processed for translation."""
@@ -791,6 +788,7 @@ class MpvOutput:
 
         while not self.stop.is_set():
 
+            self._subtitle_ready.clear()
             if self.ingest.video_failed.is_set():
                 if self._recover_video_stream():
                     return
@@ -969,7 +967,15 @@ class MpvOutput:
             if (delta := self._jump_request()) and self._jump(delta):
                 return
 
-            time.sleep(0.1)
+            # Wake for newly translated text or the next queued cue boundary.
+            wait_s = 0.1
+            if not paused and self._now is not None:
+                with self._lock:
+                    for line in self._lines:
+                        for boundary in (line.show_from, line.show_until):
+                            if self._now < boundary < self._now + wait_s:
+                                wait_s = boundary - self._now
+            self._subtitle_ready.wait(max(0.005, wait_s))
 
     def _recover_video_stream(self) -> bool:
         """Restart the shared fMP4 cache and audio reader at the current source position."""

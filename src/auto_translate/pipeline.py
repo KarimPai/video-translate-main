@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
-from .watame import reconcile_caption
+from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex
 from .text_filter import is_usable_transcript
 from .config import Config
@@ -66,6 +66,7 @@ def run_asr(
     diarizer=None,
     get_generation: Callable[[], int] | None = None,
     captions: CaptionIndex | None = None,
+    vod_title: str = "",
 ) -> None:
     """Transcribe utterances, optionally using aligned captions as a fallback."""
     while True:
@@ -123,6 +124,17 @@ def run_asr(
 
         if not text:
             continue
+
+        # Proper names must be repaired before translation and glossary lookup.
+        # The VOD title is a stronger signal than kanji auto-caption spelling.
+        corrected = correct_asr_name(
+            text,
+            vod_title=vod_title,
+            caption=caption_match.text if caption_match else "",
+        )
+        if corrected != text:
+            log.info("Watame ASR name correction: %s -> %s", text, corrected)
+            text = corrected
 
         if get_generation is not None and utt.generation != get_generation():
             continue
@@ -287,6 +299,7 @@ def run(
     stop: threading.Event,
     diarizer=None,
     captions: CaptionIndex | None = None,
+    vod_title: str = "",
 ) -> None:
     """Run ingestion, VAD, diarization, ASR and translation."""
 
@@ -361,6 +374,7 @@ def run(
                 diarizer,
                 lambda: ingest.generation,
                 captions,
+                vod_title,
             ),
             name="asr",
             daemon=True,

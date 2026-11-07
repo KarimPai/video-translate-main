@@ -208,7 +208,7 @@ class MpvIpc:
 
             self._f.write(
                 (
-                    json.dumps({"command": cmd, "request_id": rid}) + "\\n"
+                    json.dumps({"command": cmd, "request_id": rid}) + "\n"
                 ).encode()
             )
 

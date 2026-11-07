@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from ..config import TranslateConfig
-from ..context_memory import build_recent_context
+from ..context_memory import build_recent_context, reuse_recent_short_term
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -174,6 +174,11 @@ class PlamoTranslator:
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        if getattr(self, "memory_lines", 0):
+            reused = reuse_recent_short_term(ja, history)
+            if reused is not None:
+                log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
+                return reused
         english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
         english = correct_translation(ja, english)
         corrected = neutralize_unsupported_subjects(ja, english)

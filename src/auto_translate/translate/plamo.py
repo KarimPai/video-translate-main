@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from ..config import TranslateConfig
+from ..context_memory import build_recent_context
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -50,6 +51,7 @@ class PlamoTranslator:
 
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, vod_title: str = "") -> None:
         self.cfg = cfg
+        self.memory_lines = max(cfg.context_lines, getattr(cfg, "memory_lines", 24))
         self.glossary = glossary
         self.vod_title = " ".join(vod_title.split())[:200]
         self.url = cfg.plamo_base_url.rstrip("/") + "/chat/completions"
@@ -195,10 +197,17 @@ class PlamoTranslator:
             })
         messages.append({"role": "user", "content": ja})
 
+        memory = build_recent_context(
+            history, self.glossary,
+            context_lines=self.cfg.context_lines,
+            memory_lines=getattr(self.cfg, "memory_lines", 24),
+        )
         options: dict = {
             "source_lang": "ja",
             "target_lang": "en",
-            "context": _translation_context(self.vod_title),
+            "context": _translation_context(self.vod_title) + (
+                "\n" + memory if memory else ""
+            ),
         }
         if hits := self.glossary.find(ja):
             options["glossary"] = [

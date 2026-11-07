@@ -12,6 +12,9 @@ from threading import RLock
 from .types import Subtitle
 
 
+SUBTITLE_LINGER_S = 3.0
+
+
 class SessionSubtitleCache:
     """Thread-safe, unbounded (text-only) cache for one currently loaded video."""
 
@@ -37,7 +40,7 @@ class SessionSubtitleCache:
             self._entries[key] = sub
             self._by_start[floor(sub.start_s)].append(sub)
             onset = sub.speech_start_s if sub.speech_start_s is not None else sub.start_s
-            for second in range(floor(onset), floor(sub.end_s) + 1):
+            for second in range(floor(onset), floor(sub.end_s + SUBTITLE_LINGER_S) + 1):
                 self._by_second[second].append(sub)
             return True
 
@@ -64,13 +67,14 @@ class SessionSubtitleCache:
                 key=lambda sub: abs(sub.start_s - start_s) + abs(sub.end_s - end_s),
             )
 
-    def active_at(self, now: float) -> list[Subtitle]:
+    def active_at(self, now: float, *, include_linger: bool = False) -> list[Subtitle]:
         """Return already translated cues that should be visible at this time."""
+        linger = SUBTITLE_LINGER_S if include_linger else 0.0
         with self._lock:
             items = [
                 sub for sub in self._by_second.get(floor(now), ())
                 if (sub.speech_start_s if sub.speech_start_s is not None else sub.start_s)
-                <= now < sub.end_s
+                <= now < sub.end_s + linger
             ]
         return sorted(items, key=lambda sub: sub.start_s)
 

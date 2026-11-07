@@ -2,6 +2,7 @@
 from contextlib import redirect_stdout
 from io import StringIO
 import unittest
+from unittest.mock import patch
 
 from auto_translate.output.terminal import TerminalOutput
 from auto_translate.types import Subtitle
@@ -18,6 +19,15 @@ class TerminalOutputTests(unittest.TestCase):
             "JP: こんにちは",
             "EN: Hello.",
         ])
+
+    def test_simple_mode_flushes_once_for_bilingual_subtitle(self):
+        with patch("builtins.print") as output:
+            TerminalOutput(simple=True).show(
+                Subtitle(1.0, 2.0, "こんにちは", "Hello.")
+            )
+        output.assert_called_once_with(
+            "JP: こんにちは\nEN: Hello.", flush=True
+        )
 
     def test_default_output_preserves_timestamps_and_timing_fields(self):
         target = StringIO()

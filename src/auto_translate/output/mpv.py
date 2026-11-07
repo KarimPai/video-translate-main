@@ -415,10 +415,9 @@ class MpvOutput:
             "--demuxer-readahead-secs=120",
             "--demuxer-max-bytes=1GiB",
             "--demuxer-max-back-bytes=1GiB",
-            # Start live HLS at its oldest available segment; VOD keeps
-            # MPV's normal full-playlist timeline.
+            # Match the audio reader's live HLS edge and remove menu seeks.
             *(
-                ["--demuxer-lavf-o=live_start_index=-3"]
+                ["--demuxer-lavf-o=live_start_index=-3", "--load-context-menu=no"]
                 if ingest.source.live else []
             ),
             "--input-default-bindings=no",
@@ -433,7 +432,7 @@ class MpvOutput:
             ),
 
             # Use MPV's built-in native on-screen controller.
-            "--osc=yes",
+            "--osc=no" if ingest.source.live else "--osc=yes",
             "--osd-on-seek=no",
             "--no-input-default-bindings",
             f"--input-conf={INPUT_CONF}",
@@ -861,6 +860,8 @@ class MpvOutput:
             return
 
         paused = True
+        last_audio_pts = None
+        logged_live_sync = False
         live_tick = time.monotonic()
         if self.ingest.source.live:
             self._now = self._session_start
@@ -930,7 +931,23 @@ class MpvOutput:
                 )
                 tick = time.monotonic()
                 if playing:
-                    self._now += tick - live_tick
+                    elapsed = tick - live_tick
+                    self._now += elapsed
+                    anchor = self.ingest.live_audio_anchor
+                    if anchor is not None:
+                        pts = self.ipc.get("audio-pts")
+                        if pts is not None and last_audio_pts is not None and pts > last_audio_pts:
+                            transport_start, cue_start = anchor
+                            error = cue_start + (pts - transport_start) - self._now
+                            # Independent renditions can have unrelated PTS origins.
+                            # Correct plausible HLS edge differences gradually.
+                            if abs(error) <= max(12.0, self.cfg.delay_s * 2):
+                                limit = elapsed * 0.5
+                                self._now += max(-limit, min(limit, error))
+                                if not logged_live_sync:
+                                    log.info("live subtitles aligned to MPV audio PTS (initial error %+.2fs)", error)
+                                    logged_live_sync = True
+                        last_audio_pts = pts
                     self._render(self._now)
                 live_tick = tick
             elif (pos := self.ipc.get("time-pos")) is not None:

@@ -55,7 +55,7 @@ Translation failures and missing subtitles should be investigated using `logs\ru
 2. FireRedVAD detects utterance boundaries. By default, the silence interval is 400 ms, maximum utterance length is 5 seconds, and fallback probing checks speech that VAD may miss.
 3. Haas transcribes utterances, with optional Japanese YouTube caption assistance. A conservative filter suppresses obvious non-speech ASR outputs.
 4. The configured translator renders English-only subtitles; `glossary.toml` handles proper names and streaming terms.
-5. MPV initially waits for up to **5 seconds of translated audio lead**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.
+5. MPV initially waits until translation covers **5 seconds ahead of playback**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.
 
 The MPV demux limits are **1 GiB forward + 1 GiB backward**, with 120 seconds of readahead. These are upper limits, not preallocated memory.
 

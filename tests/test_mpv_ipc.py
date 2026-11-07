@@ -150,6 +150,31 @@ class MpvShutdownTests(unittest.TestCase):
 
 
 class TranslationBufferTests(unittest.TestCase):
+    def test_live_buffer_defaults_to_eight_seconds(self):
+        self.assertEqual(MpvConfig().delay_s, 8.0)
+
+    def test_live_waits_for_processing_up_to_ten_seconds(self):
+        out = object.__new__(MpvOutput)
+        out.cfg = MpvConfig()
+        out.ingest = SimpleNamespace(first_pts_at=100.0)
+        out._buffer_condition = threading.Condition()
+        out._translated_until = 0.0
+        out._session_start = 0.0
+        self.assertFalse(out._live_playback_ready(107.9))
+        self.assertFalse(out._live_playback_ready(108.1))
+        out.advance(0.5)
+        self.assertTrue(out._live_playback_ready(108.1))
+        out._translated_until = 0.0
+        self.assertTrue(out._live_playback_ready(110.0))
+
+    def test_live_clock_maps_large_mpv_pts_to_audio_relative_seconds(self):
+        out = object.__new__(MpvOutput)
+        out._uses_original_timeline = False
+        out._mpv_anchor = 5400.0
+        out._clock_source_anchor = 0.0
+        self.assertEqual(out._source_time_from_mpv(5403.5), 3.5)
+        self.assertEqual(out._mpv_time_from_source(3.5), 5403.5)
+
     def test_manual_play_bypasses_prebuffer_without_forced_pause(self):
         out = object.__new__(MpvOutput)
         out.stop = threading.Event()

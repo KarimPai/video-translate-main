@@ -268,6 +268,9 @@ class Ingest:
         self.first_pts: float | None = None
         self.first_pts_at = 0.0
         self.first_pts_ready = threading.Event()
+        # Reconnects use a continuous live subtitle timeline.
+        self._live_origin_monotonic: float | None = None
+        self._live_retry_count = 0
 
         self._restart_at: float | None = None
         self._go = threading.Event()
@@ -885,10 +888,14 @@ class Ingest:
             if not src.live:
                 self._vod_audio_url = audio_url
 
+        # MPV and the audio reader should begin at the same HLS edge.
+        is_hls = "m3u8" in audio_url.lower() or "hls_playlist" in audio_url.lower()
+        live_hls_options = ["-live_start_index", "-3"] if src.live and is_hls else []
         return [ffmpeg + [
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "10",
+            *live_hls_options,
             "-i", audio_url,
         ] + out]
 
@@ -921,7 +928,47 @@ class Ingest:
                 with self._proc_lock:
                     generation = self._generation
                     reuse_url = self._vod_audio_url is not None and not self.video_out
-                failed_to_open = self._read_session(out_q)
+                try:
+                    failed_to_open = self._read_session(out_q)
+                except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                    if not self.source.live:
+                        raise
+                    log.warning("live audio session failed: %s", exc)
+                    failed_to_open = True
+
+                if self.source.live:
+                    with self._proc_lock:
+                        if self._stopped:
+                            break
+                        self._live_retry_count += 1
+                        attempt = self._live_retry_count
+                    if attempt > 3:
+                        log.error("live audio recovery exhausted after 3 consecutive failures")
+                        break
+                    log.warning("live audio disconnected; reconnect attempt %d/3", attempt)
+                    time.sleep(float(attempt))
+                    with self._proc_lock:
+                        if self._stopped:
+                            break
+                        elapsed = (
+                            max(0.0, time.monotonic() - self._live_origin_monotonic)
+                            if self._live_origin_monotonic is not None else 0.0
+                        )
+                        self._generation += 1
+                        generation = self._generation
+                        self.source = replace(self.source, start_s=elapsed)
+                        self.first_pts = None
+                        self.first_pts_ready.clear()
+                    out_q.put(AudioChunk(
+                        round(elapsed * SAMPLE_RATE),
+                        np.zeros(0, dtype=np.float32),
+                        time.monotonic(),
+                        reset=True,
+                        generation=generation,
+                    ))
+                    log.info("live audio timeline resumed at %.2fs (generation=%d)", elapsed, generation)
+                    continue
+
                 with self._proc_lock:
                     refresh = (
                         reuse_url and failed_to_open and not self._stopped
@@ -1139,6 +1186,8 @@ class Ingest:
                         generation == self._generation
                         and self.first_pts is None
                     ):
+                        if self.source.live and self._live_origin_monotonic is None:
+                            self._live_origin_monotonic = time.monotonic()
                         self.first_pts = self.source.start_s
                         self.first_pts_at = time.monotonic()
                         self.first_pts_ready.set()
@@ -1258,6 +1307,9 @@ class Ingest:
             processed_seconds,
             [p.poll() for p in procs],
         )
+        if self.source.live and processed_seconds >= 30.0:
+            # Only consecutive short failures count against live recovery.
+            self._live_retry_count = 0
 
         if input_frames == 0 and (worker or deepfilter_worker):
             log.error(

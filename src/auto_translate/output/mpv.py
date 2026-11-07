@@ -414,7 +414,7 @@ class MpvOutput:
             # Start live HLS at its oldest available segment; VOD keeps
             # MPV's normal full-playlist timeline.
             *(
-                ["--demuxer-lavf-o=live_start_index=0"]
+                ["--demuxer-lavf-o=live_start_index=-3"]
                 if ingest.source.live else []
             ),
             "--input-default-bindings=no",
@@ -570,6 +570,15 @@ class MpvOutput:
                 self._seek_lead_target = None
                 self._subtitle_ready.set()
             self._buffer_condition.notify_all()
+
+    def _live_playback_ready(self, now: float) -> bool:
+        """Buffer the live edge without delaying indefinitely for a subtitle."""
+        elapsed = now - self.ingest.first_pts_at
+        if elapsed < self.cfg.delay_s:
+            return False
+        with self._buffer_condition:
+            processed = self._translated_until > self._session_start + 0.25
+        return processed or elapsed >= max(self.cfg.delay_s, 10.0)
 
     def _translation_ready(self) -> bool:
         """Start after a 5s lead from new work or previously cached audio."""
@@ -765,7 +774,8 @@ class MpvOutput:
                     "the currently cached video"
                 )
 
-            self._uses_original_timeline = loaded
+            # Live HLS PTS may be large/rebased; only VOD has identity mapping.
+            self._uses_original_timeline = loaded and not self.ingest.source.live
             self._direct_video_loaded = True
             if self._session_start > 0:
                 self.ipc.command("seek", self._session_start, "absolute+exact")
@@ -816,12 +826,9 @@ class MpvOutput:
         )
 
         if self.ingest.source.live:
-            unpause_at = (
-                self.ingest.first_pts_at
-                + self.cfg.delay_s
-            )
+            unpause_at = self.ingest.first_pts_at + self.cfg.delay_s
             log.info(
-                "live playback delay: %.1fs",
+                "live playback delay: %.1fs (up to 10s for initial processing)",
                 self.cfg.delay_s,
             )
         else:
@@ -857,6 +864,9 @@ class MpvOutput:
 
             if paused and unpause_at is None:
                 should_unpause = self._translation_ready()
+            elif paused and unpause_at is not None and self.ingest.source.live:
+                # Wait 5-10s for initial speech processing; never indefinitely.
+                should_unpause = self._live_playback_ready(time.monotonic())
 
             # User input overrides the optional translation prebuffer. Never
             # force MPV back to pause immediately after its Play button is used.

@@ -80,7 +80,7 @@ class MpvConfig:
 
     enabled: bool = False
     path: str = ""
-    delay_s: float = 9.0
+    delay_s: float = 8.0
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"

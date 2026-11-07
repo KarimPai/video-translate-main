@@ -62,6 +62,20 @@ The MPV demux limits are **1 GiB forward + 1 GiB backward**, with 120 seconds of
 
 A separate **RAM-only session subtitle cache** stores translated cues and processed regions for the currently loaded VOD. Seeking back to a translated region can immediately restore existing English subtitles and reuse matching ASR/translation results. The subtitle cache is discarded when the application closes or a different video is loaded; it is not an on-disk translation archive.
 
+## Live streams
+
+The existing launcher automatically detects ongoing YouTube live streams. MPV
+plays about **8 seconds behind the incoming audio** by default. Set
+`[mpv] delay_s = 5.0` through `10.0` in local `config.toml`, or pass
+`--delay 8` on the CLI. If the first audio is still processing at 8 seconds,
+startup may wait up to 10 seconds but never waits indefinitely for translation.
+
+Live HLS audio and MPV both target the third-to-last available segment. Live
+MPV timestamps are mapped relative to the audio-start anchor, unlike the
+absolute VOD timeline. The live audio reader retries up to three consecutive
+failures and retains a continuous subtitle timeline on reconnect. Live mode
+does not use the VOD translation cache or VOD seek buffering.
+
 ## Optional processing
 
 Vocal separation and DeepFilterNet are **disabled by default** and require their respective optional dependencies.

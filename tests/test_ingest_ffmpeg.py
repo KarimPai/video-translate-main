@@ -21,6 +21,21 @@ class AudioCommandTests(unittest.TestCase):
         self.assertNotIn("ashowinfo", " ".join(cmd))
         self.assertEqual(cmd[cmd.index("-loglevel") + 1], "warning")
 
+    def test_live_hls_audio_starts_near_live_edge(self):
+        self.ingest.source.live = True
+        self.ingest.source.location = "https://www.youtube.com/watch?v=live"
+        self.ingest._vod_audio_url = None
+        self.ingest._resolve_audio_url = lambda: "https://example.com/hls_playlist/index.m3u8"
+        cmd = self.ingest._audio_commands()[0]
+        self.assertEqual(cmd[cmd.index("-live_start_index") + 1], "-3")
+
+    def test_non_hls_live_audio_does_not_receive_hls_flags(self):
+        self.ingest.source.live = True
+        self.ingest.source.location = "https://www.youtube.com/watch?v=live"
+        self.ingest._vod_audio_url = None
+        self.ingest._resolve_audio_url = lambda: "https://example.com/videoplayback?id=audio"
+        self.assertNotIn("-live_start_index", self.ingest._audio_commands()[0])
+
     def test_fmp4_fallback_audio_disables_per_frame_diagnostics(self):
         root = Path(__file__).resolve().parent / "fake-fmp4"
         self.ingest._cache_root = root

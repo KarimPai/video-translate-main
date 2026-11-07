@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .auth import cookie_args
 from .config import IngestConfig
 
 log = logging.getLogger(__name__)
@@ -180,8 +181,7 @@ def download_vod_captions(
         "--sub-format", "vtt/best",
         "--output", str(cache_dir / f"{video_id}.%(ext)s"),
     ]
-    if cfg.cookies_from_browser:
-        command += ["--cookies-from-browser", cfg.cookies_from_browser]
+    command += cookie_args(cfg)
     command.append(url)
 
     try:

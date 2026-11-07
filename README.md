@@ -50,10 +50,27 @@ PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up 
 
 Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 
+### FireRedVAD defaults
+
+The recommended default values for both live streams and VODs are:
+
+```toml
+[vad]
+threshold = 0.35
+neg_threshold = 0.25
+speech_pad_ms = 200
+min_silence_ms = 400
+min_speech_ms = 100
+max_utterance_s = 6.0
+fallback_s = 5.0
+```
+
+`max_utterance_s` must remain finite; infinity is unsupported by the current frame conversion. Because `config.toml` is git-ignored, any existing local `[vad]` values still override these defaults. Remove or update old overrides to use the recommendations.
+
 ## Detection and subtitles
 
 1. FFmpeg decodes Japanese audio, with accelerated VOD ingestion in MPV mode.
-2. FireRedVAD detects utterance boundaries. By default, the silence interval is 400 ms, maximum utterance length is 5 seconds, and fallback probing checks speech that VAD may miss.
+2. FireRedVAD detects utterance boundaries. The defaults use 200 ms speech padding, 400 ms silence, 100 ms minimum speech and a finite 6-second maximum utterance; fallback probing checks speech that VAD may miss.
 3. Haas transcribes utterances, with optional Japanese YouTube caption assistance. A conservative filter suppresses obvious non-speech ASR outputs.
 4. PLaMo 3 Translate 2B renders English-only subtitles; `glossary.toml` handles proper names and streaming terms.
 5. MPV initially waits until translation covers **5 seconds ahead of playback**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.

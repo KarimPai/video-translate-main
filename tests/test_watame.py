@@ -26,6 +26,10 @@ class WatameTests(unittest.TestCase):
             spoken,
         )
         self.assertEqual(
+            correct_asr_name(spoken, vod_title="【ゲーム】配信 - 角巻わため"),
+            "今のわためが悪いわためが悪いよ",
+        )
+        self.assertEqual(
             correct_asr_name(
                 spoken,
                 vod_title="Watame live",
@@ -36,5 +40,10 @@ class WatameTests(unittest.TestCase):
 
     def test_translation_preserves_distinct_names(self):
         self.assertEqual(correct_translation("ワタメが来た", "Watanabe arrived."), "Watame arrived.")
+        self.assertEqual(
+            correct_translation("今のわためが悪いわためが悪いよ",
+                                "Watanabe was wrong! Watanabe was wrong!"),
+            "Watame was wrong! Watame was wrong!",
+        )
         for ja in ("渡辺が来た", "わためと渡辺", "ワタメとワタナベ"):
             self.assertEqual(correct_translation(ja, "Watanabe arrived."), "Watanabe arrived.")

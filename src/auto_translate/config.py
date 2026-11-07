@@ -50,22 +50,16 @@ class AsrConfig:
 
 @dataclass
 class TranslateConfig:
-    """Translation backend and model settings."""
+    """PLaMo 3 Translate 2B settings (sole translation engine)."""
 
-    backend: str = "hymt2"
     plamo_base_url: str = "http://127.0.0.1:8000/v1"
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
     plamo_context: int = 8192
     plamo_gpu_layers: int = 99
-    model: str = "kaelri/hy-mt2:1.8b-q4_K_M"
-    base_url: str = "http://127.0.0.1:11434/v1"
-    temperature: float = 0.2
     max_tokens: int = 120
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
-    min_request_interval_s: float = 3.0
-    extra_body: dict = field(default_factory=dict)
     context_lines: int = 8
     # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
     memory_lines: int = 24
@@ -143,17 +137,16 @@ def load_config(path: Path) -> Config:
     for obsolete in ("start_delay_s", "min_display_s", "hold_s"):
         mpv_data.pop(obsolete, None)
 
-    # Migrate old preset-based configs to the single flat HY-MT2 section.
-    # The selected HY-MT2 preset's values are retained; preset names are discarded.
+    # Older local config.toml files may still have an engine selector and
+    # settings from removed translation paths. Ignore those keys so an
+    # existing installation automatically uses PLaMo without manual edits.
     translate_data = dict(data.get("translate", {}))
-    legacy_presets = translate_data.pop("presets", {})
-    translate_data.pop("preset", None)
-    hymt2_settings = dict(legacy_presets.get("hymt2", {}))
-    hymt2_settings.pop("backend", None)
-    hymt2_settings.pop("mpv_delay_s", None)
-    hymt2_settings.pop("api_key_env", None)
-    for key, value in hymt2_settings.items():
-        translate_data.setdefault(key, value)
+    for obsolete in (
+        "backend", "model", "base_url", "temperature",
+        "min_request_interval_s", "extra_body", "presets", "preset",
+        "mpv_delay_s", "api_key_env",
+    ):
+        translate_data.pop(obsolete, None)
 
     return Config(
         ingest=IngestConfig(**ingest_data),

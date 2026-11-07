@@ -23,6 +23,54 @@ class PlamoTranslatorTests(unittest.TestCase):
     def test_clean_removes_prefix_and_quotes(self):
         self.assertEqual(_clean('EN: "Hello!"\n'), "Hello!")
 
+    def test_translation_guard_fixes_stream_example_without_second_request(self):
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = SimpleNamespace(timeout_s=5)
+
+        with patch.object(
+            PlamoTranslator,
+            "_chat",
+            return_value="My driving's just not that great, so I ended up hitting it.",
+        ) as chat:
+            result = translator.translate(
+                "なんか運転がまぁ上手くないから当たっちゃったんだよなぁ",
+                [],
+            )
+
+        self.assertEqual(
+            result,
+            "The driving's just not that great, so there was a collision.",
+        )
+        chat.assert_called_once()
+
+    def test_old_english_history_is_neutralized_before_new_request(self):
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = SimpleNamespace(
+            context_lines=2, plamo_model="plamo-3-translate", max_tokens=120,
+        )
+        translator.glossary = FakeGlossary()
+        translator.vod_title = ""
+        translator.url = "http://127.0.0.1:8000/v1/chat/completions"
+
+        response = io.BytesIO(json.dumps({
+            "choices": [{"message": {"content": "Okay."}}]
+        }).encode("utf-8"))
+        with patch(
+            "auto_translate.translate.plamo.urllib.request.urlopen",
+            return_value=response,
+        ) as open_url:
+            translator._chat(
+                "次の話",
+                [("運転が下手", "My driving is bad.")],
+                timeout=5,
+            )
+
+        payload = json.loads(open_url.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(
+            payload["messages"][1]["content"],
+            "The driving is bad.",
+        )
+
     def test_request_uses_plamo_options_history_and_glossary(self):
         translator = object.__new__(PlamoTranslator)
         translator.cfg = SimpleNamespace(

@@ -364,6 +364,7 @@ class MpvOutput:
         self._lock = threading.Lock()
         self._now: float | None = None
         self._shown = ""
+        self._live_overlay_confirmed = False
         self._lags: list[float] = []
         self._session_start = ingest.source.start_s
         self._buffer_condition = threading.Condition()
@@ -816,7 +817,7 @@ class MpvOutput:
             if getattr(self, "_uses_original_timeline", False)
             else "local video fallback timeline with source/session anchor"
         )
-        current_pos = self.ipc.get("time-pos")
+        current_pos = None if self.ingest.source.live else self.ipc.get("time-pos")
         if current_pos is not None:
             self._mpv_anchor = float(current_pos)
         self._last_direct_pos = (
@@ -858,6 +859,9 @@ class MpvOutput:
             return
 
         paused = True
+        live_tick = time.monotonic()
+        if self.ingest.source.live:
+            self._now = self._session_start
 
         while not self.stop.is_set():
 
@@ -914,8 +918,21 @@ class MpvOutput:
                     fmt_hms(self._session_start),
                 )
 
-            if (pos := self.ipc.get("time-pos")) is not None:
-                if self._direct_video_loaded and not self.ingest.source.live:
+            if self.ingest.source.live:
+                # Live cues use elapsed decoded PCM time. A live HLS time-pos
+                # can be missing or jump to a different transport timestamp.
+                playing = (
+                    not paused
+                    and self.ipc.get("pause") is False
+                    and not self.ipc.get("paused-for-cache")
+                )
+                tick = time.monotonic()
+                if playing:
+                    self._now += tick - live_tick
+                    self._render(self._now)
+                live_tick = tick
+            elif (pos := self.ipc.get("time-pos")) is not None:
+                if self._direct_video_loaded:
                     sampled_at = time.monotonic()
                     if self._last_direct_pos is not None:
                         raw_step = float(pos) - self._last_direct_pos
@@ -1373,6 +1390,9 @@ class MpvOutput:
                 z=10,
                 hidden=False,
             )
+            if text and self.ingest.source.live and not self._live_overlay_confirmed:
+                self._live_overlay_confirmed = True
+                log.info("MPV accepted first live subtitle overlay at %.2fs", now)
             self._shown = text
 
             if text:

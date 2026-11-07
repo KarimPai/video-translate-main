@@ -672,9 +672,26 @@ class MpvOutput:
             OSError,
             json.JSONDecodeError,
             MpvError,
-        ):
+        ) as exc:
             if not self.stop.is_set():
-                log.exception("mpv playback/IPC error; stopping")
+                # WinError 232 means MPV's IPC pipe closed. Distinguish a
+                # normal window close from an unexpected player exit rather
+                # than reporting the pipe failure itself as the root cause.
+                returncode = self._proc.poll()
+                if returncode == 0:
+                    log.info("MPV window closed; stopping translator")
+                elif returncode is not None:
+                    log.error(
+                        "MPV exited with code %s; IPC closed (%s). "
+                        "Check logs/mpv.log for the playback error.",
+                        returncode, exc,
+                        exc_info=True,
+                    )
+                else:
+                    log.exception(
+                        "MPV IPC connection closed while the player may "
+                        "still be running; check logs/mpv.log"
+                    )
                 self.stop.set()
 
     def _play_session(self, show_hint: bool) -> None:

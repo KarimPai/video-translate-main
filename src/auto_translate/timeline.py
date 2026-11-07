@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .auth import cookie_args as _cookie_args
 from .config import IngestConfig
 
 log = logging.getLogger(__name__)
@@ -22,13 +23,6 @@ _FORMAT_FIELDS = (
     "format_id", "protocol", "ext", "width", "height", "fps",
     "vcodec", "acodec", "tbr", "format_note",
 )
-
-
-def _cookie_args(cfg: IngestConfig) -> list[str]:
-    return (
-        ["--cookies-from-browser", cfg.cookies_from_browser]
-        if cfg.cookies_from_browser else []
-    )
 
 
 def _cache_dir() -> Path:

@@ -815,10 +815,16 @@ class MpvOutput:
             if paused and unpause_at is None:
                 should_unpause = self._translation_ready()
 
-            # Ignore MPV's Play toggle while a seek is still rebuffering.
-            # Otherwise manual playback can outrun the new subtitle queue.
-            if paused and not should_unpause and self.ipc.get("pause") is False:
-                self.ipc.command("set_property", "pause", True)
+            # User input overrides the optional translation prebuffer. Never
+            # force MPV back to pause immediately after its Play button is used.
+            # Once manually playing, do not auto-pause for low translation lead.
+            if paused and self.ipc.get("pause") is False:
+                paused = False
+                unpause_at = None
+                log.info(
+                    "MPV manually started; continuing playback without "
+                    "waiting for the translation buffer"
+                )
 
             if paused and should_unpause:
 

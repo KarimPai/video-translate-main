@@ -150,6 +150,71 @@ class MpvError(Exception):
     pass
 
 
+class _WindowsPipe:
+    """Raw newline IPC over a duplex, overlapped Windows pipe.
+
+    A blocking CRT file read can serialize writes on the same descriptor.
+    Keep the reader independent so it can wait while commands are sent.
+    """
+
+    def __init__(self, path: str) -> None:
+        import _winapi
+
+        self._api = _winapi
+        self._handle = _winapi.CreateFile(
+            path,
+            _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+            0, None, _winapi.OPEN_EXISTING,
+            _winapi.FILE_FLAG_OVERLAPPED, 0,
+        )
+        self._buffer = bytearray()
+
+    def readline(self) -> bytes:
+        api = self._api
+        while b"\n" not in self._buffer:
+            try:
+                ov, _ = api.ReadFile(self._handle, 65536, overlapped=True)
+                _, error = ov.GetOverlappedResult(True)
+            except OSError as exc:
+                if exc.winerror == api.ERROR_BROKEN_PIPE:
+                    return b""
+                raise
+            if error:
+                raise ctypes.WinError(error)
+            data = ov.getbuffer()
+            if not data:
+                return b""
+            self._buffer.extend(data)
+        end = self._buffer.index(b"\n") + 1
+        line = bytes(self._buffer[:end])
+        del self._buffer[:end]
+        return line
+
+    def write(self, data: bytes) -> None:
+        ov, _ = self._api.WriteFile(self._handle, data, overlapped=True)
+        try:
+            # Bound writes as well as response waits if MPV stops reading.
+            if self._api.WaitForSingleObject(ov.event, 5000) != 0:
+                raise TimeoutError("mpv IPC pipe write timed out")
+        except BaseException:
+            ov.cancel()
+            ov.GetOverlappedResult(True)
+            raise
+        written, error = ov.GetOverlappedResult(True)
+        if error:
+            raise ctypes.WinError(error)
+        if written != len(data):
+            raise ConnectionError("incomplete mpv IPC pipe write")
+
+    def close(self) -> None:
+        # Cancel a pending reader before releasing the handle.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CancelIoEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        kernel32.CancelIoEx.restype = wintypes.BOOL
+        kernel32.CancelIoEx(self._handle, None)
+        self._api.CloseHandle(self._handle)
+
+
 class MpvIpc:
     """mpv JSON IPC with a dedicated reader and bounded command waits."""
 
@@ -161,7 +226,7 @@ class MpvIpc:
         while True:
             try:
                 if sys.platform == "win32":
-                    self._f = open(path, "r+b", buffering=0)
+                    self._f = _WindowsPipe(path)
                 else:
                     sock = socket.socket(socket.AF_UNIX)
                     sock.connect(path)
@@ -236,7 +301,7 @@ class MpvIpc:
                 if msg.get("request_id") != rid:
                     continue
                 if msg.get("error") != "success":
-                    raise MpvError(msg.get("error"))
+                    raise MpvError(f"{cmd!r}: {msg.get('error')}")
                 return msg.get("data")
 
     def get(self, prop: str) -> Any:
@@ -1145,8 +1210,6 @@ class MpvOutput:
             )
 
         if text != self._shown:
-            self._shown = text
-
             self.ipc.command(
                 "osd-overlay",
                 id=OVERLAY_ID,
@@ -1157,6 +1220,7 @@ class MpvOutput:
                 z=10,
                 hidden=False,
             )
+            self._shown = text
 
             if text:
                 log.info(

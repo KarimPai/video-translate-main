@@ -201,6 +201,7 @@ def run_translate(
     """Translate transcripts while retaining recent context and forwarding progress."""
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
+    memory_generation: int | None = None
 
     while True:
         item = in_q.get()
@@ -212,8 +213,12 @@ def run_translate(
             if get_generation is not None and item.generation != get_generation():
                 continue
 
-            if item.reset:
+            if item.reset or (
+                memory_generation is not None
+                and item.generation != memory_generation
+            ):
                 history.clear()
+            memory_generation = item.generation
 
             out_q.put(item)
             continue
@@ -222,6 +227,12 @@ def run_translate(
 
         if get_generation is not None and tr.generation != get_generation():
             continue
+
+        # Seek resets are normally carried by AudioProgress. Also protect
+        # against a new generation reaching this queue before its marker.
+        if memory_generation is not None and tr.generation != memory_generation:
+            history.clear()
+        memory_generation = tr.generation
 
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.

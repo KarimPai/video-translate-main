@@ -343,7 +343,7 @@ def find_mpv(configured: str) -> str:
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
-    LIVE_SUBTITLE_ADVANCE_SECONDS = 1.5
+    LIVE_SUBTITLE_ADVANCE_SECONDS = 0.5
     LIVE_READ_SECONDS = 2.0
     LIVE_MAX_LATENESS_SECONDS = 10.0
     _seek_lead_target: float | None = None

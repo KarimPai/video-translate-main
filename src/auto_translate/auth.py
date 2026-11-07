@@ -20,3 +20,11 @@ def cookie_args(cfg: IngestConfig, directory: Path | None = None) -> list[str]:
             return ["--cookies", str(path.resolve())]
 
     return []
+
+
+def mpv_auth_args(cfg: IngestConfig, directory: Path | None = None) -> list[str]:
+    """Forward the same auth to MPV's yt-dlp hook via ytdl-raw-options."""
+    args = cookie_args(cfg, directory)
+    if not args:
+        return []
+    return [f"--ytdl-raw-options={args[0][2:]}={args[1]}"]

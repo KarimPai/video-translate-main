@@ -3,7 +3,7 @@
 import queue
 import unittest
 
-from auto_translate.context_memory import build_recent_context, repair_near_repeated_word
+from auto_translate.context_memory import build_recent_context, repair_near_repeated_word, reuse_recent_short_term
 from auto_translate.pipeline import run_translate
 from auto_translate.types import AudioProgress, Transcript, Subtitle
 
@@ -52,6 +52,25 @@ class ContextMemoryTests(unittest.TestCase):
             with self.subTest(original=original):
                 self.assertEqual(repair_near_repeated_word(original, history), expected)
         self.assertEqual(repair_near_repeated_word("シャッタ", []), "シャッタ")
+
+    def test_reuse_only_identical_short_terms_and_respect_punctuation(self):
+        history = [("シャッター!", "Shutter!")]
+        self.assertEqual(
+            reuse_recent_short_term("シャッター！", history),
+            "Shutter!",
+        )
+        self.assertEqual(
+            reuse_recent_short_term("シャッター?", history),
+            "Shutter?",
+        )
+        self.assertIsNone(reuse_recent_short_term("シャッタ", history))
+        self.assertIsNone(reuse_recent_short_term("シャッターを開けて", history))
+        self.assertIsNone(
+            reuse_recent_short_term("シャッター", [("シャッター", "Open the shutter!")])
+        )
+        self.assertIsNone(
+            reuse_recent_short_term("シャッター", [("シャッター", "Shutter!")] + [("別の話", "Other.")] * 2)
+        )
 
     def test_memory_remembers_names_terms_and_older_scene(self):
         history = [

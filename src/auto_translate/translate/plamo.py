@@ -18,6 +18,28 @@ from ..watame import correct_translation
 log = logging.getLogger(__name__)
 
 
+# PLaMo 3 GGUF ignores system messages; reference guidance belongs in
+# chat_template_kwargs["context"], alongside the video title.
+_NEUTRAL_SUBJECT_CONTEXT = (
+    "Informal Japanese livestream and gaming conversation. "
+    "Japanese often omits the subject or possessor. "
+    "If the current Japanese does not explicitly identify who is acting "
+    "or who owns something, prefer natural, subject-neutral English "
+    "instead of guessing I, you, my, your, we, our, he, she, his, or her. "
+    "For example, 運転下手だね means 'The driving is bad', not "
+    "'My driving is bad' or 'Your driving is bad'. "
+    "Preserve people and possessives explicitly stated in the Japanese. "
+    "A video title or previous English translation is not proof of "
+    "an omitted subject's identity."
+)
+
+
+def _translation_context(vod_title: str) -> str:
+    if vod_title:
+        return f"Video title: {vod_title}\\n{_NEUTRAL_SUBJECT_CONTEXT}"
+    return _NEUTRAL_SUBJECT_CONTEXT
+
+
 class PlamoTranslator:
     """Japanese-to-English PLaMo translator; inference stays on the local machine."""
 
@@ -163,9 +185,8 @@ class PlamoTranslator:
         options: dict = {
             "source_lang": "ja",
             "target_lang": "en",
+            "context": _translation_context(self.vod_title),
         }
-        if self.vod_title:
-            options["context"] = f"Video title: {self.vod_title}"
         if hits := self.glossary.find(ja):
             options["glossary"] = [
                 {"source": source, "target": target}

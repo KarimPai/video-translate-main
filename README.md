@@ -52,8 +52,8 @@ Translation failures and missing subtitles should be investigated using `logs\ru
 
 ### Haas custom vocabulary (Hololive + general gaming)
 
-The `test` branch includes an optional small Haas-ja-v1.0 **ASR** vocabulary,
-disabled by default until you benchmark it against the unboosted pipeline.
+The `test` branch enables a small Haas-ja-v1.0 **ASR** vocabulary by default.
+You can disable it to benchmark against the unboosted pipeline.
 Unlike `glossary.toml`, which helps PLaMo translate recognized Japanese to
 English, `haas_vocabulary.toml` boosts selected Japanese names and cross-genre
 gaming words during speech recognition. It does **not** add another model.
@@ -66,7 +66,7 @@ Optional overrides in your git-ignored `config.toml`:
 
 ```toml
 [asr]
-haas_keywords_enabled = true  # opt in; set false to restore unboosted Haas
+haas_keywords_enabled = true  # default; set false to restore unboosted Haas
 haas_keywords_file = "haas_vocabulary.toml"
 haas_keywords_alpha = 2.0
 haas_keywords_guard = true

@@ -25,8 +25,8 @@ def fake_worker(*answers):
 
 
 class HaasVocabularyTests(unittest.TestCase):
-    def test_opt_in_default_preserves_existing_latency(self):
-        self.assertFalse(AsrConfig().haas_keywords_enabled)
+    def test_keyword_boost_enabled_by_default(self):
+        self.assertTrue(AsrConfig().haas_keywords_enabled)
 
     def test_default_vocabulary_contains_general_terms_but_no_gta_profile(self):
         file = Path(__file__).resolve().parents[1] / "haas_vocabulary.toml"

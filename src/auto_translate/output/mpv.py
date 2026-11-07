@@ -343,7 +343,6 @@ def find_mpv(configured: str) -> str:
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
-    LIVE_SUBTITLE_ADVANCE_SECONDS = 0.5
     LIVE_READ_SECONDS = 2.0
     LIVE_MAX_LATENESS_SECONDS = 10.0
     _seek_lead_target: float | None = None
@@ -520,8 +519,7 @@ class MpvOutput:
             if sub.speech_start_s is not None
             else sub.start_s
         )
-        advance = self.LIVE_SUBTITLE_ADVANCE_SECONDS if self.ingest.source.live else 0.0
-        show_from = max(self._session_start, speech_start - advance)
+        show_from = max(self._session_start, speech_start)
         log.debug(
             "subtitle timing: audio_start=%.3f vad_onset=%.3f "
             "mpv_show=%.3f preroll=%.3fs",
@@ -530,7 +528,7 @@ class MpvOutput:
             show_from,
             max(0.0, speech_start - sub.start_s),
         )
-        until = sub.end_s - advance
+        until = sub.end_s
 
         now = self._now
         if self.ingest.source.live:
@@ -563,7 +561,7 @@ class MpvOutput:
             )
             return
 
-        until = max(until, sub.end_s - advance + SUBTITLE_LINGER_S)
+        until = max(until, sub.end_s + SUBTITLE_LINGER_S)
         with self._lock:
             self._lines.append(_Line(sub, show_from, until))
         self._subtitle_ready.set()

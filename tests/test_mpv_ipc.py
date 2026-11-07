@@ -289,5 +289,69 @@ class TranslationBufferTests(unittest.TestCase):
         self.assertEqual(out._clock_source_anchor, 600.0)
         self.assertEqual(out._mpv_anchor, 600.0)
 
+class CachedSeekTests(unittest.TestCase):
+    """Rewinding a translated VOD region must not freeze MPV for audio restart."""
+
+    def make_output(self, *, cached_until=120.0):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out._direct_video_loaded = True
+        out._subtitle_cache = SimpleNamespace(
+            covered_until=lambda position: cached_until
+        )
+        out._now = 112.0
+        out._clock_source_anchor = 0.0
+        out._mpv_anchor = 0.0
+        out._last_direct_pos = 112.0
+        out._last_direct_sample_at = 0.0
+        out.ingest = SimpleNamespace(
+            source=SimpleNamespace(live=False, duration=500.0),
+        )
+        calls = []
+        out.ipc = SimpleNamespace(
+            get=lambda key: 102.0 if key == "time-pos" else None,
+            command=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+        renders = []
+        out._render = lambda now: renders.append(now)
+        restarts = []
+        out._restart_audio_at = lambda at, *, seek_video: (
+            restarts.append((at, seek_video)) or True
+        )
+        return out, calls, renders, restarts
+
+    def test_ten_second_backseek_replays_cached_subtitles_without_pause(self):
+        out, calls, renders, restarts = self.make_output()
+        self.assertFalse(out._jump(-10))
+        self.assertEqual(restarts, [])
+        self.assertIn((("seek", 102.0, "absolute+exact"), {}), calls)
+        self.assertFalse(
+            any(args[:2] == ("set_property", "pause") for args, _ in calls)
+        )
+        self.assertEqual(out._now, 102.0)
+        self.assertEqual(out._last_direct_pos, 102.0)
+        self.assertEqual(renders, [102.0])
+
+    def test_uncached_backseek_still_restarts_audio(self):
+        out, calls, renders, restarts = self.make_output(cached_until=105.0)
+        self.assertTrue(out._jump(-10))
+        self.assertEqual(restarts, [(102.0, True)])
+        self.assertEqual(calls, [])
+        self.assertEqual(renders, [])
+
+    def test_cached_seek_respects_existing_mpv_source_anchor(self):
+        out, calls, renders, restarts = self.make_output(cached_until=450.0)
+        out._now = 410.0
+        out._clock_source_anchor = 400.0
+        out._mpv_anchor = 450.0
+        # Source 400 maps to MPV 450, not absolute 400.
+        out.ipc.get = lambda name: 450.0 if name == "time-pos" else None
+        self.assertFalse(out._jump(-10))
+        self.assertIn((("seek", 450.0, "absolute+exact"), {}), calls)
+        self.assertEqual(out._now, 400.0)
+        self.assertEqual(renders, [400.0])
+        self.assertEqual(restarts, [])
+
+
 if __name__ == '__main__':
     unittest.main()

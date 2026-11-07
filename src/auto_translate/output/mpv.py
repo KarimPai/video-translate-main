@@ -2,8 +2,9 @@
 """Translation-synchronised MPV playback.
 
 mpv listens on a local TCP port (paused); ingest's ffmpeg streams video+audio into it.
-VOD playback starts as soon as translation is 5 seconds ahead, then pauses
-whenever translated coverage falls to that lead. No deliberate video prebuffer.
+VOD playback starts after a five-second translation lead, including after
+seeks. Once started, playback is uninterrupted even if translation falls behind.
+No deliberate video prebuffer.
 For live streams, delay_s controls how far behind live playback starts.
 
 A scheduler polls mpv's time-pos over JSON IPC (~10x/s) and draws subtitles
@@ -339,9 +340,8 @@ def find_mpv(configured: str) -> str:
 
 
 class MpvOutput:
-    # Keep playback this far behind completed translation.
+    # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
-    PAUSE_LOW_WATERMARK_SECONDS = 0.5
 
     def __init__(
         self,
@@ -667,7 +667,7 @@ class MpvOutput:
                 self.stop.set()
 
     def _play_session(self, show_hint: bool) -> None:
-        """Play only while translated subtitles remain sufficiently ahead."""
+        """Buffer before start/seeks; never stutter-pause during playback."""
 
         lead = self.PAUSE_LEAD_SECONDS
 
@@ -806,34 +806,6 @@ class MpvOutput:
                 if self._recover_video_stream():
                     return
                 return
-
-            if (
-                not self.ingest.source.live
-                and not paused
-                and self._now is not None
-            ):
-                with self._buffer_condition:
-                    translated_lead = self._translated_until - self._now
-                    should_pause = (
-                        not self._source_finished
-                        and translated_lead <= self.PAUSE_LOW_WATERMARK_SECONDS
-                    )
-
-                if should_pause:
-                    self.ipc.command(
-                        "set_property",
-                        "pause",
-                        True,
-                    )
-                    paused = True
-                    unpause_at = None
-
-                    log.info(
-                        "playback paused: translation lead drained to %.1fs "
-                        "(resume at %.1fs)",
-                        translated_lead,
-                        lead,
-                    )
 
             should_unpause = (
                 unpause_at is not None

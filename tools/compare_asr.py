@@ -248,7 +248,7 @@ def main() -> None:
     location.write_text(final, encoding="utf-8")
     print("\n" + "\n".join(report[:10]))
     print(f"\nReport saved to {location.resolve()}", flush=True)
-    if not outputs:
+    if not outputs or "qwen3_ja_finetuned" not in outputs:
         sys.exit(1)
 
 

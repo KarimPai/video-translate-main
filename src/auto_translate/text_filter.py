@@ -67,3 +67,51 @@ def rejection_reason(text: str) -> str | None:
 
 def is_usable_transcript(text: str) -> bool:
     return rejection_reason(text) is None
+
+
+# Aggressive suppression is applied in run_asr *after* caption reconciliation.
+# Restrict it to whole utterances so speech such as "うわー、これすごい" survives.
+_REACTION_SEPARATORS = re.compile(
+    r"[\s、。，．・!?！？…〜～,.;:：~「」『』（）()\[\]【】]+"
+)
+_REACTION_RUN = re.compile(
+    r"(?:"
+    r"あ+[ぁー]*っ?|は+[ぁー]*っ?|え+[ぇー]*っ?|"
+    r"お+[ぉー]*っ?|う+[ぅー]*っ?|うわ[あぁー]*っ?|"
+    r"わ[あぁー]+|ふ[うぅー]+|へ[えぇー]+|ほ[おぉー]+|"
+    r"う[うぅー]*ん+|ん+[ー]?|"
+    r"よいしょ|よっこいしょ|え[ー]*っと|ええっと|あの[ー]*|はー+い|"
+    r"すっ?ご[いぃっー]+|すっ?げ[えぇー]+|すすげ[えぇー]+|"
+    r"やば[いぁっー]+|はい+|わお+|くっ|ぐっ|うぐ|"
+    r"ah+|oh+|ooh+|uh+|um+|hm+|hmm+|huh+|"
+    r"whoa+|woah+|wow+|hey+|yeah+|yep+|yup+|ugh+|sigh+"
+    r")+"
+)
+
+
+def is_isolated_reaction(text: str) -> bool:
+    """Return True only when the entire utterance is filler/interjections.
+
+    Aggressive mode intentionally drops isolated acknowledgements ("うん",
+    "はい") and praise ("すごい"). Speech containing any other words is
+    preserved in full, including when an interjection begins the sentence.
+    """
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    normalized = "".join(
+        chr(ord(char) - 0x60) if "ァ" <= char <= "ヶ" else char
+        for char in normalized
+    )
+    tokens = [part for part in _REACTION_SEPARATORS.split(normalized) if part]
+    return bool(tokens) and all(_REACTION_RUN.fullmatch(part) for part in tokens)
+
+
+def is_whole_utterance_blocked(text: str, blocklist: list[str]) -> bool:
+    """Match a custom Haas blocklist item exactly, ignoring punctuation.
+
+    Do not reject an otherwise meaningful sentence merely because it contains
+    a blocked filler word.
+    """
+    normalized = _compact(text)
+    return bool(normalized) and any(
+        normalized == _compact(phrase) for phrase in blocklist if phrase.strip()
+    )

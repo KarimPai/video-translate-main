@@ -7,7 +7,7 @@ import subprocess
 import numpy as np
 
 from ..config import AsrConfig
-from ..text_filter import rejection_reason
+from ..text_filter import is_whole_utterance_blocked, rejection_reason
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ class HaasASR:
 
         if not text:
             return ""
-        if any(phrase in text for phrase in self.cfg.blocklist):
+        if is_whole_utterance_blocked(text, self.cfg.blocklist):
             log.debug("Discarding blocked Haas text: %s", text)
             return ""
 

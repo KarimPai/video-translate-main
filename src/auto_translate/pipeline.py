@@ -15,7 +15,7 @@ from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
-from .text_filter import is_usable_transcript
+from .text_filter import is_isolated_reaction, is_usable_transcript
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
@@ -130,6 +130,12 @@ def run_asr(
         if corrected != text:
             log.debug("Watame ASR name correction: %s -> %s", text, corrected)
             text = corrected
+
+        # Filter only complete interjections, after ASR/caption reconciliation
+        # and name repair, before any translation request or subtitle output.
+        if is_isolated_reaction(text):
+            log.debug("Discarding isolated reaction: %s", text)
+            continue
 
         if get_generation is not None and utt.generation != get_generation():
             continue

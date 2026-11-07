@@ -46,10 +46,6 @@ SEPARATION_READ_FRAMES = 8192
 SEPARATION_INPUT_RATE = 44100
 DEEPFILTER_INPUT_RATE = 48000
 
-_PTS = re.compile(r"pts_time:(-?[\d.]+)")
-_ASHOWINFO_SAMPLES = re.compile(r"nb_samples:(\d+)")
-
-
 @dataclass
 class Source:
     location: str
@@ -718,70 +714,20 @@ class Ingest:
         session: int,
         capture_pts: bool = True,
     ) -> None:
-        """Read FFmpeg logs, capture first audio PTS, and filter noisy output."""
+        """Read FFmpeg warnings/errors and optional video progress heartbeats.
+
+        PCM sample arrival initializes first_pts in _read_session(), avoiding
+        unnecessary per-frame audio timestamp diagnostics.
+        """
         receiver_gone = False
-        first_frame_pts: float | None = None
-        audio_samples = 0
-        next_pts_log_sample = 0
-        output_rate = (
-            SEPARATION_INPUT_RATE if self.separation_enabled
-            else DEEPFILTER_INPUT_RATE if self.deepfilter_enabled
-            else SAMPLE_RATE
-        )
 
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
 
-            # FFmpeg writes one progress=continue/end marker per heartbeat.
+            # FFmpeg emits a progress heartbeat when transcoding fallback video.
             if not capture_pts and line.startswith("progress="):
                 with self._video_progress_lock:
                     self._video_progress_at = time.monotonic()
-                continue
-
-            if capture_pts:
-                with self._proc_lock:
-                    current = session == self._session
-
-                    if current and self.first_pts is None:
-                        if m := _PTS.search(line):
-                            self.first_pts = float(m.group(1))
-                            self.first_pts_at = time.monotonic()
-                            self.first_pts_ready.set()
-                            log.info(
-                                "first audio pts %.3f",
-                                self.first_pts,
-                            )
-
-            if "ashowinfo" in line:
-                if capture_pts:
-                    pts_match = _PTS.search(line)
-                    samples_match = _ASHOWINFO_SAMPLES.search(line)
-                    if pts_match and samples_match:
-                        frame_pts = float(pts_match.group(1))
-                        frame_samples = int(samples_match.group(1))
-                        if first_frame_pts is None:
-                            first_frame_pts = frame_pts
-                            log.info(
-                                "audio PTS baseline: %.3fs at %d Hz",
-                                first_frame_pts,
-                                output_rate,
-                            )
-                        audio_samples += frame_samples
-                        if audio_samples >= next_pts_log_sample:
-                            expected_pts = (
-                                first_frame_pts + (audio_samples - frame_samples) / output_rate
-                            )
-                            pts_error = frame_pts - expected_pts
-                            log.info(
-                                "audio PTS continuity: pts=%.3f "
-                                "sample_clock=%.3f drift=%+.3fs",
-                                frame_pts,
-                                expected_pts,
-                                pts_error,
-                            )
-                            next_pts_log_sample = (
-                                (audio_samples // (output_rate * 10)) + 1
-                            ) * output_rate * 10
                 continue
 
             receiver_gone |= any(

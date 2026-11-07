@@ -52,7 +52,7 @@ class AsrConfig:
 class TranslateConfig:
     """Translation backend and model settings."""
 
-    backend: str = "hymt2"
+    backend: str = "plamo"
     plamo_base_url: str = "http://127.0.0.1:8000/v1"
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"

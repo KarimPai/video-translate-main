@@ -71,6 +71,50 @@ class PlamoTranslatorTests(unittest.TestCase):
             "The driving is bad.",
         )
 
+    def test_repeated_short_katakana_term_reuses_translation_without_model_call(self):
+        translator = object.__new__(PlamoTranslator)
+        translator.memory_lines = 24
+        translator.cfg = SimpleNamespace(timeout_s=5)
+        with patch.object(PlamoTranslator, "_chat") as chat:
+            english = translator.translate(
+                "シャッター！",
+                [("シャッター", "Shutter!")],
+            )
+        self.assertEqual(english, "Shutter!")
+        chat.assert_not_called()
+
+    def test_memory_context_uses_older_japanese_but_not_old_english_guesses(self):
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = SimpleNamespace(
+            context_lines=2, memory_lines=24,
+            plamo_model="plamo-3-translate", max_tokens=120,
+        )
+        translator.glossary = FakeGlossary()
+        translator.vod_title = ""
+        translator.url = "http://127.0.0.1:8000/v1/chat/completions"
+        response = io.BytesIO(json.dumps({
+            "choices": [{"message": {"content": "Okay."}}]
+        }).encode("utf-8"))
+        with patch(
+            "auto_translate.translate.plamo.urllib.request.urlopen",
+            return_value=response,
+        ) as open_url:
+            translator._chat(
+                "次は何",
+                [("ぺこらとレースをしてる", "My race with Pekora."),
+                 ("シャッター", "Shutter!"),
+                 ("まだある", "There is more."),
+                 ("次のゲーム", "Next game.")],
+                timeout=5,
+            )
+        payload = json.loads(open_url.call_args.args[0].data.decode("utf-8"))
+        context = payload["chat_template_kwargs"]["context"]
+        self.assertIn("ぺこら = Pekora", context)
+        self.assertIn("シャッター ~ Shutter", context)
+        self.assertIn("ぺこらとレースをしてる", context)
+        self.assertNotIn("My race with Pekora.", context)
+        self.assertEqual(len(payload["messages"]), 5)  # last two pairs + new Japanese
+
     def test_request_uses_plamo_options_history_and_glossary(self):
         translator = object.__new__(PlamoTranslator)
         translator.cfg = SimpleNamespace(

@@ -36,7 +36,7 @@ _NEUTRAL_SUBJECT_CONTEXT = (
 
 def _translation_context(vod_title: str) -> str:
     if vod_title:
-        return f"Video title: {vod_title}\\n{_NEUTRAL_SUBJECT_CONTEXT}"
+        return f"Video title: {vod_title}\n{_NEUTRAL_SUBJECT_CONTEXT}"
     return _NEUTRAL_SUBJECT_CONTEXT
 
 

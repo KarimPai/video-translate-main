@@ -6,6 +6,7 @@ import logging
 import shutil
 import subprocess
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,15 +29,10 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "If the current Japanese does not explicitly identify who is acting "
     "or who owns something, prefer natural, subject-neutral English "
     "instead of guessing I, you, my, your, we, our, he, she, his, or her. "
-    "For example, 運転下手だね means 'The driving is bad', not "
-    "'My driving is bad' or 'Your driving is bad'. "
-    "Preserve people and possessives explicitly stated in the Japanese. "
-    "A video title or previous English translation is not proof of "
-    "an omitted subject's identity. "
-    "If a driver is not explicitly named, say The driving was bad, "
-    "not My driving was bad or Your driving was bad. "
-    "If the source only describes a crash, say There was a collision, "
-    "not I crashed or You crashed."
+    "Preserve explicitly stated people, possessives, negation, and intensity. "
+    "Use the current Japanese to decide whether the speaker expresses praise, "
+    "criticism, or surprise. Prior dialogue provides context. "
+    "In longer phrases, すごく or すごい can intensify the following description."
 )
 
 
@@ -174,6 +170,10 @@ class PlamoTranslator:
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        # An isolated exclamation can express awe or shock in either scene.
+        reaction = unicodedata.normalize("NFKC", ja).strip().rstrip("!.。…").rstrip()
+        if reaction in {"すご", "すごっ", "すごい", "スゴ", "スゴッ", "スゴイ", "凄", "凄っ", "凄い"}:
+            return "Wow!"
         if getattr(self, "memory_lines", 0):
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:

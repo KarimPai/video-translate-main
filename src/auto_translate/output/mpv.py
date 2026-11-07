@@ -28,7 +28,7 @@ from typing import Any
 from ..config import MpvConfig
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
-from ..session_cache import SessionSubtitleCache
+from ..session_cache import SUBTITLE_LINGER_S, SessionSubtitleCache
 from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
@@ -563,6 +563,7 @@ class MpvOutput:
             )
             return
 
+        until = max(until, sub.end_s - advance + SUBTITLE_LINGER_S)
         with self._lock:
             self._lines.append(_Line(sub, show_from, until))
         self._subtitle_ready.set()
@@ -1335,33 +1336,13 @@ class MpvOutput:
                     sub,
                     sub.speech_start_s
                     if sub.speech_start_s is not None else sub.start_s,
-                    sub.end_s,
+                    sub.end_s + SUBTITLE_LINGER_S,
                 )
-                for sub in cache.active_at(now)
+                for sub in cache.active_at(now, include_linger=True)
             ]
 
-        active.sort(key=lambda ln: ln.show_from)
-
-        selected: list[_Line] = []
-        used_rows = 0
-
-        for ln in reversed(active):
-            # The limit counts subtitle entries, not individual language rows.
-            # Each entry may contain Japanese above its English translation.
-            # Each visible utterance occupies one English-only row.
-            row_count = int(bool(ln.sub.en))
-
-            if (
-                selected
-                and used_rows + row_count
-                > max(1, self.cfg.max_subtitle_rows)
-            ):
-                break
-
-            selected.append(ln)
-            used_rows += row_count
-
-        active = list(reversed(selected))
+        active.sort(key=lambda ln: (ln.show_from, ln.sub.start_s), reverse=True)
+        active = active[:max(1, self.cfg.max_subtitle_rows)]
 
         text = (
             _ass_many(

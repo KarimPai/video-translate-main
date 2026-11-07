@@ -7,6 +7,7 @@ import threading
 import time
 from difflib import SequenceMatcher
 from collections import deque
+from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -17,6 +18,7 @@ from .text_filter import is_usable_transcript
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
+from .session_cache import SessionSubtitleCache
 from .translate.base import Translator
 from .types import (
     SAMPLE_RATE,
@@ -62,11 +64,12 @@ class FanoutQueue:
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
-    out_q: "queue.Queue[Transcript | AudioProgress | None]",
+    out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     diarizer=None,
     get_generation: Callable[[], int] | None = None,
     captions: CaptionIndex | None = None,
     vod_title: str = "",
+    session_cache: SessionSubtitleCache | None = None,
 ) -> None:
     """Transcribe utterances, optionally using aligned captions as a fallback."""
     while True:
@@ -85,6 +88,26 @@ def run_asr(
         utt = item
 
         if get_generation is not None and utt.generation != get_generation():
+            continue
+
+        # Reuse complete Japanese+English results when a backward seek
+        # revisits an utterance with matching VAD boundaries.
+        cached = (
+            session_cache.match(utt.start_s, utt.end_s)
+            if session_cache is not None else None
+        )
+        if cached is not None:
+            if get_generation is not None and utt.generation != get_generation():
+                continue
+            log.debug(
+                "reusing translated VOD cue %.2f-%.2fs after seek",
+                cached.start_s, cached.end_s,
+            )
+            out_q.put(replace(
+                cached,
+                generation=utt.generation,
+                timings=utt.timings,
+            ))
             continue
 
         utt.timings.asr_start = time.monotonic()
@@ -170,7 +193,7 @@ def run_asr(
 def run_translate(
     translator: Translator | None,
     context_lines: int,
-    in_q: "queue.Queue[Transcript | AudioProgress | None]",
+    in_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
 ) -> None:
@@ -196,6 +219,16 @@ def run_translate(
         tr = item
 
         if get_generation is not None and tr.generation != get_generation():
+            continue
+
+        # A cached Subtitle already includes its Japanese transcript and
+        # English translation; do not call PLaMo again for the same VOD cue.
+        if isinstance(tr, Subtitle):
+            if tr.en and tr.en != "[translation failed]":
+                history.append((tr.ja, tr.en))
+            tr.timings.mt_start = time.monotonic()
+            tr.timings.mt_end = tr.timings.mt_start
+            out_q.put(tr)
             continue
 
         tr.timings.mt_start = time.monotonic()
@@ -300,6 +333,7 @@ def run(
     diarizer=None,
     captions: CaptionIndex | None = None,
     vod_title: str = "",
+    session_cache: SessionSubtitleCache | None = None,
 ) -> None:
     """Run ingestion, VAD, diarization, ASR and translation."""
 
@@ -375,6 +409,7 @@ def run(
                 lambda: ingest.generation,
                 captions,
                 vod_title,
+                session_cache,
             ),
             name="asr",
             daemon=True,
@@ -398,6 +433,8 @@ def run(
 
     stats = Stats()
     logged_subtitle_generations: set[int] = set()
+    processed_generation = ingest.generation
+    processed_from = ingest.source.start_s
     started = time.monotonic()
     next_stats = started + cfg.stats_interval_s
 
@@ -421,15 +458,27 @@ def run(
                     continue
 
                 if isinstance(item, AudioProgress):
+                    progress_s = item.sample / SAMPLE_RATE
+                    if item.reset:
+                        processed_generation = item.generation
+                        processed_from = progress_s
+                    elif session_cache is not None:
+                        if processed_generation != item.generation:
+                            # Reset marker not yet delivered: don't invent a
+                            # processed range across a discontinuous seek.
+                            processed_generation = item.generation
+                            processed_from = progress_s
+                        session_cache.record_processed(processed_from, progress_s)
+                        processed_from = progress_s
                     for out in outputs:
                         if item.reset:
                             reset = getattr(out, "reset_buffer", None)
                             if reset is not None:
-                                reset(item.sample / SAMPLE_RATE)
+                                reset(progress_s)
                         else:
                             advance = getattr(out, "advance", None)
                             if advance is not None:
-                                advance(item.sample / SAMPLE_RATE)
+                                advance(progress_s)
                     continue
 
                 if item.generation not in logged_subtitle_generations:
@@ -441,6 +490,9 @@ def run(
                     )
 
                 stats.add(item)
+
+                if session_cache is not None:
+                    session_cache.add(item)
 
                 for out in outputs:
                     out.show(item)

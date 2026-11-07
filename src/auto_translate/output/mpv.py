@@ -901,11 +901,18 @@ class MpvOutput:
                                     + float(pos)
                                     - self._mpv_anchor
                                 )
-                            self._restart_audio_at(
-                                source_target,
-                                seek_video=False,
-                            )
-                            return
+                            if self._cached_seek_ready(source_target):
+                                log.info(
+                                    "native MPV seek %.3fs: using cached translations "
+                                    "without restarting audio",
+                                    source_target,
+                                )
+                            else:
+                                self._restart_audio_at(
+                                    source_target,
+                                    seek_video=False,
+                                )
+                                return
                     self._last_direct_pos = float(pos)
                     self._last_direct_sample_at = sampled_at
 
@@ -1086,7 +1093,59 @@ class MpvOutput:
             target = min(target, max(0.0, src.duration - 5))
 
         log.info("jump %+.0fs -> %s", delta, fmt_hms(target))
+        if self._jump_to_cached(target):
+            # Already seeking/playing from RAM-backed subtitles. Returning
+            # False keeps the current scheduler alive; True restarts it.
+            return False
         return self._restart_audio_at(target, seek_video=True)
+
+    def _cached_seek_ready(self, target: float) -> bool:
+        """Only skip an audio restart when the next 5s is fully translated."""
+        cache = getattr(self, "_subtitle_cache", None)
+        return bool(
+            cache is not None
+            and getattr(self, "_direct_video_loaded", False)
+            and cache.covered_until(target) >= target + self.PAUSE_LEAD_SECONDS
+        )
+
+    def _jump_to_cached(self, target: float) -> bool:
+        """Seek within translated VOD audio without pausing or restarting ASR.
+
+        Repeated short rewinds can use subtitles already stored in RAM while
+        the ingestion/translation workers continue running further ahead.
+        """
+        if not self._cached_seek_ready(target):
+            return False
+
+        mpv_target = target
+        if self._mpv_anchor is not None:
+            mpv_target = self._mpv_anchor + target - self._clock_source_anchor
+
+        self.ipc.command("seek", mpv_target, "absolute+exact")
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not self.stop.is_set():
+            landed = self.ipc.get("time-pos")
+            if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
+                # Mark the new position as the native-seek detector's baseline.
+                # Otherwise the next scheduler tick sees a sudden -10s step
+                # and unnecessarily restarts the audio reader.
+                self._last_direct_pos = float(landed)
+                self._last_direct_sample_at = time.monotonic()
+                self._now = target
+                self._render(target)
+                log.info(
+                    "cached VOD seek to %.3fs: subtitles replayed without "
+                    "pausing MPV or restarting translation",
+                    target,
+                )
+                return True
+            time.sleep(0.05)
+        log.warning(
+            "cached VOD seek position not confirmed at %.3fs; "
+            "using normal audio restart",
+            mpv_target,
+        )
+        return False
 
     def _restart_audio_at(self, target: float, *, seek_video: bool) -> bool:
         """Restart translation audio at a source timestamp without reloading video."""

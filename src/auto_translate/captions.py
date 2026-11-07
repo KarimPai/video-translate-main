@@ -174,7 +174,6 @@ def download_vod_captions(
     command = [
         "yt-dlp",
         "--no-warnings",
-        "--no-call-home",
         "--skip-download",
         "--write-auto-subs",
         "--sub-langs", "ja.*,ja",

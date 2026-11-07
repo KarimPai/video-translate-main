@@ -393,6 +393,17 @@ class MpvOutput:
         if sub.end_s < self._session_start:
             return
 
+        if not sub.en.strip():
+            log.error(
+                "subtitle not queued because English translation is empty "
+                "(generation=%d, %.2f-%.2fs, Japanese=%r)",
+                sub.generation,
+                sub.start_s,
+                sub.end_s,
+                sub.ja,
+            )
+            return
+
         # Use the first speech-positive VAD frame, not the earlier padded
         # audio start used to preserve context for ASR.
         speech_start = (
@@ -1100,6 +1111,13 @@ class MpvOutput:
                 z=10,
                 hidden=False,
             )
+
+            if text:
+                log.info(
+                    "MPV subtitle overlay updated: active=%d chars=%d",
+                    len(active),
+                    len(text),
+                )
 
 
 def _ass_many(

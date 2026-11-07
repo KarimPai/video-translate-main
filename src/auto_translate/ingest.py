@@ -1159,6 +1159,23 @@ class Ingest:
                 if not data:
                     break
 
+                # PTS logging can be absent or report N/A for fMP4 audio.
+                # The decoded PCM stream itself is proof that the audio clock
+                # is available, so never leave MPV blocked waiting for stderr.
+                with self._proc_lock:
+                    if (
+                        generation == self._generation
+                        and self.first_pts is None
+                    ):
+                        self.first_pts = self.source.start_s
+                        self.first_pts_at = time.monotonic()
+                        self.first_pts_ready.set()
+                        log.warning(
+                            "first audio PTS unavailable; using first decoded "
+                            "audio arrival as clock readiness (source_start=%.3fs)",
+                            self.source.start_s,
+                        )
+
                 if first_chunk_after_seek:
                     log.info(
                         "first audio data after seek: generation=%d position=%.2fs",

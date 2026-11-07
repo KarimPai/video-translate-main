@@ -59,6 +59,27 @@ def _recent_words(sources: Iterable[str]) -> list[str]:
     return words
 
 
+
+def _repair_compact_triple(japanese: str) -> str:
+    """Repair e.g. シャッターシャッタシャッター without punctuation."""
+    def replace(match: re.Match[str]) -> str:
+        word = match.group()
+        for size in range(4, min(12, len(word) // 3) + 1):
+            repeated = word[:size]
+            if (
+                not _KATAKANA_TERM.fullmatch(repeated)
+                or not word.endswith(repeated)
+            ):
+                continue
+            middle = word[size:-size]
+            if len(middle) >= 3 and _one_edit(middle, repeated):
+                return repeated * 3
+        return word
+
+    return re.sub(r"[ァ-ヶー]{11,36}", replace, japanese)
+
+
+
 def repair_near_repeated_word(
     japanese: str,
     history: list[tuple[str, str]],
@@ -77,6 +98,7 @@ def repair_near_repeated_word(
     if not japanese:
         return japanese
 
+    japanese = _repair_compact_triple(japanese)
     parts = _SPLIT.split(japanese)
     tokens = [(i, _word(piece)) for i, piece in enumerate(parts)
               if _KATAKANA_TERM.fullmatch(_word(piece))]

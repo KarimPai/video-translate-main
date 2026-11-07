@@ -9,8 +9,19 @@ def fmt_ts(seconds: float) -> str:
 
 
 class TerminalOutput:
+    def __init__(self, *, simple: bool = False) -> None:
+        self.simple = simple
+
     def show(self, sub: Subtitle) -> None:
-        print_subtitle(sub)
+        if self.simple:
+            # Native clean terminal output: no second process, shell pipe,
+            # or regex filter that might close stdout unexpectedly.
+            if sub.ja:
+                print(f"JP: {sub.ja}", flush=True)
+            if sub.en:
+                print(f"EN: {sub.en}", flush=True)
+        else:
+            print_subtitle(sub)
 
     def drain(self) -> None:
         pass

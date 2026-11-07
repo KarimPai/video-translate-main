@@ -876,7 +876,11 @@ class Ingest:
         ]
 
     def _audio_commands(self) -> list[list[str]]:
-        """Build audio-only FFmpeg commands."""
+        """Build audio-only FFmpeg commands without per-frame PTS diagnostics.
+
+        The direct MPV path uses decoded PCM arrival for clock readiness;
+        ashowinfo is unnecessary here and floods stderr with every frame.
+        """
         src = self.source
 
         ffmpeg = [
@@ -885,7 +889,7 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "info",
+            "warning",
         ]
 
         if not src.live:
@@ -922,7 +926,6 @@ class Ingest:
         filters += [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
-            "ashowinfo",
         ]
         out = ["-af", ",".join(filters)] + out
 

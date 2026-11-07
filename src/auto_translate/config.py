@@ -90,7 +90,7 @@ class MpvConfig:
     )
     en_size: int = 28
     ja_size: int = 0
-    speaker_diarization: bool = False
+    speaker_diarization: bool = True
     speaker_similarity_threshold: float = 0.72
     speaker_device: str = "cuda"
     max_speakers: int = 3

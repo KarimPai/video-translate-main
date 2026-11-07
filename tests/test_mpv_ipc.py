@@ -114,5 +114,93 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(out._shown, '')
 
 
+
+class TranslationBufferTests(unittest.TestCase):
+    def test_five_seconds_of_translated_coverage_required(self):
+        out = object.__new__(MpvOutput)
+        out._buffer_condition = threading.Condition()
+        out._now = 120.0
+        out._translated_until = 124.9
+        out._source_finished = False
+
+        self.assertFalse(out._translation_ready())
+        out.advance(125.0)
+        self.assertTrue(out._translation_ready())
+        out._now = 126.0
+        self.assertFalse(out._translation_ready())
+        out.finish()
+        self.assertTrue(out._translation_ready())
+
+    def test_seek_resets_old_translation_coverage_immediately(self):
+        out = object.__new__(MpvOutput)
+        out._buffer_condition = threading.Condition()
+        out._lock = threading.Lock()
+        out._now = 120.0
+        out._translated_until = 900.0
+        out._source_finished = True
+        out._lines = [_Line(Subtitle(119, 121, '日本語', 'Old'), 119, 121)]
+        out._shown = 'Old'
+        out._mpv_anchor = 120.0
+        out._clock_source_anchor = 120.0
+        out._pending_seek_offset = None
+        out._clock_sample_logged = True
+        out._last_direct_pos = 120.0
+        out._last_direct_sample_at = 0.0
+        calls = []
+        out.ipc = SimpleNamespace(
+            get=lambda prop: 120.0 if prop == 'time-pos' else None,
+            command=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+        restarts = []
+        out.ingest = SimpleNamespace(
+            source=SimpleNamespace(duration=3600.0),
+            request_restart=lambda pos: restarts.append(pos),
+            go=lambda: restarts.append('go'),
+        )
+
+        self.assertTrue(out._restart_audio_at(500.0, seek_video=False))
+        self.assertEqual(restarts, [500.0, 'go'])
+        self.assertEqual(out._translated_until, 500.0)
+        self.assertFalse(out._source_finished)
+        self.assertIsNone(out._now)
+        self.assertFalse(out._lines)
+        self.assertFalse(out._translation_ready())
+        self.assertTrue(any(args[:1] == ('osd-overlay',) for args, _ in calls))
+
+    def test_session_anchor_uses_new_ingest_start_after_seek(self):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out.cfg = MpvConfig()
+        out._direct_video_loaded = True
+        out._now = None
+        out._buffer_condition = threading.Condition()
+        out._translated_until = 0.0
+        out._source_finished = False
+        source = SimpleNamespace(start_s=10.0, live=False, duration=3600.0)
+
+        def first_audio_ready(timeout):
+            source.start_s = 600.0
+            out.ingest.first_pts = 600.0
+            return True
+
+        out.ingest = SimpleNamespace(
+            source=source,
+            generation=1,
+            first_pts=None,
+            first_pts_ready=SimpleNamespace(wait=first_audio_ready),
+        )
+
+        def get(prop):
+            if prop == 'time-pos':
+                out.stop.set()
+                return 600.0
+            return None
+
+        out.ipc = SimpleNamespace(get=get)
+        out._play_session(show_hint=False)
+        self.assertEqual(out._session_start, 600.0)
+        self.assertEqual(out._clock_source_anchor, 600.0)
+        self.assertEqual(out._mpv_anchor, 600.0)
+
 if __name__ == '__main__':
     unittest.main()

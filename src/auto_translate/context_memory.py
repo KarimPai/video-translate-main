@@ -84,7 +84,7 @@ def repair_near_repeated_word(
     in_line_counts = Counter(word for _, word in tokens)
     strong = {word for word, count in in_line_counts.items() if count >= 2}
     recent = _recent_words(ja for ja, _ in history[-2:])
-    standalone = len(parts) == 1 and bool(_KATAKANA_TERM.fullmatch(_word(japanese)))
+    standalone = bool(_KATAKANA_TERM.fullmatch(_word(japanese)))
     # Only allow one preceding occurrence when the CURRENT cue is a complete
     # short Katakana word; otherwise require two exact occurrences in-line.
     eligible = set(recent) if standalone else strong

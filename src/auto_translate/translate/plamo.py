@@ -51,7 +51,7 @@ class PlamoTranslator:
 
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, vod_title: str = "") -> None:
         self.cfg = cfg
-        self.memory_lines = max(cfg.context_lines, getattr(cfg, "memory_lines", 24))
+        self.memory_lines = max(0, getattr(cfg, "memory_lines", 24))
         self.glossary = glossary
         self.vod_title = " ".join(vod_title.split())[:200]
         self.url = cfg.plamo_base_url.rstrip("/") + "/chat/completions"
@@ -188,7 +188,8 @@ class PlamoTranslator:
         timeout: float,
     ) -> str:
         messages: list[dict[str, str]] = []
-        for source, translation in history[-self.cfg.context_lines:]:
+        dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
+        for source, translation in dialogue_history:
             messages.append({"role": "user", "content": source})
             # Prior inferred pronouns must not contaminate new translations.
             messages.append({

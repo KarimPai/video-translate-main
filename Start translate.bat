@@ -16,6 +16,19 @@ echo       Japanese Video Translator
 echo ========================================
 echo.
 
+rem The normal launch uses --no-sync. Install the locked speaker dependencies
+rem once when diarization is enabled and its module is missing.
+uv run --no-sync python -c "from pathlib import Path; from importlib.util import find_spec; from auto_translate.config import load_config; import sys; sys.exit(load_config(Path('config.toml')).mpv.speaker_diarization and not (find_spec('pyannote') and find_spec('pyannote.audio')))"
+if errorlevel 1 (
+    echo Installing diarization dependencies...
+    uv sync --locked --inexact --extra diarization
+    if errorlevel 1 (
+        echo ERROR: Could not install diarization dependencies.
+        pause
+        exit /b 1
+    )
+)
+
 set "VIDEO_URL="
 set /p "VIDEO_URL=Paste YouTube VOD URL: "
 

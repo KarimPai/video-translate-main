@@ -22,8 +22,10 @@ from urllib.parse import parse_qs, urlparse
 DEFAULT_URL = "https://www.youtube.com/watch?v=LE8iGHrakAc"
 # Keep the baseline equivalent to the user's current application: Haas on Vulkan
 # with GPU decoding, without custom terms. Boosted Haas is a separate experiment.
-KEYWORDS = "シャッター=しゃったー\n角巻わため=わため,ワタメ\n獅白ぼたん=ししろぼたん,ぼたん"
-QWEN_PROMPT = "シャッター、角巻わため、獅白ぼたん"
+KEYWORDS = "顔パンパンパン=かおぱんぱんぱん\nパンパンパン=ぱんぱんぱん"
+# This clip is about a bread item, not Watame, Botan, or shutters.
+# Avoid priming Qwen with irrelevant vocabulary; the earlier prompted run
+# hallucinated its exact prompt on six of the 32 speech regions.
 
 
 def run(args: list[str], *, output: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -163,12 +165,16 @@ def main() -> None:
         raise RuntimeError("VAD found no speech. Examine source_16k.wav.")
 
     print(f"VAD extracted {len(segments)} identical speech segments.", flush=True)
+    # Fetch up front so progress appears in the terminal rather than being
+    # swallowed by the recognition subprocess that captures stdout/stderr.
+    print("Checking Qwen model cache (download progress, if needed, follows)...", flush=True)
+    subprocess.run([speech, "pull", "qwen3-asr-1.7b"], check=True,
+                   stdout=subprocess.DEVNULL)
     plans = [
         ("haas_baseline", "haas-ja-v1.0", ["--decode-on-cpu=false"]),
-        ("haas_keywords", "haas-ja-v1.0",
+        ("haas_scene_keywords", "haas-ja-v1.0",
          ["--decode-on-cpu=false", "--keywords", KEYWORDS]),
-        ("qwen3_1_7b", "qwen3-asr-1.7b",
-         ["--language", "ja", "--prompt", QWEN_PROMPT]),
+        ("qwen3_unprompted", "qwen3-asr-1.7b", ["--language", "ja"]),
     ]
     outputs: dict[str, list[str]] = {}
     timings: dict[str, float] = {}
@@ -187,11 +193,11 @@ def main() -> None:
     report = [
         f"Video: {options.url}",
         f"Compared: first {seconds} seconds | {len(segments)} shared VAD segments",
-        "Elapsed time includes model load and any first-time model download.",
+        "Elapsed time includes model load; model download happened before timing.",
         "Speech.cpp VAD differs from the production FireRedVAD.",
         "No CER/WER is calculated: manually verify the audio/JP reference.",
         "Haas keywords: " + KEYWORDS.replace("\n", " ; "),
-        "Qwen prompt: " + QWEN_PROMPT,
+        "Qwen prompt: disabled (unprompted control)",
         "",
     ]
     for label, _, _ in plans:
@@ -203,7 +209,7 @@ def main() -> None:
         for label, _, _ in plans:
             report.append(f"{label}: {outputs.get(label, ['N/A'] * len(segments))[i]}")
     final = "\n".join(report) + "\n"
-    location = folder / "compare.txt"
+    location = folder / "compare_clean.txt"  # Keep the earlier prompted comparison.
     location.write_text(final, encoding="utf-8")
     print("\n" + "\n".join(report[:10]))
     print(f"\nReport saved to {location.resolve()}", flush=True)
@@ -214,6 +220,6 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, RuntimeError, OSError) as exc:
+    except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

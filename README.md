@@ -79,15 +79,21 @@ produce the **same short speech regions** for:
 
 1. Haas-ja-v1.0 Q8 with the app's GPU-decoding setting;
 2. Haas-ja-v1.0 Q8 with this clip's bread-name vocabulary hints;
-3. Qwen3-ASR 1.7B with Japanese-language selection but **no prompt**.
+3. Qwen3-ASR 1.7B with Japanese-language selection and **no prompt**;
+4. `neosophie/Qwen3-ASR-1.7B-JA` fine-tune, using
+   `kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF` Q8_0 and **no prompt**.
 
-Reports (including the full per-segment JP outputs and command logs) appear at
-`logs/asr_benchmark/VIDEO_ID/compare_clean.txt`. The original prompted result
-is retained at `compare.txt`. The first run may download the Qwen model
-(~2.2 GB) and Silero VAD. Qwen is downloaded with visible progress *before*
-recognition timing begins; recognition times still include model startup.
-The original prompted Qwen run hallucinated the literal prompt on six segments,
-so the clean comparison intentionally removes unrelated hints. **This does not produce an accuracy score without a manually verified
+The same audio and VAD segments are reused for all four models. The new report is
+`logs/asr_benchmark/VIDEO_ID/compare_finetune.txt`. Earlier `compare.txt`
+and `compare_clean.txt` results are preserved. The first run may download the
+Japanese fine-tune GGUF (~2.18 GB) through the existing `huggingface-hub`
+dependency; Hugging Face caches it for subsequent runs. The base Qwen
+model and Silero VAD use speech.cpp's normal cache. Model downloads happen
+*before* recognition timing; timings still include model startup. The
+original prompted Qwen run hallucinated its prompt on six segments, so both
+Qwen variants intentionally use no prompt. The third-party speech.cpp
+conversion is separate from the original BF16 safetensors and has not been
+validated against this specific stream yet. **This does not produce an accuracy score without a manually verified
 Japanese reference transcript.** Compare the transcriptions by listening to
 each WAV segment in `segments`. The benchmark uses speech.cpp's Silero
 segmentation, whereas the normal MPV translator uses FireRedVAD, so inference

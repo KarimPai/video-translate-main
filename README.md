@@ -78,14 +78,16 @@ its first 120 seconds to 16 kHz mono, then uses speech.cpp Silero VAD to
 produce the **same short speech regions** for:
 
 1. Haas-ja-v1.0 Q8 with the app's GPU-decoding setting;
-2. Haas-ja-v1.0 Q8 with selected Hololive/shutter vocabulary hints;
-3. Qwen3-ASR 1.7B with Japanese-language and terminology hints.
+2. Haas-ja-v1.0 Q8 with this clip's bread-name vocabulary hints;
+3. Qwen3-ASR 1.7B with Japanese-language selection but **no prompt**.
 
 Reports (including the full per-segment JP outputs and command logs) appear at
-`logs/asr_benchmark/VIDEO_ID/compare.txt`. The first run may download the
-Qwen model (~2.2 GB) and Silero VAD. The process times include model startup
-and first-time downloads; compare them again on a warm run if you care about
-speed. **This does not produce an accuracy score without a manually verified
+`logs/asr_benchmark/VIDEO_ID/compare_clean.txt`. The original prompted result
+is retained at `compare.txt`. The first run may download the Qwen model
+(~2.2 GB) and Silero VAD. Qwen is downloaded with visible progress *before*
+recognition timing begins; recognition times still include model startup.
+The original prompted Qwen run hallucinated the literal prompt on six segments,
+so the clean comparison intentionally removes unrelated hints. **This does not produce an accuracy score without a manually verified
 Japanese reference transcript.** Compare the transcriptions by listening to
 each WAV segment in `segments`. The benchmark uses speech.cpp's Silero
 segmentation, whereas the normal MPV translator uses FireRedVAD, so inference

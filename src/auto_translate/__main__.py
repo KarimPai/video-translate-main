@@ -95,6 +95,15 @@ def main() -> None:
         )
         caption_thread.start()
 
+    # Include the channel for proper-name disambiguation on streams whose
+    # titles omit the talent's name (e.g. many Watame gaming VODs).
+    vod_context = " - ".join(
+        part for part in (
+            (source.timeline or {}).get("title", ""),
+            (source.timeline or {}).get("channel", ""),
+        ) if part
+    ) if not source.live else ""
+
     # Load models before starting ingest.
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
@@ -109,8 +118,7 @@ def main() -> None:
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
     translator = create_translator(
-        cfg.translate, glossary, vod_title=(source.timeline or {}).get("title", "")
-        if not source.live else "",
+        cfg.translate, glossary, vod_title=vod_context,
     )
     translator_name = (
         "PLaMo 3 Translate"
@@ -204,7 +212,7 @@ def main() -> None:
         stop,
         diarizer=diarizer,
         captions=captions,
-        vod_title=(source.timeline or {}).get("title", "") if not source.live else "",
+        vod_title=vod_context,
     )
 
 

@@ -433,7 +433,7 @@ class MpvOutput:
             f"--hwdec={cfg.hwdec}",
 
             f"--log-file={mpv_log}",
-            "--msg-level=all=info",
+            "--msg-level=all=warn",
         ])
 
         if sys.platform == "win32":
@@ -672,9 +672,26 @@ class MpvOutput:
             OSError,
             json.JSONDecodeError,
             MpvError,
-        ):
+        ) as exc:
             if not self.stop.is_set():
-                log.exception("mpv playback/IPC error; stopping")
+                # WinError 232 means MPV's IPC pipe closed. Distinguish a
+                # normal window close from an unexpected player exit rather
+                # than reporting the pipe failure itself as the root cause.
+                returncode = self._proc.poll()
+                if returncode == 0:
+                    log.info("MPV window closed; stopping translator")
+                elif returncode is not None:
+                    log.error(
+                        "MPV exited with code %s; IPC closed (%s). "
+                        "Check logs/mpv.log for the playback error.",
+                        returncode, exc,
+                        exc_info=True,
+                    )
+                else:
+                    log.exception(
+                        "MPV IPC connection closed while the player may "
+                        "still be running; check logs/mpv.log"
+                    )
                 self.stop.set()
 
     def _play_session(self, show_hint: bool) -> None:
@@ -851,10 +868,11 @@ class MpvOutput:
                 if (
                     self._anchor_reason == "seek"
                     and not self._audio_clock_diag_done
+                    and log.isEnabledFor(logging.DEBUG)
                 ):
                     self._audio_clock_diag_until = time.monotonic() + 12.0
                     self._audio_clock_diag_done = True
-                    log.info("MPV audio-clock diagnostics started after seek")
+                    log.debug("MPV audio-clock diagnostics started after seek")
 
                 log.info(
                     "mpv playing from %s",
@@ -927,7 +945,7 @@ class MpvOutput:
                         if self._clock_last_sample_pos is not None
                         else 0.0
                     )
-                    log.info(
+                    log.debug(
                         "MPV clock sample: raw=%.3f mapped=%.3f "
                         "session_elapsed=%+.3fs raw_step=%+.3fs",
                         pos,
@@ -949,7 +967,7 @@ class MpvOutput:
                     audio_pts = self.ipc.get("audio-pts")
                     avsync = self.ipc.get("avsync")
                     mpv_paused = self.ipc.get("pause")
-                    log.info(
+                    log.debug(
                         "MPV audio clock: time_pos=%s audio_pts=%s "
                         "avsync=%s pause=%s",
                         pos,
@@ -1238,7 +1256,7 @@ class MpvOutput:
             self._logged_displayed_subtitles.add(key)
             delta = now - ln.show_from
             self._lags.append(delta)
-            log.info(
+            log.debug(
                 "subtitle first visible: generation=%d speech=%.3f-%.3f "
                 "mpv_clock=%.3f start_delta=%+.3fs active=%d",
                 ln.sub.generation,
@@ -1263,7 +1281,7 @@ class MpvOutput:
             self._shown = text
 
             if text:
-                log.info(
+                log.debug(
                     "MPV subtitle overlay updated: active=%d chars=%d",
                     len(active),
                     len(text),

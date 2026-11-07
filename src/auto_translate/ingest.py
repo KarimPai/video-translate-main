@@ -46,10 +46,6 @@ SEPARATION_READ_FRAMES = 8192
 SEPARATION_INPUT_RATE = 44100
 DEEPFILTER_INPUT_RATE = 48000
 
-_PTS = re.compile(r"pts_time:(-?[\d.]+)")
-_ASHOWINFO_SAMPLES = re.compile(r"nb_samples:(\d+)")
-
-
 @dataclass
 class Source:
     location: str
@@ -607,7 +603,7 @@ class Ingest:
         ]
 
     def _video_audio_command(self) -> list[str]:
-        """Extract ASR audio from the same progressive fMP4 cache MPV plays."""
+        """Extract ASR audio from progressive fMP4 without frame-by-frame logs."""
         if not self.video_out:
             raise RuntimeError("MPV fMP4 cache is not enabled")
 
@@ -617,7 +613,7 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "info",
+            "warning",
             "-copyts",
         ]
 
@@ -638,12 +634,12 @@ class Ingest:
 
         audio_filters = self._pitch_filter(output_rate)
         output_layout = "stereo" if self.separation_enabled else "mono"
-        # Put diagnostics after resampling/format conversion so nb_samples
-        # is measured at the same rate used by the PCM sample clock.
+        # PCM bytes are the authoritative audio clock; _read_session()
+        # initializes first_pts from the first decoded chunk, including for
+        # fallback fMP4 playback. No per-frame ashowinfo filter is needed.
         audio_filters += [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
-            "ashowinfo",
         ]
         log.info(
             "ASR audio from fMP4 cache: source_start=%.3fs playlist_offset=%.3fs rate=%dHz",
@@ -718,70 +714,20 @@ class Ingest:
         session: int,
         capture_pts: bool = True,
     ) -> None:
-        """Read FFmpeg logs, capture first audio PTS, and filter noisy output."""
+        """Read FFmpeg warnings/errors and optional video progress heartbeats.
+
+        PCM sample arrival initializes first_pts in _read_session(), avoiding
+        unnecessary per-frame audio timestamp diagnostics.
+        """
         receiver_gone = False
-        first_frame_pts: float | None = None
-        audio_samples = 0
-        next_pts_log_sample = 0
-        output_rate = (
-            SEPARATION_INPUT_RATE if self.separation_enabled
-            else DEEPFILTER_INPUT_RATE if self.deepfilter_enabled
-            else SAMPLE_RATE
-        )
 
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
 
-            # FFmpeg writes one progress=continue/end marker per heartbeat.
+            # FFmpeg emits a progress heartbeat when transcoding fallback video.
             if not capture_pts and line.startswith("progress="):
                 with self._video_progress_lock:
                     self._video_progress_at = time.monotonic()
-                continue
-
-            if capture_pts:
-                with self._proc_lock:
-                    current = session == self._session
-
-                    if current and self.first_pts is None:
-                        if m := _PTS.search(line):
-                            self.first_pts = float(m.group(1))
-                            self.first_pts_at = time.monotonic()
-                            self.first_pts_ready.set()
-                            log.info(
-                                "first audio pts %.3f",
-                                self.first_pts,
-                            )
-
-            if "ashowinfo" in line:
-                if capture_pts:
-                    pts_match = _PTS.search(line)
-                    samples_match = _ASHOWINFO_SAMPLES.search(line)
-                    if pts_match and samples_match:
-                        frame_pts = float(pts_match.group(1))
-                        frame_samples = int(samples_match.group(1))
-                        if first_frame_pts is None:
-                            first_frame_pts = frame_pts
-                            log.info(
-                                "audio PTS baseline: %.3fs at %d Hz",
-                                first_frame_pts,
-                                output_rate,
-                            )
-                        audio_samples += frame_samples
-                        if audio_samples >= next_pts_log_sample:
-                            expected_pts = (
-                                first_frame_pts + (audio_samples - frame_samples) / output_rate
-                            )
-                            pts_error = frame_pts - expected_pts
-                            log.info(
-                                "audio PTS continuity: pts=%.3f "
-                                "sample_clock=%.3f drift=%+.3fs",
-                                frame_pts,
-                                expected_pts,
-                                pts_error,
-                            )
-                            next_pts_log_sample = (
-                                (audio_samples // (output_rate * 10)) + 1
-                            ) * output_rate * 10
                 continue
 
             receiver_gone |= any(
@@ -876,7 +822,11 @@ class Ingest:
         ]
 
     def _audio_commands(self) -> list[list[str]]:
-        """Build audio-only FFmpeg commands."""
+        """Build audio-only FFmpeg commands without per-frame PTS diagnostics.
+
+        The direct MPV path uses decoded PCM arrival for clock readiness;
+        ashowinfo is unnecessary here and floods stderr with every frame.
+        """
         src = self.source
 
         ffmpeg = [
@@ -885,7 +835,7 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "info",
+            "warning",
         ]
 
         if not src.live:
@@ -922,7 +872,6 @@ class Ingest:
         filters += [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
-            "ashowinfo",
         ]
         out = ["-af", ",".join(filters)] + out
 

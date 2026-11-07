@@ -25,14 +25,25 @@ if not defined VIDEO_URL (
     exit /b 1
 )
 
+if not exist "logs" mkdir "logs"
+
 echo.
 echo Starting translation with MPV (paused)...
 echo.
 
-if not exist logs mkdir logs
-rem TerminalOutput writes timed Japanese lines and indented English lines to stdout.
-uv run --no-sync auto-translate "%VIDEO_URL%" --mode vod --mpv --no-web 2>"logs\run.log" | uv run --no-sync python -u -X utf8 -c "import re,sys; from collections import deque; p=re.compile(r'^\[[\d:.]+\u2013[\d:.]+\] (.*?)    \(vad |^\s*\u2192 (.+)$'); deque((print('JP: '+m[1] if m[1] is not None else 'EN: '+m[2]) for line in sys.stdin if (m:=p.match(line.rstrip()))),maxlen=0)"
+rem Run a single translator process. The previous two-uv pipe could exit
+rem early and hide MPV startup errors; the CLI now prints JP/EN directly.
+uv run --no-sync auto-translate "%VIDEO_URL%" --mode vod --mpv --no-web --simple-terminal 2>"logs\run.log"
+set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
-echo Translator stopped.
+if not "%EXIT_CODE%"=="0" (
+    echo ERROR: Translator exited with code %EXIT_CODE%.
+    echo Relevant errors from logs\run.log:
+    findstr /i /c:"ERROR" /c:"Traceback" /c:"Exception" /c:"BrokenPipeError" "logs\run.log"
+) else (
+    echo Translator stopped.
+)
+echo Full diagnostic log: "%CD%\logs\run.log"
 pause
+exit /b %EXIT_CODE%

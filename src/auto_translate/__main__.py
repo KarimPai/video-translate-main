@@ -23,6 +23,8 @@ def main() -> None:
     parser.add_argument("--fast", action="store_true",
                         help="vod: process as fast as possible instead of at 1x speed")
     parser.add_argument("--no-web", action="store_true", help="don't start the browser viewer")
+    parser.add_argument("--simple-terminal", action="store_true",
+                        help="print only JP/EN transcript lines (no timing columns)")
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
@@ -170,7 +172,7 @@ def main() -> None:
     subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
 
     if cfg.output.terminal:
-        outputs.append(TerminalOutput())
+        outputs.append(TerminalOutput(simple=args.simple_terminal))
 
     if cfg.output.web and not args.no_web:
         outputs.append(

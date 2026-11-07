@@ -1,443 +1,89 @@
-# auto-translate
+# Japanese Video Translator
 
-Live **Japanese → English subtitles** for YouTube streams (VTubers, gamers), running locally on your GPU.
-Japanese speech is transcribed with **Haas-ja-v1.0 through speech.cpp/Vulkan**,
-then translated by **HY-MT2 1.8B** through a local OpenAI-compatible model endpoint. Subtitles can be shown in three places:
+Japanese-to-English subtitles for YouTube streams/VODs and local media. The current Windows MPV workflow uses FireRedVAD, Haas Japanese ASR (speech.cpp / Vulkan), and a local translation backend. MPV plays the original source; the translator processes audio independently.
 
-- **Terminal**: Japanese + English lines with timings and latency.
-- **Browser viewer**: big captions on any device on your LAN (phone, Mac, tablet).
-- **mpv**: the video plays a few seconds behind, so each subtitle appears exactly when the line is spoken.
+## Windows requirements
 
-```
-yt-dlp → ffmpeg → VAD (FireRed streaming, CUDA) → ASR (Haas/Vulkan) → glossary + translator → terminal / browser / mpv
-```
+- Python 3.12+, `uv`, `yt-dlp`, `ffmpeg`, and `mpv`.
+- `speech` from speech.cpp on PATH, with the `haas-ja-v1.0` model and a working Vulkan device.
+- A CUDA-capable GPU for FireRedVAD.
+- **PLaMo option:** `llama-server` from a GPU-enabled llama.cpp build on PATH. The translator can launch its own local server.
+- **HY-MT2 option:** an already running, compatible local OpenAI-style translation endpoint. HY-MT2 remains an available backend in this branch.
 
-Works with **live streams** and **VODs** (past streams, normal videos), and with **local audio/video files**.
+Install Python dependencies with `uv sync`. Optional packages for separation, DeepFilterNet, and speaker diarization are declared under `[project.optional-dependencies]` in `pyproject.toml`.
 
----
+## Start a YouTube VOD
 
-## Contents
+From CMD in the project directory:
 
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Command-line options](#command-line-options)
-- [Live vs VOD](#live-vs-vod)
-- [Translation](#translation)
-- [Outputs](#outputs)
-- [mpv: synced video + subtitles](#mpv-synced-video--subtitles)
-- [Glossary](#glossary)
-- [Configuration reference (`config.toml`)](#configuration-reference-configtoml)
-- [Reading the logs](#reading-the-logs)
-- [Helper scripts](#helper-scripts)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## Requirements
-
-| What | Notes |
-|---|---|
-| Windows + NVIDIA GPU | Tested on an RTX 3060 Laptop (6 GB VRAM). Keep the laptop **plugged in** (GPU clocks drop on battery). |
-| [uv](https://docs.astral.sh/uv/) | Python package/project manager. Installs Python 3.12 and all dependencies. |
-| [ffmpeg](https://ffmpeg.org/) | On `PATH`. Decodes audio, and streams the video to mpv. |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | On `PATH`. **Keep it updated** (`yt-dlp -U` or `winget upgrade yt-dlp`): YouTube changes break old versions. |
-| Local HY-MT2 runtime | Serves `kaelri/hy-mt2:1.8b-q4_K_M` through the configured local chat endpoint. |
-| [speech.cpp](https://github.com/nyosegawa/speech.cpp) | Required for Haas ASR; use the Windows x64 Vulkan release and put `speech.exe` on `PATH`. |
-| [mpv](https://mpv.io/) | Only for `--mpv`. Found on `PATH` or at `C:\Program Files\MPV Player\mpv.exe`. |
-
-FireRed streaming model weights (~2.3 MB) are downloaded from Hugging Face on first launch. CUDA libraries (cuBLAS, cuDNN 9) come as pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), so you
-don't need the CUDA Toolkit. Haas runs through speech.cpp's Windows Vulkan build; FireRed VAD uses CUDA-enabled PyTorch,
-and optional separation and diarization features use CUDA. FFmpeg decoding,
-resampling and pipeline coordination remain CPU tasks.
-
-## Installation
-
-```powershell
-# Optional: keep the uv cache and Hugging Face models off C:
-$env:UV_CACHE_DIR = "X:\uv-cache"
-$env:HF_HOME      = "X:\hf-home"
-
-uv sync                                       # installs the core runtime only
-# Optional feature dependencies (install only what you use):
-uv sync --extra separation                    # UVR vocal separation
-uv sync --extra deepfilter                    # DeepFilterNet enhancement
-uv sync --extra diarization                   # pyannote speaker diarization
-
-# HY-MT2 translator for the default engine
-ollama pull kaelri/hy-mt2:1.8b-q4_K_M
+```cmd
+"Start translate.bat"
 ```
 
-Haas is the only ASR backend. With speech.cpp on `PATH`, its `haas-ja-v1.0` GGUF is fetched automatically
-by the worker on first use. HY-MT2 is loaded by the configured local model runtime.
+Paste a YouTube URL. The launcher runs a **single translator process** with `--simple-terminal`, displays **JP:** and **EN:** lines directly in CMD, and writes diagnostics to `logs\run.log`. There is no second `uv` process or stdout pipe. On startup failure, the launcher prints the exit code and matching error lines.
 
-Check that the GPU works:
+Equivalent direct command:
 
-```powershell
-speech info haas-ja-v1.0
-speech devices
+```cmd
+uv run --no-sync auto-translate "YOUTUBE_URL" --mode vod --mpv --no-web
 ```
 
-## Quick start
+For extra diagnostic logging, append `-v`. Use `uv run auto-translate --help` for the active CLI switches. There is no `--engine` switch: change the translation backend in `config.toml`.
 
-```powershell
-# Live stream: subtitles in the terminal + browser viewer
-uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID"
+## Translation backend
 
-# Same, but watch the video in mpv with subtitles synced to speech
-uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv
-
-# A VOD starting at 16:02
-uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --start 16:02 --mpv
-
-# A local file, as fast as possible, Japanese only (no translation)
-uv run auto-translate recording.mp4 --fast --engine none
-```
-
-Stop with **Ctrl+C** (or by closing the mpv window). The first run takes longer: models are downloaded,
-and the local HY-MT2 runtime loads the model into VRAM (the initial warm-up).
-
-Then open the browser viewer at **http://127.0.0.1:8765/** on this PC. LAN access is disabled by default; see [Browser viewer](#browser-viewer) to opt in for phone/tablet access.
-
-## Command-line options
-
-```
-uv run auto-translate SOURCE [--mode auto|live|vod] [--start TIME] [--fast]
-                             [--engine NAME] [--mpv] [--delay SECONDS] [--no-web] [--config FILE] [-v]
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `SOURCE` | (required) | A YouTube URL (live or VOD, `youtube.com/watch?v=…`, `youtu.be/…`, `…/live/…`), or a path to a local audio/video file (see [Local files](#local-files) for supported formats). Quote URLs in PowerShell (`&` is special). |
-| `--mode auto\|live\|vod` | `auto` | `auto` asks yt-dlp whether the URL is live right now (~4 s). `live` / `vod` skip that check. Local files are always `vod`. |
-| `--start TIME` | URL's `t=` or 0 | VOD only: where to start. Formats: `962`, `16:02`, `1:02:03`, `16m2s`, `1h2m3s`. If omitted, the URL's `t=` / `start=` value is used (`…&t=962s`). Ignored for live streams (they always start at the live edge). A start past the end of the video is rejected. |
-| `--fast` | off | VOD only: process faster than real time (no 1x pacing). Useful for transcribing a whole video. Can't be combined with `--mpv`. |
-| `--engine NAME` | HY-MT2 is always used | Translation engine: `hymt2` (HY-MT2) or `none` (Japanese only, no translator loaded). See [Translation](#translation). |
-| `--mpv` | off (`[mpv] enabled`) | Watch the video in mpv, delayed so subtitles appear exactly when each line is spoken. |
-| `--delay SECONDS` | `[mpv] delay_s` (9) | mpv only: how far playback stays behind the pipeline. Raise it if subtitles come late (see [Tuning the delay](#tuning-the-delay)). |
-| `--no-web` | web on | Don't start the browser viewer. |
-| `--config FILE` | `config.toml` | Use another config file. Missing keys fall back to built-in defaults; a missing file means all defaults. |
-| `-v`, `--verbose` | off | Debug logging (ffmpeg / yt-dlp details, per-stage events). |
-
-Examples:
-
-```powershell
-uv run auto-translate "https://youtu.be/VIDEO_ID?t=3725"               # VOD from 1:02:05
-uv run auto-translate "https://youtu.be/VIDEO_ID" --start 1h2m5s       # same
-uv run auto-translate "https://youtu.be/VIDEO_ID" --engine hymt2 # HY-MT2 (default)
-uv run auto-translate "https://youtu.be/VIDEO_ID" --mode live --no-web # skip the live check, terminal only
-uv run auto-translate "https://youtu.be/VIDEO_ID" --config my.toml -v
-```
-
-## Live vs VOD
-
-| | Live | VOD / local file |
-|---|---|---|
-| Where it starts | The live edge (now) | `--start`, the URL's `t=`, or 0:00 |
-| Speed | Real time (audio arrives at 1x) | 1x by default; `--fast` = as fast as possible |
-| Timestamps | Seconds since the app started | Position in the video (matches the YouTube player) |
-| mpv start | After `delay_s` (9 s) | After `start_wait_s` (3 s) |
-| mpv jump keys | No ("VOD only" note) | Yes (←/→ 30 s, Shift+←/→ 5 min) |
-
-### Local files
-
-Pass a path instead of a URL: `uv run auto-translate "D:\videos\stream.mp4" --start 16:02 --mpv`.
-Any path that exists is treated as a VOD (yt-dlp isn't used). If the path has a typo, it's treated as a URL
-and yt-dlp fails with an error, so check the path first.
-
-Which formats work depends on whether you use mpv:
-
-- **Without `--mpv`**, any audio or video file that ffmpeg can read works (`.mp4`, `.mkv`, `.webm`, `.mov`,
-  `.ts`, `.flv`, `.mp3`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.opus`, …). Only the first audio track is used.
-- **With `--mpv`**, FFmpeg stream-copies the selected video and audio into a temporary fMP4 HLS cache.
-  No re-encoding is performed. The streams therefore need codecs supported by FFmpeg's fragmented-MP4
-  muxer. The YouTube format selector prefers H.264 video and HLS audio; arbitrary local files may use
-  codecs that cannot be muxed into fMP4 without conversion.
-
-Check a local file with
-`ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 FILE` before using `--mpv`.
-The audio-only version is fast; the full version re-encodes the video, which is slow:
-
-```powershell
-ffmpeg -i in.mkv -c:v copy -c:a aac out.mp4                    # only the audio is unsupported
-ffmpeg -i in.webm -c:v libx264 -engine fast -crf 20 -c:a aac out.mp4   # VP9/AV1 video
-```
-
-Audio-only files also work with `--mpv`, as long as the audio codec is supported (mpv shows the subtitles on
-a black window). For local files, a `--start` past the end of the file isn't detected: you just get no lines.
-
-## Translation
-
-HY-MT2 1.8B Q4_K_M is the application's **only translation engine**. There are no translation
-engines or alternative translator backends. To change the local model endpoint or generation
-settings, edit the single `[translate]` table in `config.toml`.
+`config.toml` is local and intentionally git-ignored. To use PLaMo 3 Translate:
 
 ```toml
 [translate]
-model = "kaelri/hy-mt2:1.8b-q4_K_M"
-base_url = "http://127.0.0.1:11434/v1"
-temperature = 0.2
-max_tokens = 120
-timeout_s = 20.0
-load_timeout_s = 300.0
-min_request_interval_s = 3.0
+backend = "plamo"
+plamo_base_url = "http://127.0.0.1:8000/v1"
+plamo_model = "plamo-3-translate"
+plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
+plamo_gpu_layers = 99
 context_lines = 8
 glossary = "glossary.toml"
 ```
 
-HY-MT2 receives the previous 8 JA/EN lines and matching glossary entries as reference translations.
-The configured local endpoint must expose `/v1/chat/completions`.
+If no `[translate]` configuration is supplied, the code's current default is `hymt2`, which requires its local service. The PLaMo backend uses a managed `llama-server` when no server is already running at the configured URL; its log is `logs\plamo-server.log`. Configure `[asr]`, `[vad]`, and `[mpv]` via `src/auto_translate/config.py`.
 
----
+Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 
-## Outputs
+## Detection and subtitles
 
-### Terminal
+1. FFmpeg decodes Japanese audio, with accelerated VOD ingestion in MPV mode.
+2. FireRedVAD detects utterance boundaries. By default, the silence interval is 400 ms, maximum utterance length is 5 seconds, and fallback probing checks speech that VAD may miss.
+3. Haas transcribes utterances, with optional Japanese YouTube caption assistance. A conservative filter suppresses obvious non-speech ASR outputs.
+4. The configured translator renders English-only subtitles; `glossary.toml` handles proper names and streaming terms.
+5. MPV initially waits until translation covers **5 seconds ahead of playback**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.
 
-```
-[16:02.4–16:05.1] 今日めっちゃ眠いわ    (vad 0.52s · wait 0.00s · asr 0.31s · mt 0.48s)
-                  → I'm so sleepy today.
-```
+The MPV demux limits are **1 GiB forward + 1 GiB backward**, with 120 seconds of readahead. These are upper limits, not preallocated memory.
 
-- `[start–end]`: position in the video (VOD) or time since start (live).
-- `vad`: time from the end of the audio to the line being cut (higher for long lines that were split).
-- `wait`: time waiting for the ASR (should be ~0; higher means the GPU is falling behind).
-- `asr` / `mt`: transcription / translation time for this line.
+A separate **RAM-only session subtitle cache** stores translated cues and processed regions for the currently loaded VOD. Seeking back to a translated region can immediately restore existing English subtitles and reuse matching ASR/translation results. The subtitle cache is discarded when the application closes or a different video is loaded; it is not an on-disk translation archive.
 
-Turn it off with `[output] terminal = false`.
+## Optional processing
 
-### Browser viewer
+Vocal separation, DeepFilterNet, and pyannote speaker diarization are **disabled by default** and require their respective optional dependencies. These components remain supported; they are not orphaned modules.
 
-Starts by default on port **8765**, bound to `127.0.0.1` so only this PC can connect. LAN access is opt-in.
+## Tests
 
-- **This PC:** http://127.0.0.1:8765/
-- **Phone / Mac:** only when LAN access is explicitly enabled (see below).
-- Buttons: **JA** (show/hide Japanese), **A− / A+** (text size). Choices are remembered in the browser.
-- `?lines=5` in the URL shows more lines (default 3).
-- If the connection drops (phone Wi-Fi), the page reconnects by itself and gets the missed lines.
-- The browser viewer is **not delayed**: lines appear ~1–3 s after they're spoken on the live stream.
-  Use mpv for perfect sync.
+Run the retained regression tests from the project folder:
 
-To enable LAN access, set `web_host = "0.0.0.0"` in `[output]` and allow `python.exe` through Windows Firewall on **Private** networks. This exposes live subtitles to other devices on your network; use it only on a trusted LAN. The startup log prints the LAN URL. Return to `127.0.0.1` for local-only access. Disable with `--no-web` or `[output] web = false`.
-
-### mpv
-
-See the next section.
-
-## mpv: synced video + subtitles
-
-```powershell
-uv run auto-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv
+```cmd
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-MPV mode uses an experimental **progressive fMP4 HLS cache**:
-
-1. yt-dlp resolves the selected YouTube video and audio streams.
-2. One FFmpeg process stream-copies both streams into a temporary local HLS event playlist using fragmented MP4 (`.m4s`) segments. No re-encoding is performed.
-3. MPV plays that growing local playlist.
-4. A second FFmpeg process extracts ASR audio from the same playlist, so video playback and speech recognition share the same cached media timeline.
-5. The cache is removed when the application exits.
-
-Playback starts after the first complete media fragment is available. VOD download continues while watching; the complete VOD is not downloaded first.
-
-### Seeking and cache behavior
-
-- Backward and forward jumps **within already-downloaded fragments** reuse the local fMP4 cache.
-- A jump beyond the available cache starts a new progressive fetch at the requested position.
-- Each seek resets the translation generation and clock anchor, preventing subtitles from the previous position from being displayed.
-- Previous seek-session fragments remain in the temporary cache until shutdown, but are not yet indexed for reuse across different sessions.
-- Live playback uses a rolling 30-segment cache; live seeking remains disabled.
-
-The cache is experimental on this branch. MPV/FFmpeg behavior with a growing local HLS event playlist, codec compatibility, and repeated seeks must be tested on Windows before merging.
-### VOD timeline metadata
-
-For YouTube VODs, yt-dlp metadata is saved to
-`%LOCALAPPDATA%\\auto-translate\\timelines\\VIDEO_ID.json`. It records the
-video duration, available chapter boundaries, upload timestamp, and selected
-format details. MPV's actual `time-pos` is then anchored to the requested
-source position for each initial session, seek, and video-stream recovery.
-Those measured clock anchors are appended to the same JSON file.
-
-Subtitle timestamps remain on the original VOD timeline. The metadata duration
-is used to reject seeks beyond the video and bound the playback clock; chapter
-timestamps are reference markers, not a substitute for frame-level timestamps.
-
-### mpv keys
-
-mpv's default keys are replaced; seeking with mpv itself would break the incoming stream.
-
-| Key | Action |
-|---|---|
-| ← / → | VOD: jump back / forward 30 s (~5 s to resume) |
-| Shift+← / Shift+→ | VOD: jump back / forward 5 min |
-| Space, `p` | Pause / resume |
-| `m` | Mute |
-| ↑ / ↓, mouse wheel, `9` / `0` | Volume |
-| `f`, double-click | Fullscreen (Esc leaves it) |
-| `q` | Quit (stops the app) |
-
-### Tuning the delay
-
-The delay must be larger than the longest line (`[vad] max_utterance_s`) plus the time from end of speech
-to a finished subtitle (the `latency ... max` in the stats line). Otherwise late lines show up after
-they were spoken.
-
-| Preset | Latency max | Delay used |
-|---|---|---|
-| `hymt2` | Measure on your machine | 9 s (`[mpv] delay_s`) |
-
-Where the delay comes from, highest priority first:
-
-1. `--delay SECONDS` on the command line.
-2. `[mpv] delay_s` (9 s).
-
-A lower delay feels closer to live but risks late subtitles. For VODs the delay doesn't slow the start
-(still ~3 s); for live streams the video simply runs that many seconds behind the real stream.
-
-At the end the log prints a sync summary, e.g.
-`mpv sync: 14 lines shown, 14 within 0.5s of speech, avg +0.05s, worst +0.13s`.
-
-## Glossary
-
-`glossary.toml` holds fixed JA → EN translations for slang, names and terms ASR or the translator gets wrong:
-
-```toml
-[terms]
-"草" = "lol"
-"てぇてぇ" = "so precious"
-"スパチャ" = "superchat"
-"ヴァロ" = "Valorant"
-```
-
-- **HY-MT2:** matching entries are added to the prompt as reference translations.
-- Longer terms win over shorter ones. Avoid single-kanji terms when possible (they match inside other words).
-- Useful for streamer names, game names, and ASR mishearings (add the misheard form too, e.g. `"バロ" = "Valorant"`).
-
-Use another file with `[translate] glossary = "path/to/file.toml"`.
-
-## Configuration reference (`config.toml`)
-
-All keys are optional; missing ones use the defaults below. An unknown key is an error (typo protection).
-
-### Top level
-
-| Key | Default | Description |
-|---|---|---|
-| `stats_interval_s` | `30` | How often the stats line (queues + latency) is logged. |
-
-### `[ingest]`
-
-| Key | Default | Description |
-|---|---|---|
-| `ytdlp_format` | `"bestaudio/93/best"` | yt-dlp format for the audio (without mpv). Live streams often have no audio-only format, so `93` (360p) is the fallback. |
-| `cookies_from_browser` | `""` | `"chrome"`, `"firefox"`, `"edge"`, … to use your browser's YouTube login. Needed for **members-only** streams. |
-| `pitch_semitones` | `-3.0` | Pitch shift applied to ASR audio only; playback audio remains unchanged. `0.0` disables it. |
-
-### `[vad]`: cutting speech into lines
-
-| Key | Default | Description |
-|---|---|---|
-| `threshold` | `0.4` | FireRed speech probability that starts a line. Raise if music/noise triggers lines. |
-| `neg_threshold` | `0.25` | Below this counts as silence. |
-| `min_silence_ms` | `500` | Pause length that ends a line. Lower = shorter lines and lower latency; higher = fuller sentences. |
-| `speech_pad_ms` | `200` | Audio kept before/after the speech. |
-| `min_speech_ms` | `250` | Drop lines with less speech than this (coughs, clicks). |
-| `max_utterance_s` | `6.0` (code default 9) | Force-split long speech after this many seconds, at the quietest point in the last 2 s. Keep below `[mpv] delay_s` − 3. |
-| `fallback_s` | `5.0` | The VAD misses voices mixed with loud music (narrated videos, trailers, singing). Audio it calls non-speech is still sent to Haas in pieces of up to this many seconds. `0` = off (VAD only). Keep below `[mpv] delay_s` − 3. |
-| `fallback_min_s` | `1.5` | Skip non-speech pieces shorter than this (short bits of music often come back as a random word). |
-| `fallback_min_db` | `-45.0` | Skip non-speech pieces quieter than this (RMS, dBFS), so silence is not sent to Haas. |
-
-### `[asr]`: speech recognition
-
-| Key | Default | Description |
-|---|---|---|
-| `haas_model` | `"haas-ja-v1.0"` | speech.cpp model name or GGUF file path. |
-| `haas_device` | `"Vulkan0"` | speech.cpp device selected for Haas. |
-| `haas_decode_on_cpu` | `false` | `false` keeps Haas decoding on Vulkan; `true` decodes on CPU. |
-| `blocklist` | see config | Lines containing any of these are dropped (known ASR false positives on silence/music, e.g. 「ご視聴ありがとうございました」). |
-
-### `[translate]`
-
-| Key | Default | Description |
-|---|---|---|
-
-| `context_lines` | `8` | Previous JA/EN lines supplied to HY-MT2 as context. |
-| `glossary` | `"glossary.toml"` | Glossary file. |
-
-`[translate.engines.NAME]` tables define engines (see [Translation](#translation)).
-HY-MT2 engine keys: `model`, `base_url`, `temperature` (0.2), `max_tokens` (120),
-`timeout_s` (20), `load_timeout_s` (300), `min_request_interval_s` (3), and `extra_body` (additional local-server request fields).
-
-### `[output]`
-
-| Key | Default | Description |
-|---|---|---|
-| `terminal` | `true` | Print lines to the terminal. |
-| `web` | `true` | Run the browser viewer (`--no-web` turns it off). |
-| `web_host` | `"127.0.0.1"` | `127.0.0.1` = this PC only (default); `0.0.0.0` = reachable from the LAN. LAN access exposes subtitles to other devices on the network. |
-| `web_port` | `8765` | Viewer port. |
-
-### `[mpv]`
-
-| Key | Default | Description |
-|---|---|---|
-| `enabled` | `false` | Always use mpv (same as `--mpv`). |
-| `path` | `""` | mpv executable. `""` = `PATH`, then `C:\Program Files\MPV Player\mpv.exe`. |
-| `delay_s` | `9.0` | How far playback stays behind the pipeline. Must exceed `max_utterance_s` + max latency. `--delay` overrides it. |
-| `start_wait_s` | `3.0` | VOD: wait before playing after start or a jump. |
-| `port` | `9137` | Legacy setting; the fMP4 cache uses local playlist files instead of a TCP listener. |
-| `hwdec` | `"auto-safe"` | mpv video decoding. `"auto-safe"` = GPU video decoder (NVDEC / D3D11VA), so playback stays smooth while HY-MT2 uses the GPU. `"no"` = CPU decoding. |
-| `ytdlp_format` | ≤1080p H.264 HLS | yt-dlp format selector for the video and audio streams used to build the fMP4 cache. |
-| `en_size` / `ja_size` | `44` / `28` | Subtitle font sizes (on a 720-line canvas). |
-| `min_display_s` | `1.5` | Show short lines at least this long. |
-| `hold_s` | `1.0` | Keep a line on screen this long after it ends (unless the next line starts). |
-
-## Reading the logs
-
-Every `stats_interval_s` the app logs something like:
-
-```
-12:00:30 INFO  auto_translate.pipeline: [30s] queues {...} | 12 lines · asr avg 0.33s max 0.52s · mt avg 0.49s max 0.81s · latency avg 1.31s max 2.10s · max queue ...
-```
-
-- **queues** are bounded to cap memory use. Producers block when a queue is full, applying backpressure rather than accumulating unlimited stale audio/work. A `pipeline backpressure` warning means a queue reached 75% of capacity; close other GPU apps or reduce the audio workload if it persists.
-- **statistics** use running count/sum/max aggregates, so memory use does not grow with the number of subtitles.
-- **latency**: end of speech → subtitle ready. ~1–1.5 s with HY-MT2.
-- A summary is printed when the app stops.
-
-## Helper scripts
-
-| Script | Use |
-|---|---|
-| `uv run python scripts/mpv_jump_probe.py [RIGHT LEFT ...]` | Debug: while `--mpv` plays a VOD, press jump keys and log the audio state after each jump. |
+The `tests/test_*.py` files are development tests; they do not run during normal VOD playback. Temporary manual MPV probe scripts have been removed.
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `HTTP Error 404: Not Found` at startup | The configured HY-MT2 model is not available in the local model runtime. Check its model name and download it there. |
-| `Connection refused` at startup | The local HY-MT2 endpoint is not running. Start the configured local model runtime. |
-| First start hangs after "ASR ready" | HY-MT2 is loading into VRAM; subsequent requests reuse the loaded model. |
-| yt-dlp errors / "Sign in to confirm" / format not available | Update yt-dlp. For members-only streams set `cookies_from_browser`. |
-| Phone can't open the viewer | Same Wi-Fi? Allow `python.exe` on Private networks in Windows Firewall; check the network is set to "Private". |
-| Subtitles late in mpv | Raise the delay (`--delay 15`) or lower `[vad] max_utterance_s`. |
-| mpv video stutters / drops frames | Keep `[mpv] hwdec = "auto-safe"` (GPU decoding). Check Task Manager → Performance → GPU → "Video Decode" is active while playing. Otherwise use 30 fps: add `[fps<=30]` to `[mpv] ytdlp_format`. |
-| Local file with `--mpv`: no video/sound in mpv, or yt-dlp errors | Check the path. Otherwise the codec isn't supported (e.g. VP9/AV1/FLAC): see [Local files](#local-files) to convert it. |
-| `--mpv` can't be combined with `--fast` | mpv plays at 1x; drop one of them. |
-| Out of VRAM / CUDA errors | Close other GPU apps and verify the HY-MT2 model's GPU allocation. |
-| Lines missing when someone talks over loud music (narration, trailers) | The VAD doesn't hear it; `[vad] fallback_s` (on by default) sends that audio to Haas anyway. Run with `-v` to inspect probe-related logs. |
-| Made-up lines during music or quiet gaps | Raise `[vad] fallback_min_s`, or set `[vad] fallback_s = 0` to turn the fallback off. |
-| Odd lines like 「ご視聴ありがとうございました」 during music | ASR false positive; add the phrase to `[asr] blocklist`. |
-| Names / game titles wrong | Add them (and their misheard forms) to `glossary.toml`. |
-| Very slow everything | Laptop on battery? Plug it in. |
+- **No English subtitle:** Check `logs\run.log` for ASR, translation, and seek errors; captions and ASR may not cover every utterance.
+- **A name is misrecognized:** Update `glossary.toml`; name corrections require supporting Japanese/context, not unconditional word replacement.
+- **Translation lags:** Review the pipeline queue/backpressure and ASR/MT timings in `logs\run.log`. GPU contention and long translation prompts can reduce throughput.
+- **Seeking to uncached content:** MPV may need to fetch video data and the pipeline may have to transcribe/translate new audio.
+- **PLaMo startup errors:** Check whether `llama-server` is on PATH and read `logs\plamo-server.log`. Reusing a previously running server is supported.
 
+## Branches
 
-## mpv: stacked subtitles and speaker labels
-
-The mpv output can stack up to `[mpv].max_subtitle_rows` rendered text rows instead of replacing the previous cue immediately. When `[mpv].speaker_diarization = true`, each recognized speech turn is assigned a session-local `Speaker 1`, `Speaker 2`, etc. label. It is disabled by default to avoid installing/loading optional speaker-identification dependencies and to reduce GPU contention. Enable it explicitly only if you need speaker labels. These labels and stacked rows are rendered in mpv; the browser page's layout is unchanged.
-
-Install the optional speaker-identification packages from the project root:
-
- Install the optional pyannote dependencies with `uv sync --extra diarization` (or `pip install -e ".[diarization]"`) before enabling this feature. Set `HF_TOKEN` to a Hugging Face token that can access `pyannote/speaker-diarization-community-1`. The default device is CUDA (`speaker_device = "cuda"`).
-
-**Limitation:** this lightweight mode identifies the speaker for each VAD utterance and keeps IDs consistent across turns. It does not separate overlapping voices or split a single utterance containing two simultaneous speakers into separate tracks.
+- `main`: saved working baseline.
+- `test`: development and cleanup branch. Validate changes here before promoting them to `main`.

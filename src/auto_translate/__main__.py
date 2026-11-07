@@ -54,6 +54,7 @@ def main() -> None:
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
     from .pipeline import run
+    from .session_cache import SessionSubtitleCache
     from .translate import create_translator
 
     cfg = load_config(args.config)
@@ -164,6 +165,9 @@ def main() -> None:
 
     stop = threading.Event()
     outputs: list[Output] = []
+    # Cache only this MPV VOD in RAM. Never reuse it for another video,
+    # and never persist translated text on disk.
+    subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
 
     if cfg.output.terminal:
         outputs.append(TerminalOutput())
@@ -178,7 +182,7 @@ def main() -> None:
 
     if use_mpv:
         from .output.mpv import MpvOutput
-        outputs.append(MpvOutput(cfg.mpv, ingest, stop))
+        outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
 
     diarizer = None
 
@@ -213,6 +217,7 @@ def main() -> None:
         diarizer=diarizer,
         captions=captions,
         vod_title=vod_context,
+        session_cache=subtitle_cache,
     )
 
 

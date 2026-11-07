@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from auto_translate.translate.plamo import PlamoTranslator, _clean
+from auto_translate.translate.plamo import PlamoTranslator, _clean, _translation_context
 
 
 class FakeGlossary:
@@ -13,6 +13,13 @@ class FakeGlossary:
 
 
 class PlamoTranslatorTests(unittest.TestCase):
+    def test_context_without_video_title_keeps_subject_neutrality(self):
+        context = _translation_context("")
+        self.assertIn("Japanese often omits the subject or possessor", context)
+        self.assertIn("instead of guessing I, you, my, your", context)
+        self.assertIn("Preserve people and possessives explicitly stated", context)
+        self.assertNotIn("Video title:", context)
+
     def test_clean_removes_prefix_and_quotes(self):
         self.assertEqual(_clean('EN: "Hello!"\n'), "Hello!")
 
@@ -52,7 +59,10 @@ class PlamoTranslatorTests(unittest.TestCase):
             payload["chat_template_kwargs"]["glossary"],
             [{"source": "ぺこら", "target": "Pekora"}],
         )
-        self.assertEqual(payload["chat_template_kwargs"]["context"], "Video title: 【ホロGTA】大空スバル視点")
+        context = payload["chat_template_kwargs"]["context"]
+        self.assertIn("Video title: 【ホロGTA】大空スバル視点", context)
+        self.assertIn("subject-neutral English", context)
+        self.assertIn("The driving is bad", context)
         self.assertEqual(len(payload["messages"]), 3)
 
 

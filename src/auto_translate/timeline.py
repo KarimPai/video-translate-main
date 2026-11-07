@@ -43,17 +43,31 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
         "yt-dlp",
         "--no-warnings",
         "--no-call-home",
+        "--remote-components", "ejs:github",
         "--skip-download",
         "--dump-single-json",
     ]
     cmd += _cookie_args(cfg) + [url]
 
-    raw = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    try:
+        raw = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except subprocess.CalledProcessError as exc:
+        # Previously stderr was captured and hidden by the generic traceback,
+        # making YouTube access and JS challenge failures impossible to diagnose.
+        details = (exc.stderr or exc.stdout or "").strip()
+        if details:
+            details = "\n".join(details.splitlines()[-5:])[-1600:]
+        else:
+            details = "yt-dlp exited without an error message"
+        raise RuntimeError(
+            f"yt-dlp metadata fetch failed (exit {exc.returncode}):\n{details}"
+        ) from exc
+
     data = json.loads(raw)
 
     duration = data.get("duration")

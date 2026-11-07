@@ -3,6 +3,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 path = Path(__file__).resolve().parents[1] / "tools" / "compare_asr.py"
 spec = importlib.util.spec_from_file_location("compare_asr", path)
@@ -11,6 +12,26 @@ spec.loader.exec_module(compare_asr)
 
 
 class BenchmarkHelpersTests(unittest.TestCase):
+    def test_japanese_finetune_uses_speechcpp_gguf_not_safetensors(self):
+        self.assertEqual(
+            compare_asr.JA_REPO,
+            "kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF",
+        )
+        self.assertEqual(
+            compare_asr.JA_FILENAME,
+            "Qwen3-ASR-1.7B-JA-Q8_0.gguf",
+        )
+        with patch(
+            "huggingface_hub.hf_hub_download",
+            return_value="cached/model.gguf",
+        ) as download:
+            path = compare_asr.fetch_japanese_finetune()
+        self.assertEqual(path, "cached/model.gguf")
+        download.assert_called_once_with(
+            repo_id=compare_asr.JA_REPO,
+            filename=compare_asr.JA_FILENAME,
+        )
+
     def test_youtube_id_accepts_watch_and_short_links(self):
         self.assertEqual(
             compare_asr.youtube_id("https://www.youtube.com/watch?v=LE8iGHrakAc"),

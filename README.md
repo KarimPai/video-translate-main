@@ -58,7 +58,7 @@ context_lines = 8
 glossary = "glossary.toml"
 ```
 
-If no `[translate]` configuration is supplied, the code's current default is `hymt2`, which requires its local service. The PLaMo backend uses a managed `llama-server` when no server is already running at the configured URL; its log is `logs\plamo-server.log`. Configure `[asr]`, `[vad]`, and `[mpv]` via `src/auto_translate/config.py`.
+With no local `[translate]` section, the default is **PLaMo 3 Translate 2B**. It starts a managed `llama-server` when no server is running at the configured URL; its log is `logs\plamo-server.log`. Existing `config.toml` files that explicitly set `backend = "hymt2"` still select HY-MT2 and require their own running endpoint. Configure `[asr]`, `[vad]`, and `[mpv]` via `src/auto_translate/config.py`.
 
 Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
 

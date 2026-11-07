@@ -787,7 +787,7 @@ class MpvOutput:
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
         mapping = (
             "original MPV source timeline (identity; no per-seek rebasing)"
-            if self._uses_original_timeline
+            if getattr(self, "_uses_original_timeline", False)
             else "local video fallback timeline with source/session anchor"
         )
         current_pos = self.ipc.get("time-pos")

@@ -13,7 +13,7 @@ from typing import Callable
 
 from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
-from .captions import CaptionIndex
+from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
 from .config import Config
@@ -39,7 +39,7 @@ def run_asr(
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
-    captions: CaptionIndex | None = None,
+    captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:
@@ -306,7 +306,7 @@ def run(
     translator: Translator | None,
     outputs: list[Output],
     stop: threading.Event,
-    captions: CaptionIndex | None = None,
+    captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:

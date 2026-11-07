@@ -148,6 +148,17 @@ class CaptionIndex:
         )
 
 
+class PendingCaptions:
+    """Publish a complete index when the background VTT download finishes."""
+
+    def __init__(self) -> None:
+        self.index: CaptionIndex | None = None
+
+    def match(self, start_s: float, end_s: float) -> CaptionMatch | None:
+        index = self.index
+        return index.match(start_s, end_s) if index is not None else None
+
+
 def _caption_cache_dir() -> Path:
     root = os.environ.get("LOCALAPPDATA")
     base = Path(root) if root else Path.home() / ".cache"

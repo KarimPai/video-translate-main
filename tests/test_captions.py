@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from auto_translate.captions import CaptionIndex
+from auto_translate.captions import CaptionIndex, PendingCaptions
 from auto_translate.pipeline import run_asr
 from auto_translate.types import Transcript, Utterance
 
@@ -21,6 +21,12 @@ VTT = """WEBVTT
 class CaptionIndexTests(unittest.TestCase):
     def setUp(self):
         self.index = CaptionIndex.from_vtt(VTT)
+
+    def test_pending_captions_become_available_during_playback(self):
+        pending = PendingCaptions()
+        self.assertIsNone(pending.match(1.2, 2.2))
+        pending.index = self.index
+        self.assertEqual(pending.match(1.2, 2.2), self.index.match(1.2, 2.2))
 
     def test_parses_japanese_cues(self):
         self.assertEqual(len(self.index.cues), 2)

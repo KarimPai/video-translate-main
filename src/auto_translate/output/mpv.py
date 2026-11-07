@@ -343,6 +343,7 @@ def find_mpv(configured: str) -> str:
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
+    _seek_lead_target: float | None = None
 
     def __init__(
         self,
@@ -564,6 +565,10 @@ class MpvOutput:
                 self._translated_until,
                 progress_s,
             )
+            if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
+                log.info("translation lead ready at %.3fs", self._seek_lead_target)
+                self._seek_lead_target = None
+                self._subtitle_ready.set()
             self._buffer_condition.notify_all()
 
     def _translation_ready(self) -> bool:
@@ -585,6 +590,7 @@ class MpvOutput:
     def reset_buffer(self, progress_s: float) -> None:
         """Reset translated coverage after a VOD seek."""
         with self._buffer_condition:
+            self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
             self._translated_until = progress_s
             self._source_finished = False
             self._buffer_condition.notify_all()
@@ -1175,21 +1181,6 @@ class MpvOutput:
         if seek_video:
             mpv_target = self._mpv_time_from_source(target)
             self.ipc.command("seek", mpv_target, "absolute+exact")
-            # MPV acknowledges seek before it necessarily reaches that time.
-            # Sampling the prior time-pos here would corrupt the new anchor.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and not self.stop.is_set():
-                landed = self.ipc.get("time-pos")
-                if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
-                    break
-                time.sleep(0.05)
-            else:
-                log.warning(
-                    "MPV seek position not confirmed at %.3fs; "
-                    "rechecking the anchor after audio restarts",
-                    mpv_target,
-                )
-
         self._now = None
         self._shown = ""
         self.ipc.command(
@@ -1206,16 +1197,30 @@ class MpvOutput:
         self._mpv_anchor = None
         self._anchor_reason = "seek"
         self._clock_sample_logged = False
-        self._last_direct_pos = (
-            float(self.ipc.get("time-pos"))
-            if self.ipc.get("time-pos") is not None else None
-        )
-        self._last_direct_sample_at = time.monotonic()
-
         self.ingest.request_restart(target)
         # The queued reset marker may arrive after the MPV thread restarts.
         self.reset_buffer(target)
         self.ingest.go()
+
+        if seek_video:
+            # MPV acknowledges seek before it necessarily reaches that time.
+            # Sampling the prior time-pos here would corrupt the new anchor.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and not self.stop.is_set():
+                landed = self.ipc.get("time-pos")
+                if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
+                    break
+                time.sleep(0.05)
+            else:
+                log.warning(
+                    "MPV seek position not confirmed at %.3fs; "
+                    "rechecking the playback anchor",
+                    mpv_target,
+                )
+
+        landed = self.ipc.get("time-pos")
+        self._last_direct_pos = float(landed) if landed is not None else None
+        self._last_direct_sample_at = time.monotonic()
 
         # Previously translated captions should be visible immediately, even
         # while FFmpeg restarts audio extraction for uncached sections.

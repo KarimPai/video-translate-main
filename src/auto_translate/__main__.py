@@ -37,7 +37,7 @@ def main() -> None:
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        format="%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
 
@@ -48,7 +48,7 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .asr import create_asr
-    from .captions import download_vod_captions
+    from .captions import PendingCaptions, download_vod_captions
     from .config import load_config
     from .glossary import Glossary
     from .ingest import Ingest, resolve_source
@@ -75,17 +75,18 @@ def main() -> None:
 
     # Fetch VOD captions in parallel with model loading. Captions are optional:
     # any download/parse failure leaves the Haas-only pipeline unchanged.
-    caption_result = {}
-    caption_thread = None
+    captions = None
     video_id = (
         source.timeline.get("video_id")
         if not source.live and source.timeline
         else None
     )
     if video_id:
+        captions = PendingCaptions()
+
         def load_captions() -> None:
             try:
-                caption_result["index"] = download_vod_captions(
+                captions.index = download_vod_captions(
                     str(video_id), source.location, cfg.ingest
                 )
             except Exception:
@@ -128,13 +129,6 @@ def main() -> None:
         len(glossary.terms),
         time.perf_counter() - t0,
     )
-
-    captions = None
-    if caption_thread is not None:
-        caption_thread.join()
-        captions = caption_result.get("index")
-        if captions is None:
-            log.info("caption assistance unavailable; using Haas transcription only")
 
     use_mpv = args.mpv or cfg.mpv.enabled
     if use_mpv and not source.live and source.paced:

@@ -1,6 +1,7 @@
 """JA → EN fixed terms from glossary.toml."""
 
 import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -18,12 +19,16 @@ class Glossary:
 
     def find(self, ja: str) -> list[tuple[str, str]]:
         """Entries that appear in `ja` (non-overlapping, longest match wins)."""
+        return list(self._matches(ja))
+
+    @lru_cache(maxsize=128)
+    def _matches(self, ja: str) -> tuple[tuple[str, str], ...]:
         hits = []
         for term, en in self.terms:
             if term in ja:
                 hits.append((term, en))
                 ja = ja.replace(term, "\0")  # mask it so shorter terms can't match inside
-        return hits
+        return tuple(hits)
 
     def substitute(self, ja: str) -> str:
         """Replace terms with their English text inline (NMT models copy Latin words through)."""

@@ -254,6 +254,37 @@ class TranslationBufferTests(unittest.TestCase):
         self.assertFalse(out._translation_ready())
         self.assertTrue(any(args[:1] == ('osd-overlay',) for args, _ in calls))
 
+    def test_keyboard_seek_starts_audio_before_confirming_video_position(self):
+        out = object.__new__(MpvOutput)
+        out._uses_original_timeline = True
+        out._lock = threading.Lock()
+        out._lines = []
+        out.stop = threading.Event()
+        out._buffer_condition = threading.Condition()
+        out._subtitle_ready = threading.Event()
+        events = []
+        out.ingest = SimpleNamespace(
+            source=SimpleNamespace(duration=900.0),
+            request_restart=lambda target: events.append(("restart", target)),
+            go=lambda: events.append(("go",)),
+        )
+
+        def position(prop):
+            events.append(("position",))
+            return 500.0
+
+        out.ipc = SimpleNamespace(
+            command=lambda *args, **kwargs: events.append(args),
+            get=position,
+        )
+        self.assertTrue(out._restart_audio_at(500.0, seek_video=True))
+        self.assertLess(events.index(("seek", 500.0, "absolute+exact")), events.index(("go",)))
+        self.assertLess(events.index(("go",)), events.index(("position",)))
+        out.advance(504.99)
+        self.assertFalse(out._subtitle_ready.is_set())
+        out.advance(505.0)
+        self.assertTrue(out._subtitle_ready.is_set())
+
     def test_session_anchor_uses_new_ingest_start_after_seek(self):
         out = object.__new__(MpvOutput)
         out.stop = threading.Event()

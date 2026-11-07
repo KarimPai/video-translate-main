@@ -343,6 +343,8 @@ def find_mpv(configured: str) -> str:
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
+    LIVE_READ_SECONDS = 2.0
+    LIVE_MAX_LATENESS_SECONDS = 10.0
     _seek_lead_target: float | None = None
 
     def __init__(
@@ -528,8 +530,13 @@ class MpvOutput:
         )
         until = sub.end_s
 
-        line = _Line(sub, show_from, until)
         now = self._now
+        if self.ingest.source.live:
+            # Give short or just-completed translations a readable window,
+            # while keeping cues from a stalled pipeline out of later scenes.
+            visible_from = max(show_from, now) if now is not None else show_from
+            if visible_from - until <= self.LIVE_MAX_LATENESS_SECONDS:
+                until = max(until, visible_from + self.LIVE_READ_SECONDS)
 
         if sub.generation not in self._logged_subtitle_generations:
             self._logged_subtitle_generations.add(sub.generation)
@@ -555,7 +562,7 @@ class MpvOutput:
             return
 
         with self._lock:
-            self._lines.append(line)
+            self._lines.append(_Line(sub, show_from, until))
         self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
@@ -577,7 +584,10 @@ class MpvOutput:
         if elapsed < self.cfg.delay_s:
             return False
         with self._buffer_condition:
-            processed = self._translated_until > self._session_start + 0.25
+            processed = (
+                self._translated_until - self._session_start
+                >= min(self.cfg.delay_s, self.PAUSE_LEAD_SECONDS)
+            )
         return processed or elapsed >= max(self.cfg.delay_s, 10.0)
 
     def _translation_ready(self) -> bool:

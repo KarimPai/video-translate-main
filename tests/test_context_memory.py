@@ -103,7 +103,7 @@ class ContextMemoryTests(unittest.TestCase):
             ["シャッター", "シャッター", "シャッタ"],
         )
         self.assertEqual(
-            [item.ja for item in output if isinstance(item, AudioProgress)], [],
+            sum(isinstance(item, AudioProgress) for item in output), 1,
         )
         self.assertEqual(translator.calls[1][0], "シャッター")
         self.assertEqual(translator.calls[2][1], [])

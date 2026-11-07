@@ -134,7 +134,17 @@ def main() -> None:
     ffmpeg = locate_exe("ffmpeg")
     folder = Path("logs") / "asr_benchmark" / video_id
     folder.mkdir(parents=True, exist_ok=True)
+    report_path = folder / "compare_finetune.txt"
+    # Create the report immediately, so an interrupted download or ASR
+    # subprocess cannot leave the user with no diagnostic file.
+    report_path.write_text(
+        f"Video: {options.url}\n"
+        f"Compared: first {seconds} seconds\n"
+        "Status: Preparing input audio (benchmark not finished).\n",
+        encoding="utf-8",
+    )
     print(f"Video: {options.url}\nAudio limit: {seconds}s\nResults: {folder}", flush=True)
+    print(f"Report initialized: {report_path.resolve()}", flush=True)
 
     # Download a single audio stream once: all ASR models see identical samples.
     raw_candidates = list(folder.glob("source.*"))
@@ -186,11 +196,23 @@ def main() -> None:
         raise RuntimeError("VAD found no speech. Examine source_16k.wav.")
 
     print(f"VAD extracted {len(segments)} identical speech segments.", flush=True)
+    report_path.write_text(
+        f"Video: {options.url}\n"
+        f"Compared: first {seconds} seconds | {len(segments)} shared VAD segments\n"
+        "Status: Preparing Qwen models for inference (benchmark not finished).\n"
+        "Original baseline and clean reports are preserved.\n",
+        encoding="utf-8",
+    )
     # Fetch up front so progress appears in the terminal rather than being
     # swallowed by the recognition subprocess that captures stdout/stderr.
     print("Checking Qwen model cache (download progress, if needed, follows)...", flush=True)
-    subprocess.run([speech, "pull", "qwen3-asr-1.7b"], check=True,
-                   stdout=subprocess.DEVNULL)
+    base_qwen_error = None
+    try:
+        subprocess.run([speech, "pull", "qwen3-asr-1.7b"], check=True,
+                       stdout=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        base_qwen_error = str(exc)
+        print(f"Base Qwen download failed: {exc}", file=sys.stderr, flush=True)
     finetune_path = None
     finetune_error = None
     try:
@@ -208,11 +230,47 @@ def main() -> None:
     outputs: dict[str, list[str]] = {}
     timings: dict[str, float] = {}
     errors: dict[str, str] = {}
+    if base_qwen_error:
+        errors["qwen3_unprompted"] = base_qwen_error
+    if finetune_error:
+        errors["qwen3_ja_finetuned"] = finetune_error
+
+    def save_report(stage: str) -> None:
+        lines = [
+            f"Video: {options.url}",
+            f"Compared: first {seconds} seconds | {len(segments)} shared VAD segments",
+            f"Status: {stage}",
+            "Elapsed time includes model load; model downloads occur before timing.",
+            "Speech.cpp VAD differs from the production FireRedVAD.",
+            "No CER/WER is calculated: manually verify the audio/JP reference.",
+            "Haas keywords: " + KEYWORDS.replace("\n", " ; "),
+            "Qwen prompt: disabled for both base and Japanese fine-tune",
+            "Fine-tune source: " + JA_REPO,
+            "Fine-tune quantization: speech.cpp Q8_0, not the original BF16 checkpoint",
+            "",
+        ]
+        for label, _, _ in plans:
+            value = (f"{timings[label]}s" if label in timings
+                     else "ERROR" if label in errors else "PENDING")
+            lines.append(f"{label}: {value}")
+        for label, error in errors.items():
+            lines.append(f"ERROR {label}: {error[:1500]}")
+        for index, segment in enumerate(segments):
+            lines.append(f"\n--- Segment {index + 1:03d}: {segment.name} ---")
+            for label, _, _ in plans:
+                text = outputs.get(label)
+                lines.append(f"{label}: {text[index] if text else 'N/A'}")
+        report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return None
+
+    save_report("Models prepared; starting ASR comparisons.")
     for label, model, flags in plans:
         print(f"\nRunning {label}...", flush=True)
-        if not model:
-            errors[label] = finetune_error or "Fine-tuned model was not downloaded."
+        if not model or (label == "qwen3_unprompted" and base_qwen_error):
+            errors[label] = (errors.get(label) or
+                             "Fine-tuned model was not downloaded.")
             print(f"SKIPPED {label}: {errors[label]}", file=sys.stderr, flush=True)
+            save_report(f"Completed through {label}: skipped due to error.")
             continue
         try:
             elapsed, texts = benchmark(label, speech, model, segments, flags, folder)
@@ -222,33 +280,12 @@ def main() -> None:
         except Exception as exc:
             errors[label] = str(exc)
             print(f"FAILED {label}: {exc}", file=sys.stderr, flush=True)
+        save_report(f"Completed through {label}.")
 
-    report = [
-        f"Video: {options.url}",
-        f"Compared: first {seconds} seconds | {len(segments)} shared VAD segments",
-        "Elapsed time includes model load; model download happened before timing.",
-        "Speech.cpp VAD differs from the production FireRedVAD.",
-        "No CER/WER is calculated: manually verify the audio/JP reference.",
-        "Haas keywords: " + KEYWORDS.replace("\n", " ; "),
-        "Qwen prompt: disabled for both base and Japanese fine-tune",
-        "Fine-tune source: " + JA_REPO,
-        "Fine-tune quantization: speech.cpp Q8_0, not the original BF16 checkpoint",
-        "",
-    ]
-    for label, _, _ in plans:
-        report.append(f"{label}: {timings.get(label, 'FAILED')}s")
-    for label, error in errors.items():
-        report.append(f"ERROR {label}: {error[:400]}")
-    for i, segment in enumerate(segments):
-        report.append(f"\n--- Segment {i + 1:03d}: {segment.name} ---")
-        for label, _, _ in plans:
-            report.append(f"{label}: {outputs.get(label, ['N/A'] * len(segments))[i]}")
-    final = "\n".join(report) + "\n"
-    location = folder / "compare_finetune.txt"  # Preserve previous reports.
-    location.write_text(final, encoding="utf-8")
-    print("\n" + "\n".join(report[:10]))
-    print(f"\nReport saved to {location.resolve()}", flush=True)
-    if not outputs or "qwen3_ja_finetuned" not in outputs:
+    complete = "qwen3_ja_finetuned" in outputs
+    save_report("COMPLETE" if complete else "INCOMPLETE - inspect ERROR lines above.")
+    print(f"\nReport saved to {report_path.resolve()}", flush=True)
+    if not complete:
         sys.exit(1)
 
 

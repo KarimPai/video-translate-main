@@ -67,6 +67,8 @@ class TranslateConfig:
     min_request_interval_s: float = 3.0
     extra_body: dict = field(default_factory=dict)
     context_lines: int = 8
+    # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
+    memory_lines: int = 24
     glossary: str = "glossary.toml"
 
 

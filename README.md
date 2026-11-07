@@ -30,6 +30,19 @@ uv run --no-sync auto-translate "YOUTUBE_URL" --mode vod --mpv --no-web
 
 For extra diagnostic logging, append `-v`. Use `uv run auto-translate --help` for the active CLI switches. There is no `--engine` switch: change the translation backend in `config.toml`.
 
+## YouTube sign-in / bot confirmation
+
+If yt-dlp reports `Sign in to confirm you’re not a bot`, export a **fresh Netscape-format** YouTube cookie file named `cookies.txt` into the project directory next to `Start translate.bat`. The translator automatically passes it to metadata retrieval, audio URL extraction, Japanese caption retrieval, and MPV's yt-dlp hook. `youtube-cookies.txt` is also recognized. Both files are git-ignored; **do not commit or share cookie contents**.
+
+Alternatively, set `[ingest] cookies_from_browser = "edge"` (or the browser used for YouTube) in your local `config.toml`. An explicit browser selection takes precedence over a local cookie file. If cookies expire, refresh them from an authenticated browser session.
+
+To test cookie authentication independently in CMD:
+
+```cmd
+yt-dlp --cookies "cookies.txt" --skip-download --print title "https://youtu.be/B0_SMikmp8k"
+```
+
+
 ## Translation backend
 
 `config.toml` is local and intentionally git-ignored. To use PLaMo 3 Translate:

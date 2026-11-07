@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
+from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
@@ -30,7 +31,11 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "'My driving is bad' or 'Your driving is bad'. "
     "Preserve people and possessives explicitly stated in the Japanese. "
     "A video title or previous English translation is not proof of "
-    "an omitted subject's identity."
+    "an omitted subject's identity. "
+    "If a driver is not explicitly named, say The driving was bad, "
+    "not My driving was bad or Your driving was bad. "
+    "If the source only describes a crash, say There was a collision, "
+    "not I crashed or You crashed."
 )
 
 
@@ -168,7 +173,11 @@ class PlamoTranslator:
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
-        return correct_translation(ja, english)
+        english = correct_translation(ja, english)
+        corrected = neutralize_unsupported_subjects(ja, english)
+        if corrected != english:
+            log.debug("Neutralized unsupported subject: JP=%r EN=%r -> %r", ja, english, corrected)
+        return corrected
 
     def _chat(
         self,
@@ -179,7 +188,11 @@ class PlamoTranslator:
         messages: list[dict[str, str]] = []
         for source, translation in history[-self.cfg.context_lines:]:
             messages.append({"role": "user", "content": source})
-            messages.append({"role": "assistant", "content": translation})
+            # Prior inferred pronouns must not contaminate new translations.
+            messages.append({
+                "role": "assistant",
+                "content": neutralize_unsupported_subjects(source, translation),
+            })
         messages.append({"role": "user", "content": ja})
 
         options: dict = {

@@ -116,6 +116,11 @@ class OverlayTests(unittest.TestCase):
 
 
 class TranslationBufferTests(unittest.TestCase):
+    def test_vod_never_has_a_continuous_playback_low_watermark(self):
+        # Fast ingest and the initial/seek buffer should not force recurring
+        # stop/start playback when translation runs slower than real-time.
+        self.assertFalse(hasattr(MpvOutput, 'PAUSE_LOW_WATERMARK_SECONDS'))
+
     def test_five_seconds_of_translated_coverage_required(self):
         out = object.__new__(MpvOutput)
         out._buffer_condition = threading.Condition()

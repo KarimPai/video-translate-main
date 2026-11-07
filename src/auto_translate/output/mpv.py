@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..auth import mpv_auth_args
 from ..config import MpvConfig
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
@@ -418,7 +419,7 @@ class MpvOutput:
             # This preserves the full VOD timeline and lets MPV select both
             # video and audio tracks with the required HTTP headers.
             *(
-                [f"--ytdl-format={cfg.ytdlp_format}"]
+                [f"--ytdl-format={cfg.ytdlp_format}", *mpv_auth_args(ingest.cfg)]
                 if not Path(ingest.source.location).exists()
                 else []
             ),

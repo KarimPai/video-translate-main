@@ -607,7 +607,7 @@ class Ingest:
         ]
 
     def _video_audio_command(self) -> list[str]:
-        """Extract ASR audio from the same progressive fMP4 cache MPV plays."""
+        """Extract ASR audio from progressive fMP4 without frame-by-frame logs."""
         if not self.video_out:
             raise RuntimeError("MPV fMP4 cache is not enabled")
 
@@ -617,7 +617,7 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "info",
+            "warning",
             "-copyts",
         ]
 
@@ -638,12 +638,12 @@ class Ingest:
 
         audio_filters = self._pitch_filter(output_rate)
         output_layout = "stereo" if self.separation_enabled else "mono"
-        # Put diagnostics after resampling/format conversion so nb_samples
-        # is measured at the same rate used by the PCM sample clock.
+        # PCM bytes are the authoritative audio clock; _read_session()
+        # initializes first_pts from the first decoded chunk, including for
+        # fallback fMP4 playback. No per-frame ashowinfo filter is needed.
         audio_filters += [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
-            "ashowinfo",
         ]
         log.info(
             "ASR audio from fMP4 cache: source_start=%.3fs playlist_offset=%.3fs rate=%dHz",

@@ -115,6 +115,40 @@ class OverlayTests(unittest.TestCase):
 
 
 
+class MpvShutdownTests(unittest.TestCase):
+    def test_normal_mpv_close_does_not_report_ipc_as_playback_failure(self):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out._proc = SimpleNamespace(poll=lambda: 0)
+
+        def closed_player(show_hint):
+            raise BrokenPipeError("MPV window closed")
+
+        out._play_session = closed_player
+        with patch("auto_translate.output.mpv.log") as log:
+            out._run()
+            self.assertTrue(out.stop.is_set())
+            log.info.assert_called_once()
+            log.exception.assert_not_called()
+            log.error.assert_not_called()
+
+    def test_unexpected_mpv_exit_exposes_exit_code(self):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out._proc = SimpleNamespace(poll=lambda: 2)
+
+        def crashed_player(show_hint):
+            raise BrokenPipeError("MPV IPC closed unexpectedly")
+
+        out._play_session = crashed_player
+        with patch("auto_translate.output.mpv.log") as log:
+            out._run()
+            self.assertTrue(out.stop.is_set())
+            log.error.assert_called_once()
+            self.assertIn("code %s", log.error.call_args.args[0])
+            self.assertEqual(log.error.call_args.args[1], 2)
+
+
 class TranslationBufferTests(unittest.TestCase):
     def test_manual_play_bypasses_prebuffer_without_forced_pause(self):
         out = object.__new__(MpvOutput)

@@ -12,6 +12,7 @@ from typing import Callable
 
 from .asr.base import ASR
 from .captions import CaptionIndex
+from .text_filter import is_usable_transcript
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
@@ -106,7 +107,10 @@ def run_asr(
                     utt.start_s, utt.end_s, similarity, text, caption_match.text,
                 )
 
-        if not text and caption_match is not None and caption_match.reliable:
+        if (
+            not text and caption_match is not None and caption_match.reliable
+            and is_usable_transcript(caption_match.text)
+        ):
             text = caption_match.text
             log.info(
                 "using aligned YouTube caption because Haas returned no text "

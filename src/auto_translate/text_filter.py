@@ -30,7 +30,13 @@ def rejection_reason(text: str) -> str | None:
     if not compact:
         return "empty_after_normalization"
 
-    without_laughter = _LAUGHTER.sub("", compact)
+    label = unicodedata.normalize("NFKC", text).strip().casefold()
+    if re.fullmatch(r"(?:\[|\(|【)\s*(?:笑い声|笑い|爆笑|laughter|laughs)\s*(?:\]|\)|】)", label):
+        return "laughter_only"
+
+    # Haas may spell the same laugh in hiragana or katakana.
+    laugh_kana = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in compact)
+    without_laughter = _LAUGHTER.sub("", laugh_kana)
     if compact and not without_laughter:
         return "laughter_only"
 
@@ -45,6 +51,8 @@ def rejection_reason(text: str) -> str | None:
         for width in (1, 2, 3):
             unit = compact[:width]
             if len(compact) % width == 0 and compact == unit * (len(compact) // width):
+                if unit in ("はい", "うん"):
+                    return None
                 return "repeated_kana_loop"
 
     # Filter long outputs containing no Japanese text only when they are

@@ -69,6 +69,14 @@ class CaptionFallbackTests(unittest.TestCase):
         self.assertEqual(result.ja, "今日はゲームをします")
         self.assertIsNone(out_q.get_nowait())
 
+    def test_laughter_caption_does_not_restore_filtered_audio(self):
+        index = CaptionIndex.from_vtt(VTT.replace("今日はゲームをします", "[笑い声]"))
+        in_q, out_q = queue.Queue(), queue.Queue()
+        in_q.put(Utterance(1.2, 2.2, np.zeros(16000, dtype=np.float32)))
+        in_q.put(None)
+        run_asr(EmptyASR(), in_q, out_q, captions=index)
+        self.assertIsNone(out_q.get_nowait())
+
     def test_haas_remains_primary_when_both_sources_disagree(self):
         index = CaptionIndex.from_vtt(VTT)
         in_q = queue.Queue()

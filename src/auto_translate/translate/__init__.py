@@ -5,7 +5,7 @@ from .hymt2 import HyMt2Translator
 from .plamo import PlamoTranslator
 
 
-def create_translator(cfg: TranslateConfig, glossary: Glossary) -> Translator:
+def create_translator(cfg: TranslateConfig, glossary: Glossary, *, vod_title: str = "") -> Translator:
     """Build the configured local translation backend."""
     backend = cfg.backend.strip().lower()
     if backend == "hymt2":
@@ -15,7 +15,7 @@ def create_translator(cfg: TranslateConfig, glossary: Glossary) -> Translator:
             )
         return HyMt2Translator(cfg, glossary)
     if backend == "plamo":
-        return PlamoTranslator(cfg, glossary)
+        return PlamoTranslator(cfg, glossary, vod_title=vod_title)
     raise SystemExit(
         f"unsupported translation backend {cfg.backend!r}; choose 'hymt2' or 'plamo'"
     )

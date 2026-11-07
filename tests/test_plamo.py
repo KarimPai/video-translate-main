@@ -25,6 +25,7 @@ class PlamoTranslatorTests(unittest.TestCase):
             timeout_s=5,
         )
         translator.glossary = FakeGlossary()
+        translator.vod_title = "【ホロGTA】大空スバル視点"
         translator.url = "http://127.0.0.1:8000/v1/chat/completions"
 
         response = io.BytesIO(json.dumps({
@@ -51,6 +52,7 @@ class PlamoTranslatorTests(unittest.TestCase):
             payload["chat_template_kwargs"]["glossary"],
             [{"source": "ぺこら", "target": "Pekora"}],
         )
+        self.assertEqual(payload["chat_template_kwargs"]["context"], "Video title: 【ホロGTA】大空スバル視点")
         self.assertEqual(len(payload["messages"]), 3)
 
 

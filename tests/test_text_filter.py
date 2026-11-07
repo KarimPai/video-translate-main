@@ -5,7 +5,7 @@ from auto_translate.text_filter import rejection_reason
 
 class TranscriptFilterTests(unittest.TestCase):
     def test_laughter_only_is_rejected(self):
-        for text in ("ははは", "あはは", "ふふふ", "ｗｗｗ", "笑", "草"):
+        for text in ("ははは", "あはは", "ふふふ", "ｗｗｗ", "ハハハ", "［笑い声］", "(laughter)", "笑", "草"):
             with self.subTest(text=text):
                 self.assertEqual(rejection_reason(text), "laughter_only")
 
@@ -18,7 +18,7 @@ class TranscriptFilterTests(unittest.TestCase):
         self.assertEqual(rejection_reason("あいあいあいあい"), "repeated_kana_loop")
 
     def test_short_reactions_and_normal_speech_are_preserved(self):
-        for text in ("え", "うん", "そうそう", "今日は楽しかった", "ホロライブ"):
+        for text in ("え", "うん", "そうそう", "はいはいはいはい", "ハハハ、敵来た", "笑い声が聞こえた", "今日は楽しかった", "ホロライブ"):
             with self.subTest(text=text):
                 self.assertIsNone(rejection_reason(text))
 

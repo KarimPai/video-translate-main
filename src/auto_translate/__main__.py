@@ -108,7 +108,10 @@ def main() -> None:
 
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
-    translator = create_translator(cfg.translate, glossary)
+    translator = create_translator(
+        cfg.translate, glossary, vod_title=(source.timeline or {}).get("title", "")
+        if not source.live else "",
+    )
     translator_name = (
         "PLaMo 3 Translate"
         if cfg.translate.backend.strip().lower() == "plamo"

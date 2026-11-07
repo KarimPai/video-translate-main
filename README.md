@@ -68,6 +68,30 @@ A separate **RAM-only session subtitle cache** stores translated cues and proces
 
 Vocal separation, DeepFilterNet, and pyannote speaker diarization are **disabled by default** and require their respective optional dependencies. These components remain supported; they are not orphaned modules.
 
+## Optional: compare Japanese ASR models
+
+In the `test` branch, double-click `Compare ASR.bat` from the project
+folder and press Enter to benchmark the supplied short YouTube sample
+(`https://www.youtube.com/watch?v=LE8iGHrakAc`). You can also paste a
+different YouTube URL. The launcher downloads the source audio once, converts
+its first 120 seconds to 16 kHz mono, then uses speech.cpp Silero VAD to
+produce the **same short speech regions** for:
+
+1. Haas-ja-v1.0 Q8 with the app's GPU-decoding setting;
+2. Haas-ja-v1.0 Q8 with selected Hololive/shutter vocabulary hints;
+3. Qwen3-ASR 1.7B with Japanese-language and terminology hints.
+
+Reports (including the full per-segment JP outputs and command logs) appear at
+`logs/asr_benchmark/VIDEO_ID/compare.txt`. The first run may download the
+Qwen model (~2.2 GB) and Silero VAD. The process times include model startup
+and first-time downloads; compare them again on a warm run if you care about
+speed. **This does not produce an accuracy score without a manually verified
+Japanese reference transcript.** Compare the transcriptions by listening to
+each WAV segment in `segments`. The benchmark uses speech.cpp's Silero
+segmentation, whereas the normal MPV translator uses FireRedVAD, so inference
+times and text may differ from live playback. `Start translate.bat` and the
+default Haas backend are unchanged.
+
 ## Tests
 
 Run the retained regression tests from the project folder:

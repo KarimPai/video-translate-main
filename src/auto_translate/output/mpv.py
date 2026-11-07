@@ -28,6 +28,7 @@ from typing import Any
 from ..config import MpvConfig
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
+from ..session_cache import SessionSubtitleCache
 from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
@@ -348,10 +349,12 @@ class MpvOutput:
         cfg: MpvConfig,
         ingest: Ingest,
         stop: threading.Event,
+        subtitle_cache: SessionSubtitleCache | None = None,
     ) -> None:
         self.cfg = cfg
         self.ingest = ingest
         self.stop = stop
+        self._subtitle_cache = subtitle_cache
 
         self._lines: list[_Line] = []
         self._subtitle_ready = threading.Event()
@@ -560,12 +563,20 @@ class MpvOutput:
             self._buffer_condition.notify_all()
 
     def _translation_ready(self) -> bool:
-        """Only resume a VOD when the current audio generation is translated ahead."""
+        """Start after a 5s lead from new work or previously cached audio."""
         with self._buffer_condition:
-            return self._source_finished or (
+            ready = self._source_finished or (
                 self._now is not None
                 and self._translated_until >= self._now + self.PAUSE_LEAD_SECONDS
             )
+        if ready:
+            return True
+        cache = getattr(self, "_subtitle_cache", None)
+        now = self._now
+        return (
+            cache is not None and now is not None
+            and cache.covered_until(now) >= now + self.PAUSE_LEAD_SECONDS
+        )
 
     def reset_buffer(self, progress_s: float) -> None:
         """Reset translated coverage after a VOD seek."""
@@ -1115,9 +1126,14 @@ class MpvOutput:
 
         self.ingest.request_restart(target)
         # The queued reset marker may arrive after the MPV thread restarts.
-        # Clear old translated coverage immediately so seek cannot autoplay.
         self.reset_buffer(target)
         self.ingest.go()
+
+        # Previously translated captions should be visible immediately, even
+        # while FFmpeg restarts audio extraction for uncached sections.
+        if getattr(self, "_subtitle_cache", None) is not None:
+            self._now = target
+            self._render(target)
         return True
 
     def _wait_for_event(
@@ -1154,15 +1170,25 @@ class MpvOutput:
     def _render(self, now: float) -> None:
         with self._lock:
             self._lines = [
-                ln
-                for ln in self._lines
-                if ln.show_until > now - 60
+                ln for ln in self._lines if ln.show_until > now - 60
+            ]
+            active = [
+                ln for ln in self._lines
+                if ln.show_from <= now < ln.show_until and ln.sub.en
             ]
 
+        # The per-video text cache survives seek resets and the rolling
+        # in-memory display list. Ask it for cues at the current timestamp.
+        cache = getattr(self, "_subtitle_cache", None)
+        if cache is not None:
             active = [
-                ln
-                for ln in self._lines
-                if ln.show_from <= now < ln.show_until and ln.sub.en
+                _Line(
+                    sub,
+                    sub.speech_start_s
+                    if sub.speech_start_s is not None else sub.start_s,
+                    sub.end_s,
+                )
+                for sub in cache.active_at(now)
             ]
 
         active.sort(key=lambda ln: ln.show_from)

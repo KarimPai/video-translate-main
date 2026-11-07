@@ -400,9 +400,9 @@ class MpvOutput:
             # Keep a modest forward/backward demux cache for the direct
             # YouTube video stream.
             "--cache=yes",
-            "--demuxer-readahead-secs=12",
-            "--demuxer-max-bytes=128MiB",
-            "--demuxer-max-back-bytes=32MiB",
+            "--demuxer-readahead-secs=120",
+            "--demuxer-max-bytes=1GiB",
+            "--demuxer-max-back-bytes=1GiB",
             # Start live HLS at its oldest available segment; VOD keeps
             # MPV's normal full-playlist timeline.
             *(

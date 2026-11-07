@@ -1,5 +1,5 @@
 
-"""yt-dlp | ffmpeg → audio chunks for VAD and diarization.
+"""yt-dlp | ffmpeg → audio chunks for VAD.
 
 Normal mode:
     FFmpeg → 16 kHz mono → pipeline

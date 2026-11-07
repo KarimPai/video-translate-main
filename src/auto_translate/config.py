@@ -90,10 +90,6 @@ class MpvConfig:
     )
     en_size: int = 28
     ja_size: int = 0
-    speaker_diarization: bool = True
-    speaker_similarity_threshold: float = 0.72
-    speaker_device: str = "cuda"
-    max_speakers: int = 3
     max_subtitle_rows: int = 3
 
 
@@ -133,8 +129,11 @@ def load_config(path: Path) -> Config:
         asr_data.pop(key, None)
 
     mpv_data = dict(data.get("mpv", {}))
-    # Ignore the removed subtitle start-delay setting in older configs.
-    for obsolete in ("start_delay_s", "min_display_s", "hold_s"):
+    # Ignore removed playback and speaker settings in older configs.
+    for obsolete in (
+        "start_delay_s", "min_display_s", "hold_s", "speaker_diarization",
+        "speaker_similarity_threshold", "speaker_device", "max_speakers",
+    ):
         mpv_data.pop(obsolete, None)
 
     # Older local config.toml files may still have an engine selector and

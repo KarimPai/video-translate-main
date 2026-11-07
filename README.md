@@ -9,7 +9,7 @@ Japanese-to-English subtitles for YouTube streams/VODs and local media. The curr
 - A CUDA-capable GPU for FireRedVAD.
 - `llama-server` from a GPU-enabled llama.cpp build on PATH for PLaMo 3 Translate 2B. The translator can start its own server.
 
-Install Python dependencies with `uv sync`. Optional packages for separation, DeepFilterNet, and speaker diarization are declared under `[project.optional-dependencies]` in `pyproject.toml`.
+Install Python dependencies with `uv sync`. Optional packages for separation and DeepFilterNet are declared under `[project.optional-dependencies]` in `pyproject.toml`.
 
 ## Start a YouTube VOD
 
@@ -64,7 +64,7 @@ A separate **RAM-only session subtitle cache** stores translated cues and proces
 
 ## Optional processing
 
-Vocal separation, DeepFilterNet, and pyannote speaker diarization are **disabled by default** and require their respective optional dependencies. These components remain supported; they are not orphaned modules.
+Vocal separation and DeepFilterNet are **disabled by default** and require their respective optional dependencies.
 
 ## Optional: compare Japanese ASR models
 

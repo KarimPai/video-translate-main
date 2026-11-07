@@ -180,29 +180,6 @@ def main() -> None:
         from .output.mpv import MpvOutput
         outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
 
-    diarizer = None
-
-    if cfg.mpv.speaker_diarization:
-        from .speaker import PyannoteDiarizer
-
-        t0 = time.perf_counter()
-
-        try:
-            diarizer = PyannoteDiarizer(
-                device=cfg.mpv.speaker_device,
-                max_speakers=cfg.mpv.max_speakers,
-            )
-        except Exception as exc:
-            raise SystemExit(
-                f"Could not initialize pyannote diarization: {exc}"
-            ) from exc
-
-        log.info(
-            "pyannote diarization loaded on %s in %.1fs",
-            cfg.mpv.speaker_device,
-            time.perf_counter() - t0,
-        )
-
     run(
         ingest,
         cfg,
@@ -210,7 +187,6 @@ def main() -> None:
         translator,
         outputs,
         stop,
-        diarizer=diarizer,
         captions=captions,
         vod_title=vod_context,
         session_cache=subtitle_cache,

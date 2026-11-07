@@ -34,39 +34,10 @@ from .vad import run_segmenter
 log = logging.getLogger(__name__)
 
 
-class FanoutQueue:
-    """Send audio to VAD and pyannote, but progress markers only to VAD."""
-
-    def __init__(self, *queues, secondary_active=None):
-        self.queues = queues
-        self.secondary_active = secondary_active
-
-    def put(self, item):
-        if isinstance(item, AudioProgress):
-            self.queues[0].put(item)
-            return
-
-        for index, q in enumerate(self.queues):
-            while True:
-                try:
-                    q.put(item, timeout=0.5)
-                    break
-                except queue.Full:
-                    # A failed diarizer exits its consumer thread. Do not let
-                    # its now-unconsumed bounded queue stall the VAD pipeline.
-                    if (
-                        index > 0
-                        and self.secondary_active is not None
-                        and not self.secondary_active()
-                    ):
-                        break
-
-
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
-    diarizer=None,
     get_generation: Callable[[], int] | None = None,
     captions: CaptionIndex | None = None,
     vod_title: str = "",
@@ -163,26 +134,12 @@ def run_asr(
         if get_generation is not None and utt.generation != get_generation():
             continue
 
-        speaker_id = (
-            diarizer.identify(
-                utt.start_s,
-                utt.end_s,
-                generation=utt.generation,
-            )
-            if diarizer is not None
-            else ""
-        )
-
-        if get_generation is not None and utt.generation != get_generation():
-            continue
-
         out_q.put(
             Transcript(
                 utt.start_s,
                 utt.end_s,
                 text,
                 utt.timings,
-                speaker_id,
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
             )
@@ -286,7 +243,6 @@ def run_translate(
                 tr.ja,
                 en,
                 tr.timings,
-                tr.speaker_id,
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
             )
@@ -350,15 +306,14 @@ def run(
     translator: Translator | None,
     outputs: list[Output],
     stop: threading.Event,
-    diarizer=None,
     captions: CaptionIndex | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:
-    """Run ingestion, VAD, diarization, ASR and translation."""
+    """Run ingestion, VAD, ASR and translation."""
 
-    # Bounded queues cap queued audio/work during slow ASR, translation, or
-    # diarization. Blocking puts apply backpressure upstream instead of
+    # Bounded queues cap queued audio/work during slow ASR or translation.
+    # Blocking puts apply backpressure upstream instead of
     # allowing memory use and subtitle age to grow without limit.
     # 64 audio chunks ~= 16.4 s at 4096 samples / 16 kHz; work queues hold
     # at most 16 complete utterances/transcripts/subtitles each.
@@ -367,21 +322,6 @@ def run(
     text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
 
-    diarization_q = (
-        queue.Queue(maxsize=64) if diarizer is not None else None
-    )
-
-    # Ingest audio is copied to VAD and pyannote.
-    ingest_output = (
-        FanoutQueue(
-            audio_q,
-            diarization_q,
-            secondary_active=lambda: not diarizer.finished and not diarizer.failed,
-        )
-        if diarizer is not None
-        else audio_q
-    )
-
     queues = {
         "audio": audio_q,
         "utt": utt_q,
@@ -389,13 +329,10 @@ def run(
         "subtitle": sub_q,
     }
 
-    if diarization_q is not None:
-        queues["diarization"] = diarization_q
-
     threads = [
         threading.Thread(
             target=ingest.run,
-            args=(ingest_output,),
+            args=(audio_q,),
             name="ingest",
             daemon=True,
         ),
@@ -405,27 +342,12 @@ def run(
             name="vad",
             daemon=True,
         ),
-    ]
-
-    # Pyannote processes continuous audio independently.
-    if diarizer is not None:
-        threads.append(
-            threading.Thread(
-                target=diarizer.run,
-                args=(diarization_q, lambda: ingest.generation),
-                name="diarization",
-                daemon=True,
-            )
-        )
-
-    threads.extend([
         threading.Thread(
             target=run_asr,
             args=(
                 asr,
                 utt_q,
                 text_q,
-                diarizer,
                 lambda: ingest.generation,
                 captions,
                 vod_title,
@@ -446,7 +368,7 @@ def run(
             name="translate",
             daemon=True,
         ),
-    ])
+    ]
 
     for thread in threads:
         thread.start()

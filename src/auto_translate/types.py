@@ -54,7 +54,6 @@ class Transcript:
     end_s: float
     ja: str
     timings: Timings = field(default_factory=Timings)
-    speaker_id: str = ""
     generation: int = 0
     speech_start_s: float | None = None
 
@@ -66,6 +65,5 @@ class Subtitle:
     ja: str
     en: str  # "" when translation is off
     timings: Timings = field(default_factory=Timings)
-    speaker_id: str = ""
     generation: int = 0
     speech_start_s: float | None = None

@@ -61,6 +61,33 @@ class SubjectGuardTests(unittest.TestCase):
             with self.subTest(japanese=japanese):
                 self.assertEqual(fix(japanese, english), english)
 
+    def test_other_common_driving_phrasings(self):
+        self.assertEqual(
+            fix("運転が下手", "I'm bad at driving."),
+            "The driving isn't very good.",
+        )
+        self.assertEqual(
+            fix("運転が上手くない", "You're not very good at driving."),
+            "The driving isn't very good.",
+        )
+        self.assertEqual(
+            fix("運転が下手", "I can't drive well."),
+            "The driving isn't very good.",
+        )
+        # Ability to drive is not the same as poor driving skill.
+        self.assertEqual(
+            fix("運転できない", "I can't drive well."),
+            "I can't drive well.",
+        )
+        self.assertEqual(
+            fix("俺は運転が下手", "I'm bad at driving."),
+            "I'm bad at driving.",
+        )
+        self.assertEqual(
+            fix("お前は運転が下手", "You're not very good at driving."),
+            "You're not very good at driving.",
+        )
+
     def test_other_gameplay_possessives(self):
         self.assertEqual(
             fix("エイムが悪い", "My aim is bad."),

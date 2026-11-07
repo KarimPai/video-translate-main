@@ -266,6 +266,7 @@ class Ingest:
         self._generation = 0
 
         self.first_pts: float | None = None
+        self.live_audio_anchor: tuple[float, float] | None = None
         self.first_pts_at = 0.0
         self.first_pts_ready = threading.Event()
         # Reconnects use a continuous live subtitle timeline.
@@ -728,6 +729,16 @@ class Ingest:
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
 
+            if "ashowinfo@live_anchor" in line:
+                match = re.search(r"\bpts:(-?\d+)\b", line)
+                if match:
+                    with self._proc_lock:
+                        if session == self._session:
+                            self.live_audio_anchor = (
+                                int(match[1]) / SAMPLE_RATE, self.source.start_s,
+                            )
+                continue
+
             # FFmpeg emits a progress heartbeat when transcoding fallback video.
             if not capture_pts and line.startswith("progress="):
                 with self._video_progress_lock:
@@ -826,11 +837,7 @@ class Ingest:
         ]
 
     def _audio_commands(self) -> list[list[str]]:
-        """Build audio-only FFmpeg commands without per-frame PTS diagnostics.
-
-        The direct MPV path uses decoded PCM arrival for clock readiness;
-        ashowinfo is unnecessary here and floods stderr with every frame.
-        """
+        """Decode PCM and sample the first live transport timestamp once."""
         src = self.source
 
         ffmpeg = [
@@ -839,10 +846,12 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "warning",
+            "info" if src.live else "warning",
         ]
 
-        if not src.live:
+        if src.live:
+            ffmpeg.append("-copyts")
+        else:
             if src.paced:
                 ffmpeg.append("-re")
 
@@ -877,7 +886,15 @@ class Ingest:
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
         ]
-        out = ["-af", ",".join(filters)] + out
+        graph = ",".join(filters)
+        if src.live:
+            # Observe the input PTS before any resampling or pitch processing.
+            graph = (
+                "asplit[pcm][probe];[probe]atrim=end_sample=1,"
+                f"asettb=1/{SAMPLE_RATE},ashowinfo@live_anchor,anullsink;[pcm]"
+                + graph
+            )
+        out = ["-af", graph] + out
 
         if Path(src.location).exists():
             return [ffmpeg + ["-i", src.location] + out]
@@ -957,6 +974,7 @@ class Ingest:
                         self._generation += 1
                         generation = self._generation
                         self.source = replace(self.source, start_s=elapsed)
+                        self.live_audio_anchor = None
                         self.first_pts = None
                         self.first_pts_ready.clear()
                     out_q.put(AudioChunk(
@@ -1061,7 +1079,7 @@ class Ingest:
                         cmd,
                         stdin=stdin,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE if self.video_out else None,
+                        stderr=subprocess.PIPE if self.video_out or self.source.live else None,
                     )
 
                     procs.append(p)
@@ -1106,7 +1124,7 @@ class Ingest:
                 ]
                 raise
 
-        if self.video_out:
+        if self.video_out or self.source.live:
             assert procs[0].stderr is not None
 
             threading.Thread(

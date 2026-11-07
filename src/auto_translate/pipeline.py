@@ -14,6 +14,7 @@ from typing import Callable
 from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex
+from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
 from .config import Config
 from .ingest import Ingest
@@ -198,7 +199,8 @@ def run_translate(
     get_generation: Callable[[], int] | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
-    history: deque[tuple[str, str]] = deque(maxlen=context_lines)
+    history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
+    history: deque[tuple[str, str]] = deque(maxlen=history_limit)
 
     while True:
         item = in_q.get()
@@ -235,6 +237,13 @@ def run_translate(
         en = ""
 
         if translator is not None:
+            # Correct a near-identical repeated Katakana word only when
+            # supported by adjacent Japanese; no second ASR/model pass.
+            if getattr(translator, "memory_lines", 0):
+                repaired_ja = repair_near_repeated_word(tr.ja, list(history))
+                if repaired_ja != tr.ja:
+                    log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
+                    tr = replace(tr, ja=repaired_ja)
             try:
                 en = translator.translate(tr.ja, list(history))
             except Exception as e:

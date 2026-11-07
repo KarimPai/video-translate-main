@@ -14,12 +14,15 @@ class TerminalOutput:
 
     def show(self, sub: Subtitle) -> None:
         if self.simple:
-            # Native clean terminal output: no second process, shell pipe,
-            # or regex filter that might close stdout unexpectedly.
+            # Send both transcript lines in a single flushed write. Windows
+            # console I/O is synchronous; avoid two flushes per utterance.
+            lines = []
             if sub.ja:
-                print(f"JP: {sub.ja}", flush=True)
+                lines.append(f"JP: {sub.ja}")
             if sub.en:
-                print(f"EN: {sub.en}", flush=True)
+                lines.append(f"EN: {sub.en}")
+            if lines:
+                print("\n".join(lines), flush=True)
         else:
             print_subtitle(sub)
 

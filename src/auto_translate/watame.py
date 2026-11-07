@@ -19,16 +19,16 @@ def reconcile_caption(asr: str, caption: str) -> str:
 
 
 def correct_asr_name(asr: str, *, vod_title: str = "", caption: str = "") -> str:
-    """Correct likely Watame homophones when the VOD title identifies her.
+    """Correct likely Watame homophones when title or channel identifies her.
 
     Automatic Japanese captions can repeat the same kanji surname mistake.
     A caption explicitly spelling Watanabe phonetically, however, wins.
-    Outside Watame-titled videos, retain the ASR name unless a matching
+    Outside Watame-related videos, retain the ASR name unless a matching
     caption already reconciled it.
     """
     if not _WATANABE.search(asr) or not _WATAME.search(vod_title):
         return asr
-    if re.search(r"わたなべ|ワタナベ|\\bWatanabe\\b", caption, re.I):
+    if re.search(r"わたなべ|ワタナベ|\bWatanabe\b", caption, re.I):
         return asr
     return _WATANABE.sub("わため", asr)
 
@@ -39,6 +39,6 @@ def normalized(text: str) -> str:
 
 def correct_translation(source: str, english: str) -> str:
     if _WATAME.search(source) and not _WATANABE.search(source):
-        if len(_EN_SURNAME.findall(english)) == 1 and not _WATAME.search(english):
+        if _EN_SURNAME.search(english) and not _WATAME.search(english):
             return _EN_SURNAME.sub("Watame", english)
     return english

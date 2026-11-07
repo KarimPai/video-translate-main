@@ -132,6 +132,12 @@ def main() -> None:
             log.info("caption assistance unavailable; using Haas transcription only")
 
     use_mpv = args.mpv or cfg.mpv.enabled
+    if use_mpv and not source.live and source.paced:
+        # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
+        # buffer promptly after seeking. MPV itself keeps real-time playback.
+        from dataclasses import replace
+        source = replace(source, paced=False)
+        log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
 
     # MPV plays the original video stream; Ingest handles audio only.
     # No local video transcode or fMP4 cache is created.
@@ -198,6 +204,7 @@ def main() -> None:
         stop,
         diarizer=diarizer,
         captions=captions,
+        vod_title=(source.timeline or {}).get("title", "") if not source.live else "",
     )
 
 

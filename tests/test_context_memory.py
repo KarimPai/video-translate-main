@@ -35,6 +35,10 @@ class ContextMemoryTests(unittest.TestCase):
             repair_near_repeated_word("シャッター、シャッタ、シャッター", []),
             "シャッター、シャッター、シャッター",
         )
+        self.assertEqual(
+            repair_near_repeated_word("シャッターシャッタシャッター", []),
+            "シャッターシャッターシャッター",
+        )
 
     def test_mismatches_and_non_repeated_speech_are_not_guessed(self):
         history = [("シャッター", "Shutter!")]

@@ -187,7 +187,7 @@ def main() -> None:
     report = [
         f"Video: {options.url}",
         f"Compared: first {seconds} seconds | {len(segments)} shared VAD segments",
-        "Elapsed time includes model load but excludes initial model download.",
+        "Elapsed time includes model load and any first-time model download.",
         "Speech.cpp VAD differs from the production FireRedVAD.",
         "No CER/WER is calculated: manually verify the audio/JP reference.",
         "Haas keywords: " + KEYWORDS.replace("\n", " ; "),

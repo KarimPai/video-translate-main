@@ -78,7 +78,7 @@ class HaasASR:
             self._reader = threading.Thread(
                 target=self._read_worker,
                 args=(self.process.stdout,),
-                name="qwen-asr-output",
+                name="haas-asr-output",
                 daemon=True,
             )
             self._reader.start()

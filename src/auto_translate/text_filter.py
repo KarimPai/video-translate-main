@@ -62,9 +62,9 @@ _INLINE_LAUGH_KANA = re.compile(
     r"[ふフ]{3,}|[へヘ]{3,}|[ほホ]{3,}|[くク]{3,})"
 )
 _INLINE_CHAT_LAUGH = re.compile(
+    r"[\(（](?:笑+|草+)[\)）]|"
     r"(?<![a-zA-Z])(?:[wｗ]{3,}|(?:ha){2,})(?![a-zA-Z.])|"
-    r"(?<![\u3400-\u9fff])(?:笑+|草{2,})(?![\u3040-\u30ff\u3400-\u9fff])|"
-    r"[\(（]草[\)）]",
+    r"(?<![\u3400-\u9fff])(?:笑+|草{2,})(?![\u3040-\u30ff\u3400-\u9fff])",
     re.IGNORECASE,
 )
 _LAUGH_ONLY_EXHALE = re.compile(r"^(?:[ふフ][っッ]|[ふフ][ふフ][っッ]?)$")

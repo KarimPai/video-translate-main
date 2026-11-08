@@ -181,7 +181,7 @@ class SessionCacheTests(unittest.TestCase):
         source, translated = queue.Queue(), queue.Queue()
         source.put(Utterance(
             20.0, 21.5, np.zeros(160, dtype=np.float32),
-            generation=2, speaker_handoff=True,
+            generation=2, speaker_handoff=False,
         ))
         source.put(None)
 

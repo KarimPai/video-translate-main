@@ -15,7 +15,8 @@ class PlamoTranslationTests(unittest.TestCase):
     @staticmethod
     def _unit():
         obj = object.__new__(PlamoTranslator)
-        obj.cfg = TranslateConfig()
+        # Unit mocks are not allowed to launch an unmocked retry HTTP call.
+        obj.cfg = TranslateConfig(selective_retry_enabled=False)
         obj.glossary = Glossary({"わため": "Watame", "ころね": "Korone"})
         obj.vod_title = "Hololive"
         obj.base_url = obj.cfg.plamo_base_url

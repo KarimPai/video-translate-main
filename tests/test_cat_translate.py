@@ -50,7 +50,7 @@ class CatTranslationTests(unittest.TestCase):
             "Translate the following Japanese text into English.\n\n逃げるな",
         )
         self.assertNotIn("chat_template_kwargs", body)
-        self.assertNotIn("stop", body)
+        self.assertEqual(body["stop"], ["</s>"])
         self.assertNotIn("top_p", body)
         self.assertNotIn("quality_review", str(body))
 
@@ -81,6 +81,20 @@ class CatTranslationTests(unittest.TestCase):
             "Original song!",
         )
         self.assertEqual(_clean("No, don't run!"), "No, don't run!")
+        self.assertEqual(_clean("Well!</s>"), "Well!")
+        self.assertEqual(_clean("Wait 30 seconds. </s> extra output"), "Wait 30 seconds.")
+        self.assertEqual(_clean("English: Hello there.</s>"), "Hello there.")
+        self.assertEqual(_clean("</s>"), "")
+
+    def test_eos_artifact_is_removed_before_subtitle_display(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", return_value="Good morning!</s>"):
+            self.assertEqual(obj.translate("おはようございます", []), "Good morning!")
+
+    def test_eos_only_is_not_shown_as_translation(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", return_value="</s>"):
+            self.assertEqual(obj.translate("おはようございます", []), "[translation failed]")
 
     def test_missing_output_is_not_displayed_as_valid_english(self):
         obj = self._unit()

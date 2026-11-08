@@ -2,11 +2,12 @@
 import io
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from auto_translate.config import TranslateConfig
 from auto_translate.glossary import Glossary
-from auto_translate.translate.cat import CatTranslator, _clean, build_cat_prompt
+from auto_translate.translate.cat import CatTranslator, _clean, build_cat_prompt, cat_output_problem
 
 
 class CatTranslationTests(unittest.TestCase):
@@ -43,6 +44,7 @@ class CatTranslationTests(unittest.TestCase):
         body = json.loads(request.data)
         self.assertEqual(body["model"], "cat-translate-3.3b")
         self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["repeat_penalty"], 1.05)
         self.assertEqual(body["max_tokens"], 192)
         self.assertEqual([part["role"] for part in body["messages"]], ["user"])
         self.assertEqual(
@@ -74,6 +76,76 @@ class CatTranslationTests(unittest.TestCase):
         with patch.object(obj, "_chat", return_value="Let's run!") as chat:
             obj.translate("逃げるな", [])
         chat.assert_called_once()
+
+    def test_short_general_phrases_are_not_given_to_generating_model(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat") as request:
+            self.assertEqual(obj.translate("なるほど", []), "I see.")
+            self.assertEqual(obj.translate("あかんか", []), "So that won't work?")
+            self.assertEqual(obj.translate("なるほど。", []), "I see.")
+        request.assert_not_called()
+
+    def test_meta_reply_and_runaway_punctuation_are_rejected(self):
+        self.assertEqual(
+            cat_output_problem("なるほど", "I don't see the 10-character Japanese phrase to translate."),
+            "assistant_meta_reply",
+        )
+        self.assertEqual(
+            cat_output_problem("あかんか", "I'm ready to help translate, but please provide text."),
+            "assistant_meta_reply",
+        )
+        self.assertEqual(
+            cat_output_problem("服をセーブする", "Save it. " + ". " * 50),
+            "punctuation_loop",
+        )
+        self.assertIsNone(cat_output_problem(
+            "じゃあ行こう", "Okay, let's go."
+        ))
+        self.assertIsNone(cat_output_problem(
+            "翻訳してほしい", "I would like you to translate it."
+        ))
+
+    def test_invalid_completion_retries_once_with_same_japanese(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", side_effect=[
+            "I don't see the 10-character Japanese phrase.",
+            "Oh, is that so?",
+        ]) as call:
+            self.assertEqual(obj.translate("そうなんだ?", []), "Oh, is that so?")
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(call.call_args_list[0].args, ("そうなんだ?",))
+        self.assertEqual(call.call_args_list[1].args, ("そうなんだ?",))
+        self.assertTrue(call.call_args_list[1].kwargs["retry"])
+        self.assertLessEqual(call.call_args_list[1].kwargs["timeout"], 4.0)
+
+    def test_two_invalid_completions_drop_the_subtitle(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", side_effect=[
+            "Save. " + ". " * 30,
+            "I don't see the Japanese text to translate.",
+        ]) as call:
+            self.assertEqual(obj.translate("セーブしてね", []), "[SKIP]")
+        self.assertEqual(call.call_count, 2)
+
+    def test_valid_short_translation_still_uses_only_one_inference(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", return_value="Where's Watame?") as call:
+            self.assertEqual(obj.translate("わためどこ", []), "Where's Watame?")
+        call.assert_called_once_with("わためどこ", timeout=obj.cfg.timeout_s)
+
+    def test_retry_sampler_is_bounded(self):
+        obj = self._unit()
+        reply = io.BytesIO(json.dumps({
+            "choices": [{"message": {"content": "Oh, is that so?"}}],
+        }).encode("utf-8"))
+        with patch("auto_translate.translate.cat.urllib.request.urlopen",
+                   return_value=reply) as urlopen:
+            obj._chat("そうなんだ?", timeout=3.0, retry=True)
+        body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(body["temperature"], 0.35)
+        self.assertEqual(body["repeat_penalty"], 1.08)
+        self.assertLessEqual(body["max_tokens"], 96)
+        self.assertEqual(len(body["messages"]), 1)
 
     def test_thinking_and_translation_header_cleanup(self):
         self.assertEqual(
@@ -129,6 +201,13 @@ class CatTranslationTests(unittest.TestCase):
                              "cat-translate-3.3b-Q4_K_M.gguf")
             self.assertEqual(command[command.index("--port") + 1], "8003")
             self.assertIn("--jinja", command)
+            self.assertIn("--chat-template-file", command)
+            chat_template = Path(command[command.index("--chat-template-file") + 1])
+            self.assertTrue(chat_template.is_file())
+            template_text = chat_template.read_text(encoding="utf-8")
+            self.assertIn("<|user|>", template_text)
+            self.assertIn("<|assistant|>", template_text)
+            self.assertIn("eos_token", template_text)
             self.assertNotIn("--reasoning", command)
             obj.close()
         process.terminate.assert_called_once()

@@ -220,6 +220,22 @@ class _Line:
     show_until: float
 
 
+def _after_speaker_handoff(active: list[_Line]) -> list[_Line]:
+    """Hide old speakers once a confirmed new turn begins.
+
+    Keep ordinary 3-row stacking for speech with no verified diarization
+    handoff; stop only older cues displaced by a detected speaker change.
+    This pure timeline filter also works on subtitles replayed from VOD cache.
+    """
+    cutoff = max(
+        (line.show_from for line in active if line.sub.speaker_handoff),
+        default=None,
+    )
+    if cutoff is None:
+        return active
+    return [line for line in active if line.show_from >= cutoff - 1e-6]
+
+
 def find_mpv(configured: str) -> str:
     if configured:
         return configured
@@ -1261,8 +1277,10 @@ class MpvOutput:
                 for sub in cache.active_at(now, include_linger=True)
             ]
 
-        # Newest translated utterances appear above older cues; do not
-        # select by speaker identity now that only local turn cuts remain.
+        # An interrupted speaker's previous subtitle must stop when the
+        # new speaker's cue begins. Apply the same rule to live display and
+        # RAM-replayed cached VOD cues, without modifying speech timestamps.
+        active = _after_speaker_handoff(active)
         active.sort(key=lambda ln: (ln.show_from, ln.sub.start_s), reverse=True)
         active = active[:max(1, self.cfg.max_subtitle_rows)]
 

@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
 title Japanese Video Translator
 cd /d "%~dp0"
@@ -31,16 +31,20 @@ echo.
 echo Starting translation with MPV (paused)...
 echo.
 
-rem Run a single translator process. The previous two-uv pipe could exit
-rem early and hide MPV startup errors; the CLI now prints JP/EN directly.
-uv run --no-sync auto-translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
+rem Load this checkout even when the project's generated console launcher is stale.
+if defined PYTHONPATH (
+    set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
+) else (
+    set "PYTHONPATH=%~dp0src"
+)
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 if not "%EXIT_CODE%"=="0" (
     echo ERROR: Translator exited with code %EXIT_CODE%.
-    echo Relevant errors from logs\run.log:
-    findstr /i /c:"ERROR" /c:"Traceback" /c:"Exception" /c:"BrokenPipeError" "logs\run.log"
+    echo Last startup messages:
+    powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\run.log' -Encoding UTF8 -Tail 6 | ForEach-Object { if ($_.Length -gt 350) { $_.Substring(0,350) } else { $_ } }"
 ) else (
     echo Translator stopped.
 )

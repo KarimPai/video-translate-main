@@ -118,6 +118,7 @@ def run_asr(
                 generation=utt.generation,
                 timings=utt.timings,
                 speaker_handoff=(utt.speaker_handoff or cached.speaker_handoff),
+                speaker_context_key=utt.speaker_context_key,
             ))
             continue
 
@@ -216,10 +217,50 @@ def run_asr(
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
                 speaker_handoff=utt.speaker_handoff,
+                speaker_context_key=utt.speaker_context_key,
             )
         )
 
     out_q.put(None)
+
+
+class RecentSpeakerJapanese:
+    """Bounded reference text from verified adjacent turns of one voice.
+
+    The speaker-stage key only means consecutive CPU embeddings matched;
+    it is never a global speaker ID. Any uncertain voice, interruption, long
+    gap or seek clears the reference context.
+    """
+
+    def __init__(self, *, max_gap_s: float = 1.25) -> None:
+        self.max_gap_s = max_gap_s
+        self.lines: deque[tuple[int, float, str]] = deque(maxlen=2)
+
+    def reset(self) -> None:
+        self.lines.clear()
+
+    def context_for(self, item: Transcript | Subtitle) -> str | None:
+        if not self.lines or item.speaker_context_key is None or item.speaker_handoff:
+            return None
+        previous_key, previous_end, _ = self.lines[-1]
+        gap = item.start_s - previous_end
+        if (previous_key != item.speaker_context_key
+                or gap < -0.03 or gap > self.max_gap_s):
+            return None
+        return "。".join(line for _, _, line in self.lines)[-140:]
+
+    def observe(self, item: Transcript | Subtitle) -> None:
+        key = item.speaker_context_key
+        if key is None or item.speaker_handoff or not item.ja.strip():
+            self.reset()
+            if key is None or not item.ja.strip():
+                return
+        elif self.lines:
+            previous_key, previous_end, _ = self.lines[-1]
+            gap = item.start_s - previous_end
+            if previous_key != key or gap < -0.03 or gap > self.max_gap_s:
+                self.reset()
+        self.lines.append((key, item.end_s, item.ja.strip()[:100]))
 
 
 def run_translate(
@@ -232,6 +273,7 @@ def run_translate(
     """Translate transcripts while retaining recent context and forwarding progress."""
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
+    speaker_reference = RecentSpeakerJapanese()
     memory_generation: int | None = None
 
     def reset_scene() -> None:
@@ -254,6 +296,7 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                speaker_reference.reset()
                 reset_scene()
             memory_generation = item.generation
 
@@ -282,6 +325,9 @@ def run_translate(
                 observe_scene(tr.ja)
             if tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))
+                speaker_reference.observe(tr)
+            else:
+                speaker_reference.reset()
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
             out_q.put(tr)
@@ -313,6 +359,9 @@ def run_translate(
                 log.debug("Horse-racing spelling repair: %r -> %r", tr.ja, new_ja)
                 tr = replace(tr, ja=new_ja)
             try:
+                set_context = getattr(translator, "set_reference_context", None)
+                if callable(set_context):
+                    set_context(speaker_reference.context_for(tr))
                 en = translator.translate(tr.ja, list(history))
             except Exception as e:
                 log.error("translation failed: %s", e)
@@ -322,11 +371,15 @@ def run_translate(
                 continue
 
             if en.strip().upper() == "[SKIP]":
+                speaker_reference.reset()
                 log.debug("Skipping nonverbal translated utterance: %r", tr.ja)
                 continue
 
             if en and en != "[translation failed]":
                 history.append((tr.ja, en))
+                speaker_reference.observe(tr)
+            else:
+                speaker_reference.reset()
 
             if not en.strip():
                 log.error(
@@ -350,6 +403,7 @@ def run_translate(
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
                 speaker_handoff=tr.speaker_handoff,
+                speaker_context_key=tr.speaker_context_key,
             )
         )
 

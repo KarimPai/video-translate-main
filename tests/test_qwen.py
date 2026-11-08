@@ -461,7 +461,7 @@ class QwenTranslatorTests(unittest.TestCase):
             instance.reset_scene_context()
             raw = json.dumps({"choices": [
                 {"message": {"content": model_text}},
-            ]).encode("utf-8")
+            ]}).encode("utf-8")
             with patch("auto_translate.translate.qwen.urllib.request.urlopen",
                        return_value=io.BytesIO(raw)):
                 self.assertEqual(instance.translate(ja, history), expected)

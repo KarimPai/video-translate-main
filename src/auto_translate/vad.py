@@ -92,6 +92,61 @@ def _ms_to_frames(ms: float) -> int:
     return max(1, round(ms * SAMPLE_RATE / 1000 / FRAME))
 
 
+def _select_longform_cut(
+    frames: list[np.ndarray],
+    probs: list[float],
+    *,
+    search_frames: int,
+    pause_frames: int,
+    context_frames: int,
+    negative_threshold: float,
+    hard: bool,
+) -> int | None:
+    """Prefer sustained low-VAD/low-energy pauses; never discard or repeat PCM.
+
+    A long utterance may extend briefly beyond its soft cap to find a pause.
+    On the hard cap, choose the least energetic 70ms neighborhood instead.
+    The returned cut always leaves context on both sides in the source audio.
+    """
+    count = len(frames)
+    lo = max(context_frames, count - search_frames)
+    hi = count - context_frames
+    if lo >= hi:
+        return None
+    rms = np.asarray([
+        float(np.sqrt(np.mean(frame * frame))) for frame in frames
+    ], dtype=np.float32)
+    baseline = float(np.percentile(rms[max(0, lo - 20):hi], 75))
+    if baseline > 1e-5:
+        quiet = ((np.asarray(probs, dtype=np.float32) < negative_threshold)
+                 & (rms <= max(0.0004, baseline * 0.42)))
+        runs: list[tuple[int, int]] = []
+        start = None
+        for i in range(lo, hi):
+            if quiet[i]:
+                if start is None:
+                    start = i
+            elif start is not None:
+                if i - start >= pause_frames:
+                    runs.append((start, i))
+                start = None
+        if start is not None and hi - start >= pause_frames:
+            runs.append((start, hi))
+        if runs:
+            first, last = max(runs, key=lambda run: run[1])
+            return (first + last) // 2
+    if not hard:
+        return None
+
+    # A full fallback is unavoidable if speech never pauses. Smooth across
+    # multiple frames so a single misleading VAD dip cannot cut a word.
+    smooth = np.convolve(rms, np.ones(7) / 7.0, mode="same")
+    scale = max(1e-5, float(np.percentile(smooth[lo:hi], 75)))
+    score = (np.asarray(probs[lo:hi], dtype=np.float32) * 0.5
+             + np.minimum(smooth[lo:hi] / scale, 2) * 0.5)
+    return lo + int(np.argmin(score))
+
+
 class Segmenter:
     """State machine over 10 ms frames: idle → speech → (pause | max length) → emit."""
 

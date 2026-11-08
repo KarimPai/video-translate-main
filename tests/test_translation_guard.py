@@ -50,6 +50,37 @@ class GuardTests(unittest.TestCase):
         self.assertIn("nonpayment", translation_quality_flags(
             "請求を踏み倒した", "Devastated the bill"))
 
+    def test_number_units_and_apologies_do_not_trigger_spurious_retries(self):
+        self.assertEqual(translation_quality_flags(
+            "1000万円です", "It's 10 million yen"), frozenset())
+        self.assertEqual(translation_quality_flags(
+            "すみません", "Sorry"), frozenset())
+        self.assertEqual(translation_quality_flags(
+            "申し訳ありません", "I'm sorry"), frozenset())
+
+    def test_asr_stage_preserves_suspect_katakana_but_does_not_trust_it(self):
+        import numpy as np
+        from auto_translate.pipeline import run_asr
+        from auto_translate.types import Utterance
+
+        class ASR:
+            def __init__(self, text):
+                self.text = text
+            def transcribe(self, audio, probe=False):
+                return self.text
+
+        for source, expected in (("マイルファイル", True),
+                                 ("カージャック", False),
+                                 ("警察が来た", False)):
+            with self.subTest(source=source):
+                incoming, outgoing = queue.Queue(), queue.Queue()
+                incoming.put(Utterance(0, 2, np.zeros(32000, dtype=np.float32)))
+                incoming.put(None)
+                run_asr(ASR(source), incoming, outgoing)
+                result = outgoing.get_nowait()
+                self.assertEqual(result.ja, source)
+                self.assertEqual(result.asr_uncertain, expected)
+
     def test_merge_requires_verified_continuity(self):
         kwargs = dict(
             first_text="あとはさけど",
@@ -128,6 +159,26 @@ class SelectivePlamoRetryTests(unittest.TestCase):
         self.assertFalse(tr._source_uncertain)
         self.assertEqual(tr._scene_memory.current_topic(), "gta")
         primary.assert_called_once()
+
+    def test_source_uncertainty_drops_scene_and_speaker_prompt_hints(self):
+        import io
+        import json
+        tr = self.plamo()
+        tr.observe_scene("カージャックされた")
+        tr.set_reference_context("警察が来た")
+        tr.set_source_reliability(True)
+        requests = []
+        def responder(request, timeout):
+            requests.append(json.loads(request.data)["prompt"])
+            return io.BytesIO(json.dumps(
+                {"choices": [{"text": "Milefile"}]}
+            ).encode("utf-8"))
+        tr.url = "http://127.0.0.1:8005/v1/completions"
+        with patch("auto_translate.translate.plamo.urllib.request.urlopen",
+                   side_effect=responder):
+            self.assertEqual(tr.translate("マイルファイル", []), "Milefile")
+        self.assertNotIn("<|plamo:tag|>context", requests[0])
+        self.assertEqual(tr._scene_memory.current_topic(), "gta")
 
     def test_retry_failure_keeps_primary_and_does_not_recurse(self):
         tr = self.plamo()

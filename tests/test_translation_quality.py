@@ -113,6 +113,39 @@ class TranslationQualityTests(unittest.TestCase):
             "I can't eat motsuni.",
         )
 
+    def test_japanese_man_unit_and_lost_sight_are_not_reversed(self):
+        self.assertEqual(
+            translation_review_reason("30万だろ!?", "Thirty thousand?!"),
+            "japanese_man_unit_wrong",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("30万だろ!?", "Thirty thousand?!"),
+            "300,000?!",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("30万だろ!?", "30,000?!"),
+            "300,000?!",
+        )
+        self.assertIsNone(
+            translation_review_reason("30万だろ!?", "300,000, right?!")
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("30分だろ!?", "30,000?!"),
+            "30,000?!",
+        )
+        self.assertEqual(
+            translation_review_reason("見失いました", "I've lost my way."),
+            "lost_sight_as_lost_way",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("見失いました", "I've lost my way."),
+            "I lost sight of them.",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("見失いました", "I lost sight of the car."),
+            "I lost sight of the car.",
+        )
+
     def test_only_exact_skip_token_is_accepted(self):
         self.assertTrue(is_skip_token("[SKIP]"))
         self.assertTrue(is_skip_token(" [skip] "))

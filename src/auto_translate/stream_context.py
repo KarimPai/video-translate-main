@@ -17,6 +17,11 @@ _ARK_SIGNALS = ("ギガノト", "ギガのと", "ギガノと", "テイム", "�
 # Recognize obvious GTA contexts without enabling game-specific homophone
 # replacement globally. カイジャック may also be a garbled unrelated phrase.
 _GTA_TITLE = re.compile(r"(?i)(?<![a-z])gta(?:\s*[5v])?(?![a-z])|グラセフ|グランド[・\s]?セフト")
+
+
+def is_gta_context(title: str = "") -> bool:
+    """Only use GTA-specific prompt interpretations with an explicit title."""
+    return bool(_GTA_TITLE.search(title))
 _CARJACK_MISHEARD = re.compile(
     r"カ(?:イ)?ジャック(?=する|された|されて|して|しに|を|の|が|だ|です|[、。!?！？]|$)"
 )

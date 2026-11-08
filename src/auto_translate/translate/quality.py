@@ -57,6 +57,18 @@ _MEANINGFUL_REPETITIONS = frozenset(
 _LEVEL_REJECTION = re.compile(
     r"\s*(?:レベル)?([0-9０-９]{1,3})は(?:のん[、\s]?){2,}(?:よ|ね)?[。!?！?、\s]*"
 )
+# Narrow guards for attested GTA subtitle reversals, not a general attempt to
+# rewrite arbitrary ASR (which could remove real speech).
+_THIRTY_MAN_LINE = re.compile(r"\s*30万(?:だろ|だよ|です|だ|でしょ|かな)?[。!?！？\s]*")
+_THIRTY_THOUSAND_EN = re.compile(
+    r"\bthirty[ -]+thousand\b|(?<![0-9])30,?000(?![0-9])", re.I,
+)
+_LOST_SIGHT_LINE = re.compile(
+    r"\s*見失(?:いました|った|ってしまった)[。!?！？\s]*"
+)
+_WRONG_LOST_SIGHT_EN = re.compile(
+    r"\b(?:lost my way|lost our way|got lost|am lost|we're lost)\b", re.I
+)
 
 
 def is_skip_token(text: str) -> bool:
@@ -113,6 +125,10 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
         return "phonetic_transliteration"
     english = english.replace("’", "'")
     source = unicodedata.normalize("NFKC", japanese)
+    if _THIRTY_MAN_LINE.fullmatch(source) and _THIRTY_THOUSAND_EN.search(english):
+        return "japanese_man_unit_wrong"
+    if _LOST_SIGHT_LINE.fullmatch(source) and _WRONG_LOST_SIGHT_EN.search(english):
+        return "lost_sight_as_lost_way"
     appraisal = source.strip(" !?。、.…")
     if (_PRAISE.fullmatch(appraisal) and "?" not in source
             and not _POSITIVE_IDIOM.search(english)
@@ -166,6 +182,11 @@ def repair_high_confidence_meaning(japanese: str, english: str) -> str:
     Does not attempt to repair arbitrary garbled ASR sentences.
     """
     source = unicodedata.normalize("NFKC", japanese)
+    if _THIRTY_MAN_LINE.fullmatch(source):
+        english = _THIRTY_THOUSAND_EN.sub("300,000", english)
+    if (_LOST_SIGHT_LINE.fullmatch(source)
+            and _WRONG_LOST_SIGHT_EN.search(english)):
+        english = "I lost sight of them."
     if re.search(r"読み込み.{0,8}軽くな(?:っ|った|る|い)", source):
         # Japanese says loading became lighter, *not* that it slowed down.
         english = re.sub(

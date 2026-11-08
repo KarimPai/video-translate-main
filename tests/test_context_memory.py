@@ -189,6 +189,20 @@ class ContextMemoryTests(unittest.TestCase):
         memory.observe("払い戻し行こうか")
         self.assertIn("payouts", memory.hint())
 
+    def test_gta_robbery_cues_preserve_context_without_claiming_identity(self):
+        memory = SceneMemory()
+        self.assertEqual(memory.hint(), "")
+        memory.observe("店舗強盗行ける人いますか?")
+        self.assertEqual(memory.current_topic(), "gta")
+        memory.observe("コンビニに行こう、無線で確認")
+        self.assertIn("store robberies", memory.hint())
+        self.assertIn("radio communication", memory.hint())
+        for _ in range(7):
+            memory.observe("はい")
+        self.assertIn("GTA", memory.hint())
+        memory.reset()
+        self.assertEqual(memory.hint(), "")
+
     def test_stale_scene_expires_and_weak_terms_do_not_create_one(self):
         memory = SceneMemory(max_idle_lines=8)
         memory.observe("ワイド画面で新聞を見る")

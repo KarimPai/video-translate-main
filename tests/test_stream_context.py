@@ -5,7 +5,7 @@ import unittest
 from auto_translate.stream_context import (
     ark_glossary_hits, is_ark_context, is_incomplete_fragment,
     repair_ark_spelling, repair_peko_nickname, repair_verified_caption,
-    repair_gta_carjacking, is_horse_racing_context, repair_horse_racing_spelling,
+    repair_gta_carjacking, is_gta_context, is_horse_racing_context, repair_horse_racing_spelling,
 )
 from auto_translate.translate.quality import translation_review_reason, repair_high_confidence_meaning
 
@@ -41,6 +41,11 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_ark_spelling("おさらちが来た", "", ["更地になってる"]),
                          "おさらちが来た")
         self.assertIn(("ギガノト", "Giganotosaurus"), ark_glossary_hits("ギガノト討伐"))
+
+    def test_gta_title_context_is_explicit(self):
+        self.assertTrue(is_gta_context("Hololive GTA Day 4"))
+        self.assertTrue(is_gta_context("【グラセフ】ホロライブ"))
+        self.assertFalse(is_gta_context("ARK racing stream"))
 
     def test_gta_carjacking_requires_dialogue_evidence(self):
         # Directly observed errors from the Hololive GTA VOD.

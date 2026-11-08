@@ -308,6 +308,20 @@ class QwenTranslatorTests(unittest.TestCase):
             )
         self.assertIsNone(fresh._scene_topic())
 
+    def test_gta_context_guides_building_back_and_missing_target(self):
+        instance = translator()
+        instance.vod_title = "Hololive GTA"
+        result = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "Around the back?"}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=result) as urlopen:
+            self.assertEqual(instance._chat("裏手?", [], 5), "Around the back?")
+        prompt = json.loads(urlopen.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("around the back / rear side", prompt)
+        self.assertIn("lost sight of someone", prompt)
+        self.assertIn("30 seconds", prompt)
+
     def test_ark_glossary_in_qwen_prompt(self):
         instance = translator()
         response = io.BytesIO(json.dumps({"choices": [

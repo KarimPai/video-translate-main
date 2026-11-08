@@ -21,8 +21,8 @@ from ..context_memory import SceneMemory, reuse_recent_short_term
 from ..glossary import Glossary
 from ..process_cleanup import _create_kill_job, _close_job
 from ..stream_context import (
-    ark_glossary_hits, is_ark_context, is_horse_racing_context,
-    is_incomplete_fragment,
+    ark_glossary_hits, is_ark_context, is_gta_context,
+    is_horse_racing_context, is_incomplete_fragment,
 )
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -42,6 +42,9 @@ _SYSTEM_PROMPT = (
     "When Arabic numerals occur together in Japanese ASR without separators, "
     "preserve their exact order and digit count: do not add thousands commas, "
     "insert zeros, or reinterpret an ambiguous number string as currency. "
+    "Accurately convert the Japanese number unit 万 (10,000): 30万 is "
+    "300,000, NOT thirty thousand; do not add yen unless spoken. "
+    "見失う means losing sight of a person or thing, NOT losing one's way. "
     "The colloquial pattern verb + しかねえ/しかない means there is no choice "
     "BUT to do the verb, NOT an inability to do it. "
     "Do not reverse praise, rejection, or other sentiment. "
@@ -93,6 +96,8 @@ _REVIEW_HINTS = {
         "Japanese しかねえ/しかない after a verb means there is no choice BUT to do it. "
         "The speaker is going to do it, not saying they cannot do it."
     ),
+    "japanese_man_unit_wrong": "30万 is 300,000 (thirty times ten thousand), NOT 30,000.",
+    "lost_sight_as_lost_way": "見失う is to lose sight of someone/something, NOT to lose one's way.",
     "affirmative_ability_reversed": "The Japanese says someone CAN do it; retain that ability.",
     "unexpected_skip": "This is meaningful speech: provide its translation, not [SKIP].",
     "untranslated_japanese": "Translate the Japanese; do not repeat Japanese characters.",
@@ -461,6 +466,19 @@ class QwenTranslator:
             ))
         ):
             blocks.append("Game context: ARK dinosaurs and survival gameplay. ギガノト is Giganotosaurus.")
+        if (
+            self._scene_topic() == "gta"
+            or (self._scene_topic() is None and is_gta_context(self.vod_title))
+        ):
+            blocks.append(
+                "Game context: GTA roleplay with car pursuits, store robberies, "
+                "and radio communication only when supported by the Japanese. "
+                "裏手 for a building is around the back / rear side, not a theater "
+                "backstage. 見失った / 見失いました means lost sight of someone "
+                "or something, not lost your way. アタック禁止 is no attacking; "
+                "30秒 means 30 seconds, not minutes. Do not invent targets, "
+                "actions, speaker identities or misunderstood names."
+            )
         if (
             self._scene_topic() == "horse_racing"
             or (self._scene_topic() is None and is_horse_racing_context(

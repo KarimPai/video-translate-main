@@ -48,6 +48,7 @@ _SCENE_CUES = {
     "gta": {
         "グラセフ": 2, "グランドセフト": 2, "GTA": 2,
         "カージャック": 2, "カーチェイス": 2,
+        "店舗強盗": 2, "コンビニ強盗": 2,
         "パトカー": 1, "警察": 1, "逃走": 1,
     },
 }
@@ -67,6 +68,8 @@ _SCENE_DETAILS = {
     "gta": (
         ("カージャック", "carjacking"), ("カーチェイス", "car chases"),
         ("パトカー", "police cars"), ("警察", "police"),
+        ("店舗強盗", "store robberies"), ("コンビニ強盗", "store robberies"),
+        ("無線", "radio communication"),
     ),
 }
 

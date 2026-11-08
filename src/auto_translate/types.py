@@ -48,6 +48,7 @@ class Utterance:
     generation: int = 0
     speech_start_s: float | None = None  # first FireRed speech-positive frame; excludes VAD pre-roll
     speaker_handoff: bool = False  # another voice took over; stop prior subtitle linger
+    speaker_context_key: int | None = None  # verified adjacent-speaker continuity; not a public identity
 
 @dataclass
 class Transcript:
@@ -58,6 +59,7 @@ class Transcript:
     generation: int = 0
     speech_start_s: float | None = None
     speaker_handoff: bool = False
+    speaker_context_key: int | None = None  # verified adjacent-speaker continuity; not a public identity
 
 
 @dataclass
@@ -70,3 +72,4 @@ class Subtitle:
     generation: int = 0
     speech_start_s: float | None = None
     speaker_handoff: bool = False
+    speaker_context_key: int | None = None  # verified adjacent-speaker continuity; not a public identity

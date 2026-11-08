@@ -9,6 +9,9 @@ import base64
 import hashlib
 import json
 import logging
+import queue
+import threading
+import time
 import shutil
 import subprocess
 import sys
@@ -85,6 +88,8 @@ class QwenASR:
         self._closed = False
         self.process: subprocess.Popen | None = None
         self._job = None
+        self._messages: queue.Queue[str | BaseException | None] = queue.Queue()
+        self._reader: threading.Thread | None = None
         exe = shutil.which("speech")
         if not exe:
             raise RuntimeError(
@@ -122,6 +127,14 @@ class QwenASR:
                 ) from exc
             if ready.get("type") != "ready":
                 raise RuntimeError(f"Qwen ASR worker failed to load: {ready}")
+            # Only this thread reads stdout. A worker can otherwise hang
+            # inside readline() indefinitely while its process stays alive.
+            self._reader = threading.Thread(
+                target=self._read_worker,
+                name="qwen-asr-output",
+                daemon=True,
+            )
+            self._reader.start()
         except Exception:
             self.close()
             raise
@@ -129,6 +142,17 @@ class QwenASR:
             "Qwen3-ASR-1.7B-JA ready (%s, language=ja, speech.cpp %s)",
             cfg.device, ready.get("version", "?"),
         )
+
+    def _read_worker(self) -> None:
+        """Feed all worker responses to a queue so requests can time out."""
+        try:
+            assert self.process is not None and self.process.stdout is not None
+            for line in self.process.stdout:
+                self._messages.put(line)
+        except (OSError, ValueError) as exc:
+            self._messages.put(exc)
+        finally:
+            self._messages.put(None)
 
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
         if self.process is None or self.process.poll() is not None:
@@ -141,14 +165,33 @@ class QwenASR:
         chunk = {"type": "chunk", "id": request_id, "seq": 0, "pcm": pcm}
         request = {"type": "transcribe", "id": request_id, "sample_rate": 16000}
         stdin = self.process.stdin
-        stdout = self.process.stdout
-        stdin.write(json.dumps(chunk) + "\n")
-        stdin.write(json.dumps(request) + "\n")
-        stdin.flush()
+        try:
+            stdin.write(json.dumps(chunk) + "\n")
+            stdin.write(json.dumps(request) + "\n")
+            stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise RuntimeError("Qwen ASR worker stopped accepting audio") from exc
 
+        # Progress messages may arrive before the terminal 'end' response.
+        # Keep an absolute deadline, not a fresh timeout per progress line.
+        deadline = time.monotonic() + max(1.0, float(self.cfg.response_timeout_s))
         while True:
-            line = stdout.readline()
-            if not line:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "Qwen ASR response timeout: speech.cpp worker stopped "
+                    "responding; check Vulkan memory and logs/run.log"
+                )
+            try:
+                line = self._messages.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError(
+                    "Qwen ASR response timeout: speech.cpp worker stopped "
+                    "responding; check Vulkan memory and logs/run.log"
+                ) from exc
+            if isinstance(line, BaseException):
+                raise RuntimeError("Qwen ASR worker stdout reader failed") from line
+            if line is None:
                 raise RuntimeError("Qwen ASR worker closed the stdout pipe")
             try:
                 answer = json.loads(line)

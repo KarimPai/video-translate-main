@@ -55,6 +55,7 @@ class AsrConfig:
     model_path: str = ""  # empty: verified cached Hugging Face Q8_0 conversion
     device: str = "Vulkan0"
     prompt: str = ""  # optional small Japanese name hint; default off
+    response_timeout_s: float = 30.0  # detect hung Vulkan recognition
     blocklist: list[str] = field(default_factory=list)
 
 

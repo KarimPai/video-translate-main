@@ -43,7 +43,7 @@ class Utterance:
     start_s: float
     end_s: float
     audio: np.ndarray  # float32 mono 16 kHz
-    probe: bool = False  # VAD heard no speech; send fallback audio to Haas
+    probe: bool = False  # VAD heard no speech; send fallback audio to Qwen ASR
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None  # first FireRed speech-positive frame; excludes VAD pre-roll

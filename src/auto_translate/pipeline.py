@@ -41,6 +41,28 @@ from .speaker import run_speaker
 log = logging.getLogger(__name__)
 
 
+def _guard_stage(
+    name: str,
+    target: Callable,
+    failures: "queue.Queue[tuple[str, BaseException]]",
+    *args,
+) -> None:
+    """Report background stage errors to the main thread, never hide them."""
+    try:
+        target(*args)
+    except Exception as exc:
+        log.exception("pipeline stage %s crashed", name)
+        failures.put((name, exc))
+
+
+def _raise_stage_failure(failures: "queue.Queue[tuple[str, BaseException]]") -> None:
+    try:
+        name, exc = failures.get_nowait()
+    except queue.Empty:
+        return
+    raise RuntimeError(f"pipeline stage '{name}' failed: {exc}") from exc
+
+
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
@@ -393,6 +415,7 @@ def run(
     text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
 
+    stage_failures: queue.Queue[tuple[str, BaseException]] = queue.Queue()
     queues = {
         "audio": audio_q,
         "utt": utt_q,
@@ -403,26 +426,29 @@ def run(
 
     threads = [
         threading.Thread(
-            target=ingest.run,
-            args=(audio_q,),
+            target=_guard_stage,
+            args=("ingest", ingest.run, stage_failures, audio_q),
             name="ingest",
             daemon=True,
         ),
         threading.Thread(
-            target=run_segmenter,
-            args=(cfg.vad, audio_q, utt_q, lambda: ingest.generation),
+            target=_guard_stage,
+            args=("vad", run_segmenter, stage_failures,
+                  cfg.vad, audio_q, utt_q, lambda: ingest.generation),
             name="vad",
             daemon=True,
         ),
         threading.Thread(
-            target=run_speaker,
-            args=(cfg.speaker, utt_q, speaker_q, lambda: ingest.generation),
+            target=_guard_stage,
+            args=("speaker", run_speaker, stage_failures,
+                  cfg.speaker, utt_q, speaker_q, lambda: ingest.generation),
             name="speaker",
             daemon=True,
         ),
         threading.Thread(
-            target=run_asr,
+            target=_guard_stage,
             args=(
+                "asr", run_asr, stage_failures,
                 asr,
                 speaker_q,
                 text_q,
@@ -435,8 +461,9 @@ def run(
             daemon=True,
         ),
         threading.Thread(
-            target=run_translate,
+            target=_guard_stage,
             args=(
+                "translate", run_translate, stage_failures,
                 translator,
                 cfg.translate.context_lines,
                 text_q,
@@ -457,11 +484,15 @@ def run(
     processed_from = ingest.source.start_s
     started = time.monotonic()
     next_stats = started + cfg.stats_interval_s
+    last_pipeline_event = started
+    stall_warn_at = started
 
     try:
         while not stop.is_set():
+            _raise_stage_failure(stage_failures)
             try:
                 item = sub_q.get(timeout=0.5)
+                last_pipeline_event = time.monotonic()
 
                 if item is None:
                     for out in outputs:
@@ -520,6 +551,7 @@ def run(
             except queue.Empty:
                 pass
 
+            _raise_stage_failure(stage_failures)
             for name, q in queues.items():
                 stats.max_q[name] = max(
                     stats.max_q.get(name, 0),
@@ -527,6 +559,24 @@ def run(
                 )
 
             now = time.monotonic()
+            # A stuck worker can leave every thread alive with blocked
+            # bounded queues. A quiet stream with no queued work is allowed.
+            backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
+            if backlog and now - last_pipeline_event >= 60.0:
+                raise RuntimeError(
+                    "translation pipeline stalled for 60s with queued work: "
+                    + ", ".join(f"{name}={n}" for name, n in backlog.items())
+                    + "; inspect logs/run.log and GPU memory"
+                )
+            if backlog and now - last_pipeline_event >= 20.0 and now >= stall_warn_at:
+                stall_warn_at = now + 20.0
+                log.warning(
+                    "no pipeline output for %.0fs; backlog %s; stages %s",
+                    now - last_pipeline_event,
+                    " ".join(f"{name}={n}" for name, n in backlog.items()),
+                    " ".join(f"{th.name}={'alive' if th.is_alive() else 'stopped'}"
+                             for th in threads),
+                )
 
             if now >= next_stats:
                 next_stats = now + cfg.stats_interval_s

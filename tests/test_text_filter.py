@@ -33,7 +33,7 @@ class IsolatedReactionTests(unittest.TestCase):
             "うん。", "はい。", "えっ？", "ん?", "すすげえ",
             "すごい！", "スゴイ！", "すげえ", "あのー", "うーん",
             "へぇ～", "はーい", "Wow!", "Hey!", "Whoa!", "おお!",
-            "うわぁぁぁ！", "あっ!あっ!",
+            "うわぁぁぁ！", "あっ!あっ!", "ッ!", "っ。", "ッッ!",
         ):
             with self.subTest(text=text):
                 self.assertTrue(is_isolated_reaction(text))
@@ -48,6 +48,7 @@ class IsolatedReactionTests(unittest.TestCase):
             "なんで？", "こんにちは。", "えっ！あれは何？",
             "えーっと、ここかな", "いや", "すすげえタイミング！",
             "ヘイ、みんな！", "Wow, this is huge", "くっつく", "ワタメ",
+            "さっき、ッ!と言った", "ッ! 待って",
         ):
             with self.subTest(text=text):
                 self.assertFalse(is_isolated_reaction(text))

@@ -11,7 +11,9 @@ ARK_GLOSSARY = {
 }
 _ARK_TITLE = re.compile(r"(?i)(?<![a-z])ark(?![a-z])|アークサバイバル|アーク：|アーク:|恐竜サバイバル")
 _ARK_SIGNALS = ("ギガノト", "ギガのと", "ギガノと", "テイム", "テーム",
-                "恐竜", "アルゲンタヴィス", "アルゲン", "ティラノ", "クライオポッド", "サドル")
+                "恐竜", "アルゲンタヴィス", "アルゲン", "ティラノ", "クライオポッド", "サドル",
+                # Weak signals only: paired with genuine prior ARK evidence.
+                "気がの都", "ギガナと", "ギガノド")
 _PEKO_TITLE = re.compile(r"ぺこら|ペコラ|兎田|pekora", re.I)
 _PEKO_FORMS = ("ぺこら", "ペコラ", "ぺこちゃん", "ペコちゃん", "兎田ぺこら")
 _PEKO_CAPTIONS = ("ぺこちゃん", "ペコちゃん", "ぺこらちゃん", "ペコラちゃん")
@@ -43,6 +45,11 @@ def ark_glossary_hits(text: str) -> list[tuple[str, str]]:
 
 
 def repair_ark_spelling(text: str, title: str = "", recent: tuple[str, ...] | list[str] = ()) -> str:
+    # A repeated word from an adjacent clear sentence is strong evidence.
+    # In this stream 更地 (cleared ground) was heard as おさらち in the
+    # next two questions. Do not guess this term without recent confirmation.
+    if any("更地" in phrase for phrase in list(recent)[-5:]):
+        text = re.sub(r"おさらち(?=って|どういう|[?!？！。]|$)", "更地", text)
     if not is_ark_context(title, text, recent):
         return text
     # Preserve genuine "ギガの土地", don't rewrite broad homophones.

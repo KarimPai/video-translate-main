@@ -173,6 +173,10 @@ def is_isolated_reaction(text: str) -> bool:
         for char in normalized
     )
     tokens = [part for part in _REACTION_SEPARATORS.split(normalized) if part]
+    # A solitary small tsu is an ASR clipping artifact, not a word. It was
+    # previously sent to Qwen and surfaced as "[translation failed]".
+    if tokens and all(set(part) == {"っ"} for part in tokens):
+        return True
     return bool(tokens) and all(_REACTION_RUN.fullmatch(part) for part in tokens)
 
 

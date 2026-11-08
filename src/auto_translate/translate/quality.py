@@ -135,6 +135,14 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
             and re.search(r"\b(?:fine|okay|all right|all good|no problem)\b", english, re.I)
             and not re.search(r"\b(?:no|not|never)\b", english, re.I)):
         return "rejection_reversed"
+    # Gaming slang えぐない？ is usually a rhetorical "Isn't that crazy?"
+    # If the model makes it the literal "not that bad", request a bounded
+    # second pass; never blindly replace the rest of a longer utterance.
+    if ("えぐない" in source and re.search(
+        r"\b(?:not\s+(?:that|so|too)\s+bad|isn't\s+(?:that|so)\s+bad)\b",
+        english, re.I,
+    )):
+        return "rhetorical_egunai_reversed"
     if _EXPLICIT_NEGATION.search(japanese) and not _EN_NEGATION.search(english):
         # Obligations such as "寝ないといけない" should not be forced negative.
         if not re.search(r"ないと(?:いけない|ならない|ダメ|だめ)|なければならない|なくちゃ|なくても(?:いい|大丈夫)|かもしれない", japanese):

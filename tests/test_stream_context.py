@@ -22,6 +22,23 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_ark_spelling("このギガナとどっちが強い", "ARK"), "このギガノトどっちが強い")
         self.assertEqual(repair_ark_spelling("ギガノドだけ討伐", "ARK"), "ギガノトだけ討伐")
         self.assertEqual(repair_ark_spelling("気がの都が襲来"), "気がの都が襲来")
+        # Single genuine ARK signal plus a weak, phonetically close spelling
+        # is enough; neither one by itself is sufficient.
+        self.assertFalse(is_ark_context("", "ギガノドだけ討伐"))
+        self.assertTrue(is_ark_context("", "ギガノドだけ討伐", ["ギガノトが来た"]))
+        self.assertEqual(repair_ark_spelling("ギガノドだけ討伐", "", ["ギガノトが来た"]),
+                         "ギガノトだけ討伐")
+        self.assertEqual(repair_ark_spelling("このギガナとどっちが強い", "", ["ギガノトが来た"]),
+                         "このギガノトどっちが強い")
+        self.assertEqual(repair_ark_spelling("ギガの土地", "", ["ギガノトが来た"]),
+                         "ギガの土地")
+        self.assertEqual(repair_ark_spelling("おさらちってこと?"), "おさらちってこと?")
+        self.assertEqual(repair_ark_spelling("おさらちってこと?", "", ["更地になってる"]),
+                         "更地ってこと?")
+        self.assertEqual(repair_ark_spelling("あーでもおさらちどういうこと?", "", ["更地ってこと?"]),
+                         "あーでも更地どういうこと?")
+        self.assertEqual(repair_ark_spelling("おさらちが来た", "", ["更地になってる"]),
+                         "おさらちが来た")
         self.assertIn(("ギガノト", "Giganotosaurus"), ark_glossary_hits("ギガノト討伐"))
 
     def test_nickname(self):

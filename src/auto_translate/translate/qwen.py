@@ -39,6 +39,8 @@ _SYSTEM_PROMPT = (
     "Do not reverse praise, rejection, or other sentiment. "
     "Spoken names ending with -chan, -san or -sama retain those suffixes in English. "
     "Do not expand a nickname to a full name or invent a member name based on context. "
+    "Keep short ambiguous phonetic nicknames as spoken; never complete them "
+    "into unrelated character or franchise names. "
     "猫ちゃん means kitty/Neko-chan, not Nekomata-chan; do not infer someone's "
     "identity from an ambiguous nickname. "
     "Never add insults, blame, accusations, or spoken words absent from Japanese. "
@@ -54,6 +56,10 @@ _REVIEW_HINTS = {
     "positive_appraisal_reversed": "Japanese clearly praises something; do not turn it into criticism.",
     "loading_performance_reversed": "軽くなった means lighter or less demanding, NOT slower loading.",
     "rejection_reversed": "Repeated のん or ノン expresses rejection: no, no, no.",
+    "rhetorical_egunai_reversed": (
+        "Gaming slang えぐない is an emphatic rhetorical question: "
+        "isn't that crazy/brutal? It does not mean things are not so bad."
+    ),
     "possible_missing_negation": "Recheck explicit Japanese negation without inventing one.",
     "affirmative_ability_reversed": "The Japanese says someone CAN do it; retain that ability.",
     "unexpected_skip": "This is meaningful speech: provide its translation, not [SKIP].",

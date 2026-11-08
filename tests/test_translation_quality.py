@@ -67,6 +67,20 @@ class TranslationQualityTests(unittest.TestCase):
             with self.subTest(ja=ja, en=en):
                 self.assertEqual(translation_review_reason(ja, en), expected)
 
+    def test_rhetorical_gaming_slang_detects_meaning_reversal(self):
+        self.assertEqual(
+            translation_review_reason(
+                "えぐないきたきたきたまあ僕のアングラにお任せあれ",
+                "It's not that bad, let's go, just leave it to me.",
+            ), "rhetorical_egunai_reversed"
+        )
+        self.assertIsNone(
+            translation_review_reason("えぐない?", "Isn't that brutal?")
+        )
+        self.assertIsNone(
+            translation_review_reason("えぐいな", "It's not that bad.")
+        )
+
     def test_only_exact_skip_token_is_accepted(self):
         self.assertTrue(is_skip_token("[SKIP]"))
         self.assertTrue(is_skip_token(" [skip] "))

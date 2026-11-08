@@ -161,6 +161,30 @@ class IndexTranslationTests(unittest.TestCase):
         self.assertEqual(result, "You're wanted by police.")
         call.assert_called_once()
 
+    def test_live_gta_failures_are_flagged_for_single_review(self):
+        obj = self._unit()
+        cases = [
+            ("現行犯ということで", "So, he's a fugitive.", "現行犯"),
+            ("指名手配されてますよ", "They've called out my name!", "指名手配"),
+            ("張り込みしてほしい", "Confront me.", "張り込み"),
+            ("税金の使い込み", "Using your taxes.", "税金の使い込み"),
+            ("大空部長だ", "That's Director Daisuki.", "大空部長"),
+        ]
+        for ja, en, term in cases:
+            with self.subTest(term=term):
+                self.assertEqual(obj._review_reason(ja, en),
+                                 "missing_priority_term:" + term)
+
+    def test_glossary_contains_exact_roleplay_terms_without_ambiguous_sky(self):
+        from pathlib import Path
+        glossary = Glossary.load(Path(__file__).resolve().parents[1] / "glossary.toml")
+        for ja in ("現行犯", "指名手配", "張り込み", "オリ曲",
+                   "税金の使い込み", "大空部長"):
+            with self.subTest(term=ja):
+                self.assertTrue(glossary.find(ja), ja)
+        self.assertFalse(glossary.find("大空が青い"))
+        self.assertFalse(glossary.find("署名する"))
+
     def test_glossary_priority_anchors_not_triggered_without_source_terms(self):
         obj = self._unit()
         self.assertIsNone(obj._review_reason(

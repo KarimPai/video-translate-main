@@ -113,7 +113,8 @@ def main() -> None:
     asr = create_asr(cfg.asr)
 
     log.info(
-        "ASR ready (Qwen3-ASR-1.7B-JA, Vulkan speech.cpp) in %.1fs",
+        "ASR ready (Qwen3-ASR-1.7B-JA, %s speech.cpp) in %.1fs",
+        cfg.asr.device,
         time.perf_counter() - t0,
     )
 

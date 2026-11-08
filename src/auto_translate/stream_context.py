@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 
 ARK_GLOSSARY = {
     "ギガノトサウルス": "Giganotosaurus", "ギガノト": "Giganotosaurus",
-    "テイム": "tame (a dinosaur)", "アルゲンタヴィス": "Argentavis",
+    "テイム": "tame", "アルゲンタヴィス": "Argentavis",
     "アルゲン": "Argentavis", "クライオポッド": "Cryopod",
     "ティラノサウルス": "Tyrannosaurus", "ティラノ": "Tyrannosaurus",
     "サドル": "saddle",

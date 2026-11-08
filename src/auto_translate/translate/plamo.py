@@ -21,7 +21,7 @@ from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
 from .quality import (
     SKIP_TOKEN, is_obvious_nonverbal_japanese, is_skip_token,
-    translation_review_reason,
+    translation_review_reason, repair_high_confidence_meaning,
 )
 
 log = logging.getLogger(__name__)
@@ -236,6 +236,10 @@ class PlamoTranslator:
             log.warning("PLaMo returned [SKIP] for meaningful Japanese: %r", ja)
             return "[translation failed]"
 
+        reviewed_english = repair_high_confidence_meaning(ja, english)
+        if reviewed_english != english:
+            log.info("Corrected known translation inversion: JP=%r EN=%r -> %r", ja, english, reviewed_english)
+            english = reviewed_english
         english = correct_translation(ja, english)
         english = _remove_unmentioned_member_names(ja, english)
         corrected = neutralize_unsupported_subjects(ja, english)
@@ -285,6 +289,10 @@ class PlamoTranslator:
         }
         if review_hint == "positive_appraisal_reversed":
             options["context"] += "\nThe current Japanese expresses a favorable appraisal. Preserve that assessment."
+        elif review_hint == "loading_performance_reversed":
+            options["context"] += "\n読み込みが軽くなった describes a LIGHTER loading burden, not slower loading."
+        elif review_hint == "rejection_reversed":
+            options["context"] += "\nのんのんのん is a repeated refusal (no, no, no), not agreement."
         if review_hint:
             options["context"] += (
                 "\nCarefully retry this Japanese-to-English translation. "

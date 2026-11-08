@@ -44,7 +44,8 @@
 "草" = "LOL"
 "ｗｗｗ" = "LOL"
 "なんでやねん" = "what the heck"
-"助かる" = "blessed"
+# Context-dependent: 助かる may mean "thanks", "that helps", or "what a relief".
+# Do not force a literal "blessed" translation.
 "かわ余" = "cute"
 "エッッッ" = "seggs"
 "センシティブ" = "NSFW"

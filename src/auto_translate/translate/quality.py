@@ -132,3 +132,25 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
         if not re.search(r"ないと(?:いけない|ならない|ダメ|だめ)|なければならない|なくちゃ|なくても(?:いい|大丈夫)|かもしれない", japanese):
             return "possible_missing_negation"
     return None
+
+def repair_high_confidence_meaning(japanese: str, english: str) -> str:
+    """Fix two tightly bounded reversals found in real Japanese stream output.
+
+    Applies AFTER optional PLaMo quality review, so a rejected or timed-out
+    model retry cannot leave these known meaning inversions on screen.
+    Does not attempt to repair arbitrary garbled ASR sentences.
+    """
+    source = unicodedata.normalize("NFKC", japanese)
+    if re.search(r"読み込み.{0,8}軽くな(?:っ|った|る|い)", source):
+        # Japanese says loading became lighter, *not* that it slowed down.
+        english = re.sub(
+            r"\b(?:the\s+)?loading\s+has\s+slowed\s+down\b",
+            "loading has become less demanding",
+            english, count=1, flags=re.I,
+        )
+    if (
+        re.fullmatch(r"\s*(?:レベル)?95は(?:のん){2,}(?:よ)?[。!?！。\s]*", source)
+        and re.fullmatch(r"\s*95\s+is\s+(?:totally\s+)?fine[.!?]?\s*", english, re.I)
+    ):
+        return "Level 95? No, no, no."
+    return english

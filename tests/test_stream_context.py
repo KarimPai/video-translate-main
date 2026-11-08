@@ -6,7 +6,7 @@ from auto_translate.stream_context import (
     ark_glossary_hits, is_ark_context, is_incomplete_fragment,
     repair_ark_spelling, repair_peko_nickname, repair_verified_caption,
 )
-from auto_translate.translate.quality import translation_review_reason
+from auto_translate.translate.quality import translation_review_reason, repair_high_confidence_meaning
 
 
 class TestStreamContext(unittest.TestCase):
@@ -38,6 +38,16 @@ class TestStreamContext(unittest.TestCase):
     def test_translation(self):
         self.assertEqual(translation_review_reason("読み込みが軽くなっちまっておる", "The loading has slowed down."), "loading_performance_reversed")
         self.assertEqual(translation_review_reason("95はのんのんのんよ", "95 is totally fine"), "rejection_reversed")
+        self.assertEqual(repair_high_confidence_meaning(
+            "読み込みが軽くなっちまっておるあそこすごいぞ!",
+            "The loading has slowed down—that place is insane!"
+        ), "loading has become less demanding—that place is insane!")
+        self.assertEqual(repair_high_confidence_meaning(
+            "95はのんのんのんよ。", "95 is totally fine."
+        ), "Level 95? No, no, no.")
+        self.assertEqual(repair_high_confidence_meaning(
+            "読み込みが重くなった", "The loading has slowed down"
+        ), "The loading has slowed down")
         self.assertTrue(is_incomplete_fragment("拠点から離せたんだけど"))
         self.assertFalse(is_incomplete_fragment("倒してきます。"))
 

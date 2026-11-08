@@ -55,7 +55,7 @@ def translation_quality_flags(japanese: str, english: str) -> frozenset[str]:
     Japanese cannot be reliably inferred from the two strings alone.
     """
     ja = unicodedata.normalize("NFKC", japanese)
-    en = unicodedata.normalize("NFKC", english)
+    en = unicodedata.normalize("NFKC", english).replace("’", "'")
     flags: set[str] = set()
     # Japanese 万/億/千 multipliers alter numeric magnitude; a bare
     # numeric-token comparison would falsely flag correct "1000万" -> "10 million".

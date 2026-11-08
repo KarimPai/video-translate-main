@@ -286,12 +286,27 @@ class QwenTranslatorTests(unittest.TestCase):
                    return_value=io.BytesIO(raw)):
             result = instance.translate("払い戻し行こうか", [("馬券買ったの?", "Did you bet?")])
         self.assertEqual(result, "Let's go get our payout.")
-        # Retail refunds remain refunds when there is no racing evidence.
+        # A new video starts with new scene memory; never carry the previous
+        # horse-racing state into unrelated retail dialogue.
+        instance.reset_scene_context()
         instance.vod_title = "Shopping"
         with patch("auto_translate.translate.qwen.urllib.request.urlopen",
                    return_value=io.BytesIO(raw)):
             result = instance.translate("払い戻し行こうか", [])
         self.assertEqual(result, "Let's go get our refund.")
+        self.assertIsNone(instance._scene_topic())
+
+        # A fresh translator with a shopping title must behave identically,
+        # even without an explicit reset or any previous source context.
+        fresh = translator()
+        fresh.vod_title = "Shopping"
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            self.assertEqual(
+                fresh.translate("払い戻し行こうか", []),
+                "Let's go get our refund.",
+            )
+        self.assertIsNone(fresh._scene_topic())
 
     def test_ark_glossary_in_qwen_prompt(self):
         instance = translator()

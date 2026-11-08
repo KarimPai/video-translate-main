@@ -34,7 +34,10 @@ _SCENE_CUES = {
     "horse_racing": {
         "競馬": 2, "馬券": 2, "オッズ": 2, "パドック": 2,
         "推奨馬": 2, "三連複": 2, "三連単": 2, "単勝": 2,
-        "複勝": 2, "払戻し": 2, "払い戻し": 2,
+        "複勝": 2,
+        # Cashing out occurs in both betting and retail; one mention
+        # cannot establish that the scene is horse racing.
+        "払戻し": 1, "払い戻し": 1,
         "ダート": 1, "ワイド": 1, "レース": 1,
     },
     "ark": {

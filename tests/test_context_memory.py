@@ -172,6 +172,23 @@ class ContextMemoryTests(unittest.TestCase):
         self.assertEqual(memory.current_topic(), "horse_racing")
         self.assertLessEqual(SceneMemory(max_idle_lines=10000).max_idle_lines, 96)
 
+    def test_refund_or_payout_alone_does_not_invent_horse_racing(self):
+        for japanese in ("払い戻し行こうか", "払戻しはどこ?", "返金して"):
+            with self.subTest(japanese=japanese):
+                memory = SceneMemory()
+                memory.observe(japanese)
+                self.assertIsNone(memory.current_topic())
+                self.assertEqual(memory.hint(), "")
+
+        # A betting ticket supplies independent evidence for racing.
+        memory = SceneMemory()
+        memory.observe("払い戻し行こうか")
+        self.assertEqual(memory.hint(), "")
+        memory.observe("馬券を買った")
+        self.assertEqual(memory.current_topic(), "horse_racing")
+        memory.observe("払い戻し行こうか")
+        self.assertIn("payouts", memory.hint())
+
     def test_stale_scene_expires_and_weak_terms_do_not_create_one(self):
         memory = SceneMemory(max_idle_lines=8)
         memory.observe("ワイド画面で新聞を見る")

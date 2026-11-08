@@ -112,7 +112,8 @@ def _select_longform_cut(
     lo = max(context_frames, count - search_frames)
     hi = count - context_frames
     if lo >= hi:
-        return None
+        # Even a tiny custom max_utterance_s must have a finite hard limit.
+        return max(1, count // 2) if hard and count >= 2 else None
     rms = np.asarray([
         float(np.sqrt(np.mean(frame * frame))) for frame in frames
     ], dtype=np.float32)

@@ -55,7 +55,10 @@ def _clean(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.I | re.S)
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[-1]
-    text = text.strip()
+    # The GGUF/Sarashina tokenizer sometimes returns its literal EOS
+    # marker as visible text (e.g. "Well!</s>"). An EOS token ends the
+    # response; never display it or text beyond it in an English subtitle.
+    text = text.split("</s>", 1)[0].strip()
     text = re.sub(r"^(?:Translation|English|EN)\s*:\s*", "", text, flags=re.I)
     text = text.strip(' \t\r\n"“”')
     return " ".join(text.splitlines()).strip()
@@ -193,12 +196,16 @@ class CatTranslator:
     def _chat(self, japanese: str, *, timeout: float) -> str:
         # CAT's model card specifies exactly one user role and the short prompt.
         # No Index instruction/metadata stop strings, thinking flags, or
-        # model-specific quality-retry chat parameters are sent here.
+        # model-specific quality-retry chat parameters are sent here. The
+        # lone stop string is the Sarashina EOS seen in real CAT outputs.
         payload = {
             "model": self.cfg.cat_model,
             "messages": [{"role": "user", "content": build_cat_prompt(japanese)}],
             "temperature": 0,
             "max_tokens": self.cfg.max_tokens,
+            # Sarashina's model EOS is </s>. Explicitly stop here in case
+            # this community GGUF exposes EOS as an ordinary text token.
+            "stop": ["</s>"],
             "stream": False,
         }
         request = urllib.request.Request(

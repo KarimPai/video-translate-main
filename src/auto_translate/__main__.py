@@ -125,7 +125,7 @@ def main() -> None:
         cfg.translate, glossary, vod_title=vod_context,
     )
     log.info(
-        "PLaMo 3 Translate 2B ready (%d glossary terms) in %.1fs",
+        "Qwen3.5-4B ready (%d glossary terms) in %.1fs",
         len(glossary.terms),
         time.perf_counter() - t0,
     )

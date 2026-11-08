@@ -52,7 +52,7 @@ _UNSUPPORTED_COLLISION_CLAUSE = re.compile(
 )
 
 
-# PLaMO may express unsupported attribution as a predicate ("I'm bad at
+# the translator may express unsupported attribution as a predicate ("I'm bad at
 # driving") instead of a possessive ("my driving is bad").
 _DRIVING_SKILL_CLAUSE = re.compile(
     r"\b(?P<agent>I'm|I am|you're|you are)\s+"
@@ -93,7 +93,7 @@ def neutralize_unsupported_subjects(japanese: str, english: str) -> str:
 
     An omitted Japanese subject is not evidence of who drove or collided. Keep
     all other translation text (including implied addressees such as "Are you
-    okay?") as PLaMO generated it. This is a conservative fallback, not a
+    okay?") as the translator generated it. This is a conservative fallback, not a
     general grammatical validator.
     """
     if not japanese or not english:

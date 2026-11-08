@@ -1,220 +1,101 @@
-# Japanese Video Translator
+# Japanese Video Translator — Qwen3.5-4B experiment
 
-Japanese-to-English subtitles for YouTube streams/VODs and local media. The current Windows MPV workflow uses FireRedVAD, Haas Japanese ASR (speech.cpp / Vulkan), and PLaMo 3 Translate 2B running locally through llama.cpp. MPV plays the original source; the translator processes audio independently.
+Isolated `test-qwen35-4b` branch. This experiment replaces the translator
+with **Qwen3.5-4B Q4_K_M** through local `llama-server`. The established
+FireRedVAD + Haas-ja-v1.0 Vulkan recognition, YouTube caption reconciliation,
+Hololive nickname fixes, ARK contextual corrections, glossary and MPV
+subtitles are unchanged.
 
-## Windows requirements
+## Requirements
 
-- Python 3.12+, `uv`, `yt-dlp`, `ffmpeg`, and `mpv`.
-- `speech` from speech.cpp on PATH, with the `haas-ja-v1.0` model and a working Vulkan device.
-- A CUDA-capable GPU for FireRedVAD.
-- `llama-server` from a GPU-enabled llama.cpp build on PATH for PLaMo 3 Translate 2B. The translator can start its own server.
+- Windows, Python 3.12+, `uv`, `ffmpeg`, `yt-dlp`, and MPV.
+- `speech` / speech.cpp with Haas-ja-v1.0 on Vulkan; CUDA for FireRedVAD.
+- **Recent CUDA-enabled llama.cpp `llama-server`** with Qwen3.5 GGUF model
+  support, `--jinja` and `--reasoning off`. Older binaries may exit during
+  startup; check `logs\qwen-server.log` and upgrade them if necessary.
+- Model: [unsloth/Qwen3.5-4B-GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF)
+  using the published `Q4_K_M` quantization (~2.74 GB of weights). The
+  server downloads the model on first use and caches it through llama.cpp.
+  No vision projector is required for text translation.
 
-Install Python dependencies with `uv sync`. Optional packages for separation and DeepFilterNet are declared under `[project.optional-dependencies]` in `pyproject.toml`.
+## Starting the independent branch
 
-## Start a YouTube VOD
-
-From CMD in the project directory:
+Clone this branch to a **different Windows folder** so your existing checkout
+of `test` remains untouched:
 
 ```cmd
+cd /d C:\Games
+git clone --branch test-qwen35-4b --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-qwen
+cd /d C:\Games\video-translate-qwen
+uv sync
 "Start translate.bat"
 ```
 
-Paste a YouTube URL. The launcher runs a **single translator process** with `--simple-terminal`, displays **JP:** and **EN:** lines directly in CMD, and writes diagnostics to `logs\run.log`. There is no second `uv` process or stdout pipe. On startup failure, the launcher prints the exit code and matching error lines.
+The batch file automatically detects live/VOD, runs MPV and displays `JP:`
+and `EN:` terminal output. Logs are in `logs\run.log` and
+`logs\qwen-server.log`. If MPV does not appear or the model fails to load,
+inspect these logs. The original `test` branch is not changed.
 
-Equivalent direct command:
+## Local settings
 
-```cmd
-uv run --no-sync auto-translate "YOUTUBE_URL" --mode vod --mpv --no-web
-```
-
-For extra diagnostic logging, append `-v`. Use `uv run auto-translate --help` for the active CLI switches. PLaMo 3 Translate 2B is the only translation engine; no backend selection is necessary.
-
-## PLaMo 3 Translate 2B
-
-`config.toml` is local and intentionally git-ignored. PLaMo is enabled by default; optionally configure it with:
+`config.toml` is git-ignored. If it does not exist, these defaults apply:
 
 ```toml
 [translate]
-plamo_base_url = "http://127.0.0.1:8000/v1"
-plamo_model = "plamo-3-translate"
-plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-plamo_gpu_layers = 99
-context_lines = 8
-memory_lines = 24  # additional recent subtitle pairs for term and scene memory
+qwen_base_url = "http://127.0.0.1:8001/v1"
+qwen_model = "qwen3.5-4b"
+qwen_hf_model = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
+qwen_context = 4096
+qwen_gpu_layers = 99
+context_lines = 5
+memory_lines = 12
+max_tokens = 128
 glossary = "glossary.toml"
-```
-
-If no `[translate]` configuration is supplied, PLaMo 3 Translate 2B Q4_K_M is selected automatically. The translator starts a managed `llama-server` when no server responds at the configured URL; its log is `logs\plamo-server.log`. Older local engine selectors and unused legacy translator options are ignored for compatibility. Configure `[asr]`, `[vad]`, and `[mpv]` via `src/auto_translate/config.py`.
-
-PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up to `memory_lines` recent pairs for brief terminology and earlier Japanese scene hints. Exact glossary spellings remain authoritative; learned short-term word hints are tentative. A conservative no-model-pass repair can fix one-edit repetitions of short Katakana words (for example `シャッター` / `シャッタ`) from adjacent subtitles, or from two matching words on either side of a misheard word in one subtitle. It cannot resolve unrelated ASR misrecognitions. Memory is limited to the current video segment and is cleared on seeks; set `memory_lines = 0` to disable the extra memory and repetition repair. Larger memory may add prompt tokens and translation time.
-
-Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for detailed pipeline, subtitle timing, and audio-clock diagnostics.
-
-### Haas custom vocabulary (Hololive + general gaming)
-
-The `test` branch enables a small Haas-ja-v1.0 **ASR** vocabulary by default.
-You can disable it to benchmark against the unboosted pipeline.
-Unlike `glossary.toml`, which helps PLaMo translate recognized Japanese to
-English, `haas_vocabulary.toml` boosts selected Japanese names and cross-genre
-gaming words during speech recognition. It does **not** add another model.
-The default list contains 29 entries (Hololive names, FPS/RPG/MMO/gacha terms),
-not game-specific GTA or casino vocabulary. Edit the top-level `keywords` array
-to add/remove entries, one `written form=reading` per string. Keep the list
-small to avoid false positives and slowdowns.
-
-Optional overrides in your git-ignored `config.toml`:
-
-```toml
-[asr]
-haas_keywords_enabled = true  # default; set false to restore unboosted Haas
-haas_keywords_file = "haas_vocabulary.toml"
-haas_keywords_alpha = 2.0
-haas_keywords_guard = true
-```
-
-This uses speech.cpp 0.10+ worker's `keywords`, `keywords_alpha`, and
-`keywords_guard` options. Boosted speech is decoded twice (the guard compares
-against unboosted recognition), so ASR may take longer; fallback VAD probes use
-unboosted recognition to limit overhead. If the installed speech.cpp/model
-rejects keyword options, the first affected utterance is retried unboosted and
-keyword boosting is disabled for that session with a warning in
-`logs\\run.log`. Older Haas GGUF files from before speech.cpp 0.9.4 may need
-re-fetching to support vocabulary. No speech accuracy improvement is asserted
-until tested on the same audio.
-
-### Translation style
-
-PLaMo's default prompt produces **clear, concise, neutral English** rather than
-overly casual/slangy or stiff/formal prose. It can lightly trim fillers and
-needless repetition, but must preserve meaning, sentiment, negation, uncertainty,
-emphasis, names and relevant details. It should not invent subjects or turn a
-translation into a loose summary. The model may not follow every instruction
-perfectly; Japanese ASR errors still affect the result.
-
-### Selective PLaMo quality recheck
-
-The translator uses its existing video-title context, recent dialogue and Hololive
-glossary on every request. A short instruction asks PLaMo not to romanize
-meaningless vocalizations; obvious repeated Japanese syllables are suppressed
-before inference. If a translation contains suspicious phonetic repetition,
-untranslated Japanese, a possible missing explicit negation, or an unexpected
-`[SKIP]` token, it can receive **one** additional request through the same
-PLaMo model. Ordinary subtitles use a single request; no separate reasoning model
-or ASR pass is used. Rechecks are throttled and time-limited to avoid persistent
-live-stream backlogs. Proper names and meaningful speech are preserved by
-conservative validation. These checks cannot prove semantic correctness or
-recover words that Haas did not recognize.
-
-Optional local settings:
-
-```toml
-[translate]
 quality_recheck_enabled = true
 quality_recheck_timeout_s = 3.0
 quality_recheck_min_interval_s = 10.0
 ```
 
-Use `quality_recheck_enabled = false` to turn off only the second-pass requests.
-`config.toml` is git-ignored and existing local values take precedence.
+**The dedicated 8001 port prevents accidental reuse of an unrelated local
+translation server.** The program verifies the responding server's model
+identifier before using it; stop an incompatible server or change the port.
+It starts and stops only a server process that it owns.
 
-### FireRedVAD defaults
+### Prompts and terminology
 
-The recommended default values for both live streams and VODs are:
+- Uses a **Qwen chat system instruction** and a short per-cue user request;
+  it does not send model-specific translator metadata.
+- Instructs Qwen to output English only, **disable thinking**, preserve names
+  and honorifics, and not invent speakers or missing words.
+- Sends up to `context_lines` **recent Japanese lines**, never the prior
+  generated English translations, to avoid repeating earlier model mistakes.
+- Only includes matching **current-cue** entries from the unchanged
+  `glossary.toml`, up to ten terms. ARK terms apply only when game context
+  is supported by the title or recent Japanese speech.
+- Preserves the existing caption reconciliation, Peko-chan name support,
+  speech filtering, polarity review and selective one-time recheck.
+  Known high-confidence translation inversions are repaired without a model call.
 
-```toml
-[vad]
-threshold = 0.35
-neg_threshold = 0.25
-speech_pad_ms = 200
-min_silence_ms = 400
-min_speech_ms = 100
-max_utterance_s = 6.0
-fallback_s = 5.0
-```
+If the stream has no Japanese YouTube captions, recognition still uses Haas.
+A translation model cannot recover what ASR never heard correctly. A nickname
+resolver must not automatically replace genuine `猫ちゃん` with `ぺこちゃん`.
 
-`max_utterance_s` must remain finite; infinity is unsupported by the current frame conversion. Because `config.toml` is git-ignored, any existing local `[vad]` values still override these defaults. Remove or update old overrides to use the recommendations.
-
-## Detection and subtitles
-
-1. FFmpeg decodes Japanese audio, with accelerated VOD ingestion in MPV mode.
-2. FireRedVAD detects utterance boundaries. The defaults use 200 ms speech padding, 400 ms silence, 100 ms minimum speech and a finite 6-second maximum utterance; fallback probing checks speech that VAD may miss.
-3. Haas transcribes utterances, with optional Japanese YouTube caption assistance. A conservative filter suppresses obvious non-speech ASR outputs.
-4. PLaMo 3 Translate 2B renders English-only subtitles; `glossary.toml` handles proper names and streaming terms.
-5. MPV initially waits until translation covers **5 seconds ahead of playback**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.
-
-The MPV demux limits are **1 GiB forward + 1 GiB backward**, with 120 seconds of readahead. These are upper limits, not preallocated memory.
-
-A separate **RAM-only session subtitle cache** stores translated cues and processed regions for the currently loaded VOD. Seeking back to a translated region can immediately restore existing English subtitles and reuse matching ASR/translation results. The subtitle cache is discarded when the application closes or a different video is loaded; it is not an on-disk translation archive.
-
-## Live streams
-
-The existing launcher automatically detects ongoing YouTube live streams. MPV
-plays about **8 seconds behind the incoming audio** by default. Set
-`[mpv] delay_s = 5.0` through `10.0` in local `config.toml`, or pass
-`--delay 8` on the CLI. If the first audio is still processing at 8 seconds,
-startup may wait up to 10 seconds but never waits indefinitely for translation.
-
-Live HLS audio and MPV both target the third-to-last available segment. Live
-MPV timestamps are mapped relative to the audio-start anchor, unlike the
-absolute VOD timeline. The live audio reader retries up to three consecutive
-failures and retains a continuous subtitle timeline on reconnect. Live mode
-does not use the VOD translation cache or VOD seek buffering.
-
-## Optional processing
-
-Vocal separation and DeepFilterNet are **disabled by default** and require their respective optional dependencies.
-
-## Optional: compare Japanese ASR models
-
-In the `test` branch, double-click `Compare ASR.bat` from the project
-folder and press Enter to benchmark the supplied short YouTube sample
-(`https://www.youtube.com/watch?v=LE8iGHrakAc`). You can also paste a
-different YouTube URL. The launcher downloads the source audio once, converts
-its first 120 seconds to 16 kHz mono, then uses speech.cpp Silero VAD to
-produce the **same short speech regions** for:
-
-1. Haas-ja-v1.0 Q8 with the app's GPU-decoding setting;
-2. Haas-ja-v1.0 Q8 with this clip's bread-name vocabulary hints;
-3. Qwen3-ASR 1.7B with Japanese-language selection and **no prompt**;
-4. `neosophie/Qwen3-ASR-1.7B-JA` fine-tune, using
-   `kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF` Q8_0 and **no prompt**.
-
-The same audio and VAD segments are reused for all four models. The new report is
-`logs/asr_benchmark/VIDEO_ID/compare_finetune.txt`. Earlier `compare.txt`
-and `compare_clean.txt` results are preserved. The first run may download the
-Japanese fine-tune GGUF (~2.18 GB) through the existing `huggingface-hub`
-dependency; Hugging Face caches it for subsequent runs. The base Qwen
-model and Silero VAD use speech.cpp's normal cache. Model downloads happen
-*before* recognition timing; timings still include model startup. The
-original prompted Qwen run hallucinated its prompt on six segments, so both
-Qwen variants intentionally use no prompt. The third-party speech.cpp
-conversion is separate from the original BF16 safetensors and has not been
-validated against this specific stream yet. **This does not produce an accuracy score without a manually verified
-Japanese reference transcript.** Compare the transcriptions by listening to
-each WAV segment in `segments`. The benchmark uses speech.cpp's Silero
-segmentation, whereas the normal MPV translator uses FireRedVAD, so inference
-times and text may differ from live playback. `Start translate.bat` and the
-default Haas backend are unchanged.
+The model file plus GPU/Vulkan recognition, VAD and MPV compete for 8 GB
+VRAM. Start with Q4_K_M, a 4096-token context, and a single server slot.
+A larger context may increase memory pressure or latency.
 
 ## Tests
-
-Run the retained regression tests from the project folder:
 
 ```cmd
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-The `tests/test_*.py` files are development tests; they do not run during normal VOD playback. Temporary manual MPV probe scripts have been removed.
+All tests are offline and need no live model unless explicitly specified by
+the test. They do not prove Japanese-to-English quality; compare the same
+recorded Japanese clip against the `test` branch for accuracy and speed.
 
-## Troubleshooting
+## Branch separation
 
-- **No English subtitle:** Check `logs\run.log` for ASR, translation, and seek errors; captions and ASR may not cover every utterance.
-- **A name is misrecognized:** Update `glossary.toml`; name corrections require supporting Japanese/context, not unconditional word replacement.
-- **Translation lags:** Review the pipeline queue/backpressure and ASR/MT timings in `logs\run.log`. GPU contention and long translation prompts can reduce throughput.
-- **Seeking to uncached content:** MPV may need to fetch video data and the pipeline may have to transcribe/translate new audio.
-- **PLaMo startup errors:** Check whether `llama-server` is on PATH and read `logs\plamo-server.log`. Reusing a previously running server is supported.
-
-## Branches
-
-- `main`: saved working baseline.
-- `test`: development and cleanup branch. Validate changes here before promoting them to `main`.
+- `main`: original stable baseline.
+- `test`: existing Haas + original translator pipeline.
+- `test-qwen35-4b`: isolated Qwen-only translator experiment.

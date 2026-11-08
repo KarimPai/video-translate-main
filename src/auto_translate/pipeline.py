@@ -228,7 +228,7 @@ def run_translate(
         memory_generation = tr.generation
 
         # A cached Subtitle already includes its Japanese transcript and
-        # English translation; do not call PLaMo again for the same VOD cue.
+        # English translation; do not call the translator again for the same VOD cue.
         if isinstance(tr, Subtitle):
             if tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))

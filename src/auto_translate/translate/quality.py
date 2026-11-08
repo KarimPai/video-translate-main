@@ -1,4 +1,4 @@
-"""Cheap, conservative signals for selective PLaMo translation review.
+"""Cheap, conservative signals for selective Qwen translation review.
 
 Do not classify unfamiliar romanized words as gibberish: they may be VTuber
 names or game terminology. Only skip Japanese with clear syllable loops and
@@ -136,7 +136,7 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
 def repair_high_confidence_meaning(japanese: str, english: str) -> str:
     """Fix two tightly bounded reversals found in real Japanese stream output.
 
-    Applies AFTER optional PLaMo quality review, so a rejected or timed-out
+    Applies AFTER optional Qwen quality review, so a rejected or timed-out
     model retry cannot leave these known meaning inversions on screen.
     Does not attempt to repair arbitrary garbled ASR sentences.
     """

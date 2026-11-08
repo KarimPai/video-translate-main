@@ -1,7 +1,4 @@
-"""PLaMo-only translation regression tests.
-
-No model or llama-server is started; the translator constructor is mocked.
-"""
+"""Qwen-only configuration and legacy-config regression checks."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,57 +9,51 @@ from auto_translate.translate import create_translator
 
 
 class TranslationConfigurationTests(unittest.TestCase):
-    def test_defaults_select_plamo_without_backend_switch(self):
+    def test_defaults_are_local_qwen_only(self):
         cfg = TranslateConfig()
-        self.assertEqual(cfg.plamo_hf_model, "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M")
-        self.assertEqual(cfg.context_lines, 8)
-        self.assertEqual(cfg.memory_lines, 24)
+        self.assertEqual(cfg.qwen_hf_model, "unsloth/Qwen3.5-4B-GGUF:Q4_K_M")
+        self.assertEqual(cfg.qwen_model, "qwen3.5-4b")
+        self.assertEqual(cfg.qwen_context, 4096)
+        self.assertEqual(cfg.qwen_base_url, "http://127.0.0.1:8001/v1")
+        self.assertEqual(cfg.glossary, "glossary.toml")
         self.assertTrue(cfg.quality_recheck_enabled)
-        self.assertEqual(cfg.quality_recheck_timeout_s, 3.0)
-        self.assertEqual(cfg.quality_recheck_min_interval_s, 10.0)
-        for obsolete in ("backend", "model", "base_url", "extra_body", "min_request_interval_s"):
-            self.assertFalse(hasattr(cfg, obsolete), obsolete)
+        self.assertFalse(hasattr(cfg, "backend"))
 
-    def test_old_local_engine_keys_are_ignored_but_plamo_options_survive(self):
-        text = """
+    def test_legacy_local_config_does_not_reenable_old_engine(self):
+        legacy = """
 [translate]
-backend = "previous-engine"
-model = "unused-model"
-base_url = "http://localhost:11434/v1"
-temperature = 0.3
-min_request_interval_s = 3
-extra_body = { unused = true }
-plamo_model = "plamo-3-translate"
+backend = "legacy"
+model = "ignored"
+plamo_model = "unused"
+plamo_hf_model = "unused"
+plamo_base_url = "http://127.0.0.1:8000/v1"
 plamo_gpu_layers = 66
 context_lines = 4
 memory_lines = 12
-[translate.presets.previous]
-model = "unused-preset"
+qwen_context = 3072
+[translate.presets.old]
+model = "ignored"
 """
-        with tempfile.TemporaryDirectory() as folder:
-            cfg_path = Path(folder) / "config.toml"
-            cfg_path.write_text(text, encoding="utf-8")
-            cfg = load_config(cfg_path)
-        self.assertEqual(cfg.translate.plamo_model, "plamo-3-translate")
-        self.assertEqual(cfg.translate.plamo_gpu_layers, 66)
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / "config.toml"
+            file.write_text(legacy, encoding="utf-8")
+            cfg = load_config(file)
+        self.assertEqual(cfg.translate.qwen_model, "qwen3.5-4b")
+        self.assertEqual(cfg.translate.qwen_context, 3072)
         self.assertEqual(cfg.translate.context_lines, 4)
-        self.assertEqual(cfg.translate.memory_lines, 12)
-        self.assertFalse(hasattr(cfg.translate, "backend"))
+        self.assertFalse(hasattr(cfg.translate, "plamo_model"))
 
-    def test_factory_always_creates_plamo_with_glossary_and_video_title(self):
-        cfg = TranslateConfig()
-        glossary = object()
-        with patch("auto_translate.translate.PlamoTranslator") as constructor:
-            instance = create_translator(cfg, glossary, vod_title="Hololive VOD")
-        self.assertIs(instance, constructor.return_value)
-        constructor.assert_called_once_with(
-            cfg, glossary, vod_title="Hololive VOD"
-        )
+    def test_factory_uses_qwen_and_preserves_glossary(self):
+        cfg, glossary = TranslateConfig(), object()
+        with patch("auto_translate.translate.QwenTranslator") as constructor:
+            actual = create_translator(cfg, glossary, vod_title="Hololive ARK")
+        self.assertIs(actual, constructor.return_value)
+        constructor.assert_called_once_with(cfg, glossary, vod_title="Hololive ARK")
 
-    def test_no_config_file_still_uses_plamo_settings(self):
-        with tempfile.TemporaryDirectory() as folder:
-            cfg = load_config(Path(folder) / "missing.toml")
-        self.assertEqual(cfg.translate.plamo_model, "plamo-3-translate")
+    def test_missing_config_is_qwen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = load_config(Path(tmp) / "missing.toml")
+        self.assertEqual(cfg.translate.qwen_model, "qwen3.5-4b")
 
 
 if __name__ == "__main__":

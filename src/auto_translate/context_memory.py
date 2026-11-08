@@ -170,7 +170,7 @@ def build_recent_context(
     context_lines: int = 8,
     memory_lines: int = 24,
 ) -> str:
-    """Short, non-authoritative memory beyond the normal PLaMO chat history."""
+    """Short, non-authoritative memory beyond the normal the translator chat history."""
     recent = history[-max(0, memory_lines):] if memory_lines else []
     if not recent:
         return ""
@@ -178,7 +178,7 @@ def build_recent_context(
     lines: list[str] = []
     found: list[str] = []
     seen: set[str] = set()
-    # The static glossary is reliable even if past PLaMO output was not.
+    # The static glossary is reliable even if past the translator output was not.
     for ja, _ in reversed(recent):
         for source, target in glossary.find(ja):
             if source in seen:

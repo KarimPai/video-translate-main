@@ -1,7 +1,7 @@
 """Load config.toml into typed dataclasses (missing keys fall back to defaults)."""
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
@@ -55,21 +55,20 @@ class AsrConfig:
 
 @dataclass
 class TranslateConfig:
-    """PLaMo 3 Translate 2B settings (sole translation engine)."""
+    """Qwen3.5-4B GGUF is the sole local Japanese-to-English translator."""
 
-    plamo_base_url: str = "http://127.0.0.1:8000/v1"
-    plamo_model: str = "plamo-3-translate"
-    plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-    plamo_context: int = 8192
-    plamo_gpu_layers: int = 99
-    max_tokens: int = 120
+    # Port 8001 avoids accidentally reusing a lingering older model server.
+    qwen_base_url: str = "http://127.0.0.1:8001/v1"
+    qwen_model: str = "qwen3.5-4b"
+    qwen_hf_model: str = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
+    qwen_context: int = 4096
+    qwen_gpu_layers: int = 99
+    max_tokens: int = 128
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
-    context_lines: int = 8
-    # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
-    memory_lines: int = 24
+    context_lines: int = 5
+    memory_lines: int = 12
     glossary: str = "glossary.toml"
-    # Only dubious outputs receive a bounded second pass through the SAME PLaMo.
     quality_recheck_enabled: bool = True
     quality_recheck_timeout_s: float = 3.0
     quality_recheck_min_interval_s: float = 10.0
@@ -145,16 +144,13 @@ def load_config(path: Path) -> Config:
     ):
         mpv_data.pop(obsolete, None)
 
-    # Older local config.toml files may still have an engine selector and
-    # settings from removed translation paths. Ignore those keys so an
-    # existing installation automatically uses PLaMo without manual edits.
-    translate_data = dict(data.get("translate", {}))
-    for obsolete in (
-        "backend", "model", "base_url", "temperature",
-        "min_request_interval_s", "extra_body", "presets", "preset",
-        "mpv_delay_s", "api_key_env",
-    ):
-        translate_data.pop(obsolete, None)
+    # Keep the existing git-ignored config.toml compatible when switching
+    # branches: ignore all outdated engine fields, not just known names.
+    valid_translate_keys = {entry.name for entry in fields(TranslateConfig)}
+    translate_data = {
+        key: value for key, value in data.get("translate", {}).items()
+        if key in valid_translate_keys
+    }
 
     return Config(
         ingest=IngestConfig(**ingest_data),

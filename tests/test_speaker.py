@@ -88,25 +88,39 @@ class SpeakerTurnTests(unittest.TestCase):
         self.assertEqual(result, [Turn(0, 2, 0), Turn(2, 4, 1)])
         self.assertEqual(sum(x.end - x.start for x in result), 4)
 
-    def test_overlap_is_not_falsely_isolated(self):
+    def test_second_speaker_interrupts_and_truncates_first(self):
         self.assertEqual(
             split_turns(4.0, [Turn(0, 2.5, 0), Turn(1.7, 4, 1)], 0.55),
+            [Turn(0, 1.7, 0), Turn(1.7, 4, 1)],
+        )
+
+    def test_short_interjection_over_long_speech_is_not_a_false_takeover(self):
+        self.assertEqual(
+            split_turns(4.0, [Turn(0, 4, 0), Turn(1.6, 2.2, 1)], 0.55),
             [Turn(0, 4, None)],
         )
 
-    def test_separates_clear_changes_around_mixed_overlap(self):
+    def test_ambiguous_nearly_simultaneous_speech_remains_unsplit(self):
+        self.assertEqual(
+            split_turns(3.0, [Turn(0, 2.0, 0), Turn(.2, 3.0, 1)], 0.55),
+            [Turn(0, 3.0, None)],
+        )
+
+    def test_separates_successive_interruptions_and_normal_turns(self):
         spans = split_turns(6.0, [
             Turn(0.0, 1.40, 0),
             Turn(1.65, 3.10, 1),
             Turn(2.70, 4.00, 2),
             Turn(4.30, 6.00, 3),
         ], .55)
-        self.assertEqual(len(spans), 3)
-        self.assertEqual([span.speaker for span in spans], [0, None, 3])
+        self.assertEqual(len(spans), 4)
+        self.assertEqual([span.speaker for span in spans], [0, 1, 2, 3])
         self.assertAlmostEqual(spans[0].end, 1.525)
         self.assertAlmostEqual(spans[1].start, 1.525)
-        self.assertAlmostEqual(spans[1].end, 4.15)
-        self.assertAlmostEqual(spans[2].start, 4.15)
+        self.assertAlmostEqual(spans[1].end, 2.70)
+        self.assertAlmostEqual(spans[2].start, 2.70)
+        self.assertAlmostEqual(spans[2].end, 4.15)
+        self.assertAlmostEqual(spans[3].start, 4.15)
         self.assertAlmostEqual(sum(x.end - x.start for x in spans), 6.0)
 
     def test_tiny_speaker_fragment_is_not_cut(self):
@@ -190,6 +204,7 @@ class SpeakerPipelineTests(unittest.TestCase):
         self.assertEqual([u.speech_start_s for u in result], [10.1, 12.0])
         self.assertIsNot(result[0].timings, result[1].timings)
         self.assertFalse(hasattr(result[0], "speaker_id"))
+        self.assertEqual([part.speaker_handoff for part in result], [False, True])
 
     def test_short_windows_do_not_run_diarization(self):
         backend = object.__new__(SherpaSplitter)
@@ -258,7 +273,7 @@ class SpeakerPipelineTests(unittest.TestCase):
         self.assertAlmostEqual(result[0].start_s, 40)
         self.assertAlmostEqual(result[-1].end_s, 42.4)
 
-    def test_overlapping_model_turns_preserve_original_audio(self):
+    def test_overlapping_takeover_cuts_first_audio_and_preserves_all_pcm(self):
         class FakeDiarizer:
             def process(self, samples):
                 return self
@@ -271,8 +286,16 @@ class SpeakerPipelineTests(unittest.TestCase):
         backend.cfg = SpeakerConfig()
         backend.diarizer = FakeDiarizer()
         backend.failures = 0
-        src = Utterance(0, 4, np.ones(4 * SAMPLE_RATE, dtype=np.float32))
-        self.assertEqual(backend.split(src), [src])
+        pcm = np.arange(4 * SAMPLE_RATE, dtype=np.float32) / (4 * SAMPLE_RATE)
+        src = Utterance(100, 104, pcm, generation=4, speech_start_s=100.08)
+        parts = backend.split(src)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual([(p.start_s, p.end_s) for p in parts],
+                         [(100, 101.5), (101.5, 104)])
+        self.assertEqual([p.speaker_handoff for p in parts], [False, True])
+        self.assertEqual([p.speech_start_s for p in parts], [100.08, 101.5])
+        self.assertTrue(np.array_equal(np.concatenate([p.audio for p in parts]), pcm))
+        self.assertEqual([p.generation for p in parts], [4, 4])
 
     def test_legacy_identity_config_is_ignored(self):
         from auto_translate.config import load_config

@@ -1,5 +1,6 @@
 """PLaMo 3 Translate with an automatically managed local llama.cpp server."""
 
+import re
 import atexit
 import json
 import logging
@@ -235,6 +236,7 @@ class PlamoTranslator:
             return "[translation failed]"
 
         english = correct_translation(ja, english)
+        english = _remove_unmentioned_member_names(ja, english)
         corrected = neutralize_unsupported_subjects(ja, english)
         if corrected != english:
             log.debug("Neutralized unsupported subject: JP=%r EN=%r -> %r", ja, english, corrected)
@@ -304,6 +306,28 @@ class PlamoTranslator:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.load(resp)
         return data["choices"][0]["message"]["content"]
+
+
+# Guard against a specific class of unsupported Hololive full-name insertions.
+# Do not remove nicknames or names when their Japanese form is present.
+_MEMBER_NAME_FORMS = {
+    "Ichijou Ririka": ("一条莉々華", "一条りりか", "いちじょうりりか", "莉々華", "りりか", "リリカ"),
+    "Usada Pekora": ("兎田ぺこら", "うさだぺこら", "ぺこら", "ペコラ", "ぺこちゃん", "ペコちゃん"),
+}
+
+
+def _remove_unmentioned_member_names(japanese: str, english: str) -> str:
+    """Reject unsupported full-name expansions without rewriting normal speech."""
+    for full_name, forms in _MEMBER_NAME_FORMS.items():
+        if any(form in japanese for form in forms):
+            continue
+        # Only suppress a complete invented name; leave surrounding speech intact.
+        pattern = re.compile(r"(?<![A-Za-z])" + re.escape(full_name) + r"(?![A-Za-z])", re.I)
+        if pattern.search(english):
+            log.warning("Removed unsupported member name %s from translation: JP=%r", full_name, japanese)
+            english = pattern.sub("", english)
+            english = re.sub(r"\\s{2,}", " ", english).strip(" ,")
+    return english
 
 
 def _server_responds(base_url: str) -> bool:

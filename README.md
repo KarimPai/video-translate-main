@@ -6,8 +6,8 @@ The `main` and `test-cat-translate-3.3b` branches remain untouched for compariso
 
 ## Experimental: verified speaker context and stricter caption repair
 
-This branch `experiment/plamo8b-context-captions` adds three optional-quality
-improvements over `test-plamo8b-q3`. The original PLaMo 8B Q3_K_M branch
+This branch `experiment/plamo8b-context-captions` adds conservative quality
+safeguards over `test-plamo8b-q3`. The original PLaMo 8B Q3_K_M branch
 remains an unchanged comparison baseline.
 
 ### PLaMo scene memory (enabled by default)
@@ -109,6 +109,52 @@ context_enabled = false
 - This runs before the PLaMo translator and short-term speaker context,
   without loading another GPU model or adding translation requests.
 
+### Conservative ASR and translation safeguards
+
+Haas's current speech.cpp worker returns **recognized text only**, not
+calibrated word confidence, so this is **heuristic uncertainty detection**,
+not an actual ASR-confidence model.
+
+- **Uncertain Japanese:** A standalone unrecognized Katakana phrase or a
+  strong conflict with an otherwise well-aligned Japanese YouTube caption
+  is flagged (not deleted). It still appears in JP/EN output, but **cannot
+  establish a scene, be reused as recent translation memory, or cause an
+  unnecessary second LLM pass**. Different VTT text is not automatically
+  trusted or substituted.
+- **Incomplete phrases:** After Haas, the translator may wait up to
+  **500 ms**, and combine two fragments only if the first has a recognized
+  unfinished Japanese clause ending, the **same speaker** is verified by
+  CPU embeddings, neither fragment is uncertain, the audio gap is at most
+  **350 ms**, and total segment duration stays within seven seconds.
+  Different speakers, seeks, VOD cache records and unrelated dialogue
+  remain separate. This may add latency; the merge is intentionally rare.
+- **Selective retry:** One extra PLaMo request **only** for a failed/invalid
+  completion or a narrowly testable contradiction, including mismatched
+  Arabic numerals, a simple missing English negation, `だっこ` incorrectly
+  rendered as shoulder-carrying, or `踏み倒す` rendered as destruction.
+  The alternative uses only the current Japanese and matched glossary
+  (with a few grounded corrective terms), **no scene or previous dialogue**.
+  Retry has a default **4-second timeout**. Accept the alternative only
+  if it removes a flagged error; otherwise keep the first result.
+  Numeric units such as `1000万` and common apologies are guarded against
+  obvious false-positive retry triggers.
+- This does **not** reconstruct words lost by Haas, validate a stream's
+  real audio against translations, or guarantee elimination of hallucinations.
+  It deliberately avoids speculative rewrites and extra permanent models.
+
+All quality toggles can be changed in an existing git-ignored `config.toml`:
+
+```toml
+[translate]
+selective_retry_enabled = true
+selective_retry_timeout_s = 4.0
+fragment_join_enabled = true
+fragment_join_wait_s = 0.5
+fragment_join_gap_s = 0.35
+```
+
+Disable either mode to compare latency/accuracy with the preceding branch.
+
 ### Switch an existing single-branch clone to the experiment
 
 ```bat
@@ -124,8 +170,9 @@ To restore the original PLaMo 8B baseline, close MPV and run
 
 The model size/quantization, 1024-token context allocation, Flash Attention,
 Q8 KV cache, one inference slot, MPV transport and subtitle style are
-**unchanged**. Only the variable-length reference text and CPU embedding
-work may add processing latency.
+**unchanged**. A qualifying fragment may add at most 500 ms of waiting;
+a quality-flagged PLaMo result may trigger one extra inference, capped by
+the configured retry timeout. Typical unflagged utterances still use one pass.
 
 ---
 

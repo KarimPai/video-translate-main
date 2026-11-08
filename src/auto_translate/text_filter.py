@@ -52,6 +52,44 @@ def strip_nonverbal_labels(text: str) -> str:
         return ""
     return cleaned
 
+
+# In a mixed speech/laughter utterance, discard only conspicuous laugh runs.
+# Do NOT use _LAUGHTER globally: it also matches individual 「笑」「草」
+# within ordinary words such as 笑った / 草原. Keep short "はは", "ふふ"
+# and meaningful repetition such as 来い来い or 待って待って.
+_INLINE_LAUGH_KANA = re.compile(
+    r"(?:[あア][はハ]{2,}|[わワ][はハ]{2,}|[はハ]{3,}|"
+    r"[ふフ]{3,}|[へヘ]{3,}|[ほホ]{3,}|[くク]{3,})"
+)
+_INLINE_CHAT_LAUGH = re.compile(
+    r"(?<![a-zA-Z])(?:[wｗ]{3,}|(?:ha){2,})(?![a-zA-Z.])|"
+    r"(?<![\u3400-\u9fff])(?:笑+|草+)(?![\u3040-\u30ff\u3400-\u9fff])",
+    re.IGNORECASE,
+)
+_LAUGH_ONLY_EXHALE = re.compile(r"^(?:[ふフ][っッ]|[ふフ][ふフ][っッ]?)$")
+_CONSECUTIVE_COMMAS = re.compile(r"[、，,]{2,}")
+
+
+def strip_incidental_laughter(text: str) -> str:
+    """Remove obvious laughs from mixed Japanese speech, not words or meaning.
+
+    Run *after* caption/name reconciliation, before translator/context memory.
+    Conservative textual cleanup cannot identify every nonverbal audio event.
+    """
+    if not text:
+        return ""
+    cleaned = _INLINE_LAUGH_KANA.sub(" ", text)
+    cleaned = _INLINE_CHAT_LAUGH.sub(" ", cleaned)
+    if cleaned == text:
+        return text
+    cleaned = _CONSECUTIVE_COMMAS.sub("、", cleaned)
+    cleaned = re.sub(r"\s+([、，,。！？!?])", r"\1", cleaned)
+    cleaned = _SPACES.sub(" ", cleaned)
+    # Punctuation left by a removed laugh is never useful on its own.
+    cleaned = cleaned.strip(" \t\r\n、，,。！？!?")
+    return cleaned
+
+
 # These stock decoder completions are also legitimate dialogue. Suppress them
 # only when an aligned caption independently identifies a sound-only event.
 def is_sound_caption_artifact(text: str) -> bool:
@@ -176,6 +214,8 @@ def is_isolated_reaction(text: str) -> bool:
     # A solitary small tsu is an ASR clipping artifact, not a word. It was
     # previously sent to Qwen and surfaced as "[translation failed]".
     if tokens and all(set(part) == {"っ"} for part in tokens):
+        return True
+    if len(tokens) == 1 and _LAUGH_ONLY_EXHALE.fullmatch(tokens[0]):
         return True
     return bool(tokens) and all(_REACTION_RUN.fullmatch(part) for part in tokens)
 

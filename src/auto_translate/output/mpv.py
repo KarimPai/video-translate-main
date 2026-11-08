@@ -1261,7 +1261,7 @@ class MpvOutput:
             ]
 
         active.sort(key=lambda ln: (ln.show_from, ln.sub.start_s), reverse=True)
-        active = active[:max(1, self.cfg.max_subtitle_rows)]
+        active = _prefer_speaker_rows(active, max(1, self.cfg.max_subtitle_rows))
 
         text = (
             _ass_many(
@@ -1322,6 +1322,31 @@ class MpvOutput:
                 )
 
 
+def _prefer_speaker_rows(lines: list[_Line], limit: int) -> list[_Line]:
+    """Select the latest utterance from each known voice before filling rows.
+
+    One-speaker streams still stack earlier cues in the remaining slots.
+    The selection itself does not change the visual ordering: newest above.
+    """
+    selected: list[_Line] = []
+    used_speakers: set[int] = set()
+    for line in lines:
+        speaker = line.sub.speaker_id
+        if speaker is not None and speaker not in used_speakers:
+            selected.append(line)
+            used_speakers.add(speaker)
+            if len(selected) == limit:
+                break
+    if len(selected) < limit:
+        for line in lines:
+            if all(existing is not line for existing in selected):
+                selected.append(line)
+            if len(selected) == limit:
+                break
+    selected.sort(key=lambda line: (line.show_from, line.sub.start_s), reverse=True)
+    return selected
+
+
 def _ass_many(
     subtitles: list[Subtitle],
     cfg: MpvConfig,
@@ -1346,7 +1371,7 @@ def _ass_many(
         if sub.en:
             rows.append(
                 rf"{{\fs{cfg.en_size}\1c&HFFFFFF&}}"
-                + esc(sub.en)
+                + esc((f"{chr(65 + sub.speaker_id)}: " if sub.speaker_id is not None and 0 <= sub.speaker_id < 26 else "") + sub.en)
             )
 
         if not rows:

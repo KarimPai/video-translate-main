@@ -63,7 +63,7 @@ def repair_gta_carjacking(
 _HORSE_RACING_TITLE = re.compile(r"(?i)競馬|ホロ[1１]GP|horse.?rac|derby|ダービー")
 _HORSE_RACING_SIGNALS = (
     "競馬", "オッズ", "パドック", "推奨馬", "お馬", "競走馬",
-    "前走", "出走", "馬番", "着順",
+    "前走", "出走", "馬番", "着順", "ワイド", "馬券", "三連複", "軸馬",
 )
 
 

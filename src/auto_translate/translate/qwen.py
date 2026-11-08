@@ -38,6 +38,9 @@ _SYSTEM_PROMPT = (
     "Return ONLY a clear, concise, natural English translation of the CURRENT Japanese line, "
     "never commentary, explanations, multiple options, or Japanese text. "
     "Preserve tone, humor, strong language, names, honorifics, numbers, negation, "
+    "When Arabic numerals occur together in Japanese ASR without separators, "
+    "preserve their exact order and digit count: do not add thousands commas, "
+    "insert zeros, or reinterpret an ambiguous number string as currency. "
     "uncertainty, and meaning without adding or censoring information. "
     "Do not reverse praise, rejection, or other sentiment. "
     "Spoken names ending with -chan, -san or -sama retain those suffixes in English. "
@@ -302,9 +305,23 @@ class QwenTranslator:
         # 327-term glossary or mistake carjacking for kidnapping.
         if "カージャック" in ja and not any(term == "カージャック" for term, _ in hits):
             hits.append(("カージャック", "carjack / carjacking (vehicle theft, not kidnapping)"))
-        if is_ark_context(self.vod_title, ja, [jp for jp, _ in history[-8:]]):
+        recent_ja = [jp for jp, _ in history[-8:]]
+        if is_ark_context(self.vod_title, ja, recent_ja):
             existing = {source for source, _ in hits}
             hits.extend((src, target) for src, target in ark_glossary_hits(ja) if src not in existing)
+        if is_horse_racing_context(self.vod_title, ja, recent_ja):
+            racing_terms = {
+                "ワイド": "wide bet (Japanese place quinella; NOT a straight win bet)",
+                "軸馬": "key horse / anchor horse in betting combinations",
+                "馬券": "horse-racing betting ticket",
+                "三連複": "trio bet (three horses in top three, any order)",
+                "複勝": "place bet",
+                "単勝": "win bet",
+            }
+            existing = {source for source, _ in hits}
+            for src, target in racing_terms.items():
+                if src in ja and src not in existing:
+                    hits.append((src, target))
         return hits[:10]
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
@@ -376,10 +393,15 @@ class QwenTranslator:
             self.vod_title, ja, [jp for jp, _ in history[-8:]]
         ):
             blocks.append(
-                "Event context: horse racing. Odds are betting odds; the paddock "
-                "is where horses are inspected; 推奨馬 is a recommended horse, "
-                "never a bar. Keep racehorse names as proper names; don't "
-                "invent a horse's identity or rewrite unknown words."
+                "Event context: Japanese horse racing and betting. Odds are "
+                "betting odds; the paddock is where horses are inspected; "
+                "推奨馬 is a recommended horse, never a bar. ワイド is a "
+                "place-quinella bet where both selected horses finish in the "
+                "top three; 軸 is a key or anchor horse, not a straight bet. "
+                "Unseparated digits may be spoken horse numbers: preserve "
+                "their exact sequence, never turn 62468 into 62,468 or 468 "
+                "into 4,680. Keep racehorse names as proper names. Do not "
+                "invent an identity or repair unclear ASR without evidence."
             )
             if "ミルフィーユドール" in ja:
                 blocks.append(

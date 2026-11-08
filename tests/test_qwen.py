@@ -213,6 +213,34 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertIn("Event context: horse racing", data["messages"][1]["content"])
         self.assertIn("not 'Milky Way Doll'", data["messages"][1]["content"])
 
+    def test_horse_wide_bet_and_number_sequence_are_not_straight_bet_or_money(self):
+        instance = translator()
+        instance.vod_title = "Hololive horse racing"
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "Just the key horse for the wide bet."}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=response) as call:
+            self.assertEqual(
+                instance._chat("ワイドに軸だけ。", [], 5),
+                "Just the key horse for the wide bet.",
+            )
+        data = json.loads(call.call_args.args[0].data.decode("utf-8"))
+        self.assertIn("ワイド => wide bet", data["messages"][1]["content"])
+        self.assertIn("NOT a straight win bet", data["messages"][1]["content"])
+        self.assertIn("key or anchor horse", data["messages"][1]["content"])
+
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "62468? How about 468?"}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=response) as call:
+            self.assertEqual(instance._chat("62468どうする?468。", [], 5),
+                             "62468? How about 468?")
+        data = json.loads(call.call_args.args[0].data.decode("utf-8"))
+        self.assertIn("do not add thousands commas", data["messages"][0]["content"])
+        self.assertIn("never turn 62468 into 62,468", data["messages"][1]["content"])
+
     def test_ark_glossary_in_qwen_prompt(self):
         instance = translator()
         response = io.BytesIO(json.dumps({"choices": [

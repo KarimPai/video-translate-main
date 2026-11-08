@@ -27,6 +27,7 @@ from ..stream_context import (
     repair_valorant_translation,
 )
 from ..subject_guard import neutralize_unsupported_subjects
+from ..translation_guard import translation_quality_flags
 from ..watame import correct_translation
 from .quality import (
     SKIP_TOKEN,
@@ -126,6 +127,7 @@ class PlamoTranslator:
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
         self._reference_context: str | None = None
+        self._source_uncertain = False
         self._scene_memory = (
             SceneMemory(max_idle_lines=cfg.scene_max_idle_lines)
             if cfg.scene_memory_enabled else None
@@ -246,6 +248,7 @@ class PlamoTranslator:
         if scene is not None:
             scene.reset()
         self._reference_context = None
+        self._source_uncertain = False
 
     def observe_scene(self, japanese: str) -> None:
         """Accumulate only recognized Japanese, never model English output."""
@@ -257,6 +260,10 @@ class PlamoTranslator:
             if before != after:
                 log.debug("PLaMo scene changed: %s -> %s", before, after)
 
+    def set_source_reliability(self, uncertain: bool) -> None:
+        """A heuristic from Haas text, not an acoustic confidence score."""
+        self._source_uncertain = bool(uncertain)
+
     def set_reference_context(self, text: str | None) -> None:
         """For the very next request only; never inject mixed or old history."""
         if not text or "<|plamo:" in text or "\n" in text or "\r" in text:
@@ -265,10 +272,11 @@ class PlamoTranslator:
         self._reference_context = text[-140:]
 
     def _complete(self, japanese: str, *, timeout: float) -> str:
-        reference = getattr(self, "_reference_context", None)
+        source_uncertain = bool(getattr(self, "_source_uncertain", False))
+        reference = None if source_uncertain else getattr(self, "_reference_context", None)
         self._reference_context = None
         scene = getattr(self, "_scene_memory", None)
-        scene_hint = scene.hint() if scene is not None else None
+        scene_hint = scene.hint() if scene is not None and not source_uncertain else None
         payload = {
             "model": self.cfg.plamo_model,
             "prompt": build_plamo_prompt(
@@ -290,30 +298,92 @@ class PlamoTranslator:
             data = json.load(response)
         return str(data["choices"][0].get("text") or "")
 
+    # Source-grounded hints apply only to this fallback. Never change the
+    # main prompt or feed one English guess into another translation request.
+    _RETRY_TERMS = (
+        ("だっこ", "carry someone in one's arms"),
+        ("抱っこ", "carry someone in one's arms"),
+        ("踏み倒", "avoid paying a debt or bill"),
+    )
+
+    def _complete_retry(self, ja: str, *, timeout: float) -> str:
+        """One source-only alternative: no prior dialogue or scene guesses."""
+        matched = self.glossary.find(ja)
+        for source, meaning in self._RETRY_TERMS:
+            if source in ja and all(source != hit[0] for hit in matched):
+                matched.append((source, meaning))
+        prompt = build_plamo_prompt(ja, matched)
+        payload = {
+            "model": self.cfg.plamo_model,
+            "prompt": prompt,
+            "temperature": 0,
+            "max_tokens": self.cfg.max_tokens,
+            "stop": _STOP,
+            "stream": False,
+        }
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.load(response)
+        return str(data["choices"][0].get("text") or "")
+
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
-        if not ja.strip():
-            return SKIP_TOKEN
-        if is_obvious_nonverbal_japanese(ja) and not self.glossary.find(ja):
-            return SKIP_TOKEN
-        # Observe even when an identical short term can be reused without an
-        # LLM request. Cached subtitles use observe_scene() from the pipeline.
-        self.observe_scene(ja)
-        if self.memory_lines:
-            reused = reuse_recent_short_term(ja, history)
-            if reused is not None:
-                return reused
-        english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
-        if _invalid_output(ja, english):
-            log.warning("PLaMo invalid completion skipped for source=%r", ja[:100])
-            return SKIP_TOKEN
-        english = repair_high_confidence_meaning(ja, english)
-        recent_ja = [j for j, _ in history[-8:]]
-        english = repair_valorant_translation(ja, english, recent_ja, False)
-        english = repair_barotrauma_translation(ja, english)
-        english = repair_ark_tier_translation(ja, english, self.vod_title, recent_ja)
-        english = correct_translation(ja, english)
-        english = neutralize_unsupported_subjects(ja, english)
-        return english or SKIP_TOKEN
+        suspect = bool(getattr(self, "_source_uncertain", False))
+        try:
+            if not ja.strip():
+                return SKIP_TOKEN
+            if is_obvious_nonverbal_japanese(ja) and not self.glossary.find(ja):
+                return SKIP_TOKEN
+            # A doubtful transcript must not establish a game scene.
+            if not suspect:
+                self.observe_scene(ja)
+            if self.memory_lines and not suspect:
+                reused = reuse_recent_short_term(ja, history)
+                if reused is not None:
+                    return reused
+            english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
+            original_invalid = _invalid_output(ja, english)
+            original_flags = translation_quality_flags(ja, english) if not original_invalid else frozenset()
+            # Only an objectively flagged problem can trigger a second pass.
+            # Retrying identical temperature-0 prompts would not help.
+            if (
+                (original_invalid or original_flags)
+                and not suspect
+                and getattr(self.cfg, "selective_retry_enabled", False)
+            ):
+                try:
+                    alternative = _clean(self._complete_retry(
+                        ja, timeout=max(0.5, min(
+                            float(self.cfg.selective_retry_timeout_s),
+                            float(self.cfg.timeout_s),
+                        )),
+                    ))
+                    if not _invalid_output(ja, alternative):
+                        alternative_flags = translation_quality_flags(ja, alternative)
+                        if original_invalid or len(alternative_flags) < len(original_flags):
+                            log.debug(
+                                "PLaMo selective retry accepted: %r -> %r",
+                                english[:100], alternative[:100],
+                            )
+                            english = alternative
+                except (OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                    log.debug("PLaMo selective retry unavailable, keeping first result: %s", exc)
+            if _invalid_output(ja, english):
+                log.warning("PLaMo invalid completion skipped for source=%r", ja[:100])
+                return SKIP_TOKEN
+            english = repair_high_confidence_meaning(ja, english)
+            recent_ja = [j for j, _ in history[-8:]]
+            english = repair_valorant_translation(ja, english, recent_ja, False)
+            english = repair_barotrauma_translation(ja, english)
+            english = repair_ark_tier_translation(ja, english, self.vod_title, recent_ja)
+            english = correct_translation(ja, english)
+            english = neutralize_unsupported_subjects(ja, english)
+            return english or SKIP_TOKEN
+        finally:
+            self._source_uncertain = False
 
     def close(self) -> None:
         process, self.process = self.process, None

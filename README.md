@@ -29,6 +29,12 @@ Translate the following Japanese text into English.
 
 No previous Japanese/English dialogue, video title, long instructions, leaked constraint sections, Index stop markers, or Qwen thinking parameters are injected. **Temperature is 0** for deterministic comparison. CAT is not guaranteed to understand VTuber slang or broken ASR perfectly; validate on actual audio.
 
+### Real-VOD output compatibility
+
+The community CAT GGUF has been observed returning the Sarashina end-of-sequence marker `</s>` **inside the English text**, even when using the officially specified prompt. The CAT request now explicitly stops on `</s>`, and output cleanup also strips it if the server exposes the marker. No extra inference or prompt history is used.
+
+Three source-evident GTA transcript errors have narrow, deterministic safeguards: `30秒` wrongly translated as `15 seconds`; a standalone `聞こえるな!` wrongly rendered `Don't listen!`; and a standalone `よろしくお願いします!` incorrectly generating an unrelated "reliable/professional" request. These are **not general translation-quality fixes**—other CAT errors, incomplete Japanese or incorrect Haas transcription can remain.
+
 ### Clean default CAT settings
 
 The configuration file is optional. Model defaults are:

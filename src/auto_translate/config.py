@@ -53,6 +53,8 @@ class SpeakerConfig:
     boundary_search_ms: int = 180
     boundary_quiet_ms: int = 40
     boundary_quiet_ratio: float = 0.45
+    interruption_handoffs: bool = True
+    interruption_min_continuation_s: float = 0.25
 
 
 @dataclass

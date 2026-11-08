@@ -352,8 +352,9 @@ def run_translate(
             tr.start_s - last_scene_end_s > scene_gap_reset_s
             or tr.start_s < last_scene_end_s - 1.0
         ):
-            reset_scene()
+            history.clear()
             speaker_reference.reset()
+            reset_scene()
         last_scene_end_s = tr.end_s
 
         # A cached Subtitle already includes its Japanese transcript and

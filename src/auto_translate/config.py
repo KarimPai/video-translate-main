@@ -60,7 +60,7 @@ class AsrConfig:
     """Haas-ja-v1.0 Q8_0 on speech.cpp Vulkan; sole ASR backend."""
     haas_model: str = "haas-ja-v1.0:q8_0"
     haas_device: str = "Vulkan0"
-    # Q8_0's CPU decoder leaves more VRAM for Qwen3.5 translation.
+    # Q8_0's CPU decoder leaves more VRAM for Index-Translate.
     haas_decode_on_cpu: bool = True
     haas_keywords_enabled: bool = True
     haas_keywords_file: str = "haas_vocabulary.toml"
@@ -72,40 +72,20 @@ class AsrConfig:
 
 @dataclass
 class TranslateConfig:
-    """Qwen3.5-4B GGUF is the sole local Japanese-to-English translator."""
+    """Index-Translate-2B Q4_K_M is the sole offline Japanese→English engine."""
 
-    # Port 8001 avoids accidentally reusing a lingering older model server.
-    qwen_base_url: str = "http://127.0.0.1:8001/v1"
-    qwen_model: str = "qwen3.5-4b"
-    qwen_hf_model: str = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
-    qwen_context: int = 4096
-    qwen_gpu_layers: int = 99
-    # Accuracy-first trial: preserve details rather than compressing into a gist.
-    subtitle_style: str = "faithful"
-    # These map directly to llama.cpp's OpenAI-compatible chat completion
-    # sampling keys. Defaults are experiments, not proven optimum values.
-    temperature: float = 0.1
-    top_p: float = 0.8
-    top_k: int = 20
-    min_p: float = 0.0
-    repeat_penalty: float = 1.0
-    presence_penalty: float = 0.0
-    sampling_seed: int | None = None  # optional reproducible local comparison
-    max_tokens: int = 128
+    # Separate port avoids stale server reuse from other branch experiments.
+    index_base_url: str = "http://127.0.0.1:8002/v1"
+    index_model: str = "index-translate-2b"
+    index_hf_model: str = "IndexTeam/Index-Translate-2B-GGUF:Q4_K_M"
+    index_context: int = 4096
+    index_gpu_layers: int = 99
+    max_tokens: int = 160
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
-    context_lines: int = 5
+    context_lines: int = 4
     memory_lines: int = 12
-    # Tiny rule-based, source-only scene topic; no extra Qwen requests.
-    scene_context_enabled: bool = True
-    scene_context_max_idle_lines: int = 32
     glossary: str = "glossary.toml"
-    quality_recheck_enabled: bool = True
-    # Leave unset to reuse normal sampling; optionally try a different
-    # temperature ONLY on a flagged quality recheck, not every line.
-    quality_recheck_temperature: float | None = None
-    quality_recheck_timeout_s: float = 3.0
-    quality_recheck_min_interval_s: float = 10.0
 
 
 @dataclass

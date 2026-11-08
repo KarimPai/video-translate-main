@@ -82,7 +82,10 @@ class PlamoTranslationTests(unittest.TestCase):
                    return_value=response) as send:
             self.assertEqual(obj._complete("わためどうする?", timeout=5), "What should we do?")
         prompt = json.loads(send.call_args.args[0].data)["prompt"]
-        context = "<|plamo:tag|>context<|plamo:msg|>車が止まりました。"
+        context = (
+            "<|plamo:tag|>context<|plamo:msg|>"
+            "Previous Japanese (verified same speaker, not current): 車が止まりました。"
+        )
         glossary = "<|plamo:tag|>glossary<|plamo:index|>わため<|plamo:item|>Watame"
         current = "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>わためどうする?"
         self.assertIn(context, prompt)

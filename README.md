@@ -19,7 +19,7 @@ CAT is the **sole translator**. There is no Index-Translate implementation, Inde
 
 **Exact GGUF filename:** `cat-translate-3.3b-Q4_K_M.gguf` (2,066,389,824 bytes; about 2.07 GB). The community repository also contains 1.4B and Gemma Q4 files. The launcher specifies **`-hf` plus `-hff`** to prevent accidental loading of a different model.
 
-The server uses `--jinja --chat-template-file src/auto_translate/translate/cat_sarashina.jinja` to apply the official **Sarashina 2.2 chat markers** explicitly. This avoids relying on the community GGUF's embedded template. A single USER message is rendered as `<|user|>...<\/s><|assistant|>` (the EOS string is actually `</s>`). CAT's official inference format is:
+The server uses `--jinja --chat-template-file src/auto_translate/translate/cat_sarashina.jinja` to apply the official **Sarashina 2.2 chat markers** explicitly. This avoids relying on the community GGUF's embedded template. A single USER message is rendered as ``<|user|>` + source + `</s>` + `<|assistant|>`` (the EOS string is actually `</s>`). CAT's official inference format is:
 
 ```text
 Translate the following Japanese text into English.

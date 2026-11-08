@@ -109,11 +109,19 @@ def _download(
                     temporary.append(downloaded)
                     with urllib.request.urlopen(request, timeout=45) as response:
                         size = 0
+                        next_report = 4 * 1024 * 1024
                         while chunk := response.read(1024 * 1024):
                             size += len(chunk)
                             if size > 150 * 1024 * 1024:
                                 raise ValueError("Speaker model download exceeded 150 MB")
                             output.write(chunk)
+                            if size >= next_report:
+                                print(
+                                    f"Speaker diarization: {target.name} "
+                                    f"{size / (1024 * 1024):.0f} MiB downloaded...",
+                                    flush=True,
+                                )
+                                next_report += 4 * 1024 * 1024
                 candidate = downloaded
                 if archive_member:
                     with tarfile.open(downloaded, "r:bz2") as archive:

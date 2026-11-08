@@ -33,6 +33,10 @@ class VadConfig:
     speech_pad_ms: int = 200
     min_speech_ms: int = 100
     max_utterance_s: float = 6.0
+    # At the soft limit, prefer a sustained natural pause.
+    max_split_extension_s: float = 1.0  # hard deadline remains 7s
+    split_pause_min_ms: int = 80
+    split_context_ms: int = 120  # retain boundary audio, without duplication
     fallback_s: float = 5.0
     fallback_min_s: float = 1.5
     fallback_min_db: float = -45.0
@@ -46,6 +50,9 @@ class SpeakerConfig:
     num_threads: int = 2
     min_turn_s: float = 0.55
     max_turns: int = 5
+    boundary_search_ms: int = 180
+    boundary_quiet_ms: int = 40
+    boundary_quiet_ratio: float = 0.45
 
 
 @dataclass

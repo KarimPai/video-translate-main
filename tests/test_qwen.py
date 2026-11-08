@@ -210,7 +210,7 @@ class QwenTranslatorTests(unittest.TestCase):
                 "The first horse is Millefeuille d'Or.",
             )
         data = json.loads(call.call_args.args[0].data.decode())
-        self.assertIn("Event context: horse racing", data["messages"][1]["content"])
+        self.assertIn("Event context: Japanese horse racing and betting.", data["messages"][1]["content"])
         self.assertIn("not 'Milky Way Doll'", data["messages"][1]["content"])
 
     def test_horse_wide_bet_and_number_sequence_are_not_straight_bet_or_money(self):

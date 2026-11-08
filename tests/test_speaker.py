@@ -70,8 +70,10 @@ class ModelDownloadTests(unittest.TestCase):
                           expected_sha256=expected)
             self.assertEqual(path.read_bytes(), valid)
             path.unlink()
+            # Return a NEW stream per retry: io.BytesIO is closed after
+            # each attempt, just like a real HTTP response.
             with patch("auto_translate.speaker.urllib.request.urlopen",
-                       return_value=io.BytesIO(b"invalid" * 500)), patch(
+                       side_effect=lambda *args, **kwargs: io.BytesIO(b"invalid" * 500)), patch(
                        "auto_translate.speaker.time.sleep"):
                 with self.assertRaisesRegex(RuntimeError, "SHA256"):
                     _download("https://huggingface.co/emb.onnx", path,

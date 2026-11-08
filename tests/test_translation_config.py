@@ -19,7 +19,7 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.max_tokens, 160)
         self.assertEqual(cfg.context_lines, 2)
         self.assertTrue(cfg.quality_retry_enabled)
-        self.assertEqual(cfg.quality_retry_timeout_s, 8.0)
+        self.assertEqual(cfg.quality_retry_timeout_s, 4.0)
         self.assertEqual(cfg.glossary, "glossary.toml")
         self.assertFalse(hasattr(cfg, "qwen_model"))
         self.assertFalse(hasattr(cfg, "plamo_model"))

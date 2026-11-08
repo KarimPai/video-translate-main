@@ -17,7 +17,7 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.cat_base_url, "http://127.0.0.1:8003/v1")
         self.assertEqual(cfg.cat_context, 2048)
         self.assertEqual(cfg.cat_gpu_layers, 99)
-        self.assertEqual(cfg.max_tokens, 192)
+        self.assertEqual(cfg.max_tokens, 128)
         self.assertEqual(cfg.context_lines, 0)
         self.assertEqual(cfg.memory_lines, 12)
         self.assertEqual(cfg.glossary, "glossary.toml")

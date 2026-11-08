@@ -1,6 +1,6 @@
 # Optional Haas Japanese vocabulary (speech.cpp 0.10+).
-# Top-level keywords are passed to Haas ASR, not to PLaMo.
-# Prefer a short list of unusual Hololive names and cross-genre gaming terms.
+# Top-level keywords are passed to Haas ASR, not to the Qwen translator.
+# Prefer a short list of distinctive Hololive names; generic gaming terms were removed.
 # Format: preferred Japanese spelling=hiragana reading
 # Avoid generic reactions, ordinary words, and game-specific terms from one VOD.
 keywords = [

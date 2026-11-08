@@ -28,13 +28,17 @@ class HaasVocabularyTests(unittest.TestCase):
     def test_keyword_boost_enabled_by_default(self):
         self.assertTrue(AsrConfig().haas_keywords_enabled)
 
-    def test_default_vocabulary_contains_general_terms_but_no_gta_profile(self):
+    def test_default_vocabulary_keeps_distinctive_names_not_generic_game_terms(self):
         file = Path(__file__).resolve().parents[1] / "haas_vocabulary.toml"
         words = load_haas_keywords(str(file)).splitlines()
-        self.assertEqual(len(words), 29)
+        # The name-only list deliberately replaced the older 29-item list.
+        self.assertEqual(len(words), 15)
         self.assertIn("音乃瀬奏=おとのせかなで", words)
-        self.assertIn("リスポーン=りすぽーん", words)
-        self.assertNotIn("インパウンド=いんぱうんど", words)
+        self.assertIn("ぺこちゃん=ぺこちゃん", words)
+        self.assertIn("兎田ぺこら=うさだぺこら", words)
+        self.assertNotIn("リスポーン=りすぽーん", words)
+        self.assertNotIn("ナーフ=なーふ", words)
+        self.assertNotIn("一条莉々華=いちじょうりりか", words)
 
     def test_duplicate_keywords_ignored_and_missing_file_disables_boost(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -66,7 +70,8 @@ class HaasVocabularyTests(unittest.TestCase):
             self.assertEqual(sent[0]["type"], "chunk")
             self.assertEqual(sent[1]["type"], "transcribe")
             self.assertEqual(sent[1]["keywords"], "わため=わため\nギミック=ぎみっく")
-            self.assertEqual(sent[1]["keywords_alpha"], 2.0)
+            self.assertEqual(sent[1]["keywords_alpha"], 1.5)
+            self.assertEqual(sent[1]["keywords_alpha"], cfg.haas_keywords_alpha)
             self.assertIs(sent[1]["keywords_guard"], True)
 
     def test_probe_and_disabled_vocabulary_do_not_send_keywords(self):

@@ -184,6 +184,19 @@ class QwenTranslatorTests(unittest.TestCase):
         with patch("auto_translate.translate.qwen.urllib.request.urlopen", return_value=response):
             self.assertEqual(_model_ids("http://127.0.0.1:8001/v1"), ["qwen3.5-4b"])
 
+    def test_carjacking_is_defined_not_kidnapping_in_current_cue(self):
+        instance = translator()
+        instance.vod_title = "Hololive GTA"
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "We're going to the carjacking scene."}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen", return_value=response) as call:
+            self.assertEqual(instance._chat("カージャックされた現場に行く", [], 5),
+                             "We're going to the carjacking scene.")
+        data = json.loads(call.call_args.args[0].data.decode())
+        self.assertIn("カージャック => carjack / carjacking", data["messages"][1]["content"])
+        self.assertIn("not kidnapping", data["messages"][1]["content"])
+
     def test_ark_glossary_in_qwen_prompt(self):
         instance = translator()
         response = io.BytesIO(json.dumps({"choices": [

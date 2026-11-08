@@ -12,7 +12,10 @@ from typing import Callable
 
 from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
-from .stream_context import repair_peko_nickname, repair_verified_caption, repair_ark_spelling
+from .stream_context import (
+    repair_peko_nickname, repair_verified_caption, repair_ark_spelling,
+    repair_gta_carjacking,
+)
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import (
@@ -248,10 +251,13 @@ def run_translate(
                 if repaired_ja != tr.ja:
                     log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
                     tr = replace(tr, ja=repaired_ja)
-            new_ja = repair_ark_spelling(
-                tr.ja, getattr(translator, "vod_title", ""),
-                [ja for ja, _ in list(history)[-8:]],
-            )
+            context_ja = [ja for ja, _ in list(history)[-8:]]
+            title = getattr(translator, "vod_title", "")
+            new_ja = repair_gta_carjacking(tr.ja, title, context_ja)
+            if new_ja != tr.ja:
+                log.debug("GTA carjacking spelling repair: %r -> %r", tr.ja, new_ja)
+                tr = replace(tr, ja=new_ja)
+            new_ja = repair_ark_spelling(tr.ja, title, context_ja)
             if new_ja != tr.ja:
                 log.debug("ARK spelling repair: %r -> %r", tr.ja, new_ja)
                 tr = replace(tr, ja=new_ja)

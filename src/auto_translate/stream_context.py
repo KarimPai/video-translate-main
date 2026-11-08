@@ -14,6 +14,12 @@ _ARK_SIGNALS = ("ギガノト", "ギガのと", "ギガノと", "テイム", "�
                 "恐竜", "アルゲンタヴィス", "アルゲン", "ティラノ", "クライオポッド", "サドル",
                 # Weak signals only: paired with genuine prior ARK evidence.
                 "気がの都", "ギガナと", "ギガノド")
+# Recognize obvious GTA contexts without enabling game-specific homophone
+# replacement globally. カイジャック may also be a garbled unrelated phrase.
+_GTA_TITLE = re.compile(r"(?i)(?<![a-z])gta(?:\s*[5v])?(?![a-z])|グラセフ|グランド[・\s]?セフト")
+_CARJACK_MISHEARD = re.compile(
+    r"カ(?:イ)?ジャック(?=する|された|されて|して|しに|を|の|が|だ|です|[、。!?！？]|$)"
+)
 _PEKO_TITLE = re.compile(r"ぺこら|ペコラ|兎田|pekora", re.I)
 _PEKO_FORMS = ("ぺこら", "ペコラ", "ぺこちゃん", "ペコちゃん", "兎田ぺこら")
 _PEKO_CAPTIONS = ("ぺこちゃん", "ペコちゃん", "ぺこらちゃん", "ペコラちゃん")
@@ -33,6 +39,25 @@ def is_ark_context(title: str = "", current: str = "", recent: tuple[str, ...] |
     strong = {"ギガノト", "ギガのと", "ギガノと", "テイム", "テーム",
               "アルゲンタヴィス", "アルゲン", "クライオポッド"}
     return len(found) >= 2 and bool(found & strong)
+
+
+def repair_gta_carjacking(
+    text: str, title: str = "", recent: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Repair two observed GTA carjack ASR forms only with contextual evidence.
+
+    Carjacking and kidnapping are distinct; avoid globally rewriting phonetic
+    fragments such as カイジャック outside GTA / nearby driving dialogue.
+    """
+    if not _CARJACK_MISHEARD.search(text):
+        return text
+    cues = [*list(recent)[-5:], text]
+    supported = bool(_GTA_TITLE.search(title)) or any(
+        "カーチェイス" in cue or "カージャック" in cue for cue in cues
+    )
+    if not supported:
+        return text
+    return _CARJACK_MISHEARD.sub("カージャック", text)
 
 
 def ark_glossary_hits(text: str) -> list[tuple[str, str]]:

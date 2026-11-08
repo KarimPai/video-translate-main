@@ -57,6 +57,9 @@ _GIST_STYLE = (
     "Express the main point in one short, natural English sentence or fragment, "
     "usually 5 to 16 words when the source allows. "
     "Remove hesitations, filler, duplicate words and redundant conversational framing. "
+    "Compress long repetitions of the same short word into a brief emphatic phrase. "
+    "If the transcript appears to include two replies, preserve each distinct "
+    "statement in order; do not collapse them into one speaker's perspective. "
     "Preserve every meaningful negation, question, uncertainty, important number, "
     "explicit speaker reference, proper name, game term, and essential action. "
     "Do not soften strong language, reverse sentiment, invent details, or guess "
@@ -292,6 +295,10 @@ class QwenTranslator:
 
     def _glossary_hits(self, ja: str, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
         hits = self.glossary.find(ja)
+        # Use an exact current-cue gaming term. Do not alter the original
+        # 327-term glossary or mistake carjacking for kidnapping.
+        if "カージャック" in ja and not any(term == "カージャック" for term, _ in hits):
+            hits.append(("カージャック", "carjack / carjacking (vehicle theft, not kidnapping)"))
         if is_ark_context(self.vod_title, ja, [jp for jp, _ in history[-8:]]):
             existing = {source for source, _ in hits}
             hits.extend((src, target) for src, target in ark_glossary_hits(ja) if src not in existing)

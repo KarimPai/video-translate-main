@@ -171,6 +171,16 @@ assigned to the closest voice without adequate evidence. Very short samples
 also cannot create new identities. This reduces label fragmentation but
 cannot guarantee perfect identity matching or unmix overlapping speech.
 
+## YouTube metadata errors
+
+The metadata probe no longer passes the deprecated yt-dlp
+`--no-call-home` option. If YouTube reports "We're experiencing technical
+difficulties" for a live broadcast, the probe retries twice (brief backoff)
+and then surfaces YouTube's original error if the video is still inaccessible.
+The retry cannot bypass unavailable streams, authentication restrictions,
+or a YouTube outage. Verify the same URL in your browser and try another
+working VOD before changing ASR or translation settings.
+
 ## Tests
 
 ```cmd

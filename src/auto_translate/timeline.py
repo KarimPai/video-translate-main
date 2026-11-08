@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,31 +43,42 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     cmd = [
         "yt-dlp",
         "--no-warnings",
-        "--no-call-home",
         "--remote-components", "ejs:github",
         "--skip-download",
         "--dump-single-json",
     ]
     cmd += _cookie_args(cfg) + [url]
 
-    try:
-        raw = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    except subprocess.CalledProcessError as exc:
-        # Previously stderr was captured and hidden by the generic traceback,
-        # making YouTube access and JS challenge failures impossible to diagnose.
-        details = (exc.stderr or exc.stdout or "").strip()
-        if details:
-            details = "\n".join(details.splitlines()[-5:])[-1600:]
-        else:
-            details = "yt-dlp exited without an error message"
-        raise RuntimeError(
-            f"yt-dlp metadata fetch failed (exit {exc.returncode}):\n{details}"
-        ) from exc
+    # YouTube occasionally returns a transient player response while a live
+    # stream is available. Retry that *specific* error, never bot challenges,
+    # private videos, missing videos or unrelated extraction failures.
+    for attempt in range(3):
+        try:
+            raw = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            break
+        except subprocess.CalledProcessError as exc:
+            # Preserve yt-dlp's actual message so a stream/source failure is
+            # not mistaken for a translator, model or MPV startup failure.
+            details = (exc.stderr or exc.stdout or "").strip()
+            if details:
+                details = "\n".join(details.splitlines()[-5:])[-1600:]
+            else:
+                details = "yt-dlp exited without an error message"
+            if "technical difficulties" in details.casefold() and attempt < 2:
+                log.warning(
+                    "YouTube reports technical difficulties; retrying metadata "
+                    "(attempt %d/3)", attempt + 2,
+                )
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise RuntimeError(
+                f"yt-dlp metadata fetch failed (exit {exc.returncode}):\n{details}"
+            ) from exc
 
     data = json.loads(raw)
 

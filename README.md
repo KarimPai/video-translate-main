@@ -80,7 +80,7 @@ Alternatively, to reuse the existing `C:\Games\video-translate-cat` checkout **w
 
 ```bat
 cd /d C:\Games\video-translate-cat
-git fetch origin
+git fetch origin test-plamo8b-q3:refs/remotes/origin/test-plamo8b-q3
 git switch -c test-plamo8b-q3 --track origin/test-plamo8b-q3
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 "Start translate.bat"

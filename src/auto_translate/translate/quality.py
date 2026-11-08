@@ -145,7 +145,7 @@ def repair_high_confidence_meaning(japanese: str, english: str) -> str:
         # Japanese says loading became lighter, *not* that it slowed down.
         english = re.sub(
             r"\b(?:the\s+)?loading\s+has\s+slowed\s+down\b",
-            "loading has become less demanding",
+            "The load is lighter now",
             english, count=1, flags=re.I,
         )
     if (

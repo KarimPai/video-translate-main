@@ -41,7 +41,7 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_high_confidence_meaning(
             "読み込みが軽くなっちまっておるあそこすごいぞ!",
             "The loading has slowed down—that place is insane!"
-        ), "loading has become less demanding—that place is insane!")
+        ), "The load is lighter now—that place is insane!")
         self.assertEqual(repair_high_confidence_meaning(
             "95はのんのんのんよ。", "95 is totally fine."
         ), "Level 95? No, no, no.")

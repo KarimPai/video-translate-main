@@ -182,7 +182,6 @@ def run_asr(
                 utt.timings,
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
-                speaker_id=utt.speaker_id,
             )
         )
 
@@ -304,7 +303,6 @@ def run_translate(
                 tr.timings,
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
-                speaker_id=tr.speaker_id,
             )
         )
 

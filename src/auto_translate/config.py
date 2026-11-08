@@ -45,9 +45,6 @@ class SpeakerConfig:
     model_dir: str = ""
     num_threads: int = 2
     min_turn_s: float = 0.55
-    # More tolerant matching; unknown voice samples remain unlabeled.
-    similarity_threshold: float = 0.68
-    max_speakers: int = 4
     max_turns: int = 5
 
 
@@ -159,6 +156,13 @@ def load_config(path: Path) -> Config:
     ):
         mpv_data.pop(obsolete, None)
 
+    # Retired cross-utterance identity fields in local config are ignored.
+    valid_speaker_keys = {entry.name for entry in fields(SpeakerConfig)}
+    speaker_data = {
+        key: value for key, value in data.get("speaker", {}).items()
+        if key in valid_speaker_keys
+    }
+
     # Keep the existing git-ignored config.toml compatible when switching
     # branches: ignore all outdated engine fields, not just known names.
     valid_translate_keys = {entry.name for entry in fields(TranslateConfig)}
@@ -172,7 +176,7 @@ def load_config(path: Path) -> Config:
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),
-        speaker=SpeakerConfig(**data.get("speaker", {})),
+        speaker=SpeakerConfig(**speaker_data),
         asr=AsrConfig(**asr_data),
         translate=TranslateConfig(**translate_data),
         output=OutputConfig(**data.get("output", {})),

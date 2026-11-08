@@ -1260,8 +1260,10 @@ class MpvOutput:
                 for sub in cache.active_at(now, include_linger=True)
             ]
 
+        # Newest translated utterances appear above older cues; do not
+        # select by speaker identity now that only local turn cuts remain.
         active.sort(key=lambda ln: (ln.show_from, ln.sub.start_s), reverse=True)
-        active = _prefer_speaker_rows(active, max(1, self.cfg.max_subtitle_rows))
+        active = active[:max(1, self.cfg.max_subtitle_rows)]
 
         text = (
             _ass_many(
@@ -1320,31 +1322,6 @@ class MpvOutput:
                     len(active),
                     len(text),
                 )
-
-
-def _prefer_speaker_rows(lines: list[_Line], limit: int) -> list[_Line]:
-    """Select the latest utterance from each known voice before filling rows.
-
-    One-speaker streams still stack earlier cues in the remaining slots.
-    The selection itself does not change the visual ordering: newest above.
-    """
-    selected: list[_Line] = []
-    used_speakers: set[int] = set()
-    for line in lines:
-        speaker = line.sub.speaker_id
-        if speaker is not None and speaker not in used_speakers:
-            selected.append(line)
-            used_speakers.add(speaker)
-            if len(selected) == limit:
-                break
-    if len(selected) < limit:
-        for line in lines:
-            if all(existing is not line for existing in selected):
-                selected.append(line)
-            if len(selected) == limit:
-                break
-    selected.sort(key=lambda line: (line.show_from, line.sub.start_s), reverse=True)
-    return selected
 
 
 def _ass_many(

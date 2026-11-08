@@ -20,30 +20,31 @@ class TerminalOutputTests(unittest.TestCase):
             "EN: Hello.",
         ])
 
-    def test_simple_mode_shows_speaker_only_in_cmd(self):
+    def test_simple_mode_has_no_speaker_labels(self):
         target = StringIO()
         with redirect_stdout(target):
             TerminalOutput(simple=True).show(
-                Subtitle(1.0, 2.0, "危ない！", "Watch out!", speaker_id=0)
+                Subtitle(1.0, 2.0, "危ない！", "Watch out!")
             )
             TerminalOutput(simple=True).show(
-                Subtitle(2.0, 3.0, "わかった", "Got it.", speaker_id=1)
+                Subtitle(2.0, 3.0, "わかった", "Got it.")
             )
         self.assertEqual(target.getvalue().splitlines(), [
-            "JP [A]: 危ない！",
-            "EN [A]: Watch out!",
-            "JP [B]: わかった",
-            "EN [B]: Got it.",
+            "JP: 危ない！",
+            "EN: Watch out!",
+            "JP: わかった",
+            "EN: Got it.",
         ])
 
-    def test_verbose_mode_shows_speaker_in_cmd(self):
+    def test_verbose_mode_has_no_speaker_labels(self):
         target = StringIO()
         with redirect_stdout(target):
             TerminalOutput(simple=False).show(
-                Subtitle(1.0, 2.0, "危ない", "Watch out!", speaker_id=0)
+                Subtitle(1.0, 2.0, "危ない", "Watch out!")
             )
-        self.assertIn("[A] 危ない", target.getvalue())
-        self.assertIn("→ [A] Watch out!", target.getvalue())
+        self.assertIn(" 危ない", target.getvalue())
+        self.assertIn("→ Watch out!", target.getvalue())
+        self.assertNotIn("[A]", target.getvalue())
 
     def test_simple_mode_flushes_once_for_bilingual_subtitle(self):
         with patch("builtins.print") as output:

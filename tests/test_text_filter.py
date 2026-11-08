@@ -37,7 +37,7 @@ class InlineLaughterTests(unittest.TestCase):
             "これｗｗｗ！": "これ！",
             "あはは、何それ？": "何それ？",
             "何それ？アハハ": "何それ？",
-            "これ(笑)違うよ": "これ違うよ",
+            "これ(笑)違うよ": "これ 違うよ",
             "それ（笑）": "それ",
             "それ（草）": "それ",
         }
@@ -58,7 +58,7 @@ class InlineLaughterTests(unittest.TestCase):
         for text in (
             "今日は笑った", "笑顔が好き", "草原の草",
             "来い来い来い", "待って待って", "うん、そうだね",
-            "はは", "ふふ", "母は元気", "はははと笑った",
+            "はは", "ふふ", "母は元気", "はははと笑った", "アハハと言った",
             "https://www.youtube.com", "そこに草があります",
         ):
             with self.subTest(text=text):

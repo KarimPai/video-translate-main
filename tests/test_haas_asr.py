@@ -36,10 +36,10 @@ class HaasWorkerTests(unittest.TestCase):
         exe = patch("auto_translate.asr.haas.shutil.which", return_value="speech.exe")
         pop = patch("auto_translate.asr.haas.subprocess.Popen", return_value=proc)
         exe.start()
-        pop.start()
+        popen_mock = pop.start()
         self.addCleanup(exe.stop)
         self.addCleanup(pop.stop)
-        return create_asr(cfg or AsrConfig()), pop
+        return create_asr(cfg or AsrConfig()), popen_mock
 
     def test_worker_uses_q8_vulkan_and_cpu_decode(self):
         proc = stream({"type": "end", "id": "1", "text": "わため、ありがとう"})

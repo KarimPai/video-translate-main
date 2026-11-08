@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from auto_translate.config import TranslateConfig, load_config
+from auto_translate.config import AsrConfig, TranslateConfig, load_config
 from auto_translate.translate import create_translator
 
 
@@ -59,6 +59,37 @@ model = "ignored"
             cfg = load_config(file)
             self.assertFalse(cfg.speaker.enabled)
             self.assertEqual(cfg.speaker.num_threads, 1)
+
+    def test_japanese_qwen_asr_is_the_only_asr_default(self):
+        cfg = AsrConfig()
+        self.assertEqual(cfg.device, "Vulkan0")
+        self.assertEqual(cfg.model_path, "")
+        self.assertEqual(cfg.prompt, "")
+        self.assertFalse(hasattr(cfg, "haas_model"))
+        self.assertFalse(hasattr(cfg, "haas_keywords_enabled"))
+
+    def test_old_haas_fields_are_ignored_in_local_config(self):
+        old = """
+[asr]
+haas_model = "haas-ja-v1.0"
+haas_device = "Vulkan0"
+haas_decode_on_cpu = true
+haas_keywords_enabled = true
+haas_keywords_file = "haas_vocabulary.toml"
+haas_keywords_alpha = 1.5
+haas_keywords_guard = true
+backend = "haas"
+device = "cpu"
+prompt = "角巻わため"
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.toml"
+            path.write_text(old, encoding="utf-8")
+            cfg = load_config(path).asr
+        self.assertEqual(cfg.device, "cpu")
+        self.assertEqual(cfg.prompt, "角巻わため")
+        self.assertFalse(hasattr(cfg, "haas_model"))
+        self.assertFalse(hasattr(cfg, "haas_keywords_file"))
 
     def test_missing_config_is_qwen(self):
         with tempfile.TemporaryDirectory() as tmp:

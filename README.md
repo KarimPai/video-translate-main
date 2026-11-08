@@ -1,15 +1,18 @@
 # Japanese Video Translator — Qwen3.5-4B experiment
 
-Isolated `test-qwen35-4b` branch. This experiment replaces the translator
-with **Qwen3.5-4B Q4_K_M** through local `llama-server`. The established
-FireRedVAD + Haas-ja-v1.0 Vulkan recognition, YouTube caption reconciliation,
-Hololive nickname fixes, ARK contextual corrections, glossary and MPV
-subtitles are unchanged.
+Isolated `test-qwen35-4b` branch. Both models are Qwen-only:
+
+- **ASR:** Japanese-fine-tuned Qwen3-ASR-1.7B-JA Q8_0 in speech.cpp on Vulkan.
+- **Translation:** Qwen3.5-4B Q4_K_M in the managed llama-server on CUDA.
+
+FireRedVAD, Sherpa voice-turn segmentation, optional YouTube captions, the
+Hololive glossary and MPV's English subtitle overlay are retained. There is
+no Haas ASR fallback.
 
 ## Requirements
 
 - Windows, Python 3.12+, `uv`, `ffmpeg`, `yt-dlp`, and MPV.
-- `speech` / speech.cpp with Haas-ja-v1.0 on Vulkan; CUDA for FireRedVAD.
+- `speech` / speech.cpp 0.8.10+ with Qwen3-ASR and Vulkan support; CUDA for FireRedVAD.
 - **Recent CUDA-enabled llama.cpp `llama-server`** with Qwen3.5 GGUF model
   support, `--jinja` and `--reasoning off`. Older binaries may exit during
   startup; check `logs\qwen-server.log` and upgrade them if necessary.
@@ -17,6 +20,16 @@ subtitles are unchanged.
   using the published `Q4_K_M` quantization (~2.74 GB of weights). The
   server downloads the model on first use and caches it through llama.cpp.
   No vision projector is required for text translation.
+- Japanese ASR model: [kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF](https://huggingface.co/kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF),
+  Q8_0, 2,176,109,280 bytes (2.03 GiB). It is the speech.cpp-specific
+  conversion of Neosophie's proper-noun Japanese fine-tune, not a llama.cpp
+  GGUF. The application downloads it via the existing huggingface-hub
+  dependency on first use, verifies its SHA-256, and caches it.
+  First download requires roughly 2.18 GB. To pre-download:
+  `uv run --no-sync python -c "from auto_translate.asr.qwen_asr import resolve_qwen_asr_model; from auto_translate.config import AsrConfig; print(resolve_qwen_asr_model(AsrConfig()))"`.
+  The full Q8_0 fine-tune was conversion-tested but has no published
+  Hololive/stream accuracy benchmark. Expect higher VRAM and potentially
+  slower ASR than the former small recognizer.
 
 ## Starting the independent branch
 
@@ -41,6 +54,11 @@ inspect these logs. The original `test` branch is not changed.
 `config.toml` is git-ignored. If it does not exist, these defaults apply:
 
 ```toml
+[asr]
+device = "Vulkan0"
+model_path = ""         # optional verified local .gguf path for offline setup
+prompt = ""             # optional SHORT names/terms hint; off to avoid hallucinations
+
 [translate]
 qwen_base_url = "http://127.0.0.1:8001/v1"
 qwen_model = "qwen3.5-4b"
@@ -112,25 +130,32 @@ limits are unchanged, allowing a cleaner comparison against the previous run.
   speech filtering, polarity review and selective one-time recheck.
   Known high-confidence translation inversions are repaired without a model call.
 
-If the stream has no Japanese YouTube captions, recognition still uses Haas.
+If the stream has no Japanese YouTube captions, recognition uses Qwen3-ASR-1.7B-JA.
 A translation model cannot recover what ASR never heard correctly. A nickname
 resolver must not automatically replace genuine `猫ちゃん` with `ぺこちゃん`.
 
-The model file plus GPU/Vulkan recognition, VAD and MPV compete for 8 GB
-VRAM. Start with Q4_K_M, a 4096-token context, and a single server slot.
-A larger context may increase memory pressure or latency.
+The two Qwen models compete for 8 GB VRAM with FireRedVAD, MPV and the
+Windows desktop. Qwen3-ASR-1.7B Q8_0 is a 2.18 GB file, while Qwen3.5-4B
+Q4_K_M has about 2.74 GB of weights; actual allocations are larger and
+hardware-dependent. On an RTX 3070 8 GB, test concurrent loading and latency
+before assuming both models can stay fully GPU-resident. If the ASR worker
+cannot load due to VRAM pressure, try `[asr] device = "cpu"` as a diagnostic
+rather than silently substituting another ASR model. That will be slower.
+The `[asr] prompt` can provide a few confirmed Japanese terms, but is empty
+by default to avoid falsely transcribing unspoken prompt names. A larger
+translation context may increase memory pressure or latency.
 
 ## Original-pitch audio
 
 The old experimental FFmpeg pitch shift has been removed. FireRedVAD,
-Sherpa speaker diarization, and Haas all receive original-pitch PCM audio
+Sherpa speaker diarization, and Qwen ASR all receive original-pitch PCM audio
 (resampled only as required). MPV playback remains unmodified.
 Both legacy `pitch_semitones` and `pitch_shift_semitones` config entries
 are ignored for compatibility with existing local `config.toml` files.
 
 ## Sherpa-ONNX voice-turn-separated subtitles
 
-The optional Sherpa CPU stage runs after FireRedVAD and before Haas. It
+The optional Sherpa CPU stage runs after FireRedVAD and before Qwen ASR. It
 uses pyannote segmentation 3.0 INT8 and NeMo TitaNet Small *internally*
 to detect voice changes **within each VAD utterance**. No session-long
 speaker memory or A/B/C identities are generated.
@@ -160,7 +185,7 @@ segmentation without modifying the actual audio or timeline. Utterances
 shorter than 2s remain whole to avoid speculative cuts. When a clean
 non-overlapping speaker change is detected, the system picks a nearby
 low-energy boundary, ensures all PCM is preserved exactly once, and sends
-each slice independently through Haas and Qwen. MPV retains up to three
+each slice independently through Qwen ASR and Qwen3.5 translation. MPV retains up to three
 English-only rows, newest above, with no speaker letters in MPV or CMD.
 
 **Limitations:** Diarization is not source separation. Simultaneous
@@ -196,4 +221,4 @@ recorded Japanese clip against the `test` branch for accuracy and speed.
 
 - `main`: original stable baseline.
 - `test`: existing Haas + original translator pipeline.
-- `test-qwen35-4b`: isolated Qwen-only translator experiment.
+- `test-qwen35-4b`: isolated Qwen Japanese ASR + Qwen3.5 translator.

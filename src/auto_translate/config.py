@@ -62,7 +62,7 @@ class AsrConfig:
     """Haas-ja-v1.0 Q8_0 on speech.cpp Vulkan; sole ASR backend."""
     haas_model: str = "haas-ja-v1.0:q8_0"
     haas_device: str = "Vulkan0"
-    # Q8_0's CPU decoder leaves more VRAM for CAT-Translate.
+    # Q8_0's CPU decoder leaves more VRAM for PLaMo 8B.
     haas_decode_on_cpu: bool = True
     haas_keywords_enabled: bool = True
     haas_keywords_file: str = "haas_vocabulary.toml"
@@ -74,23 +74,20 @@ class AsrConfig:
 
 @dataclass
 class TranslateConfig:
-    """CAT-Translate-3.3B Q4_K_M is the sole offline Japanese→English LLM."""
+    """PLaMo 3 Translate 8B Q3_K_M: sole offline Japanese→English LLM."""
 
-    # Explicit filename avoids choosing the 1.4B or Gemma Q4 model from
-    # this multi-model GGUF repository. Distinct port avoids Index reuse.
-    cat_base_url: str = "http://127.0.0.1:8003/v1"
-    cat_model: str = "cat-translate-3.3b"
-    cat_hf_repo: str = "Sundowner123/cat-translate-3.3b-gguf"
-    cat_hf_file: str = "cat-translate-3.3b-Q4_K_M.gguf"
-    cat_context: int = 2048
-    cat_gpu_layers: int = 99
+    plamo_base_url: str = "http://127.0.0.1:8005/v1"
+    plamo_model: str = "plamo-3-translate-8b"
+    plamo_hf_repo: str = "pfnet/plamo-3-translate-8b-GGUF"
+    plamo_hf_file: str = "plamo-3-translate-8b-Q3_K_M.gguf"
+    plamo_context: int = 1024
+    plamo_gpu_layers: int = 99
     max_tokens: int = 128
-    timeout_s: float = 20.0
-    load_timeout_s: float = 300.0
-    context_lines: int = 0  # no prior dialogue enters CAT inference
-    memory_lines: int = 12  # existing ASR and local repeat consistency only
+    timeout_s: float = 25.0
+    load_timeout_s: float = 600.0
+    context_lines: int = 0  # short source-only PFML3 prompt, no dialogue history
+    memory_lines: int = 12  # previous local repeat consistency (no prompt history)
     glossary: str = "glossary.toml"
-
 
 @dataclass
 class OutputConfig:

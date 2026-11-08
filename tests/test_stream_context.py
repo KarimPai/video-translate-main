@@ -9,7 +9,7 @@ from auto_translate.stream_context import (
     valorant_glossary_hits, repair_valorant_translation,
     repair_barotrauma_translation, repair_ark_tier_translation,
 )
-from auto_translate.translate.quality import translation_review_reason, repair_high_confidence_meaning
+from auto_translate.translate.quality import repair_high_confidence_meaning
 
 
 class TestStreamContext(unittest.TestCase):
@@ -265,12 +265,7 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_verified_caption("レベルは95だったかもしれない", "レベルは85だったかもしれない"), "レベルは95だったかもしれない")
         self.assertEqual(repair_verified_caption("テコちゃん", "ぺこちゃん"), "テコちゃん")
 
-    def test_translation(self):
-        self.assertEqual(translation_review_reason("読み込みが軽くなっちまっておる", "The loading has slowed down."), "loading_performance_reversed")
-        self.assertEqual(translation_review_reason("95はのんのんのんよ", "95 is totally fine"), "rejection_reversed")
-        self.assertEqual(translation_review_reason(
-            "95はのんのんのんよ。", "95 is the fourth, the fifth, the sixth, the seventh."
-        ), "rejection_reversed")
+    def test_shared_translation_repairs_without_index_review(self):
         self.assertEqual(repair_high_confidence_meaning(
             "読み込みが軽くなっちまっておるあそこすごいぞ!",
             "The loading has slowed down—that place is insane!"

@@ -157,10 +157,17 @@ class HaasASR:
         request_id = str(self._counter)
         chunk = {"type": "chunk", "id": request_id, "seq": 0, "pcm": pcm}
         request = {"type": "transcribe", "id": request_id, "sample_rate": 16000}
+        use_keywords = bool(self.keywords and not probe)
+        if use_keywords:
+            request.update({
+                "keywords": self.keywords,
+                "keywords_alpha": self.cfg.haas_keywords_alpha,
+                "keywords_guard": self.cfg.haas_keywords_guard,
+            })
         stdin = self.process.stdin
         try:
             stdin.write(json.dumps(chunk) + "\n")
-            stdin.write(json.dumps(request) + "\n")
+            stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
             stdin.flush()
         except (BrokenPipeError, OSError) as exc:
             raise RuntimeError("Haas ASR worker stopped accepting audio") from exc
@@ -197,6 +204,21 @@ class HaasASR:
             if answer.get("id") != request_id:
                 continue
             if answer.get("type") in {"error", "cancelled"}:
+                error = answer.get("error") or {}
+                option = error.get("option", "") if isinstance(error, dict) else ""
+                detail = error.get("message", "") if isinstance(error, dict) else str(error)
+                code = error.get("code", "") if isinstance(error, dict) else ""
+                if use_keywords and (
+                    option in {"keywords", "keywords_alpha", "keywords_guard"}
+                    or ("keyword" in detail.lower()
+                        and code in {"unsupported", "invalid_argument"})
+                ):
+                    # Older speech.cpp builds may not accept Haas keyword options.
+                    # Retry once without hints; never switch ASR backends.
+                    log.warning("Haas keyword options unavailable (%s); "
+                                "reverting to unboosted recognition", detail)
+                    self.keywords = ""
+                    return self.transcribe(audio, probe=True)
                 raise RuntimeError(f"Haas ASR recognition failed: {answer}")
             if answer.get("type") != "end":
                 continue

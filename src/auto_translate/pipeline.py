@@ -310,6 +310,17 @@ def run_translate(
     speaker_reference = RecentSpeakerJapanese()
     memory_generation: int | None = None
     last_scene_end_s: float | None = None
+    translator_cfg = getattr(translator, "cfg", None)
+    fragment_enabled = bool(getattr(translator_cfg, "fragment_join_enabled", False))
+    fragment_wait_s = min(0.5, max(0.0, float(
+        getattr(translator_cfg, "fragment_join_wait_s", 0.5)
+    )))
+    fragment_gap_s = min(0.5, max(0.0, float(
+        getattr(translator_cfg, "fragment_join_gap_s", 0.35)
+    )))
+    # Preserve an unrelated next queue item (including EOS and seek markers).
+    deferred_empty = object()
+    deferred: object = deferred_empty
     configured_gap = getattr(getattr(translator, "cfg", None), "scene_gap_reset_s", 30.0)
     scene_gap_reset_s = (
         max(5.0, float(configured_gap))
@@ -322,10 +333,54 @@ def run_translate(
             reset()
 
     while True:
-        item = in_q.get()
+        if deferred is not deferred_empty:
+            item, deferred = deferred, deferred_empty
+        else:
+            item = in_q.get()
 
         if item is None:
             break
+
+        if (
+            fragment_enabled and fragment_wait_s > 0
+            and isinstance(item, Transcript)
+            and item.speaker_context_key is not None
+            and not item.speaker_handoff and not item.asr_uncertain
+        ):
+            from .stream_context import is_incomplete_fragment
+            if is_incomplete_fragment(item.ja):
+                try:
+                    following = in_q.get(timeout=fragment_wait_s)
+                except queue.Empty:
+                    following = deferred_empty
+                if following is not deferred_empty:
+                    if (
+                        isinstance(following, Transcript)
+                        and following.generation == item.generation
+                        and not following.asr_uncertain
+                        and trusted_merge_candidate(
+                            item.ja, following.ja,
+                            first_key=item.speaker_context_key,
+                            next_key=following.speaker_context_key,
+                            first_end_s=item.end_s,
+                            next_start_s=following.start_s,
+                            combined_duration_s=following.end_s - item.start_s,
+                            next_handoff=following.speaker_handoff,
+                            max_gap_s=fragment_gap_s,
+                        )
+                    ):
+                        log.debug(
+                            "Joined verified same-speaker fragment %.2f-%.2fs",
+                            item.start_s, following.end_s,
+                        )
+                        item = replace(
+                            item,
+                            ja=item.ja.rstrip("、 ,") + following.ja.lstrip(),
+                            end_s=following.end_s,
+                            timings=following.timings,
+                        )
+                    else:
+                        deferred = following
 
         if isinstance(item, AudioProgress):
             if get_generation is not None and item.generation != get_generation():
@@ -380,7 +435,10 @@ def run_translate(
                 observe_scene(tr.ja)
             if tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))
-                speaker_reference.observe(tr)
+                if not tr.asr_uncertain:
+                    speaker_reference.observe(tr)
+                else:
+                    speaker_reference.reset()
             else:
                 speaker_reference.reset()
             tr.timings.mt_start = time.monotonic()
@@ -416,7 +474,10 @@ def run_translate(
             try:
                 set_context = getattr(translator, "set_reference_context", None)
                 if callable(set_context):
-                    set_context(speaker_reference.context_for(tr))
+                    set_context(None if tr.asr_uncertain else speaker_reference.context_for(tr))
+                set_reliability = getattr(translator, "set_source_reliability", None)
+                if callable(set_reliability):
+                    set_reliability(tr.asr_uncertain)
                 en = translator.translate(tr.ja, list(history))
             except Exception as e:
                 log.error("translation failed: %s", e)
@@ -432,7 +493,10 @@ def run_translate(
 
             if en and en != "[translation failed]":
                 history.append((tr.ja, en))
-                speaker_reference.observe(tr)
+                if tr.asr_uncertain:
+                    speaker_reference.reset()
+                else:
+                    speaker_reference.observe(tr)
             else:
                 speaker_reference.reset()
 
@@ -459,6 +523,7 @@ def run_translate(
                 speech_start_s=tr.speech_start_s,
                 speaker_handoff=tr.speaker_handoff,
                 speaker_context_key=tr.speaker_context_key,
+                asr_uncertain=tr.asr_uncertain,
             )
         )
 

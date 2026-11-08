@@ -55,6 +55,9 @@ class SpeakerConfig:
     boundary_quiet_ratio: float = 0.45
     interruption_handoffs: bool = True
     interruption_min_continuation_s: float = 0.25
+    context_enabled: bool = True  # experimental CPU voice continuity, never shown as identity
+    context_max_gap_s: float = 1.25
+    context_cosine_threshold: float = 0.88
 
 
 @dataclass

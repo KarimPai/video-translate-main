@@ -108,6 +108,94 @@ class SessionCacheTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertEqual(calls[-1][1]["format"], "ass-events")
 
+    def test_interrupted_speakers_translate_as_two_independent_cues(self):
+        class FakeASR:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, audio, probe):
+                self.calls.append(len(audio))
+                return ["今から行くよ", "ちょっと待ってください"][len(self.calls) - 1]
+
+        class FakeTranslator:
+            memory_lines = 0
+            vod_title = ""
+
+            def translate(self, japanese, history):
+                return {"今から行くよ": "I'm heading out—",
+                        "ちょっと待ってください": "Wait a second!"}[japanese]
+
+        utterances, transcripts, subtitles = queue.Queue(), queue.Queue(), queue.Queue()
+        utterances.put(Utterance(
+            0.0, 1.5, np.full(24000, .1, dtype=np.float32),
+            speech_start_s=0.0, speaker_handoff=False,
+        ))
+        utterances.put(Utterance(
+            1.5, 4.0, np.full(40000, -.1, dtype=np.float32),
+            speech_start_s=1.5, speaker_handoff=True,
+        ))
+        utterances.put(None)
+        asr = FakeASR()
+        run_asr(asr, utterances, transcripts)
+        run_translate(FakeTranslator(), 4, transcripts, subtitles)
+        first, second, sentinel = (
+            subtitles.get_nowait(), subtitles.get_nowait(), subtitles.get_nowait()
+        )
+        self.assertIsNone(sentinel)
+        self.assertEqual(asr.calls, [24000, 40000])
+        self.assertEqual([first.en, second.en],
+                         ["I'm heading out—", "Wait a second!"])
+        self.assertEqual([(first.start_s, first.end_s), (second.start_s, second.end_s)],
+                         [(0.0, 1.5), (1.5, 4.0)])
+        self.assertEqual([first.speaker_handoff, second.speaker_handoff],
+                         [False, True])
+
+    def test_vod_cache_replay_stops_old_subtitle_at_speaker_handoff(self):
+        first = Subtitle(10.0, 11.5, "先に", "I'll go first.",
+                         speech_start_s=10.0)
+        second = Subtitle(11.5, 13.0, "待って", "Wait!",
+                          speech_start_s=11.5, speaker_handoff=True)
+        self.cache.add(first)
+        self.cache.add(second)
+        self.assertEqual(len(self.cache.active_at(11.8, include_linger=True)), 2)
+
+        out = object.__new__(MpvOutput)
+        out.ingest = SimpleNamespace(source=SimpleNamespace(live=False))
+        out._live_overlay_confirmed = False
+        out._subtitle_cache = self.cache
+        out._lock = threading.Lock()
+        out._lines = []
+        out._shown = ""
+        out._logged_displayed_subtitles = set()
+        out._lags = []
+        out.cfg = SimpleNamespace(max_subtitle_rows=3, en_size=28, ja_size=0)
+        out.ipc = SimpleNamespace(command=lambda *args, **named: None)
+        out._render(11.8)
+        self.assertIn("Wait!", out._shown)
+        self.assertNotIn("I'll go first.", out._shown)
+
+    def test_cached_handoff_metadata_survives_seek_generation(self):
+        cached = Subtitle(20.0, 21.5, "待って", "Wait!",
+                          speech_start_s=20.0, speaker_handoff=True)
+        self.cache.add(cached)
+        source, translated = queue.Queue(), queue.Queue()
+        source.put(Utterance(
+            20.0, 21.5, np.zeros(160, dtype=np.float32),
+            generation=2, speaker_handoff=True,
+        ))
+        source.put(None)
+
+        class NoASR:
+            def transcribe(self, audio, probe):
+                raise AssertionError("should reuse matching cached subtitle")
+
+        run_asr(NoASR(), source, translated,
+                get_generation=lambda: 2, session_cache=self.cache)
+        reuse = translated.get_nowait()
+        self.assertIsInstance(reuse, Subtitle)
+        self.assertEqual(reuse.generation, 2)
+        self.assertTrue(reuse.speaker_handoff)
+
     def test_cached_audio_can_satisfy_five_second_playback_lead(self):
         self.cache.record_processed(45.0, 65.0)
         out = object.__new__(MpvOutput)

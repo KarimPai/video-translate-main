@@ -50,6 +50,14 @@ class IndexTranslationTests(unittest.TestCase):
         self.assertTrue(prompt.endswith("\n\nどうするの"))
         self.assertNotIn("〖", prompt)
 
+    def test_oozora_name_hint_requires_explicit_correction(self):
+        glossary = Glossary({})
+        disambiguated = build_index_prompt("あ大原じゃねえ大空だ", [], glossary)
+        self.assertIn("大原 = Ohara", disambiguated)
+        self.assertIn("大空 = Oozora", disambiguated)
+        plain_sky = build_index_prompt("大空が青いね", [], glossary)
+        self.assertNotIn("Oozora", plain_sky)
+
     def test_context_is_disabled_by_zero_and_has_no_target_leak(self):
         glossary = Glossary({})
         prompt = build_index_prompt("今どこ", [("前の発言", "Where now")],

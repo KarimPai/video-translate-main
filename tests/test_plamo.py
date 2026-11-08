@@ -201,6 +201,13 @@ class SelectiveRecheckTests(unittest.TestCase):
             chat.call_args.kwargs["review_hint"], "possible_missing_negation"
         )
 
+    def test_praise_reversal_gets_one_bounded_second_pass(self):
+        translator = self.translator()
+        with patch.object(PlamoTranslator, "_chat", side_effect=["That's bad!", "That's amazing!"]) as chat:
+            self.assertEqual(translator.translate("これすごいね！", []), "That's amazing!")
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(chat.call_args.kwargs["review_hint"], "positive_appraisal_reversed")
+
     def test_nonenglish_gibberish_gets_one_retry(self):
         translator = self.translator()
         with patch.object(

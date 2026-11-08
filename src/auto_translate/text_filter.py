@@ -3,6 +3,8 @@
 import re
 import unicodedata
 
+import numpy as np
+
 # Common Japanese laughter spellings and chat-style laughter.
 _LAUGHTER = re.compile(
     r"(?:あ?は){2,}|あは+|わは+|ふふ+|へへ+|ほほ+|くく+|"
@@ -22,10 +24,10 @@ def _compact(text: str) -> str:
 
 # Remove caption/ASR sound-effect labels, not actual spoken words.
 _SOUND_WORDS = (
-    r"applause|clapping|claps?|cheering|crowd cheering|"
+    r"applause|clapping|claps?|cheering|crowd cheering|crowd noise|footsteps|gunfire|"
     r"music|background music|bgm|instrumental|singing|"
     r"sound effects?|sfx|laughter|laughing|laughs|"
-    r"拍手|拍手喝采|歓声|声援|音楽|背景音楽|効果音|笑い声|笑い|爆笑"
+    r"足音|銃声|手拍子|拍手|拍手喝采|歓声|声援|音楽|背景音楽|効果音|笑い声|笑い|爆笑"
 )
 _SOUND_BRACKET = re.compile(
     rf"[\[\(（【［]\s*(?:{_SOUND_WORDS})\s*[\]\)）】］]",
@@ -38,13 +40,55 @@ _SPACES = re.compile(r"\s+")
 
 def strip_nonverbal_labels(text: str) -> str:
     """Remove explicit sound-event labels while preserving adjacent speech."""
-    cleaned = unicodedata.normalize("NFKC", text)
-    cleaned = _SOUND_BRACKET.sub(" ", cleaned)
+    normalized = unicodedata.normalize("NFKC", text)
+    cleaned, removed = _SOUND_BRACKET.subn(" ", normalized)
+    if not removed:
+        cleaned = text
     cleaned = _MUSIC_MARKS.sub(" ", cleaned)
     cleaned = _SPACES.sub(" ", cleaned).strip()
-    if _SOUND_ONLY.fullmatch(cleaned):
+    if not _compact(cleaned) or _SOUND_ONLY.fullmatch(
+        unicodedata.normalize("NFKC", cleaned).strip(".,!?。！？ ")
+    ):
         return ""
     return cleaned
+
+# These stock decoder completions are also legitimate dialogue. Suppress them
+# only when an aligned caption independently identifies a sound-only event.
+def is_sound_caption_artifact(text: str) -> bool:
+    compact = _compact(text)
+    if re.fullmatch(r"(?:パチ|ぱち){2,}|(?:パン|ぱん){2,}|(?:ドン|どん){2,}", compact):
+        return True
+    return compact in {
+        "ご視聴ありがとうございました", "ご視聴ありがとうございます",
+        "チャンネル登録お願いします", "チャンネル登録よろしくお願いします",
+    }
+
+
+def is_nonspeech_probe(audio: np.ndarray) -> bool:
+    """Only for VAD-negative probes. Recognize silence, sparse clicks or a pure tone."""
+    frame_size = 320  # 20 ms of mono PCM at 16 kHz
+    count = audio.size // frame_size
+    if count < 5:
+        return False
+    frames = audio[:count * frame_size].reshape(count, frame_size)
+    peak = float(np.max(np.abs(audio)))
+    if peak < 1 / 32768:
+        return True
+    active = np.abs(frames) > peak * 0.05
+    # Every active frame contains at most 1 ms above threshold.
+    if np.max(active.sum(axis=1)) <= 16:
+        return True
+    # Check only sustained, nearly single-frequency signals (e.g. game tones).
+    # A sinusoid obeys x[n+2] + x[n] = 2*cos(w)*x[n+1].
+    middle = audio[1:-1]
+    neighbors = audio[2:] + audio[:-2]
+    power = float(np.dot(middle, middle))
+    if power == 0:
+        return False
+    coefficient = np.dot(neighbors, middle) / power
+    residual = neighbors - coefficient * middle
+    return float(np.dot(residual, residual)) < 1e-7 * power
+
 
 def rejection_reason(text: str) -> str | None:
     """Return why an ASR result should be dropped, or None if it looks usable.

@@ -24,7 +24,8 @@ _HYPHENATED_PHONETIC = re.compile(
 )
 _EXPLICIT_NEGATION = re.compile(
     r"じゃない|ではない|できない|出来ない|してない|しない|"
-    r"てない|くない|なかった|ません|無理|禁止|駄目|だめ"
+    r"てない|くない|なかった|ません|無理|禁止|駄目|だめ|"
+    r"(?:行か|行け|食べ|飲ま|見え|聞こえ|分から|わから|勝て|負け)ない"
 )
 _EN_NEGATION = re.compile(
     r"\b(?:not|no|never|can't|cannot|don't|doesn't|didn't|"
@@ -32,6 +33,18 @@ _EN_NEGATION = re.compile(
     r"shouldn't|mustn't|unable|impossible|forbidden|prohibited|"
     r"bad|wrong|without|neither|nor|nothing|nobody|nowhere)\b",
     re.IGNORECASE,
+)
+# Anchor to a complete favorable appraisal. Praise can also modify something
+# negative (すごく悪い), and やばい alone does not establish polarity.
+_PRAISE = re.compile(
+    r"(?:これ|それ|あれ)?(?:は|って)?(?:本当に|ほんとに|めっちゃ|めちゃくちゃ)?"
+    r"(?:すごい|すごかった|凄い|凄かった|最高|素晴らしい|上手い|うまい|楽しかった)"
+    r"(?:だった|だ|です)?(?:ね|よ|な|わ|よね)?"
+)
+_CRITICISM = re.compile(r"\b(?:bad|terrible|awful|horrible|lousy|hated?|sucks?)\b", re.I)
+_POSITIVE_IDIOM = re.compile(
+    r"\b(?:not bad|no way|no joke|nothing short of|can.t believe|couldn.t be better)\b",
+    re.I,
 )
 # These are ordinary English repetitions, not romanization artifacts.
 _MEANINGFUL_REPETITIONS = frozenset(
@@ -93,8 +106,21 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
         and not _KANJI.search(japanese)
     ):
         return "phonetic_transliteration"
+    english = english.replace("’", "'")
+    source = unicodedata.normalize("NFKC", japanese)
+    appraisal = source.strip(" !?。、.…")
+    if (_PRAISE.fullmatch(appraisal) and "?" not in source
+            and not _POSITIVE_IDIOM.search(english)
+            and (_CRITICISM.search(english) or re.search(
+                r"\b(?:not|isn't|wasn't)\s+(?:that |very )?(?:good|great|fun|impressive|amazing)\b",
+                english, re.I,
+            ))):
+        return "positive_appraisal_reversed"
+    if (re.fullmatch(r"(?:できる|出来る|勝てる|行ける|見える|聞こえる)(?:よ|ね|よね)?", appraisal)
+            and "?" not in source and re.search(r"\b(?:can't|cannot|unable to)\b", english, re.I)):
+        return "affirmative_ability_reversed"
     if _EXPLICIT_NEGATION.search(japanese) and not _EN_NEGATION.search(english):
         # Obligations such as "寝ないといけない" should not be forced negative.
-        if not re.search(r"ないと(?:いけない|ならない|ダメ|だめ)", japanese):
+        if not re.search(r"ないと(?:いけない|ならない|ダメ|だめ)|なければならない|なくちゃ|なくても(?:いい|大丈夫)|かもしれない", japanese):
             return "possible_missing_negation"
     return None

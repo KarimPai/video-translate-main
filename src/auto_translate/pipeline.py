@@ -5,7 +5,6 @@ import logging
 import queue
 import threading
 import time
-from difflib import SequenceMatcher
 from collections import deque
 from dataclasses import replace
 from dataclasses import dataclass, field
@@ -15,7 +14,10 @@ from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
-from .text_filter import is_isolated_reaction, is_usable_transcript, strip_nonverbal_labels
+from .text_filter import (
+    is_isolated_reaction, is_nonspeech_probe, is_sound_caption_artifact,
+    is_usable_transcript, strip_nonverbal_labels,
+)
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
@@ -82,6 +84,9 @@ def run_asr(
             ))
             continue
 
+        if utt.probe and is_nonspeech_probe(utt.audio):
+            continue
+
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         utt.timings.asr_end = time.monotonic()
@@ -95,34 +100,21 @@ def run_asr(
             if captions is not None
             else None
         )
-        if caption_match is not None:
-            cleaned_caption = strip_nonverbal_labels(caption_match.text)
-            if cleaned_caption != caption_match.text:
-                log.debug("filtered YouTube sound labels at %.2fs: %r -> %r", utt.start_s, caption_match.text, cleaned_caption)
-            caption_match = replace(caption_match, text=cleaned_caption) if cleaned_caption else None
+        if caption_match is not None and not caption_match.reliable:
+            caption_match = None
+        if caption_match is not None and not caption_match.text and is_sound_caption_artifact(text):
+            log.debug("Discarding likely Haas hallucination over sound-only caption at %.2fs", utt.start_s)
+            continue
 
         source = "haas"
         if text and caption_match is not None:
-            if caption_match.reliable:
-                reconciled = strip_nonverbal_labels(reconcile_caption(text, caption_match.text))
-                if reconciled:
-                    if reconciled != text:
-                        source = "haas+youtube_correction"
-                    text = reconciled
-            haas_compact = "".join(ch for ch in text if ch.isalnum()).casefold()
-            caption_compact = "".join(ch for ch in caption_match.text if ch.isalnum()).casefold()
-            similarity = SequenceMatcher(
-                None, haas_compact, caption_compact
-            ).ratio() if haas_compact and caption_compact else 0.0
-            if similarity < 0.55:
-                log.debug(
-                    "Haas/caption disagreement at %.2f-%.2fs "
-                    "(similarity=%.2f): Haas=%r captions=%r",
-                    utt.start_s, utt.end_s, similarity, text, caption_match.text,
-                )
+            reconciled = reconcile_caption(text, caption_match.text)
+            if reconciled != text:
+                source = "haas+youtube_correction"
+                text = reconciled
 
         if (
-            not text and caption_match is not None and caption_match.reliable
+            not text and not original_asr and caption_match is not None and caption_match.text
             and is_usable_transcript(caption_match.text)
         ):
             text = caption_match.text

@@ -270,6 +270,8 @@ class PlamoTranslator:
                 "\n" + memory if memory else ""
             ),
         }
+        if review_hint == "positive_appraisal_reversed":
+            options["context"] += "\nThe current Japanese expresses a favorable appraisal. Preserve that assessment."
         if review_hint:
             options["context"] += (
                 "\nCarefully retry this Japanese-to-English translation. "

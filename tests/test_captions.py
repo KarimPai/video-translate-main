@@ -1,9 +1,10 @@
 import queue
 import unittest
+from unittest.mock import Mock
 
 import numpy as np
 
-from auto_translate.captions import CaptionIndex, PendingCaptions
+from auto_translate.captions import CaptionCue, CaptionIndex, PendingCaptions
 from auto_translate.pipeline import run_asr, run_translate
 from auto_translate.types import Transcript, Utterance
 
@@ -47,6 +48,23 @@ class CaptionIndexTests(unittest.TestCase):
         self.assertFalse(match.reliable)
 
 
+    def test_duplicate_overlap_and_sound_labels_do_not_verify_dialogue(self):
+        index = CaptionIndex([
+            CaptionCue(0, 1, "[拍手]"), CaptionCue(0, .35, "行ける"),
+            CaptionCue(0, .35, "行ける"),
+        ])
+        match = index.match(0, 1)
+        self.assertAlmostEqual(match.coverage, .35)
+        self.assertFalse(match.reliable)
+        self.assertFalse(CaptionIndex([CaptionCue(0, 8, "長い字幕")]).match(2, 3).reliable)
+
+    def test_rolling_vtt_does_not_repeat_previous_line_after_seek(self):
+        index = CaptionIndex.from_vtt(VTT.replace(
+            "一緒に遊びましょう", "今日はゲームをします\n一緒に<00:00:03.000>遊びましょう",
+        ))
+        self.assertEqual(index.match(2.5, 4).text, "一緒に遊びましょう")
+
+
 class EmptyASR:
     def transcribe(self, audio, probe=False):
         return ""
@@ -74,6 +92,31 @@ class CaptionFallbackTests(unittest.TestCase):
         self.assertIsInstance(result, Transcript)
         self.assertEqual(result.ja, "今日はゲームをします")
         self.assertIsNone(out_q.get_nowait())
+
+    def test_nonspeech_probes_do_not_decode_or_restore_captions(self):
+        t = np.arange(16000) / 16000
+        clicks = np.zeros(16000, dtype=np.float32)
+        clicks[::800] = .8
+        for audio in (clicks, np.sin(2 * np.pi * 440 * t).astype("f"), clicks * 0):
+            incoming, outgoing = queue.Queue(), queue.Queue()
+            incoming.put(Utterance(1.2, 2.2, audio, probe=True))
+            incoming.put(None)
+            asr = Mock()
+            run_asr(asr, incoming, outgoing, captions=CaptionIndex.from_vtt(VTT))
+            asr.transcribe.assert_not_called()
+            self.assertIsNone(outgoing.get_nowait())
+
+    def test_sound_cue_requires_independent_evidence_to_drop_haas(self):
+        audio = np.random.default_rng(7).normal(0, .1, 16000).astype("f")
+        for text, expected in [("ご視聴ありがとうございました", None), ("パチパチ", None),
+                               ("この音楽が好き", "この音楽が好き")]:
+            incoming, outgoing = queue.Queue(), queue.Queue()
+            incoming.put(Utterance(1.2, 2.2, audio, probe=True))
+            incoming.put(None)
+            run_asr(TextASR(text), incoming, outgoing,
+                    captions=CaptionIndex([CaptionCue(1.2, 2.2, "[音楽]")]))
+            item = outgoing.get_nowait()
+            self.assertEqual(item.ja if item else None, expected)
 
     def test_laughter_caption_does_not_restore_filtered_audio(self):
         index = CaptionIndex.from_vtt(VTT.replace("今日はゲームをします", "[笑い声]"))

@@ -52,6 +52,21 @@ class TranslationQualityTests(unittest.TestCase):
             with self.subTest(ja=ja, en=en):
                 self.assertIsNone(translation_review_reason(ja, en))
 
+    def test_polarity_depends_on_the_whole_source(self):
+        for ja, en, expected in [
+            ("すごいね", "That's awful.", "positive_appraisal_reversed"),
+            ("勝てるよ", "You can’t win.", "affirmative_ability_reversed"),
+            ("行けない", "I can go.", "possible_missing_negation"),
+            ("行けない", "I can’t go.", None),
+            ("最高だよ", "Couldn't be better!", None),
+            ("上手いね", "Not bad!", None),
+            ("すごく悪い", "That's terrible.", None),
+            ("すごいダメージ", "That's bad damage.", None),
+            ("行かないかもしれない", "I might stay home.", None),
+        ]:
+            with self.subTest(ja=ja, en=en):
+                self.assertEqual(translation_review_reason(ja, en), expected)
+
     def test_only_exact_skip_token_is_accepted(self):
         self.assertTrue(is_skip_token("[SKIP]"))
         self.assertTrue(is_skip_token(" [skip] "))

@@ -13,6 +13,7 @@ from itertools import accumulate
 from pathlib import Path
 
 from .config import IngestConfig
+from .text_filter import strip_nonverbal_labels
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,14 @@ class CaptionIndex:
             end = _seconds(timing.group(2))
             if start is None or end is None or end <= start:
                 continue
-            text = _clean_caption(lines[timing_index + 1:])
+            payload = lines[timing_index + 1:]
+            # YouTube rolling VTT can retain the previous line above a new
+            # timestamped line. Discard it only when it matches the last cue.
+            if (cues and len(payload) > 1 and cues[-1].end_s >= start - 0.05
+                    and re.search(r"<(?:\d+:)?\d{2}:\d{2}[.,]\d{3}>", " ".join(payload[1:]))
+                    and _clean_caption(payload[:1]) == cues[-1].text):
+                payload = payload[1:]
+            text = _clean_caption(payload)
             if not text:
                 continue
             cues.append(CaptionCue(start, end, text))
@@ -121,30 +129,34 @@ class CaptionIndex:
         if not matched:
             return None
 
-        # Avoid repeating rolling-caption text when adjacent cues overlap.
+        # Stage directions cannot lend their overlap to a sliver of dialogue.
+        cleaned = [(cue, overlap, strip_nonverbal_labels(cue.text)) for cue, overlap in matched]
+        speech = [entry for entry in cleaned if entry[2]]
+        evidence = speech or cleaned
         texts: list[str] = []
-        seen: set[str] = set()
-        for cue, _ in matched:
-            key = _SPACE.sub("", cue.text).casefold()
-            if key and key not in seen:
-                seen.add(key)
-                texts.append(cue.text)
+        covered_to = start_s
+        overlap_s = 0.0
+        well_aligned = True
+        for cue, overlap, line in evidence:
+            left, right = max(start_s, cue.start_s), min(end_s, cue.end_s)
+            overlap_s += max(0.0, right - max(left, covered_to))
+            covered_to = max(covered_to, right)
+            # A short segment inside a long cue cannot verify the whole line.
+            if overlap < 0.40 * (cue.end_s - cue.start_s):
+                well_aligned = False
+            if not line:
+                continue
+            if texts and line.startswith(texts[-1]):
+                texts[-1] = line
+            elif not texts or texts[-1] != line:
+                texts.append(line)
 
-        if not texts:
-            return None
-
-        overlap_s = min(duration, sum(overlap for _, overlap in matched))
         coverage = overlap_s / duration
-        strongest = max(overlap for _, overlap in matched)
-        reliable = (
-            (coverage >= 0.30 and strongest >= 0.25)
-            or (overlap_s >= 0.75 and strongest >= 0.40)
-        )
         return CaptionMatch(
             text=" ".join(texts),
             overlap_s=overlap_s,
             coverage=coverage,
-            reliable=reliable,
+            reliable=well_aligned and coverage >= 0.60 and overlap_s >= 0.25,
         )
 
 

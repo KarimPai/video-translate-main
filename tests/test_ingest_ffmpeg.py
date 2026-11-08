@@ -41,11 +41,11 @@ class AudioCommandTests(unittest.TestCase):
     def test_explicit_opt_in_and_legacy_pitch_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "config.toml"
-            file.write_text("[ingest]\\npitch_semitones = -3.0\\n", encoding="utf-8")
+            file.write_text("[ingest]\npitch_semitones = -3.0\n", encoding="utf-8")
             self.assertEqual(load_config(file).ingest.pitch_shift_semitones, 0.0)
-            file.write_text("[ingest]\\npitch_shift_semitones = -2.0\\n", encoding="utf-8")
+            file.write_text("[ingest]\npitch_shift_semitones = -2.0\n", encoding="utf-8")
             self.assertEqual(load_config(file).ingest.pitch_shift_semitones, -2.0)
-            file.write_text("[ingest]\\npitch_shift_semitones = -6.0\\n", encoding="utf-8")
+            file.write_text("[ingest]\npitch_shift_semitones = -6.0\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "pitch_shift_semitones"):
                 load_config(file)
 

@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from ..config import TranslateConfig
-from ..context_memory import reuse_recent_short_term
+from ..context_memory import SceneMemory, reuse_recent_short_term
 from ..glossary import Glossary
 from ..process_cleanup import _close_job, _create_kill_job
 from ..stream_context import (
@@ -57,12 +57,24 @@ def build_plamo_prompt(
     matched_terms: list[tuple[str, str]] | None = None,
     *,
     reference_context: str | None = None,
+    scene_context: str | None = None,
 ) -> str:
-    """Build PFML3 from current Japanese, verified prior Japanese and glossary."""
+    """Keep classified scene background separate from same-speaker dialogue."""
     prompt = _PFML3_START
-    if reference_context:
-        # PFML3 context is reference material, not dialogue to translate.
-        prompt += "<|plamo:tag|>context<|plamo:msg|>" + reference_context
+    references: list[str] = []
+    # Both are hints only; neither is text to translate. This is one
+    # short native PFML3 context block, not additional model inference.
+    if (scene_context and "<|plamo:" not in scene_context
+            and "\n" not in scene_context and "\r" not in scene_context):
+        references.append("Scene background (not spoken): " + scene_context[:180])
+    if (reference_context and "<|plamo:" not in reference_context
+            and "\n" not in reference_context and "\r" not in reference_context):
+        references.append(
+            "Previous Japanese (verified same speaker, not current): "
+            + reference_context[-140:]
+        )
+    if references:
+        prompt += "<|plamo:tag|>context<|plamo:msg|>" + " | ".join(references)
     for ja_term, english_term in (matched_terms or [])[:8]:
         if not ja_term or not english_term:
             continue
@@ -114,6 +126,10 @@ class PlamoTranslator:
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
         self._reference_context: str | None = None
+        self._scene_memory = (
+            SceneMemory(max_idle_lines=cfg.scene_max_idle_lines)
+            if cfg.scene_memory_enabled else None
+        )
         self.vod_title = " ".join(vod_title.split())[:200]
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.url = self.base_url + "/completions"
@@ -224,6 +240,23 @@ class PlamoTranslator:
             time.sleep(0.5)
         raise TimeoutError("PLaMo translator warm-up timed out; see logs/plamo8b-server.log")
 
+    def reset_scene_context(self) -> None:
+        """Called on seek/timeline discontinuity; never reuse stale hints."""
+        scene = getattr(self, "_scene_memory", None)
+        if scene is not None:
+            scene.reset()
+        self._reference_context = None
+
+    def observe_scene(self, japanese: str) -> None:
+        """Accumulate only recognized Japanese, never model English output."""
+        scene = getattr(self, "_scene_memory", None)
+        if scene is not None and japanese.strip():
+            before = scene.current_topic()
+            scene.observe(japanese)
+            after = scene.current_topic()
+            if before != after:
+                log.debug("PLaMo scene changed: %s -> %s", before, after)
+
     def set_reference_context(self, text: str | None) -> None:
         """For the very next request only; never inject mixed or old history."""
         if not text or "<|plamo:" in text or "\n" in text or "\r" in text:
@@ -234,11 +267,14 @@ class PlamoTranslator:
     def _complete(self, japanese: str, *, timeout: float) -> str:
         reference = getattr(self, "_reference_context", None)
         self._reference_context = None
+        scene = getattr(self, "_scene_memory", None)
+        scene_hint = scene.hint() if scene is not None else None
         payload = {
             "model": self.cfg.plamo_model,
             "prompt": build_plamo_prompt(
                 japanese, self.glossary.find(japanese),
                 reference_context=reference,
+                scene_context=scene_hint,
             ),
             "temperature": 0,
             "max_tokens": self.cfg.max_tokens,
@@ -259,6 +295,9 @@ class PlamoTranslator:
             return SKIP_TOKEN
         if is_obvious_nonverbal_japanese(ja) and not self.glossary.find(ja):
             return SKIP_TOKEN
+        # Observe even when an identical short term can be reused without an
+        # LLM request. Cached subtitles use observe_scene() from the pipeline.
+        self.observe_scene(ja)
         if self.memory_lines:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:

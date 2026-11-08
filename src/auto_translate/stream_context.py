@@ -294,6 +294,37 @@ def repair_verified_caption(asr: str, caption: str) -> str:
     return asr[:i] + new + asr[j:]
 
 
+def repair_strongly_aligned_caption(asr: str, caption: str) -> str:
+    """Correct at most two tiny recognition glitches when captions agree.
+
+    Caller must independently establish >=90% utterance time coverage and
+    >=0.75s overlap. Never substitute contradictory numbers, polarity, or
+    substantially different speech: captions can be wrong too.
+    """
+    if len(asr) < 14 or len(caption) < 14:
+        return asr
+    matcher = SequenceMatcher(None, asr, caption, autojunk=False)
+    if matcher.ratio() < 0.90:
+        return asr
+    changes = [op for op in matcher.get_opcodes() if op[0] != "equal"]
+    if not 1 <= len(changes) <= 2:
+        return asr
+    for tag, i, j, x, y in changes:
+        old, new = asr[i:j], caption[x:y]
+        # Do not delete arbitrary recognized words, alter punctuation or
+        # accept full phrase insertions from a larger rolling VTT cue.
+        if tag not in ("replace", "insert") or not new:
+            return asr
+        if max(len(old), len(new)) > 2:
+            return asr
+        if _NUMBERS.search(old + new) or not _JAPANESE.search(old + new):
+            return asr
+        surround = asr[max(0, i - 3):j + 4] + caption[max(0, x - 3):y + 4]
+        if _NEGATION.search(surround):
+            return asr
+    return caption
+
+
 def is_incomplete_fragment(text: str) -> bool:
     text = text.strip().rstrip("…")
     return not text.endswith(("。", "！", "!", "？", "?")) and bool(_UNFINISHED.search(text))

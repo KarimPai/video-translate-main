@@ -27,7 +27,7 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertEqual(
             build_plamo_prompt(" 行ってきます "),
             "<|plamo:tag|>dataset<|plamo:msg|>translation"
-            "<|plamo:tag|>input<|plamo:msg|>行ってきます"
+            "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>行ってきます"
             "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>",
         )
 
@@ -38,7 +38,7 @@ class PlamoTranslationTests(unittest.TestCase):
         )
         self.assertIn("<|plamo:tag|>glossary<|plamo:index|>わため<|plamo:item|>Watame", prompt)
         self.assertNotIn("Korone", prompt)
-        self.assertIn("<|plamo:tag|>input<|plamo:msg|>わためが来た", prompt)
+        self.assertIn("<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>わためが来た", prompt)
         self.assertEqual(prompt.count("<|plamo:tag|>glossary"), 1)
 
     def test_pfml3_special_marker_injection_is_not_accepted_from_glossary(self):
@@ -67,6 +67,7 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertEqual(body["max_tokens"], 128)
         self.assertFalse(body["stream"])
         self.assertEqual(body["stop"], ["<|plamo:tag|>", "<|plamo:bos|>"])
+        self.assertIn("<|plamo:val|>ja<|plamo:msg|>", body["prompt"])
         self.assertIn("<|plamo:val|>en<|plamo:msg|>", body["prompt"])
         self.assertNotIn("messages", body)
         self.assertNotIn("chat_template_kwargs", body)

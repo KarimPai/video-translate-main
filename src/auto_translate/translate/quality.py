@@ -1,8 +1,4 @@
-"""Shared no-model subtitle safeguards used with CAT translation.
-
-No Index-style second-inference review, LLM-based rewrite, or translator
-selection code lives here. Preserve only conservative offline filters/fixes.
-"""
+"""Conservative offline Japanese-to-English subtitle filters and repairs."""
 import re
 import unicodedata
 
@@ -69,28 +65,6 @@ def is_obvious_nonverbal_japanese(text: str) -> bool:
 def repair_high_confidence_meaning(japanese: str, english: str) -> str:
     """Apply only unambiguous meaning fixes already tested on real streams."""
     source = unicodedata.normalize("NFKC", japanese)
-
-    # Precisely observed CAT mistakes. Scope each repair to the Japanese
-    # evidence and a known wrong English realization; do not rewrite other
-    # numbers or general negation patterns.
-    if (
-        re.findall(r"\d+", source) == ["30"]
-        and re.search(r"(?<!\d)30\s*秒", source)
-    ):
-        english = re.sub(
-            r"\b(?:15|fifteen)\s+(?:seconds?|secs?)\b",
-            "30 seconds", english, flags=re.I,
-        )
-    if (
-        re.fullmatch(r"聞こえるな[!！。]?\s*", source)
-        and re.fullmatch(r"Don['’]t listen[.!！]?\s*", english, flags=re.I)
-    ):
-        return "I can hear it!"
-    if (
-        re.fullmatch(r"よろしくお願いします[!！。]?\s*", source)
-        and re.search(r"\b(?:reliable|professional)\b", english, re.I)
-    ):
-        return "Nice to meet you!"
 
     if _THIRTY_MAN_LINE.fullmatch(source):
         english = _THIRTY_THOUSAND_EN.sub("300,000", english)

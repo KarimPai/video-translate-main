@@ -933,7 +933,6 @@ class Ingest:
             while True:
                 with self._proc_lock:
                     generation = self._generation
-                    reuse_url = self._vod_audio_url is not None and not self.video_out
                 if generation != previous_generation:
                     vod_retries = 0
                     previous_generation = generation
@@ -945,6 +944,39 @@ class Ingest:
                         raise
                     log.warning("live audio session failed: %s", exc)
                     failed_to_open = True
+
+                # Initial VOD startup used to abort immediately when the
+                # first resolved YouTube audio URL yielded no PCM. Always try
+                # one newly signed URL, then one AAC/m4a rendition as a bounded
+                # fallback. Do not retry local files, live streams or seek resets.
+                if not self.source.live and failed_to_open:
+                    with self._proc_lock:
+                        recoverable = (
+                            not self._stopped
+                            and self._restart_at is None
+                            and generation == self._generation
+                            and self.video_out is None
+                            and not Path(self.source.location).exists()
+                        )
+                    if recoverable:
+                        log.warning(
+                            "VOD audio produced no PCM; refreshing signed "
+                            "YouTube URL and retrying"
+                        )
+                        self._vod_audio_url = None
+                        failed_to_open = self._read_session(out_q)
+                    if recoverable and failed_to_open:
+                        log.warning(
+                            "Fresh URL still produced no PCM; trying AAC/m4a "
+                            "audio as an alternative to the default codec"
+                        )
+                        self._audio_format_override = (
+                            "bestaudio[ext=m4a]/bestaudio/best"
+                        )
+                        self._vod_audio_url = None
+                        failed_to_open = self._read_session(out_q)
+                    if recoverable and not failed_to_open:
+                        log.info("VOD audio recovery succeeded")
 
                 if not self.source.live and not failed_to_open:
                     # FFmpeg may exit cleanly after only a fraction of a
@@ -1023,22 +1055,7 @@ class Ingest:
                     log.info("live audio timeline resumed at %.2fs (generation=%d)", elapsed, generation)
                     continue
 
-                with self._proc_lock:
-                    refresh = (
-                        reuse_url and failed_to_open and not self._stopped
-                        and self._restart_at is None and generation == self._generation
-                    )
-                    if refresh:
-                        self._vod_audio_url = None
-                if refresh:
-                    log.info("cached VOD audio failed to open; resolving again")
-                    retry_failed = self._read_session(out_q)
-                    if retry_failed:
-                        raise RuntimeError(
-                            "VOD audio failed to open even after refreshing the "
-                            "signed YouTube URL; inspect FFmpeg logs"
-                        )
-                elif failed_to_open:
+                if failed_to_open:
                     with self._proc_lock:
                         interrupted = (
                             not self._stopped and self._restart_at is None
@@ -1046,8 +1063,9 @@ class Ingest:
                         )
                     if interrupted:
                         raise RuntimeError(
-                            "VOD audio decoder exited before producing any PCM; "
-                            "check yt-dlp, source availability and FFmpeg logs"
+                            "VOD audio decoder produced no PCM after URL refresh "
+                            "and audio format fallback; check FFmpeg errors in "
+                            "logs/run.log and yt-dlp access to this VOD"
                         )
 
                 with self._proc_lock:

@@ -433,12 +433,13 @@ def run_translate(
             observe_scene = getattr(translator, "observe_scene", None)
             if callable(observe_scene) and tr.ja:
                 observe_scene(tr.ja)
-            if tr.en and tr.en != "[translation failed]":
+            if tr.en and tr.en != "[translation failed]" and not tr.asr_uncertain:
                 history.append((tr.ja, tr.en))
-                if not tr.asr_uncertain:
-                    speaker_reference.observe(tr)
-                else:
-                    speaker_reference.reset()
+                speaker_reference.observe(tr)
+            else:
+                # A possibly garbled Japanese fragment must not poison
+                # future name repairs, prompt history or scene hints.
+                speaker_reference.reset()
             else:
                 speaker_reference.reset()
             tr.timings.mt_start = time.monotonic()
@@ -491,13 +492,11 @@ def run_translate(
                 log.debug("Skipping nonverbal translated utterance: %r", tr.ja)
                 continue
 
-            if en and en != "[translation failed]":
+            if en and en != "[translation failed]" and not tr.asr_uncertain:
                 history.append((tr.ja, en))
-                if tr.asr_uncertain:
-                    speaker_reference.reset()
-                else:
-                    speaker_reference.observe(tr)
+                speaker_reference.observe(tr)
             else:
+                # Still display uncertain dialogue, but never reinforce it.
                 speaker_reference.reset()
 
             if not en.strip():

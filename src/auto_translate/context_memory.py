@@ -80,7 +80,7 @@ class SceneMemory:
     """
 
     def __init__(self, max_idle_lines: int = 32) -> None:
-        self.max_idle_lines = max(8, int(max_idle_lines))
+        self.max_idle_lines = max(8, min(96, int(max_idle_lines)))
         self.reset()
 
     def reset(self) -> None:
@@ -126,6 +126,15 @@ class SceneMemory:
         ranked = sorted(scores, key=lambda name: scores[name], reverse=True)
         strongest = ranked[0] if ranked and scores[ranked[0]] > 0 else None
         score = scores[strongest] if strongest else 0
+        # Equal evidence for multiple scenes is ambiguous ASR, not a
+        # reason to choose an arbitrary category by dictionary order.
+        ambiguous = (
+            len(ranked) > 1 and score > 0 and scores[ranked[1]] == score
+        )
+        if ambiguous:
+            strongest = None
+            score = 0
+            scores = {topic: 0 for topic in scores}
 
         if self.topic and self.lines - self.last_supported > self.max_idle_lines:
             self._activate_topic_expired()
@@ -155,7 +164,7 @@ class SceneMemory:
                 self._pending_count = 1
                 self._pending_at = self.lines
 
-        if not self.topic:
+        if not self.topic or ambiguous:
             return
         for word, label in _SCENE_DETAILS[self.topic]:
             if word in source:

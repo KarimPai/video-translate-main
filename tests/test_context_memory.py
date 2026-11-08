@@ -159,6 +159,19 @@ class ContextMemoryTests(unittest.TestCase):
         memory.reset()
         self.assertEqual(memory.hint(), "")
 
+    def test_conflicting_scene_evidence_does_not_guess_a_topic(self):
+        memory = SceneMemory()
+        memory.observe("ARKとGTAを比較しよう")
+        self.assertIsNone(memory.current_topic())
+        memory.observe("競馬と恐竜が好き")
+        self.assertIsNone(memory.current_topic())
+        memory.observe("馬券買った")
+        self.assertEqual(memory.current_topic(), "horse_racing")
+        # Independent conflicting topics do not replace established scene.
+        memory.observe("ARKとGTA")
+        self.assertEqual(memory.current_topic(), "horse_racing")
+        self.assertLessEqual(SceneMemory(max_idle_lines=10000).max_idle_lines, 96)
+
     def test_stale_scene_expires_and_weak_terms_do_not_create_one(self):
         memory = SceneMemory(max_idle_lines=8)
         memory.observe("ワイド画面で新聞を見る")

@@ -47,9 +47,12 @@ class SeekProcessingTests(unittest.TestCase):
         self.assertGreater(probes, 1)
         self.assertEqual(covered, start + 12 * SAMPLE_RATE)
 
-    def test_vod_seeks_reuse_url_and_refresh_once_on_open_failure(self):
+    def test_vod_seeks_refresh_url_then_try_aac_on_zero_pcm(self):
         ingest = Ingest(Source("https://example.org/video", live=False), IngestConfig())
-        with patch.object(ingest, "_resolve_audio_url", side_effect=["first", "fresh"]) as resolve:
+        with patch.object(
+            ingest, "_resolve_audio_url",
+            side_effect=["first", "fresh", "aac-fresh"],
+        ) as resolve:
             self.assertIn("first", ingest._audio_commands()[0])
             ingest.source = replace(ingest.source, start_s=30)
             calls = []
@@ -60,26 +63,51 @@ class SeekProcessingTests(unittest.TestCase):
 
             with patch.object(ingest, "_read_session", side_effect=failed_session):
                 with self.assertRaisesRegex(
-                    RuntimeError, "VOD audio failed to open even after refreshing",
+                    RuntimeError, "after URL refresh and audio format fallback",
                 ):
                     ingest.run(queue.Queue())
-        self.assertEqual(resolve.call_count, 2)
-        self.assertEqual(len(calls), 2)
-        for cmd, url in zip(calls, ["first", "fresh"]):
+        self.assertEqual(resolve.call_count, 3)
+        self.assertEqual(len(calls), 3)
+        for cmd, url in zip(calls, ["first", "fresh", "aac-fresh"]):
             self.assertEqual(cmd[cmd.index("-i") + 1], url)
             self.assertEqual(cmd[cmd.index("-ss") + 1], "30.000")
+        self.assertEqual(ingest._audio_format_override, "bestaudio[ext=m4a]/bestaudio/best")
 
-    def test_first_vod_audio_open_failure_reports_error(self):
+    def test_first_vod_audio_open_failure_is_retried_twice_then_reported(self):
         ingest = Ingest(
             Source("https://www.youtube.com/watch?v=EXAMPLE", live=False,
                    duration=150.0),
             IngestConfig(),
         )
-        with patch.object(ingest, "_read_session", return_value=True):
+        with patch.object(ingest, "_read_session", return_value=True) as read:
             with self.assertRaisesRegex(
-                RuntimeError, "decoder exited before producing any PCM",
+                RuntimeError, "audio format fallback",
             ):
                 ingest.run(queue.Queue())
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(ingest._audio_format_override, "bestaudio[ext=m4a]/bestaudio/best")
+
+    def test_first_vod_audio_refresh_can_succeed_without_fallback(self):
+        ingest = Ingest(
+            Source("https://www.youtube.com/watch?v=EXAMPLE", live=False),
+            IngestConfig(),
+        )
+        with patch.object(ingest, "_read_session", side_effect=[True, False]) as read:
+            ingest.run(queue.Queue())
+        self.assertEqual(read.call_count, 2)
+        self.assertIsNone(ingest._audio_format_override)
+
+    def test_first_vod_audio_aac_fallback_can_succeed(self):
+        ingest = Ingest(
+            Source("https://www.youtube.com/watch?v=EXAMPLE", live=False),
+            IngestConfig(),
+        )
+        with patch.object(
+            ingest, "_read_session", side_effect=[True, True, False],
+        ) as read:
+            ingest.run(queue.Queue())
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(ingest._audio_format_override, "bestaudio[ext=m4a]/bestaudio/best")
 
     def test_vod_premature_audio_eof_resumes_until_real_end(self):
         ingest = Ingest(

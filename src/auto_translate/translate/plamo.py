@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term
+from ..stream_context import ark_glossary_hits, is_ark_context, is_incomplete_fragment
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -189,7 +190,7 @@ class PlamoTranslator:
         # A clear rhythmic-syllable loop can be skipped without paying for
         # translation or a review. A glossary hit always protects names/terms.
         glossary = getattr(self, "glossary", None)
-        hits = glossary.find(ja) if glossary is not None else []
+        hits = self._contextual_glossary_hits(ja, history) if glossary is not None else []
         if not hits and is_obvious_nonverbal_japanese(ja):
             log.debug("Suppressing nonverbal syllable loop: %r", ja)
             return SKIP_TOKEN
@@ -242,6 +243,16 @@ class PlamoTranslator:
             log.debug("Neutralized unsupported subject: JP=%r EN=%r -> %r", ja, english, corrected)
         return corrected
 
+    def _contextual_glossary_hits(
+        self, ja: str, history: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        hits = self.glossary.find(ja)
+        if is_ark_context(self.vod_title, ja, [jp for jp, _ in history[-8:]]):
+            present = {source for source, _ in hits}
+            hits.extend((source, target) for source, target in ark_glossary_hits(ja)
+                        if source not in present)
+        return hits
+
     def _chat(
         self,
         ja: str,
@@ -286,7 +297,17 @@ class PlamoTranslator:
         options["context"] += ("\nPreserve spoken Hololive nicknames and honorifics (-chan, -san, -sama). "
                                "Do not expand nicknames into full names or introduce member names "
                                "that are absent from the current Japanese speech.")
-        if hits := self.glossary.find(ja):
+        if is_ark_context(self.vod_title, ja, [jp for jp, _ in history[-8:]]):
+            options["context"] += ("\nThis is ARK gameplay. ギガノト = Giganotosaurus "
+                                   "(a dinosaur, not a location); テイム = taming. "
+                                   "Do not invent game facts.")
+        if is_incomplete_fragment(ja):
+            options["context"] += ("\nUnfinished spoken sentence fragment: translate only "
+                                   "the words heard without inventing a subject or ending.")
+        elif history and is_incomplete_fragment(history[-1][0]):
+            options["context"] += ("\nThe previous cue was unfinished; this may be its continuation. "
+                                   "Translate only this cue, without repeating previous content.")
+        if hits := self._contextual_glossary_hits(ja, history):
             options["glossary"] = [
                 {"source": source, "target": target}
                 for source, target in hits

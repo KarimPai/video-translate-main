@@ -106,7 +106,7 @@ def main() -> None:
             (source.timeline or {}).get("title", ""),
             (source.timeline or {}).get("channel", ""),
         ) if part
-    ) if not source.live else ""
+    )
 
     # Load models before starting ingest.
     t0 = time.perf_counter()

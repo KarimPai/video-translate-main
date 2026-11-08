@@ -48,7 +48,7 @@ class AsrConfig:
     # Optional Haas-ASR keyword boosting in speech.cpp 0.10+.
     haas_keywords_enabled: bool = True
     haas_keywords_file: str = "haas_vocabulary.toml"
-    haas_keywords_alpha: float = 2.0
+    haas_keywords_alpha: float = 1.5
     haas_keywords_guard: bool = True
     blocklist: list[str] = field(default_factory=list)
 

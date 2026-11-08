@@ -12,6 +12,7 @@ from typing import Callable
 
 from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
+from .stream_context import repair_peko_nickname, repair_verified_caption, repair_ark_spelling
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import (
@@ -46,6 +47,8 @@ def run_asr(
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:
     """Transcribe utterances, optionally using aligned captions as a fallback."""
+    recent_japanese: deque[str] = deque(maxlen=12)
+    last_generation: int | None = None
     while True:
         item = in_q.get()
 
@@ -53,6 +56,9 @@ def run_asr(
             break
 
         if isinstance(item, AudioProgress):
+            if item.reset or (last_generation is not None and item.generation != last_generation):
+                recent_japanese.clear()
+            last_generation = item.generation
             if get_generation is not None and item.generation != get_generation():
                 continue
 
@@ -60,6 +66,9 @@ def run_asr(
             continue
 
         utt = item
+        if last_generation is not None and utt.generation != last_generation:
+            recent_japanese.clear()
+        last_generation = utt.generation
 
         if get_generation is not None and utt.generation != get_generation():
             continue
@@ -109,6 +118,8 @@ def run_asr(
         source = "haas"
         if text and caption_match is not None:
             reconciled = reconcile_caption(text, caption_match.text)
+            if caption_match.coverage >= 0.80 and caption_match.overlap_s >= 0.45:
+                reconciled = repair_verified_caption(reconciled, caption_match.text)
             if reconciled != text:
                 source = "haas+youtube_correction"
                 text = reconciled
@@ -140,6 +151,15 @@ def run_asr(
             log.debug("Watame ASR name correction: %s -> %s", text, corrected)
             text = corrected
 
+        new_name = repair_peko_nickname(
+            text, title=vod_title,
+            caption=caption_match.text if caption_match else "",
+            recent=list(recent_japanese),
+        )
+        if new_name != text:
+            log.debug("Supported nickname correction: %r -> %r", text, new_name)
+            text = new_name
+
         # Filter only complete interjections, after ASR/caption reconciliation
         # and name repair, before any translation request or subtitle output.
         if is_isolated_reaction(text):
@@ -149,6 +169,7 @@ def run_asr(
         if get_generation is not None and utt.generation != get_generation():
             continue
 
+        recent_japanese.append(text)
         out_q.put(
             Transcript(
                 utt.start_s,
@@ -227,6 +248,13 @@ def run_translate(
                 if repaired_ja != tr.ja:
                     log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
                     tr = replace(tr, ja=repaired_ja)
+            new_ja = repair_ark_spelling(
+                tr.ja, getattr(translator, "vod_title", ""),
+                [ja for ja, _ in list(history)[-8:]],
+            )
+            if new_ja != tr.ja:
+                log.debug("ARK spelling repair: %r -> %r", tr.ja, new_ja)
+                tr = replace(tr, ja=new_ja)
             try:
                 en = translator.translate(tr.ja, list(history))
             except Exception as e:

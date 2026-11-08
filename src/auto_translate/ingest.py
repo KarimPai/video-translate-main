@@ -155,7 +155,7 @@ def resolve_source(
                 "live mode: ignoring the start time "
                 "(we always start at the live edge)"
             )
-        return Source(location, live=True)
+        return Source(location, live=True, timeline=timeline)
 
     if not is_file and timeline is None:
         timeline = load_vod_metadata(location, cfg)
@@ -168,7 +168,7 @@ def resolve_source(
         # duration. Detect the actual source type before attempting VOD math.
         if status == "is_live":
             log.info("yt-dlp: detected live stream; using live ingest")
-            return Source(location, live=True)
+            return Source(location, live=True, timeline=timeline)
 
         raw_duration = timeline.get("duration_s")
         duration = (

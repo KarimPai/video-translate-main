@@ -119,6 +119,14 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
     if (re.fullmatch(r"(?:できる|出来る|勝てる|行ける|見える|聞こえる)(?:よ|ね|よね)?", appraisal)
             and "?" not in source and re.search(r"\b(?:can't|cannot|unable to)\b", english, re.I)):
         return "affirmative_ability_reversed"
+    # Context-specific meaning reversals seen in live ARK subtitles.
+    if (re.search(r"読み込み.{0,10}軽くな|軽くなっちま|ロード.{0,8}軽くな", source)
+            and re.search(r"\b(?:slowed?|slower|sluggish|heavier)\b", english, re.I)):
+        return "loading_performance_reversed"
+    if (re.search(r"(?:のん[、\s]?){2,}|(?:ノン[、\s]?){2,}", source)
+            and re.search(r"\b(?:fine|okay|all right|all good|no problem)\b", english, re.I)
+            and not re.search(r"\b(?:no|not|never)\b", english, re.I)):
+        return "rejection_reversed"
     if _EXPLICIT_NEGATION.search(japanese) and not _EN_NEGATION.search(english):
         # Obligations such as "寝ないといけない" should not be forced negative.
         if not re.search(r"ないと(?:いけない|ならない|ダメ|だめ)|なければならない|なくちゃ|なくても(?:いい|大丈夫)|かもしれない", japanese):

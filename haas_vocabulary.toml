@@ -22,21 +22,5 @@ keywords = [
     "獅白ぼたん=ししろぼたん",
     # Do not globally boost Ririka: weak audio can produce false names.
     # Keep her name in the translation glossary for explicit mentions.
-    # General gaming across FPS, RPG, MMO, gacha and co-op
-    "エイムアシスト=えいむあしすと",
-    "ヘッドショット=へっどしょっと",
-    "リスポーン=りすぽーん",
-    "リロード=りろーど",
-    "クールダウン=くーるだうん",
-    "クールタイム=くーるたいむ",
-    "ノックバック=のっくばっく",
-    "ソロキュー=そろきゅー",
-    "リセマラ=りせまら",
-    "デバフ=でばふ",
-    "ギミック=ぎみっく",
-    "レイド=れいど",
-    "ガチャ=がちゃ",
-    "マッチング=まっちんぐ",
-    "エイム=えいむ",
-    "ナーフ=なーふ",
+    # Don't globally boost generic gaming words; these can displace speech.
 ]

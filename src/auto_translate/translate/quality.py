@@ -52,6 +52,11 @@ _MEANINGFUL_REPETITIONS = frozenset(
      "okay", "fire", "help", "look", "here", "that", "what", "this", "yeah",
      "good", "turn", "left", "back", "move", "roll"}
 )
+# "95はのんのんのんよ" is a rejection, not a numeric sequence.
+# Only correct an entire line with this tightly bounded construction.
+_LEVEL_REJECTION = re.compile(
+    r"\s*(?:レベル)?([0-9０-９]{1,3})は(?:のん[、\s]?){2,}(?:よ|ね)?[。!?！?、\s]*"
+)
 
 
 def is_skip_token(text: str) -> bool:
@@ -123,6 +128,9 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
     if (re.search(r"読み込み.{0,10}軽くな|軽くなっちま|ロード.{0,8}軽くな", source)
             and re.search(r"\b(?:slowed?|slower|sluggish|heavier)\b", english, re.I)):
         return "loading_performance_reversed"
+    if (_LEVEL_REJECTION.fullmatch(source)
+            and not re.search(r"\b(?:no|nope|nah|not|reject|refus)\b", english, re.I)):
+        return "rejection_reversed"
     if (re.search(r"(?:のん[、\s]?){2,}|(?:ノン[、\s]?){2,}", source)
             and re.search(r"\b(?:fine|okay|all right|all good|no problem)\b", english, re.I)
             and not re.search(r"\b(?:no|not|never)\b", english, re.I)):
@@ -148,9 +156,8 @@ def repair_high_confidence_meaning(japanese: str, english: str) -> str:
             "The load is lighter now",
             english, count=1, flags=re.I,
         )
-    if (
-        re.fullmatch(r"\s*(?:レベル)?95は(?:のん){2,}(?:よ)?[。!?！。\s]*", source)
-        and re.fullmatch(r"\s*95\s+is\s+(?:totally\s+)?fine[.!?]?\s*", english, re.I)
-    ):
-        return "Level 95? No, no, no."
+    # Meaning is explicit in Japanese regardless of how Qwen mistranslates
+    # the number or repeated refusal (including "fourth, fifth, sixth").
+    if match := _LEVEL_REJECTION.fullmatch(source):
+        return f"Level {int(match.group(1))}? No, no, no."
     return english

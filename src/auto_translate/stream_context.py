@@ -48,6 +48,11 @@ def repair_ark_spelling(text: str, title: str = "", recent: tuple[str, ...] | li
     # Preserve genuine "ギガの土地", don't rewrite broad homophones.
     text = re.sub(r"ギガのと(?=$|[、。！？!? \t]|[がをにはで]|討伐|チェック|えぐ)", "ギガノト", text)
     text = re.sub(r"ギガノと(?=$|[、。！？!? \t]|[がをにはで]|討伐|チェック|えぐ)", "ギガノト", text)
+    # Small, attested ARK-only Haas confusions. Never globally rewrite
+    # homophones such as ギガの土地 ("Giga's land").
+    text = re.sub(r"気がの都(?=$|[がをにはで]|討伐|襲来)", "ギガノト", text)
+    text = re.sub(r"ギガナと(?=$|[がをにはで]|討伐|どっち)", "ギガノト", text)
+    text = re.sub(r"ギガノド(?=$|[がをにはで]|討伐|だけ)", "ギガノト", text)
     return re.sub(r"テーム(?=した|する|して|済み|でき)", "テイム", text)
 
 

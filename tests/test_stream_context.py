@@ -18,6 +18,10 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_ark_spelling("ギガの土地", "ARK"), "ギガの土地")
         self.assertEqual(repair_ark_spelling("恐竜をテームした", "ARK"), "恐竜をテイムした")
         self.assertEqual(repair_ark_spelling("ギガのと討伐"), "ギガのと討伐")
+        self.assertEqual(repair_ark_spelling("気がの都が襲来", "ARK"), "ギガノトが襲来")
+        self.assertEqual(repair_ark_spelling("このギガナとどっちが強い", "ARK"), "このギガノトどっちが強い")
+        self.assertEqual(repair_ark_spelling("ギガノドだけ討伐", "ARK"), "ギガノトだけ討伐")
+        self.assertEqual(repair_ark_spelling("気がの都が襲来"), "気がの都が襲来")
         self.assertIn(("ギガノト", "Giganotosaurus"), ark_glossary_hits("ギガノト討伐"))
 
     def test_nickname(self):
@@ -38,6 +42,9 @@ class TestStreamContext(unittest.TestCase):
     def test_translation(self):
         self.assertEqual(translation_review_reason("読み込みが軽くなっちまっておる", "The loading has slowed down."), "loading_performance_reversed")
         self.assertEqual(translation_review_reason("95はのんのんのんよ", "95 is totally fine"), "rejection_reversed")
+        self.assertEqual(translation_review_reason(
+            "95はのんのんのんよ。", "95 is the fourth, the fifth, the sixth, the seventh."
+        ), "rejection_reversed")
         self.assertEqual(repair_high_confidence_meaning(
             "読み込みが軽くなっちまっておるあそこすごいぞ!",
             "The loading has slowed down—that place is insane!"
@@ -45,6 +52,15 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_high_confidence_meaning(
             "95はのんのんのんよ。", "95 is totally fine."
         ), "Level 95? No, no, no.")
+        self.assertEqual(repair_high_confidence_meaning(
+            "95はのんのんのんよ。", "95 is the fourth, the fifth, the sixth, the seventh."
+        ), "Level 95? No, no, no.")
+        self.assertEqual(repair_high_confidence_meaning(
+            "95はのんのんのんよ。", "No, no, no. 95 is too low."
+        ), "Level 95? No, no, no.")
+        self.assertEqual(repair_high_confidence_meaning(
+            "95は大丈夫だよ。", "95 is fine."
+        ), "95 is fine.")
         self.assertEqual(repair_high_confidence_meaning(
             "読み込みが重くなった", "The loading has slowed down"
         ), "The loading has slowed down")

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from auto_translate.translate.qwen import (
     QwenTranslator, _clean, _model_ids, _remove_unmentioned_full_names,
+    _remove_unspoken_insult,
 )
 
 
@@ -68,6 +69,33 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertEqual(
             _remove_unmentioned_full_names("一条莉々華が来た", "Ichijou Ririka is here"),
             "Ichijou Ririka is here",
+        )
+
+    def test_ambiguous_cat_nickname_is_not_expanded_to_hololive_name(self):
+        self.assertEqual(
+            _remove_unmentioned_full_names("あ、聞こえます?猫ちゃん",
+                                           "Can you hear me? Nekomata-chan"),
+            "Can you hear me? Neko-chan",
+        )
+        self.assertEqual(
+            _remove_unmentioned_full_names("猫又おかゆが来た", "Nekomata-chan came"),
+            "Nekomata-chan came",
+        )
+        self.assertEqual(
+            _remove_unmentioned_full_names("ぺこちゃん", "Peko-chan"),
+            "Peko-chan",
+        )
+
+    def test_unspoken_trailing_insult_removed(self):
+        self.assertEqual(
+            _remove_unspoken_insult(
+                "もう罠から出さなくていいんだよなきっと",
+                "You don't have to get out of the trap, you idiot."
+            ), "You don't have to get out of the trap."
+        )
+        self.assertEqual(
+            _remove_unspoken_insult("バカだな", "You're an idiot, you idiot."),
+            "You're an idiot, you idiot.",
         )
 
     def test_isolated_exclamation_needs_no_model_call(self):

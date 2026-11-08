@@ -39,6 +39,9 @@ _SYSTEM_PROMPT = (
     "Do not reverse praise, rejection, or other sentiment. "
     "Spoken names ending with -chan, -san or -sama retain those suffixes in English. "
     "Do not expand a nickname to a full name or invent a member name based on context. "
+    "猫ちゃん means kitty/Neko-chan, not Nekomata-chan; do not infer someone's "
+    "identity from an ambiguous nickname. "
+    "Never add insults, blame, accusations, or spoken words absent from Japanese. "
     "Japanese may omit the grammatical subject; avoid guessing who acted. "
     "The input is automatic speech recognition and may contain errors; "
     "use the provided terminology only when the current Japanese actually supports it. "
@@ -103,7 +106,24 @@ def _remove_unmentioned_full_names(japanese: str, english: str) -> str:
             log.debug("Discarding unsupported complete member name %s: JP=%r", full_name, japanese)
             english = pattern.sub("", english)
             english = re.sub(r"\s{2,}", " ", english).strip(" ,")
+    # 猫ちゃん is not evidence for the specific person Nekomata. Never infer
+    # another person's name solely from the video title or a prior cue.
+    if ("猫ちゃん" in japanese and not any(
+            name in japanese for name in ("猫又", "ネコマタ", "ねこまた"))):
+        english = re.sub(r"\bNekomata-chan\b", "Neko-chan", english, flags=re.I)
     return english
+
+
+def _remove_unspoken_insult(japanese: str, english: str) -> str:
+    """Remove only a known trailing Qwen addition if Japanese lacks an insult."""
+    if re.search(r"バカ|ばか|馬鹿|アホ|阿呆|クソ|くそ|死ね|ふざけ", japanese):
+        return english
+    return re.sub(
+        r",\s+you idiot(?P<punct>[.!?]?)\s*$",
+        lambda match: match.group("punct"),
+        english,
+        flags=re.I,
+    )
 
 
 class QwenTranslator:
@@ -297,6 +317,7 @@ class QwenTranslator:
         english = repair_high_confidence_meaning(ja, english)
         english = correct_translation(ja, english)
         english = _remove_unmentioned_full_names(ja, english)
+        english = _remove_unspoken_insult(ja, english)
         english = neutralize_unsupported_subjects(ja, english)
         return english if english else "[translation failed]"
 

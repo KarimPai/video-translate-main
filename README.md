@@ -1,136 +1,103 @@
-# Japanese Video Translator — CAT-Translate-3.3B experiment
+# Japanese Video Translator — PLaMo 3 Translate 8B Q3_K_M experiment
 
-This separate branch runs one Japanese ASR and one local translation LLM:
+This **separate test branch** replaces CAT with **PLaMo 3 Translate 8B Q3_K_M**. It keeps the existing Haas-ja-v1.0 Q8_0 Vulkan ASR (CPU decode), FireRedVAD CUDA, Sherpa-ONNX CPU speaker diarization, YouTube JP caption reconciliation, Hololive glossary, direct MPV video playback, English-only subtitle stacking, and VOD seeking/cache. **Only one translation LLM is configured.**
 
-- **ASR:** Haas-ja-v1.0 Q8_0 (speech.cpp Vulkan0, CPU decoding).
-- **Translation:** **CyberAgent CAT-Translate-3.3B**, **Q4_K_M GGUF**, via managed local CUDA llama.cpp.
-- **VAD:** FireRedVAD CUDA, with natural-pause splitting.
-- **Diarization:** Sherpa-ONNX CPU speaker turns and interruption-aware cuts.
-- **Video:** MPV plays the original YouTube stream; English-only stacked subtitles and native VOD seeking.
-- **Other:** Hololive names, conservative glossary corrections, caption reconciliation, game-context fixes, VOD subtitle cache.
+The `main` and `test-cat-translate-3.3b` branches remain untouched for comparison.
 
-CAT is the **sole translator**. There is no Index-Translate implementation, Index-style constraint prompting, Qwen model, PLaMo model, Ollama, external translation API, model chooser, or Index-specific retry workflow in this branch.
+## Model and verified prompting
 
-## Exact model
+Official model/quantization: https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF
 
-**Original model (non-beta):** https://huggingface.co/cyberagent/CAT-Translate-3.3b
+- Repository: `pfnet/plamo-3-translate-8b-GGUF`
+- Exact file: `plamo-3-translate-8b-Q3_K_M.gguf` (**4.31 GB model weights**)
+- API alias: `plamo-3-translate-8b`
+- Port: `http://127.0.0.1:8005/v1` (dedicated, avoids CAT port 8003)
+- Model is downloaded automatically on its first launch using llama.cpp's `-hf` and `-hff` options.
 
-**Community Q4_K_M GGUF:** https://huggingface.co/Sundowner123/cat-translate-3.3b-gguf
-
-**Exact GGUF filename:** `cat-translate-3.3b-Q4_K_M.gguf` (2,066,389,824 bytes; about 2.07 GB). The community repository also contains 1.4B and Gemma Q4 files. The launcher specifies **`-hf` plus `-hff`** to prevent accidental loading of a different model.
-
-The server uses `--jinja --chat-template-file src/auto_translate/translate/cat_sarashina.jinja` to apply the official **Sarashina 2.2 chat markers** explicitly. This avoids relying on the community GGUF's embedded template. A single USER message is rendered as the sequence `<|user|>` + source + `</s>` + `<|assistant|>`. CAT's official inference format is:
+The official model card recommends **PFML3** prompts directly to `/v1/completions` for production. The launcher uses the original GGUF embedded chat template for compatibility, but translation requests go to the raw completions endpoint **without any chat wrapper or extra system prompts**. Every utterance is sent in this exact language-targeted structure:
 
 ```text
-Translate the following Japanese text into English.
-
-行ってきます
+<|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>行ってきます<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>
 ```
 
-No previous Japanese/English dialogue, video title, long instructions, leaked constraint sections, Index stop markers, or Qwen thinking parameters are injected. **Temperature is 0 on the first pass**, with a small repetition penalty. CAT is not guaranteed to understand VTuber slang or broken ASR perfectly; validate against actual audio.
+Translation stops at `<|plamo:tag|>` or `<|plamo:bos|>`. Only glossary terms **actually present in the Japanese transcript** are optionally supplied using the documented PFML3 glossary syntax. The model never receives previous English subtitles, which prevents accidental continuation of prior dialogue.
 
-### Real-VOD output compatibility
+## Low-VRAM defaults (RTX 3070 8 GB)
 
-The community CAT GGUF has been observed returning the Sarashina end-of-sequence marker `</s>` **inside the English text**, even when using the officially specified prompt. The CAT request explicitly stops on `</s>`, and output cleanup also strips it if the server exposes the marker. Extra inference is only used on obviously invalid completions, never as regular prompt context.
+The managed llama-server starts with the following flags:
 
-**General failure protection:** CAT sometimes replies as a translation assistant (for example, asking the user to provide Japanese), or repeats punctuation for many tokens. The pipeline now flags these concrete failures, retries **once with the same Japanese text and a 4-second timeout**, and suppresses the subtitle if the second result is still invalid. Normal lines have **one inference only**. This does not censor legitimate speech or guarantee that fluent but incorrect translations will be detected. Common exact short reactions `なるほど` and `あかんか` are handled locally so they cannot trigger irrelevant assistant-style replies. The default maximum output is now **128 tokens**, down from 192.
+```bat
+llama-server -hf pfnet/plamo-3-translate-8b-GGUF -hff plamo-3-translate-8b-Q3_K_M.gguf -c 1024 -np 1 -ngl 99 -fa on -ctk q8_0 -ctv q8_0 --jinja --no-prefill-assistant --host 127.0.0.1 --port 8005 --alias plamo-3-translate-8b
+```
 
-For deterministic diagnostics, compare the same saved Japanese sentences before and after the update. This is a compatibility experiment; whether it improves translation accuracy must be established on real VODs.
+- **Q3_K_M:** 4.31 GB of model weights (not total VRAM).
+- **1024-token context:** short utterances, no prompt history.
+- **1 inference slot:** no duplicate KV allocations.
+- **Q8_0 KV cache:** quantized K and V state.
+- **Flash Attention:** `-fa on`.
+- **GPU offload:** `-ngl 99`, subject to actual VRAM availability.
+- **Output:** up to 128 English tokens, temperature 0.
+- **Cleanup:** owned server shuts down when MPV/session ends.
 
-Three source-evident GTA transcript errors have narrow, deterministic safeguards: `30秒` wrongly translated as `15 seconds`; a standalone `聞こえるな!` wrongly rendered `Don't listen!`; and a standalone `よろしくお願いします!` incorrectly generating an unrelated "reliable/professional" request. These are **not general translation-quality fixes**—other CAT errors, incomplete Japanese or incorrect Haas transcription can remain.
+Estimated total pipeline memory before measurement: roughly **6–8 GB**; it may exceed 8 GB depending on CUDA buffers, concurrent programs, Windows and the GPU build. A successful launch and the actual VRAM peak are not guaranteed by the unit tests. If full GPU offload fails, reduce `plamo_gpu_layers` in `config.toml` (e.g. 80) to transfer some computation to CPU at a potential speed penalty. An old `llama-server` build may reject `-ctk`, `-ctv` or `-fa on`; upgrade the binary rather than silently disabling the requested optimizations.
 
-### Clean default CAT settings
+### Optional configuration
 
-The configuration file is optional. Model defaults are:
+No `config.toml` is required. Defaults:
 
 ```toml
 [translate]
-cat_base_url = "http://127.0.0.1:8003/v1"
-cat_model = "cat-translate-3.3b"
-cat_hf_repo = "Sundowner123/cat-translate-3.3b-gguf"
-cat_hf_file = "cat-translate-3.3b-Q4_K_M.gguf"
-cat_context = 2048
-cat_gpu_layers = 99
+plamo_base_url = "http://127.0.0.1:8005/v1"
+plamo_model = "plamo-3-translate-8b"
+plamo_hf_repo = "pfnet/plamo-3-translate-8b-GGUF"
+plamo_hf_file = "plamo-3-translate-8b-Q3_K_M.gguf"
+plamo_context = 1024
+plamo_gpu_layers = 99
 max_tokens = 128
-timeout_s = 20.0
-load_timeout_s = 300.0
+timeout_s = 25.0
+load_timeout_s = 600.0
 context_lines = 0
 memory_lines = 12
 glossary = "glossary.toml"
 ```
 
-`context_lines = 0` ensures the CAT LLM sees only the current speech turn. `memory_lines` supports existing non-LLM ASR/context corrections and short-term repeat consistency, **not model prompt history**.
+Retired CAT settings (`cat_*`), old Index/Qwen translation keys and obsolete quality-retry fields are ignored in legacy local configuration files. Runtime speech segmentation and subtitle timings are otherwise unchanged.
 
-Old translation keys such as `index_*`, `quality_retry_enabled`, `qwen_*`, `plamo_*` and old model selectors are ignored if they appear in an existing git-ignored `config.toml`.
+## Install / run (Windows)
 
-CAT's server runs on **port 8003**, deliberately separate from Index's port 8002. It will **not adopt or terminate** a previously running server on that port.
-
-### Preserved speech segmentation settings
-
-```toml
-[asr]
-haas_model = "haas-ja-v1.0:q8_0"
-haas_device = "Vulkan0"
-haas_decode_on_cpu = true
-haas_keywords_enabled = true
-haas_keywords_file = "haas_vocabulary.toml"
-haas_keywords_alpha = 1.5
-haas_keywords_guard = true
-
-[vad]
-threshold = 0.35
-min_silence_ms = 400
-min_speech_ms = 100
-max_utterance_s = 6.0
-max_split_extension_s = 1.0
-
-[speaker]
-enabled = true
-min_turn_s = 0.55
-interruption_handoffs = true
-interruption_min_continuation_s = 0.25
-```
-
-Speaker 2 interrupting speaker 1 yields **two separately transcribed and translated turns** at a confident takeover boundary. This does not physically isolate simultaneous voices; overlap remains challenging. Previous subtitles stop lingering after a confirmed handoff, including cached VOD seek playback.
-
-## Install in a separate Windows checkout
+New isolated checkout:
 
 ```bat
 cd /d C:\Games
-git clone --branch test-cat-translate-3.3b --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-cat
-cd /d C:\Games\video-translate-cat
+git clone --branch test-plamo8b-q3 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-plamo8b
+cd /d C:\Games\video-translate-plamo8b
 uv sync --extra diarization
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 "Start translate.bat"
 ```
 
-Prerequisites: Windows, Python 3.12+, `uv`, ffmpeg/yt-dlp/MPV, CUDA-enabled Torch for FireRedVAD, working Haas/speech.cpp Vulkan ASR, and a **recent CUDA llama-server.exe** in PATH with `-hf`, `-hff`, and `--jinja` support.
-
-The first CAT startup downloads its GGUF if not cached. It remains local afterwards. Model-server startup/download issues are recorded in **`logs\cat-server.log`**. The main pipeline logs to **`logs\run.log`**. The server is automatically terminated when the session ends.
-
-### When FFmpeg produces no VOD audio
-
-This is an **ingest failure, not evidence of CAT inference failing**. On a first-audio-open error the program now (1) requests a fresh signed YouTube URL and retries, then (2) tries an AAC/m4a audio rendition if the second attempt also fails. Only after all three attempts does it stop. FFmpeg stderr (including HTTP/codec errors) is now written to `logs\run.log`; temporary signed media URLs are redacted.
-
-To inspect the actual failure without pasting long logs:
-
-```bat
-powershell -NoProfile -Command "Select-String -Path 'logs\run.log' -Pattern 'ffmpeg:','VOD audio','ingest session ended','pipeline stage' | Select-Object -Last 24 | ForEach-Object { $_.Line }"
-```
-
-If all attempts fail, check yt-dlp format availability with `yt-dlp -F "https://www.youtube.com/watch?v=nEdOU2p6fmU"` and verify FFmpeg is accessible with `ffmpeg -version`. Do **not** paste signed URLs returned by `yt-dlp -g`: they contain temporary access tokens.
-
-## Offline regression tests
+Alternatively, to reuse the existing `C:\Games\video-translate-cat` checkout **without deleting its local files manually**:
 
 ```bat
 cd /d C:\Games\video-translate-cat
+git fetch origin
+git switch -c test-plamo8b-q3 --track origin/test-plamo8b-q3
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+"Start translate.bat"
 ```
 
-Tests include the exact CAT translation prompt, API request, correct non-beta GGUF filename, managed server lifecycle, and absence of previous dialogue in prompts. They mock model/ASR processes and **do not prove runtime translation quality**. Recheck the same Hololive VOD and measure meaning, subtitles, and latency manually.
+The launcher still requests the YouTube URL, loads models, opens MPV, and prints JP/EN to the terminal.
 
-## Experimental branch isolation
+## Diagnostics
 
-- `main`, `test` — unchanged.
-- `test-qwen35-4b` — unchanged.
-- `test-index-translate-2b` — previous Index model experiment retained.
-- **`test-cat-translate-3.3b` — clean CAT-Translate-3.3B replacement.**
+- `logs/plamo8b-server.log`: llama.cpp download, model load, unsupported flags, CUDA and memory failures.
+- `logs/run.log`: yt-dlp, FFmpeg ingest, Japanese recognition, translation pipeline and MPV diagnostics.
+- Inspect GPU memory while running:
+
+```bat
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+```
+
+The tests mock the model server and verify PFML3 formatting, exact model/quantization, memory flags, glossary matching, cleanup, and baseline pipeline behavior. They **cannot prove actual Q3_K_M quality or VRAM usage**; compare the same saved VOD transcript and runtime logs with CAT and PLaMo 2B.
+
+This branch removes CAT's translator code, its Sarashina template, CAT-specific response-retry rules, model settings and tests. General conservative speech/post-translation safeguards remain.

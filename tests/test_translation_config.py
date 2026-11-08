@@ -20,6 +20,9 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.max_tokens, 128)
         self.assertEqual(cfg.context_lines, 0)
         self.assertEqual(cfg.memory_lines, 12)
+        self.assertTrue(cfg.scene_memory_enabled)
+        self.assertEqual(cfg.scene_max_idle_lines, 24)
+        self.assertEqual(cfg.scene_gap_reset_s, 30.0)
         self.assertEqual(cfg.glossary, "glossary.toml")
         for obsolete in (
             "index_model", "index_hf_model", "index_base_url", "index_context",
@@ -42,6 +45,19 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.plamo_gpu_layers, 50)
         self.assertEqual(cfg.max_tokens, 96)
         self.assertEqual(cfg.plamo_base_url, "http://127.0.0.1:8004/v1")
+
+    def test_scene_memory_can_be_disabled_or_tuned(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text(
+                '[translate]\nscene_memory_enabled = false\n'
+                'scene_max_idle_lines = 12\nscene_gap_reset_s = 18.0\n',
+                encoding="utf-8",
+            )
+            cfg = load_config(path).translate
+        self.assertFalse(cfg.scene_memory_enabled)
+        self.assertEqual(cfg.scene_max_idle_lines, 12)
+        self.assertEqual(cfg.scene_gap_reset_s, 18.0)
 
     def test_retired_index_and_qwen_settings_ignored(self):
         with tempfile.TemporaryDirectory() as temp:

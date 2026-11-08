@@ -271,6 +271,9 @@ class Ingest:
         # Reconnects use a continuous live subtitle timeline.
         self._live_origin_monotonic: float | None = None
         self._live_retry_count = 0
+        # Set on normal FFmpeg EOF. A VOD must not silently finish early
+        # while its original video continues playing in MPV.
+        self._last_session_audio_s: float | None = None
 
         self._restart_at: float | None = None
         self._go = threading.Event()
@@ -919,11 +922,17 @@ class Ingest:
 
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
+        vod_retries = 0
+        previous_generation = self.generation
         try:
             while True:
                 with self._proc_lock:
                     generation = self._generation
                     reuse_url = self._vod_audio_url is not None and not self.video_out
+                if generation != previous_generation:
+                    vod_retries = 0
+                    previous_generation = generation
+                self._last_session_audio_s = None
                 try:
                     failed_to_open = self._read_session(out_q)
                 except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
@@ -931,6 +940,47 @@ class Ingest:
                         raise
                     log.warning("live audio session failed: %s", exc)
                     failed_to_open = True
+
+                if not self.source.live and not failed_to_open:
+                    # FFmpeg may exit cleanly after only a fraction of a
+                    # YouTube VOD (expired signed URL, HLS disconnect, etc).
+                    # Resume the same audio timeline instead of emitting EOF
+                    # and letting MPV continue playing without subtitles.
+                    duration_s = self.source.duration
+                    processed_s = self._last_session_audio_s
+                    with self._proc_lock:
+                        interrupted = (
+                            not self._stopped and self._restart_at is None
+                            and generation == self._generation
+                        )
+                        remaining = (
+                            float(duration_s) - self.source.start_s - processed_s
+                            if duration_s is not None and processed_s is not None
+                            else 0.0
+                        )
+                        if interrupted and remaining > 15.0:
+                            vod_retries += 1
+                            if vod_retries > 3:
+                                raise RuntimeError(
+                                    "VOD audio ended prematurely on four sessions "
+                                    f"with {remaining:.1f}s remaining; "
+                                    "check FFmpeg/yt-dlp in logs/run.log"
+                                )
+                            previous_start = self.source.start_s
+                            resume_at = previous_start + processed_s
+                            self.source = replace(self.source, start_s=resume_at)
+                            # Force yt-dlp to resolve a fresh signed URL.
+                            self._vod_audio_url = None
+                        else:
+                            resume_at = None
+                    if resume_at is not None:
+                        log.warning(
+                            "VOD audio ended %.1fs before expected end; "
+                            "resuming from %.2fs (attempt %d/3)",
+                            remaining, resume_at, vod_retries,
+                        )
+                        time.sleep(min(1.5, 0.3 * vod_retries))
+                        continue
 
                 if self.source.live:
                     with self._proc_lock:
@@ -1299,6 +1349,7 @@ class Ingest:
         else:
             processed_seconds = (sample - first) / SAMPLE_RATE
 
+        self._last_session_audio_s = processed_seconds
         log.info(
             "ingest session ended after %.1fs of audio (exit codes %s)",
             processed_seconds,

@@ -212,6 +212,11 @@ Set `enabled = false` to bypass the stage. Legacy
 
 ## Silent-subtitle stall handling
 
+If FFmpeg ends a VOD's audio significantly before its known duration, the
+ingest stage re-resolves the signed YouTube audio URL and resumes from the
+processed position (up to three attempts). Repeated early EOF is an explicit
+error rather than a silent stop while MPV continues to play.
+
 The Qwen ASR speech.cpp worker has a 30-second response deadline for each
 utterance (`[asr] response_timeout_s = 30.0`). A crashed ingestion, VAD,
 Sherpa, ASR or translation thread now reports a fatal stage error rather than

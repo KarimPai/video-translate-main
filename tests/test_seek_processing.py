@@ -66,6 +66,46 @@ class SeekProcessingTests(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("-i") + 1], url)
             self.assertEqual(cmd[cmd.index("-ss") + 1], "30.000")
 
+    def test_vod_premature_audio_eof_resumes_until_real_end(self):
+        ingest = Ingest(
+            Source("https://www.youtube.com/watch?v=EXAMPLE", live=False,
+                   duration=100.0),
+            IngestConfig(),
+        )
+        starts = []
+        lengths = iter([8.0, 12.0, 80.0])
+        def fake_session(out_q):
+            starts.append(ingest.source.start_s)
+            ingest._last_session_audio_s = next(lengths)
+            return False
+        out = queue.Queue()
+        with patch.object(ingest, "_read_session", side_effect=fake_session), patch(
+            "auto_translate.ingest.time.sleep"
+        ):
+            ingest.run(out)
+        self.assertEqual(starts, [0.0, 8.0, 20.0])
+        self.assertIsNone(out.get_nowait())
+
+    def test_repeated_vod_premature_eof_is_reported_not_silent(self):
+        ingest = Ingest(
+            Source("https://www.youtube.com/watch?v=EXAMPLE", live=False,
+                   duration=100.0),
+            IngestConfig(),
+        )
+        called = []
+        def fake_session(out_q):
+            called.append(ingest.source.start_s)
+            ingest._last_session_audio_s = 2.0
+            return False
+        out = queue.Queue()
+        with patch.object(ingest, "_read_session", side_effect=fake_session), patch(
+            "auto_translate.ingest.time.sleep"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "audio ended prematurely"):
+                ingest.run(out)
+        self.assertEqual(called, [0.0, 2.0, 4.0, 6.0])
+        self.assertIsNone(out.get_nowait())
+
     def test_late_match_includes_long_overlapping_cue(self):
         index = CaptionIndex([
             CaptionCue(1, 100, "A"), CaptionCue(2, 3, "B"),

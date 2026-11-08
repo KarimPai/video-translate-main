@@ -16,9 +16,41 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.qwen_context, 4096)
         self.assertEqual(cfg.qwen_base_url, "http://127.0.0.1:8001/v1")
         self.assertEqual(cfg.glossary, "glossary.toml")
-        self.assertEqual(cfg.subtitle_style, "gist")
+        self.assertEqual(cfg.subtitle_style, "faithful")
+        self.assertEqual(cfg.temperature, 0.35)
+        self.assertEqual(cfg.top_p, 0.8)
+        self.assertEqual(cfg.top_k, 20)
+        self.assertEqual(cfg.min_p, 0.0)
+        self.assertEqual(cfg.repeat_penalty, 1.0)
+        self.assertEqual(cfg.presence_penalty, 0.0)
+        self.assertIsNone(cfg.quality_recheck_temperature)
         self.assertTrue(cfg.quality_recheck_enabled)
         self.assertFalse(hasattr(cfg, "backend"))
+
+    def test_config_sampling_fields_load_without_touching_other_engines(self):
+        custom = """
+[translate]
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+min_p = 0.04
+repeat_penalty = 1.05
+presence_penalty = 0.2
+quality_recheck_temperature = 0.1
+subtitle_style = "gist"
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.toml"
+            path.write_text(custom, encoding="utf-8")
+            cfg = load_config(path).translate
+        self.assertEqual(cfg.temperature, 0.7)
+        self.assertEqual(cfg.top_p, 0.9)
+        self.assertEqual(cfg.top_k, 40)
+        self.assertEqual(cfg.min_p, 0.04)
+        self.assertEqual(cfg.repeat_penalty, 1.05)
+        self.assertEqual(cfg.presence_penalty, 0.2)
+        self.assertEqual(cfg.quality_recheck_temperature, 0.1)
+        self.assertEqual(cfg.subtitle_style, "gist")
 
     def test_legacy_local_config_does_not_reenable_old_engine(self):
         legacy = """

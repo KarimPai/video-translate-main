@@ -65,12 +65,20 @@ qwen_model = "qwen3.5-4b"
 qwen_hf_model = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
 qwen_context = 4096
 qwen_gpu_layers = 99
-subtitle_style = "gist"  # "gist" (short meaning-focused) or "faithful"
+subtitle_style = "faithful"  # accuracy-first; "gist" is optional
+# Experimental sampling, now explicitly sent to llama.cpp per line:
+temperature = 0.35
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+repeat_penalty = 1.0
+presence_penalty = 0.0
 context_lines = 5
 memory_lines = 12
 max_tokens = 128
 glossary = "glossary.toml"
 quality_recheck_enabled = true
+# Optional: quality_recheck_temperature = 0.5 (only on flagged lines)
 quality_recheck_timeout_s = 3.0
 quality_recheck_min_interval_s = 10.0
 ```
@@ -95,17 +103,18 @@ outside this translator. Logs: `logs\\qwen-server.log`.
 
 ### Subtitle style
 
-This experimental branch defaults to `subtitle_style = "gist"`: short,
-natural, meaning-first English rather than literal transcription. It trims
-fillers and repetition without dropping names, numbers, essential facts,
-negation, questions, or important gaming terminology. It does not summarize
-across separate utterances or change the number of speakers. For the
-previous, more faithful style, use `subtitle_style = "faithful"` under
-`[translate]` in your local `config.toml`.
+The experimental branch now defaults to `subtitle_style = "faithful"`:
+keep more spoken details rather than compressing every line to a gist.
+`subtitle_style = "gist"` remains available in local `config.toml`.
+Neither option changes the speaker-turn logic or the Japanese ASR text.
 
-The style prompt is appended to the existing Qwen system message, so glossary
-and accuracy safeguards still apply. Sampling parameters and output token
-limits are unchanged, allowing a cleaner comparison against the previous run.
+Sampling controls (`temperature`, `top_p`, `top_k`, `min_p`,
+`repeat_penalty`, `presence_penalty`) are explicit per-request values
+sent to the managed Qwen3.5 llama.cpp server. The starting values are
+**experimental**, not an established optimum. The selective quality
+recheck uses the same values unless `quality_recheck_temperature` is
+configured; this affects only a flagged second request, never every line.
+Thinking remains disabled and the context window remains 4096 tokens.
 
 ### Prompts and terminology
 

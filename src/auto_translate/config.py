@@ -69,8 +69,16 @@ class TranslateConfig:
     qwen_hf_model: str = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
     qwen_context: int = 4096
     qwen_gpu_layers: int = 99
-    # "gist" favors short meaning-first subtitles; "faithful" is closer to literal.
-    subtitle_style: str = "gist"
+    # Accuracy-first trial: preserve details rather than compressing into a gist.
+    subtitle_style: str = "faithful"
+    # These map directly to llama.cpp's OpenAI-compatible chat completion
+    # sampling keys. Defaults are experiments, not proven optimum values.
+    temperature: float = 0.35
+    top_p: float = 0.8
+    top_k: int = 20
+    min_p: float = 0.0
+    repeat_penalty: float = 1.0
+    presence_penalty: float = 0.0
     max_tokens: int = 128
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
@@ -81,6 +89,9 @@ class TranslateConfig:
     scene_context_max_idle_lines: int = 32
     glossary: str = "glossary.toml"
     quality_recheck_enabled: bool = True
+    # Leave unset to reuse normal sampling; optionally try a different
+    # temperature ONLY on a flagged quality recheck, not every line.
+    quality_recheck_temperature: float | None = None
     quality_recheck_timeout_s: float = 3.0
     quality_recheck_min_interval_s: float = 10.0
 

@@ -114,6 +114,45 @@ _FULL_NAMES = {
 _SUGOI = {"すご", "すごっ", "すごい", "スゴ", "スゴッ", "スゴイ", "凄", "凄っ", "凄い"}
 
 
+def sampling_parameters(cfg: TranslateConfig, *, review: bool = False) -> dict:
+    """Build explicit llama.cpp chat completion sampling without changing prompts.
+
+    Validating settings avoids silently sending an invalid config or asking
+    llama.cpp to interpret a missing value with version-specific defaults.
+    """
+    temperature = cfg.temperature
+    if review and cfg.quality_recheck_temperature is not None:
+        temperature = cfg.quality_recheck_temperature
+    params = {
+        "temperature": temperature,
+        "top_p": cfg.top_p,
+        "top_k": cfg.top_k,
+        "min_p": cfg.min_p,
+        "repeat_penalty": cfg.repeat_penalty,
+        "presence_penalty": cfg.presence_penalty,
+    }
+    for key in ("temperature", "top_p", "min_p", "repeat_penalty", "presence_penalty"):
+        value = params[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"[translate] {key} must be a number, got {value!r}")
+    if isinstance(params["top_k"], bool) or not isinstance(params["top_k"], int):
+        raise ValueError("[translate] top_k must be an integer")
+    ranges = {
+        "temperature": (0.0, 2.0),
+        "top_p": (0.0, 1.0),
+        "min_p": (0.0, 1.0),
+        "repeat_penalty": (0.01, 3.0),
+        "presence_penalty": (-2.0, 2.0),
+    }
+    for key, (lo, hi) in ranges.items():
+        value = params[key]
+        if not lo <= value <= hi:
+            raise ValueError(f"[translate] {key} must be between {lo} and {hi}, got {value!r}")
+    if params["top_k"] < 0:
+        raise ValueError("[translate] top_k must be >= 0")
+    return params
+
+
 def _clean(text: str) -> str:
     """Discard leaked reasoning and routine response prefixes."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I)
@@ -563,8 +602,7 @@ class QwenTranslator:
                 {"role": "system", "content": _SYSTEM_PROMPT + " " + style_prompt},
                 {"role": "user", "content": "\n\n".join(blocks)},
             ],
-            "temperature": 0.1,
-            "top_p": 0.8,
+            **sampling_parameters(self.cfg, review=bool(review_hint)),
             "max_tokens": self.cfg.max_tokens,
             "stream": False,
             "chat_template_kwargs": {"enable_thinking": False},

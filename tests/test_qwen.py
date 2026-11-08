@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from auto_translate.translate.qwen import (
     QwenTranslator, _clean, _model_ids, _remove_unmentioned_full_names,
-    _remove_unspoken_insult,
+    _remove_unspoken_insult, sampling_parameters,
 )
 
 
@@ -20,6 +20,9 @@ def translator(**kwargs):
     settings = {
         "qwen_model": "qwen3.5-4b", "context_lines": 3,
         "timeout_s": 10.0, "max_tokens": 128,
+        "temperature": 0.35, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+        "repeat_penalty": 1.0, "presence_penalty": 0.0,
+        "quality_recheck_temperature": None,
         "quality_recheck_enabled": True, "quality_recheck_timeout_s": 3.0,
         "quality_recheck_min_interval_s": 0.0,
     }
@@ -34,6 +37,62 @@ def translator(**kwargs):
 
 
 class QwenTranslatorTests(unittest.TestCase):
+    def test_explicit_sampling_params_are_in_every_chat_request(self):
+        instance = translator()
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "I think I can go."}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=response) as call:
+            self.assertEqual(instance._chat("行けると思う", [], 5), "I think I can go.")
+        body = json.loads(call.call_args.args[0].data)
+        for key, expected in {
+            "temperature": 0.35, "top_p": 0.8,
+            "top_k": 20, "min_p": 0.0,
+            "repeat_penalty": 1.0, "presence_penalty": 0.0,
+        }.items():
+            self.assertEqual(body[key], expected, key)
+        self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(body["max_tokens"], 128)
+
+    def test_sampling_override_is_used_only_for_quality_review(self):
+        instance = translator(
+            temperature=0.7, top_k=36, min_p=0.05,
+            presence_penalty=0.2, quality_recheck_temperature=0.2,
+        )
+        content = json.dumps({"choices": [
+            {"message": {"content": "That's good."}},
+        ]}).encode("utf-8")
+        calls = []
+        def respond(request, timeout):
+            calls.append(json.loads(request.data))
+            return io.BytesIO(content)
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   side_effect=respond):
+            instance._chat("いいね", [], 5)
+            instance._chat("いいね", [], 5, review_hint="positive_appraisal_reversed")
+        self.assertEqual([request["temperature"] for request in calls], [0.7, 0.2])
+        self.assertEqual([request["top_k"] for request in calls], [36, 36])
+        self.assertEqual([request["min_p"] for request in calls], [0.05, 0.05])
+        self.assertEqual([request["presence_penalty"] for request in calls], [0.2, 0.2])
+
+    def test_sampling_bounds_reject_invalid_configuration(self):
+        instance = translator()
+        cases = [
+            ("temperature", -0.1), ("temperature", 3.0),
+            ("top_p", 1.1), ("min_p", -0.1),
+            ("top_k", -2), ("top_k", 2.5),
+            ("repeat_penalty", 0.0), ("presence_penalty", 3.0),
+        ]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                cfg = translator(**{key: value}).cfg
+                with self.assertRaisesRegex(ValueError, key):
+                    sampling_parameters(cfg)
+        cfg = translator(quality_recheck_temperature=4.0).cfg
+        with self.assertRaisesRegex(ValueError, "temperature"):
+            sampling_parameters(cfg, review=True)
+
     def test_clean_discards_leaked_thinking(self):
         self.assertEqual(_clean("<think>speculation</think>\nEN: Peko-chan!"), "Peko-chan!")
         self.assertEqual(_clean("EN: \"Hello!\""), "Hello!")

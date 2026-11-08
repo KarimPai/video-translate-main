@@ -41,6 +41,21 @@ class PlamoSceneMemoryTests(unittest.TestCase):
 
         return prompts, fake_open
 
+    def test_scene_context_feature_can_be_disabled(self):
+        from unittest.mock import patch as mocked
+        cfg = TranslateConfig(scene_memory_enabled=False)
+        with mocked.object(PlamoTranslator, "_start_server"), mocked.object(
+            PlamoTranslator, "_warmup",
+        ):
+            obj = PlamoTranslator(cfg, Glossary({}), vod_title="Hololive GTA")
+        self.assertIsNone(obj._scene_memory)
+        obj.observe_scene("カージャックされた")
+        self.assertNotIn(
+            "<|plamo:tag|>context",
+            build_plamo_prompt("車が来た", scene_context=None),
+        )
+        obj.close()
+
     def test_unrelated_or_weak_lines_do_not_receive_invented_game_context(self):
         obj = self.translator()
         prompts, fake_open = self.completion_spy(obj)
@@ -85,7 +100,7 @@ class PlamoSceneMemoryTests(unittest.TestCase):
 
     def test_scene_context_and_same_speaker_prior_japanese_share_one_block(self):
         prompt = build_plamo_prompt(
-            "今度ドライブしよう", [("わため", "Watame")],
+            "わためとドライブしよう", [("わため", "Watame")],
             scene_context="GTA driving/crime gameplay",
             reference_context="わためはどこ?",
         )

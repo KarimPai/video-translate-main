@@ -120,56 +120,49 @@ Sherpa speaker diarization, and Haas all receive original-pitch PCM audio
 Both legacy `pitch_semitones` and `pitch_shift_semitones` config entries
 are ignored for compatibility with existing local `config.toml` files.
 
-## Sherpa-ONNX speaker-aware subtitles
+## Sherpa-ONNX voice-turn-separated subtitles
 
-The isolated Qwen experiment now includes a CPU-only Sherpa-ONNX speaker
-segmentation stage **before Haas**. It is enabled in configuration by default,
-but Sherpa is an optional Python package. Install it once in this checkout:
+The optional Sherpa CPU stage runs after FireRedVAD and before Haas. It
+uses pyannote segmentation 3.0 INT8 and NeMo TitaNet Small *internally*
+to detect voice changes **within each VAD utterance**. No session-long
+speaker memory or A/B/C identities are generated.
+
+Install the additional dependency once:
 
 ```cmd
 uv sync --extra diarization
 ```
 
-On the first run the launcher prints an explicit download message for
-pyannote segmentation 3.0 INT8 (1.54 MB) and NeMo TitaNet Small (40.3 MB).
-The downloader first uses official maintainer-hosted Hugging Face standalone
-ONNX files, retries temporary errors, then falls back to Sherpa's GitHub
-release assets. It checks SHA256 before accepting either model, rejects
-partial caches, and preserves the original non-diarized audio path if both
-sources fail. The files are cached under `%LOCALAPPDATA%\auto-translate\speaker-models`.
-Model setup failure falls back to the unchanged unsplit FireRedVAD path.
-No separate model runs on the GPU. The CPU cost and extra subtitle delay
-must be measured on the target i7-9700K.
+The first run downloads the two verified ONNX models to
+`%LOCALAPPDATA%\\auto-translate\\speaker-models`. Sherpa's embedding model
+remains necessary for clustering voices *within a window*, even though
+persistent identity matching has been removed. No extra GPU VRAM is used.
 
 ```toml
 [speaker]
 enabled = true
 num_threads = 2
 min_turn_s = 0.55
-similarity_threshold = 0.68
-max_speakers = 4
 max_turns = 5
 ```
 
-Set `enabled = false` to restore the original pipeline immediately. The
-optional `model_dir = ""` uses the default model cache directory.
+For 3s+ VAD utterances, Sherpa estimates speaker-turn boundaries directly.
+Speech between 2 and 3 seconds is symmetrically padded with silence for
+segmentation without modifying the actual audio or timeline. Utterances
+shorter than 2s remain whole to avoid speculative cuts. When a clean
+non-overlapping speaker change is detected, the system picks a nearby
+low-energy boundary, ensures all PCM is preserved exactly once, and sends
+each slice independently through Haas and Qwen. MPV retains up to three
+English-only rows, newest above, with no speaker letters in MPV or CMD.
 
-The implementation processes completed FireRedVAD utterances through
-Sherpa's **offline** diarization API. Clear speaker changes produce separate
-audio slices, Haas transcriptions, Qwen translations and MPV subtitle lines.
-MPV prioritizes distinct speakers (A:, B:, etc.) among its three lines,
-with the newest lines above. A single speaker can still have multiple
-stacked lines if there are no other speakers to prioritize.
+**Limitations:** Diarization is not source separation. Simultaneous
+overlapping speakers or uncertain boundaries remain unsplit, because
+slicing overlapping voices can mix dialogue or clip spoken words. The
+2-3s path can increase CPU usage; check live subtitle latency.
 
-Speaker IDs now use session-long voice memory, retaining multiple
-reference embeddings per speaker. The first voice sample is provisional; a
-second independent, matching utterance is needed before a new letter is
-allocated. Identity memory persists through VOD seeks and resets on exit.
-The registry is strictly capped at max_speakers (default four labels A-D);
-unfamiliar or ambiguous voices are left unlabeled, not displayed as E/F or
-assigned to the closest voice without adequate evidence. Very short samples
-also cannot create new identities. This reduces label fragmentation but
-cannot guarantee perfect identity matching or unmix overlapping speech.
+Set `enabled = false` to bypass the stage. Legacy
+`similarity_threshold` and `max_speakers` entries in local
+`config.toml` are ignored for compatibility.
 
 ## YouTube metadata errors
 

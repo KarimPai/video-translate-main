@@ -117,7 +117,7 @@ def run_asr(
                 cached,
                 generation=utt.generation,
                 timings=utt.timings,
-                speaker_handoff=utt.speaker_handoff,
+                speaker_handoff=(utt.speaker_handoff or cached.speaker_handoff),
             ))
             continue
 

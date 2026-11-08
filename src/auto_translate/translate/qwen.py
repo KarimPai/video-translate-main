@@ -150,6 +150,11 @@ def sampling_parameters(cfg: TranslateConfig, *, review: bool = False) -> dict:
             raise ValueError(f"[translate] {key} must be between {lo} and {hi}, got {value!r}")
     if params["top_k"] < 0:
         raise ValueError("[translate] top_k must be >= 0")
+    seed = getattr(cfg, "sampling_seed", None)
+    if seed is not None:
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise ValueError("[translate] sampling_seed must be a nonnegative integer")
+        params["seed"] = seed
     return params
 
 

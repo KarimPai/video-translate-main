@@ -79,6 +79,7 @@ class TranslateConfig:
     min_p: float = 0.0
     repeat_penalty: float = 1.0
     presence_penalty: float = 0.0
+    sampling_seed: int | None = None  # optional reproducible local comparison
     max_tokens: int = 128
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0

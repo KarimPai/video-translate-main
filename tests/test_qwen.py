@@ -22,6 +22,7 @@ def translator(**kwargs):
         "timeout_s": 10.0, "max_tokens": 128,
         "temperature": 0.35, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
         "repeat_penalty": 1.0, "presence_penalty": 0.0,
+        "sampling_seed": None,
         "quality_recheck_temperature": None,
         "quality_recheck_enabled": True, "quality_recheck_timeout_s": 3.0,
         "quality_recheck_min_interval_s": 0.0,
@@ -54,6 +55,7 @@ class QwenTranslatorTests(unittest.TestCase):
             self.assertEqual(body[key], expected, key)
         self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(body["max_tokens"], 128)
+        self.assertNotIn("seed", body)
 
     def test_sampling_override_is_used_only_for_quality_review(self):
         instance = translator(
@@ -75,6 +77,11 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertEqual([request["top_k"] for request in calls], [36, 36])
         self.assertEqual([request["min_p"] for request in calls], [0.05, 0.05])
         self.assertEqual([request["presence_penalty"] for request in calls], [0.2, 0.2])
+        instance.cfg.sampling_seed = 42
+        self.assertEqual(sampling_parameters(instance.cfg)["seed"], 42)
+        instance.cfg.sampling_seed = -1
+        with self.assertRaisesRegex(ValueError, "sampling_seed"):
+            sampling_parameters(instance.cfg)
 
     def test_sampling_bounds_reject_invalid_configuration(self):
         instance = translator()

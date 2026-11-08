@@ -7,6 +7,7 @@ from auto_translate.stream_context import (
     repair_ark_spelling, repair_peko_nickname, repair_verified_caption,
     repair_gta_carjacking, is_gta_context, is_horse_racing_context, repair_horse_racing_spelling,
     valorant_glossary_hits, repair_valorant_translation,
+    repair_barotrauma_translation, repair_ark_tier_translation,
 )
 from auto_translate.translate.quality import translation_review_reason, repair_high_confidence_meaning
 
@@ -42,6 +43,53 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_ark_spelling("おさらちが来た", "", ["更地になってる"]),
                          "おさらちが来た")
         self.assertIn(("ギガノト", "Giganotosaurus"), ark_glossary_hits("ギガノト討伐"))
+
+    def test_ark_ascendant_tier_only_in_supported_game_context(self):
+        self.assertIn(
+            ("至高のサドル", "Ascendant saddle (ARK quality tier)"),
+            ark_glossary_hits("至高のサドルは神"),
+        )
+        self.assertEqual(
+            repair_ark_spelling("思考のサドルは神", "Hololive ARK"),
+            "至高のサドルは神",
+        )
+        self.assertEqual(
+            repair_ark_spelling("思考のサドルは神", "Philosophy lecture"),
+            "思考のサドルは神",
+        )
+        self.assertEqual(
+            repair_ark_tier_translation(
+                "至高のサドルは神", "The ultimate saddle is god-tier.",
+                "Hololive ARK",
+            ),
+            "The Ascendant saddle is god-tier.",
+        )
+        self.assertEqual(
+            repair_ark_tier_translation(
+                "思考のサドルは神", "The saddle of thought is god.",
+                "Hololive ARK",
+            ),
+            "The Ascendant saddle is god.",
+        )
+        self.assertEqual(
+            repair_ark_tier_translation(
+                "思考のサドル", "The saddle of thought",
+                "Philosophy lecture",
+            ),
+            "The saddle of thought",
+        )
+        self.assertEqual(
+            repair_ark_tier_translation(
+                "至高のサドル", "The Ascendant saddle", "ARK",
+            ),
+            "The Ascendant saddle",
+        )
+        self.assertEqual(
+            repair_ark_tier_translation(
+                "至高の演奏だ", "An ultimate performance", "ARK",
+            ),
+            "An ultimate performance",
+        )
 
     def test_valorant_game_aliases_are_evidence_bound(self):
         self.assertIn(
@@ -101,6 +149,45 @@ class TestStreamContext(unittest.TestCase):
                 "VALORANTとバロトラウマを比べよう",
                 "Let's compare Valorant and Barotrauma.",
             ), "Let's compare Valorant and Barotrauma.",
+        )
+
+    def test_hyphenated_valorant_and_distinct_barotrauma_are_corrected(self):
+        source = "バローランドっておもしろいぞ"
+        recent = ["バロラントやってる?"]
+        for wrong in ("Baro-land", "Baro Rando", "Baro-rant", "Baroland"):
+            with self.subTest(wrong=wrong):
+                self.assertEqual(
+                    repair_valorant_translation(
+                        source, f"{wrong} is fun.", recent,
+                    ),
+                    "VALORANT is fun.",
+                )
+                # Without independent evidence, do not guess a game title.
+                self.assertEqual(
+                    repair_valorant_translation(source, f"{wrong} is fun."),
+                    f"{wrong} is fun.",
+                )
+        for wrong in ("Valentine's Trauma", "Bartourma", "Barttrauma"):
+            with self.subTest(wrong=wrong):
+                self.assertEqual(
+                    repair_barotrauma_translation(
+                        "バロトラウマは別のゲームだよ",
+                        f"{wrong} is a different game.",
+                    ),
+                    "Barotrauma is a different game.",
+                )
+        self.assertEqual(
+            repair_barotrauma_translation(
+                "バローラントは違うゲーム", "Valentine's Trauma is a different game.",
+            ),
+            "Valentine's Trauma is a different game.",
+        )
+        self.assertEqual(
+            repair_valorant_translation(
+                "VALORANTとバロトラウマを比べる",
+                "Compare VALORANT to Barotrauma.",
+            ),
+            "Compare VALORANT to Barotrauma.",
         )
 
     def test_gta_title_context_is_explicit(self):

@@ -14,7 +14,7 @@
 {"ja":"どれ新品どれだ。","reference_en":"Which one is new?","title":"Hololive ARK survival gameplay"}
 {"ja":"右に全部入るんか。","reference_en":"Will everything fit on the right?","title":"Hololive ARK survival gameplay"}
 {"ja":"サドルは神。","reference_en":"The saddle is amazing.","title":"Hololive ARK survival gameplay","must_include":["saddle"]}
-{"ja":"至高のサドルは神。","reference_en":"Ascendant saddles are amazing.","title":"Hololive ARK survival gameplay","must_include":["saddle"]}
+{"ja":"至高のサドルは神。","reference_en":"Ascendant saddles are amazing.","title":"Hololive ARK survival gameplay","must_include":["Ascendant","saddle"],"must_exclude":["ultimate saddle","saddle of thought"]}
 {"ja":"30万だろ!?","reference_en":"300,000, right?!","title":"Hololive GTA","must_include":["300,000"],"must_exclude":["30,000"]}
 {"ja":"見失いました","reference_en":"I've lost sight of them.","title":"Hololive GTA","must_exclude":["lost my way"]}
 {"ja":"30秒アタック禁止!","reference_en":"No attacking for 30 seconds!","title":"Hololive GTA","must_include":["30 seconds"]}
@@ -24,7 +24,7 @@
 {"ja":"わため大丈夫?","reference_en":"Watame, are you okay?","title":"Hololive GTA","must_include":["Watame"]}
 {"ja":"裏手?","reference_en":"Around the back?","title":"Hololive GTA","must_include":["back"]}
 {"ja":"え、待たないよ追いかけるよ","reference_en":"I'm not waiting; I'm going after them.","title":"Hololive GTA"}
-{"ja":"ぶつかっちゃって1分に延ばせって言われてます","reference_en":"We crashed, and they told us to extend it to one minute.","title":"Hololive GTA"}
+{"ja":"ぶつかっちゃって1分に延ばせって言われてます","reference_en":"We crashed, and they told us to extend it to one minute.","title":"Hololive GTA","must_include":["one minute"],"must_exclude":["another minute","one more minute"]}
 {"ja":"誰が行く","reference_en":"Who's going?","title":"Hololive GTA"}
 {"ja":"一応コンビニに行こう","reference_en":"Let's go to the convenience store for now.","title":"Hololive GTA"}
 {"ja":"ええ、二期生です。","reference_en":"Yes, we're second-generation members.","title":"Hololive second-generation Christmas party","must_include":["generation"],"must_exclude":["second-year"]}
@@ -46,5 +46,5 @@
 {"ja":"少なくなったね。","reference_en":"There are fewer of us now.","title":"Hololive second-generation Christmas party"}
 {"ja":"もうちょっと温まってからの方がいいかもしれない。","reference_en":"It might be better to wait until things warm up.","title":"Hololive second-generation Christmas party"}
 {"ja":"バローランドっておもしろいぞ。","reference_en":"VALORANT is really fun.","title":"Hololive second-generation Christmas party","history_ja":["バロラントやってる？"],"must_include":["VALORANT"],"must_exclude":["Baroland"]}
-{"ja":"バロトラウマは別のゲームだよ。","reference_en":"Barotrauma is a different game.","title":"Hololive second-generation Christmas party","must_include":["Barotrauma"],"must_exclude":["VALORANT"]}
+{"ja":"バロトラウマは別のゲームだよ。","reference_en":"Barotrauma is a different game.","title":"Hololive second-generation Christmas party","must_include":["Barotrauma"],"must_exclude":["Valentine","Barttrauma","Bartourma"]}
 {"ja":"あやめの配信見てた。","reference_en":"I was watching Ayame's stream.","title":"Hololive second-generation Christmas party","must_include":["Ayame"]}

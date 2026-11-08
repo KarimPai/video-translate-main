@@ -123,6 +123,24 @@ recheck uses the same values unless `quality_recheck_temperature` is
 configured; this affects only a flagged second request, never every line.
 Thinking remains disabled and the context window remains 4096 tokens.
 
+### Benchmark-driven terminology and duration safeguards
+
+For ARK, the Japanese item-quality rank `至高` is officially `Ascendant`,
+so `至高のサドル` means `Ascendant saddle`, not `ultimate saddle`.
+The observed ASR homophone `思考のサドル` is repaired only in confirmed
+ARK contexts. Other `思考` and `至高` usages are unaffected.
+
+VALORANT aliases such as `バローランド` require independently supported
+gaming context. The English spelling `Baro-land` is also corrected in that
+context. When the Japanese explicitly says `バロトラウマ`, the separate
+game `Barotrauma` is preserved and specific observed garbled names are
+repaired, without renaming other games.
+
+For the attested GTA exchange `1分に延ばせ`, the duration is extended
+**to one minute**, not **by another minute**. A narrow quality review and
+fallback fix protect this difference without rewriting unrelated timings.
+The 50-case benchmark now checks these exact names and duration words.
+
 ### Compare Qwen sampling temperatures on your PC
 
 Close `Start translate.bat` and any other process using local Qwen port

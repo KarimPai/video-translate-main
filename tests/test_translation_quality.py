@@ -146,6 +146,40 @@ class TranslationQualityTests(unittest.TestCase):
             "I lost sight of the car.",
         )
 
+    def test_one_minute_extension_is_not_an_extra_minute(self):
+        ja = "ぶつかっちゃって1分に延ばせって言われてます"
+        examples = [
+            ("I got bumped into, and they're telling me to keep it going for one more minute.",
+             "I got bumped into, and they're telling me to extend it to one minute."),
+            ("We crashed; they asked to extend it for another minute.",
+             "We crashed; they asked to extend it to one minute."),
+        ]
+        for english, corrected in examples:
+            with self.subTest(english=english):
+                self.assertEqual(
+                    translation_review_reason(ja, english),
+                    "duration_extension_one_minute",
+                )
+                self.assertEqual(
+                    repair_high_confidence_meaning(ja, english),
+                    corrected,
+                )
+        self.assertIsNone(
+            translation_review_reason(ja, "They told us to extend it to one minute.")
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "1分延ばせって言われた", "Add another minute.",
+            ),
+            "Add another minute.",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "1分に延ばせって言われた", "They told me to extend it to one minute.",
+            ),
+            "They told me to extend it to one minute.",
+        )
+
     def test_only_exact_skip_token_is_accepted(self):
         self.assertTrue(is_skip_token("[SKIP]"))
         self.assertTrue(is_skip_token(" [skip] "))

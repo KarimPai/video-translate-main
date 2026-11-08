@@ -374,6 +374,73 @@ class QwenTranslatorTests(unittest.TestCase):
             )
         self.assertIsNone(fresh._scene_topic())
 
+    def test_ark_ascendant_saddle_repair_and_ambiguous_homophone(self):
+        instance = translator()
+        instance.vod_title = "Hololive ARK"
+        raw = json.dumps({"choices": [
+            {"message": {"content": "The ultimate saddle is god-tier."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)) as call:
+            result = instance.translate("至高のサドルは神", [])
+        self.assertEqual(result, "The Ascendant saddle is god-tier.")
+        prompt = json.loads(call.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("至高のサドル => Ascendant saddle", prompt)
+        self.assertIn("ARK equipment quality tier", prompt)
+
+        instance.reset_scene_context()
+        raw = json.dumps({"choices": [
+            {"message": {"content": "The saddle of thought is god."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            self.assertEqual(
+                instance.translate("思考のサドルは神", []),
+                "The Ascendant saddle is god.",
+            )
+        instance.reset_scene_context()
+        instance.vod_title = "Philosophy lecture"
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            self.assertEqual(
+                instance.translate("思考のサドルは神", []),
+                "The saddle of thought is god.",
+            )
+
+    def test_duration_extension_repairs_without_changing_speaker(self):
+        instance = translator(quality_recheck_enabled=False)
+        instance.vod_title = "Hololive GTA"
+        raw = json.dumps({"choices": [
+            {"message": {"content": "I got bumped into, and they're telling me to keep it going for one more minute."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)) as call:
+            result = instance.translate("ぶつかっちゃって1分に延ばせって言われてます", [])
+        self.assertEqual(
+            result, "I got bumped into, and they're telling me to extend it to one minute."
+        )
+        self.assertEqual(call.call_count, 1)
+
+    def test_valorant_benchmark_alias_does_not_rename_other_games(self):
+        instance = translator(quality_recheck_enabled=False)
+        instance.vod_title = "Hololive second-generation Christmas party"
+        samples = [
+            ("バローランドっておもしろいぞ",
+             [("バロラントやってる?", "Are you playing VALORANT?")],
+             "Baro-land is fun.", "VALORANT is fun."),
+            ("バロトラウマは別のゲームだよ", [],
+             "Valentine's Trauma is a different game.",
+             "Barotrauma is a different game."),
+        ]
+        for ja, history, model_text, expected in samples:
+            instance.reset_scene_context()
+            raw = json.dumps({"choices": [
+                {"message": {"content": model_text}},
+            ]).encode("utf-8")
+            with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                       return_value=io.BytesIO(raw)):
+                self.assertEqual(instance.translate(ja, history), expected)
+
     def test_valorant_game_name_is_consistent_without_extra_model_call(self):
         instance = translator()
         raw = json.dumps({"choices": [

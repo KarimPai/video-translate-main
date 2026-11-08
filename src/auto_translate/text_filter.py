@@ -19,6 +19,33 @@ def _compact(text: str) -> str:
     return _NON_TEXT.sub("", normalized)
 
 
+
+# Remove caption/ASR sound-effect labels, not actual spoken words.
+_SOUND_WORDS = (
+    r"applause|clapping|claps?|cheering|crowd cheering|"
+    r"music|background music|bgm|instrumental|singing|"
+    r"sound effects?|sfx|laughter|laughing|laughs|"
+    r"拍手|拍手喝采|歓声|声援|音楽|背景音楽|効果音|笑い声|笑い|爆笑"
+)
+_SOUND_BRACKET = re.compile(
+    rf"[\[\(（【［]\s*(?:{_SOUND_WORDS})\s*[\]\)）】］]",
+    re.IGNORECASE,
+)
+_SOUND_ONLY = re.compile(rf"^(?:{_SOUND_WORDS})$", re.IGNORECASE)
+_MUSIC_MARKS = re.compile(r"[♪♫♬♩]+")
+_SPACES = re.compile(r"\s+")
+
+
+def strip_nonverbal_labels(text: str) -> str:
+    """Remove explicit sound-event labels while preserving adjacent speech."""
+    cleaned = unicodedata.normalize("NFKC", text)
+    cleaned = _SOUND_BRACKET.sub(" ", cleaned)
+    cleaned = _MUSIC_MARKS.sub(" ", cleaned)
+    cleaned = _SPACES.sub(" ", cleaned).strip()
+    if _SOUND_ONLY.fullmatch(cleaned):
+        return ""
+    return cleaned
+
 def rejection_reason(text: str) -> str | None:
     """Return why an ASR result should be dropped, or None if it looks usable.
 

@@ -3,13 +3,15 @@ import base64
 import io
 import json
 import queue
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
 
 from auto_translate.asr import create_asr
-from auto_translate.asr.haas import HaasASR
+from auto_translate.asr.haas import HaasASR, load_haas_keywords
 from auto_translate.config import AsrConfig
 
 
@@ -91,6 +93,48 @@ class HaasWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "worker failed to load"):
                 HaasASR(AsrConfig())
         proc.terminate.assert_called_once()
+
+    def test_guarded_haas_keywords_in_worker_request(self):
+        proc = stream({"type": "end", "id": "1", "text": "角巻わため"})
+        asr, _ = self.make(proc)
+        self.assertEqual(asr.transcribe(np.ones(8000, dtype=np.float32)), "角巻わため")
+        payload = [json.loads(x) for x in proc.stdin.getvalue().splitlines()]
+        self.assertIn("角巻わため", payload[1]["keywords"])
+        self.assertEqual(payload[1]["keywords_alpha"], 1.5)
+        self.assertTrue(payload[1]["keywords_guard"])
+        asr.close()
+
+    def test_probes_do_not_force_hololive_names(self):
+        proc = stream({"type": "end", "id": "1", "text": "大丈夫"})
+        asr, _ = self.make(proc)
+        asr.transcribe(np.ones(8000, dtype=np.float32), probe=True)
+        payload = [json.loads(x) for x in proc.stdin.getvalue().splitlines()]
+        self.assertNotIn("keywords", payload[1])
+        asr.close()
+
+    def test_unsupported_keyword_options_retry_once_unboosted(self):
+        proc = stream(
+            {"type": "error", "id": "1", "error": {
+                "option": "keywords", "code": "unsupported",
+                "message": "keywords not supported"}},
+            {"type": "end", "id": "2", "text": "大丈夫です"},
+        )
+        asr, _ = self.make(proc)
+        self.assertEqual(asr.transcribe(np.ones(8000, dtype=np.float32)), "大丈夫です")
+        payload = [json.loads(x) for x in proc.stdin.getvalue().splitlines()]
+        self.assertIn("keywords", payload[1])
+        self.assertNotIn("keywords", payload[3])
+        self.assertFalse(asr.keywords)
+        asr.close()
+
+    def test_vocabulary_deduplicates_and_rejects_invalid_spelling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "keywords.toml"
+            file.write_text('keywords = ["わため=わため", "わため=わため"]', encoding="utf-8")
+            self.assertEqual(load_haas_keywords(str(file)), "わため=わため")
+            file.write_text('keywords = ["=よみ"]', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid keyword"):
+                load_haas_keywords(str(file))
 
 
 if __name__ == "__main__":

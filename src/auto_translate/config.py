@@ -85,8 +85,10 @@ class TranslateConfig:
     max_tokens: int = 160
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
-    context_lines: int = 4
+    context_lines: int = 2  # previous Japanese lines; no previous EN text
     memory_lines: int = 12
+    quality_retry_enabled: bool = True
+    quality_retry_timeout_s: float = 8.0
     glossary: str = "glossary.toml"
 
 

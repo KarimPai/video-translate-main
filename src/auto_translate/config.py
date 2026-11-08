@@ -84,7 +84,7 @@ class TranslateConfig:
     cat_hf_file: str = "cat-translate-3.3b-Q4_K_M.gguf"
     cat_context: int = 2048
     cat_gpu_layers: int = 99
-    max_tokens: int = 192
+    max_tokens: int = 128
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
     context_lines: int = 0  # no prior dialogue enters CAT inference

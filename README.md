@@ -17,10 +17,10 @@ Official model/quantization: https://huggingface.co/pfnet/plamo-3-translate-8b-G
 The official model card recommends **PFML3** prompts directly to `/v1/completions` for production. The launcher uses the original GGUF embedded chat template for compatibility, but translation requests go to the raw completions endpoint **without any chat wrapper or extra system prompts**. Every utterance is sent in this exact language-targeted structure:
 
 ```text
-<|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>行ってきます<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>
+<|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>行ってきます<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>
 ```
 
-Translation stops at `<|plamo:tag|>` or `<|plamo:bos|>`. Only glossary terms **actually present in the Japanese transcript** are optionally supplied using the documented PFML3 glossary syntax. The model never receives previous English subtitles, which prevents accidental continuation of prior dialogue.
+Translation stops at `<|plamo:tag|>` or `<|plamo:bos|>`. The input now explicitly tags Japanese (`lang=ja`) as recommended by the model's PFML3 specification; English remains the target (`lang=en`). This is a low-overhead prompting correction, not a guarantee of better translation accuracy. Only glossary terms **actually present in the Japanese transcript** are optionally supplied using the documented PFML3 glossary syntax. The model never receives previous English subtitles, which prevents accidental continuation of prior dialogue.
 
 ## Low-VRAM defaults (RTX 3070 8 GB)
 

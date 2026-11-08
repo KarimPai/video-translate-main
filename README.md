@@ -57,9 +57,22 @@ quality_recheck_min_interval_s = 10.0
 ```
 
 **The dedicated 8001 port prevents accidental reuse of an unrelated local
-translation server.** The program verifies the responding server's model
-identifier before using it; stop an incompatible server or change the port.
-It starts and stops only a server process that it owns.
+translation server.** The translator **refuses to reuse an existing server**,
+even one with the correct model ID: it cannot guarantee cleanup of a process
+it did not start. Close any previous llama-server on 8001 before launching or
+choose another free port in local config.toml.
+
+### Automatic model-server shutdown
+
+The translator's managed llama-server **closes automatically** when the MPV
+window is closed, the translator exits after a VOD, or Ctrl+C is pressed.
+The same Windows Job Object kill-on-close mechanism as MPV also stops its
+owned server if the CMD window or Python process closes unexpectedly and
+Python's normal cleanup handlers cannot run. The Qwen model is unloaded and
+VRAM is freed when the server process terminates.
+
+This does not terminate unrelated llama.cpp processes or a server started
+outside this translator. Logs: `logs\\qwen-server.log`.
 
 ### Prompts and terminology
 

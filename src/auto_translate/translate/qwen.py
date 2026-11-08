@@ -19,6 +19,7 @@ from pathlib import Path
 from ..config import TranslateConfig
 from ..context_memory import reuse_recent_short_term
 from ..glossary import Glossary
+from ..process_cleanup import _create_kill_job, _close_job
 from ..stream_context import ark_glossary_hits, is_ark_context, is_incomplete_fragment
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -116,6 +117,7 @@ class QwenTranslator:
         self.base_url = cfg.qwen_base_url.rstrip("/")
         self.url = self.base_url + "/chat/completions"
         self.process: subprocess.Popen | None = None
+        self._job = None  # Windows kill-on-close job for a server started by us
         self._server_log = None
         self._start_server()
         try:
@@ -127,14 +129,14 @@ class QwenTranslator:
     def _start_server(self) -> None:
         current_models = _model_ids(self.base_url)
         if current_models is not None:
-            if self.cfg.qwen_model not in current_models:
-                raise RuntimeError(
-                    f"Port {self.base_url} has another llama.cpp model {current_models!r}. "
-                    "Stop that server or use a different [translate] qwen_base_url. "
-                    "Do not reuse the wrong translation model."
-                )
-            log.info("Reusing local Qwen3.5-4B server at %s", self.base_url)
-            return
+            # Do not adopt an existing process: its PID/ownership is unknown,
+            # and silently reusing it would prevent guaranteed auto-cleanup.
+            raise RuntimeError(
+                f"A llama.cpp server is already listening at {self.base_url}: "
+                f"{current_models!r}. Close that server before launching this "
+                "session, or set [translate] qwen_base_url to another free port. "
+                "This translator only starts and stops servers it owns."
+            )
 
         executable = shutil.which("llama-server")
         if not executable:
@@ -167,8 +169,15 @@ class QwenTranslator:
             self._server_log.close()
             self._server_log = None
             raise
+        try:
+            # Job Object also closes llama-server when CMD is closed abruptly.
+            # Fail closed if Windows cannot attach it rather than orphan a server.
+            self._job = _create_kill_job(self.process)
+        except Exception:
+            self.close()
+            raise
         atexit.register(self.close)
-        log.info("Started Qwen3.5-4B llama-server (PID %s)", self.process.pid)
+        log.info("Started managed Qwen3.5-4B server (PID %s)", self.process.pid)
         deadline = time.monotonic() + self.cfg.load_timeout_s
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
@@ -210,19 +219,30 @@ class QwenTranslator:
             time.sleep(min(1.0, remaining))
 
     def close(self) -> None:
+        """Stop our own llama-server and release the crash-safe job handle.
+
+        Idempotent. An existing external server is never adopted or killed.
+        """
         process, self.process = self.process, None
-        if process is not None and process.poll() is None:
-            log.info("Stopping Qwen3.5-4B server (PID %s)", process.pid)
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        if self._server_log is not None:
-            self._server_log.close()
-            self._server_log = None
-        atexit.unregister(self.close)
+        job, self._job = getattr(self, "_job", None), None
+        try:
+            if process is not None and process.poll() is None:
+                log.info("Stopping managed Qwen3.5-4B server (PID %s)", process.pid)
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    log.warning("Qwen server did not exit promptly; forcing shutdown")
+                    process.kill()
+                    process.wait(timeout=2)
+        finally:
+            # A close of the kill-on-job-close handle guarantees shutdown even
+            # when terminate()/wait() failed. On other OSes this is a no-op.
+            _close_job(job)
+            if self._server_log is not None:
+                self._server_log.close()
+                self._server_log = None
+            atexit.unregister(self.close)
 
     def _glossary_hits(self, ja: str, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
         hits = self.glossary.find(ja)

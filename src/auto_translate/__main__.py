@@ -130,61 +130,66 @@ def main() -> None:
         time.perf_counter() - t0,
     )
 
-    use_mpv = args.mpv or cfg.mpv.enabled
-    if use_mpv and not source.live and source.paced:
-        # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
-        # buffer promptly after seeking. MPV itself keeps real-time playback.
-        from dataclasses import replace
-        source = replace(source, paced=False)
-        log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
-
-    # MPV plays the original video stream; Ingest handles audio only.
-    # No local video transcode or fMP4 cache is created.
-    video_out = None
-    burst_s = 0.0
-
-    ingest = Ingest(
-        source,
-        cfg.ingest,
-        video_out,
-        cfg.mpv.ytdlp_format,
-        burst_s,
-        separation_cfg=cfg.separation,
-        deepfilter_cfg=cfg.deepfilter,
-    )
-
-    stop = threading.Event()
-    outputs: list[Output] = []
-    # Cache only this MPV VOD in RAM. Never reuse it for another video,
-    # and never persist translated text on disk.
-    subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
-
-    if cfg.output.terminal:
-        outputs.append(TerminalOutput(simple=args.simple_terminal))
-
-    if cfg.output.web and not args.no_web:
-        outputs.append(
-            WebOutput(
-                cfg.output.web_host,
-                cfg.output.web_port,
-            )
+    try:
+        use_mpv = args.mpv or cfg.mpv.enabled
+        if use_mpv and not source.live and source.paced:
+            # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
+            # buffer promptly after seeking. MPV itself keeps real-time playback.
+            from dataclasses import replace
+            source = replace(source, paced=False)
+            log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
+    
+        # MPV plays the original video stream; Ingest handles audio only.
+        # No local video transcode or fMP4 cache is created.
+        video_out = None
+        burst_s = 0.0
+    
+        ingest = Ingest(
+            source,
+            cfg.ingest,
+            video_out,
+            cfg.mpv.ytdlp_format,
+            burst_s,
+            separation_cfg=cfg.separation,
+            deepfilter_cfg=cfg.deepfilter,
         )
-
-    if use_mpv:
-        from .output.mpv import MpvOutput
-        outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
-
-    run(
-        ingest,
-        cfg,
-        asr,
-        translator,
-        outputs,
-        stop,
-        captions=captions,
-        vod_title=vod_context,
-        session_cache=subtitle_cache,
-    )
+    
+        stop = threading.Event()
+        outputs: list[Output] = []
+        # Cache only this MPV VOD in RAM. Never reuse it for another video,
+        # and never persist translated text on disk.
+        subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
+    
+        if cfg.output.terminal:
+            outputs.append(TerminalOutput(simple=args.simple_terminal))
+    
+        if cfg.output.web and not args.no_web:
+            outputs.append(
+                WebOutput(
+                    cfg.output.web_host,
+                    cfg.output.web_port,
+                )
+            )
+    
+        if use_mpv:
+            from .output.mpv import MpvOutput
+            outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
+    
+        run(
+            ingest,
+            cfg,
+            asr,
+            translator,
+            outputs,
+            stop,
+            captions=captions,
+            vod_title=vod_context,
+            session_cache=subtitle_cache,
+        )
+    finally:
+        # Always release the owned Qwen server: MPV close, Ctrl+C, EOF,
+        # or failure while initializing MPV / ingest.
+        translator.close()
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import io
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from auto_translate.translate.qwen import (
     QwenTranslator, _clean, _model_ids, _remove_unmentioned_full_names,
@@ -90,6 +90,45 @@ class QwenTranslatorTests(unittest.TestCase):
         instance = translator(quality_recheck_enabled=False)
         with patch.object(QwenTranslator, "_chat", return_value="[SKIP]"):
             self.assertEqual(instance.translate("警察が来た", []), "[translation failed]")
+
+
+    def test_owned_llama_server_is_terminated_and_job_released(self):
+        instance = translator()
+        process = Mock()
+        process.poll.return_value = None
+        process.pid = 1234
+        instance.process = process
+        instance._job = "fake-windows-job"
+        instance._server_log = Mock()
+        with patch("auto_translate.translate.qwen._close_job") as close_job, patch(
+            "auto_translate.translate.qwen.atexit.unregister"
+        ):
+            instance.close()
+            instance.close()  # cleanup is idempotent
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=3)
+        close_job.assert_called_once_with("fake-windows-job")
+        self.assertIsNone(instance.process)
+
+    def test_close_does_not_stop_external_server(self):
+        instance = translator()
+        instance.process = None
+        instance._job = None
+        instance._server_log = None
+        with patch("auto_translate.translate.qwen._close_job") as close_job, patch(
+            "auto_translate.translate.qwen.atexit.unregister"
+        ):
+            instance.close()
+        close_job.assert_called_once_with(None)
+
+    def test_start_server_rejects_unowned_existing_server(self):
+        instance = translator()
+        instance.base_url = "http://127.0.0.1:8001/v1"
+        instance.process = None
+        instance._job = None
+        with patch("auto_translate.translate.qwen._model_ids", return_value=["qwen3.5-4b"]):
+            with self.assertRaisesRegex(RuntimeError, "already listening"):
+                instance._start_server()
 
     def test_qwen_server_models_are_checked_before_reuse(self):
         response = io.BytesIO(json.dumps({"data": [{"id": "qwen3.5-4b"}]}).encode())

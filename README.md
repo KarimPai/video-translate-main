@@ -70,7 +70,7 @@ load_timeout_s = 300.0
 context_lines = 2
 memory_lines = 12
 quality_retry_enabled = true
-quality_retry_timeout_s = 8.0
+quality_retry_timeout_s = 4.0
 glossary = "glossary.toml"
 ```
 

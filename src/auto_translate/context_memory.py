@@ -20,8 +20,8 @@ _IGNORE_EN = {
     "wait", "what", "there", "right", "yeah", "oh", "huh", "hey",
 }
 
-# A small, evidence-based scene tag is kept separately from the 5-line Qwen
-# dialogue window. Never summarize previous English model output or guess
+# A small, evidence-based scene tag is kept separately from PLaMo's
+# speaker-verified dialogue context. Never summarize English model output or guess
 # names, horses, locations, game outcomes or actions.
 _SCENE_LABELS = {
     "horse_racing": "Japanese horse racing and betting",
@@ -81,6 +81,11 @@ _SCENE_DETAILS = {
         ("パトカー", "police cars"), ("警察", "police"),
         ("店舗強盗", "store robberies"), ("コンビニ強盗", "store robberies"),
         ("無線", "radio communication"),
+        # Details are weak and never establish GTA on their own. Only
+        # remember them after an independently supported GTA scene.
+        ("カジノ", "casino roleplay"), ("キャバクラ", "hostess club roleplay"),
+        ("経費", "in-game expenses"), ("税金", "in-game tax funds"),
+        ("服屋", "clothing shop"), ("張り込み", "police stakeout"),
     ),
     "valorant": (
         ("ヴァロラント", "VALORANT"),
@@ -99,7 +104,7 @@ _SCENE_DETAILS = {
 class SceneMemory:
     """Small scene context inferred only from recognized current Japanese.
 
-    Scene hints are optional background for the current Qwen request, never
+    Scene hints are optional background for the current translator, never
     evidence that a specific word/name was spoken in that request. One clear
     topic activates immediately; switching between established scenes needs
     two separate cues unless several independent signals occur together.

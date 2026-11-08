@@ -206,11 +206,12 @@ def split_turns(
     min_seconds: float,
     audio: np.ndarray | None = None,
 ) -> list[Turn]:
-    """Divide a VAD utterance at clear non-overlapping Sherpa turns.
+    """Cut at clear speaker changes; keep any inseparable overlap together.
 
-    Sherpa's speaker numbers are temporary *within the current window* only.
-    Return the original utterance on overlap or tiny/ambiguous turns. Each
-    output owns a contiguous non-overlapping span of the original audio.
+    One ambiguous pair of overlapping speakers must not erase unrelated,
+    well-supported changes elsewhere in the same VAD window. Overlap is
+    isolated into one *mixed* segment, not falsely attributed to either
+    voice. Audio samples are never duplicated or dropped.
     """
     unknown = [Turn(0.0, length, None)]
     if length <= 0 or not raw:
@@ -219,38 +220,52 @@ def split_turns(
     for turn in sorted(raw, key=lambda t: t.start):
         if turn.speaker is None or turn.end <= turn.start:
             continue
-        if merged and merged[-1].speaker == turn.speaker and turn.start <= merged[-1].end + 0.2:
-            last = merged[-1]
-            merged[-1] = Turn(last.start, max(last.end, turn.end), last.speaker)
+        start = min(max(0.0, turn.start), length)
+        end = min(max(0.0, turn.end), length)
+        if end <= start:
+            continue
+        if (merged and merged[-1].speaker == turn.speaker
+                and start <= merged[-1].end + 0.2):
+            prev = merged[-1]
+            merged[-1] = Turn(prev.start, max(prev.end, end), prev.speaker)
         else:
-            merged.append(turn)
+            merged.append(Turn(start, end, turn.speaker))
     if not merged:
         return unknown
     if len(merged) == 1:
         return [Turn(0.0, length, merged[0].speaker)]
 
+    # Collapse genuine overlapping speakers into mixed groups, preserving
+    # other speaker changes before or after the overlap.
+    groups: list[Turn] = []
+    for turn in merged:
+        if groups and turn.start < groups[-1].end - 0.12:
+            prev = groups[-1]
+            groups[-1] = Turn(
+                prev.start, max(prev.end, turn.end), None,
+            )
+        else:
+            groups.append(turn)
+    if len(groups) < 2:
+        return unknown
+
     cuts: list[float] = []
-    labels = [merged[0].speaker]
-    for prev, following in zip(merged, merged[1:]):
-        if following.speaker == prev.speaker:
+    labels = [groups[0].speaker]
+    for prev, following in zip(groups, groups[1:]):
+        if prev.speaker is not None and prev.speaker == following.speaker:
             continue
-        # Sherpa overlap is not speaker-separated PCM; do not assign the
-        # two voices to separate cues by slicing through mixed speech.
-        if prev.end > following.start + 0.12:
-            return unknown
         center = max(0.0, min(length, (prev.end + following.start) / 2))
         cut = _quiet_cut(
             audio, center, min(prev.end, following.start),
             max(prev.end, following.start), length,
         )
         if cut - (cuts[-1] if cuts else 0.0) < min_seconds:
+            # An unreliable tiny prefix invalidates the proposed cuts.
             return unknown
         cuts.append(cut)
         labels.append(following.speaker)
-    if cuts and length - cuts[-1] < min_seconds:
+    if not cuts or length - cuts[-1] < min_seconds:
         return unknown
-    if not cuts:
-        return [Turn(0.0, length, merged[0].speaker)]
     edges = [0.0, *cuts, length]
     return [Turn(edges[i], edges[i + 1], labels[i]) for i in range(len(labels))]
 
@@ -289,9 +304,9 @@ class SherpaSplitter:
         if original.probe:
             return [original]
         samples = len(original.audio)
-        if samples < 2 * SAMPLE_RATE:
-            # At this duration there isn't enough evidence to confidently
-            # distinguish two full speech turns with the offline model.
+        if samples < round(1.65 * SAMPLE_RATE):
+            # Very short cues cannot contain two robust turn segments; do
+            # not hallucinate speaker boundaries in a split-second response.
             return [original]
         try:
             audio = np.ascontiguousarray(original.audio, dtype=np.float32)
@@ -324,6 +339,11 @@ class SherpaSplitter:
             windows = split_turns(length, turns, self.cfg.min_turn_s, audio)
             if len(windows) <= 1 or len(windows) > self.cfg.max_turns:
                 self.failures = 0
+                log.debug(
+                    "Sherpa unsplit %.2f-%.2fs: %d detected turns, %d safe cuts",
+                    original.start_s, original.end_s,
+                    len(turns), len(windows) - 1,
+                )
                 return [original]
 
             result: list[Utterance] = []

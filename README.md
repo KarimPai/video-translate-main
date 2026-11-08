@@ -190,9 +190,12 @@ max_turns = 5
 ```
 
 For 3s+ VAD utterances, Sherpa estimates speaker-turn boundaries directly.
-Speech between 2 and 3 seconds is symmetrically padded with silence for
+Speech between 1.65 and 3 seconds is symmetrically padded with silence for
 segmentation without modifying the actual audio or timeline. Utterances
-shorter than 2s remain whole to avoid speculative cuts. When a clean
+shorter than 1.65s remain whole to avoid speculative cuts. Clear speaker
+boundaries before/after an overlapping pair can still be separated, while
+the overlapping part remains one mixed cue (not falsely attributed to one
+voice). When a clean
 non-overlapping speaker change is detected, the system picks a nearby
 low-energy boundary, ensures all PCM is preserved exactly once, and sends
 each slice independently through Qwen ASR and Qwen3.5 translation. MPV retains up to three
@@ -206,6 +209,21 @@ slicing overlapping voices can mix dialogue or clip spoken words. The
 Set `enabled = false` to bypass the stage. Legacy
 `similarity_threshold` and `max_speakers` entries in local
 `config.toml` are ignored for compatibility.
+
+## Silent-subtitle stall handling
+
+The Qwen ASR speech.cpp worker has a 30-second response deadline for each
+utterance (`[asr] response_timeout_s = 30.0`). A crashed ingestion, VAD,
+Sherpa, ASR or translation thread now reports a fatal stage error rather than
+leaving MPV playing without subtitles. If queued audio stops advancing,
+diagnostics log stage health after 20 seconds and fail explicitly after 60
+seconds of stalled queued work. A legitimately quiet stream with no queued
+audio is not treated as a stall.
+
+Inspect `logs\\run.log` for `pipeline stage`, `response timeout`,
+`no pipeline output`, `pipeline stalled` and `Sherpa unsplit` messages.
+This does not separate simultaneous voices; clean changes on either side of
+overlap are now preserved when possible.
 
 ## YouTube metadata errors
 

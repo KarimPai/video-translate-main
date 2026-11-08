@@ -94,6 +94,21 @@ class SpeakerTurnTests(unittest.TestCase):
             [Turn(0, 4, None)],
         )
 
+    def test_separates_clear_changes_around_mixed_overlap(self):
+        spans = split_turns(6.0, [
+            Turn(0.0, 1.40, 0),
+            Turn(1.65, 3.10, 1),
+            Turn(2.70, 4.00, 2),
+            Turn(4.30, 6.00, 3),
+        ], .55)
+        self.assertEqual(len(spans), 3)
+        self.assertEqual([span.speaker for span in spans], [0, None, 3])
+        self.assertAlmostEqual(spans[0].end, 1.525)
+        self.assertAlmostEqual(spans[1].start, 1.525)
+        self.assertAlmostEqual(spans[1].end, 4.15)
+        self.assertAlmostEqual(spans[2].start, 4.15)
+        self.assertAlmostEqual(sum(x.end - x.start for x in spans), 6.0)
+
     def test_tiny_speaker_fragment_is_not_cut(self):
         self.assertEqual(
             split_turns(4.0, [Turn(0, .2, 0), Turn(.25, 4, 1)], .55),
@@ -157,13 +172,39 @@ class SpeakerPipelineTests(unittest.TestCase):
         backend.cfg = SpeakerConfig()
         backend.diarizer = SimpleNamespace(
             process=lambda samples: (_ for _ in ()).throw(
-                AssertionError("No model call for <2s utterances")
+                AssertionError("No model call for <1.65s utterances")
             )
         )
         backend.failures = 0
-        src = Utterance(0, 1.7,
-                        np.zeros(round(1.7 * SAMPLE_RATE), dtype=np.float32))
+        src = Utterance(0, 1.4,
+                        np.zeros(round(1.4 * SAMPLE_RATE), dtype=np.float32))
         self.assertEqual(backend.split(src), [src])
+
+    def test_1_8_second_clean_turns_use_padding_and_conserve_pcm(self):
+        class FakeDiarizer:
+            def process(self, samples):
+                self.samples = samples
+                return self
+            def sort_by_start_time(self):
+                return [
+                    SimpleNamespace(start=0.60, end=1.35, speaker=0),
+                    SimpleNamespace(start=1.65, end=2.40, speaker=1),
+                ]
+
+        backend = object.__new__(SherpaSplitter)
+        backend.cfg = SpeakerConfig()
+        backend.diarizer = FakeDiarizer()
+        backend.failures = 0
+        pcm = np.concatenate([
+            np.full(round(.9 * SAMPLE_RATE), .2, dtype=np.float32),
+            np.full(round(.9 * SAMPLE_RATE), -.2, dtype=np.float32),
+        ])
+        source = Utterance(30.0, 31.8, pcm)
+        result = backend.split(source)
+        self.assertEqual(len(backend.diarizer.samples), 3 * SAMPLE_RATE)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(sum(len(part.audio) for part in result), len(pcm))
+        self.assertTrue(np.array_equal(np.concatenate([part.audio for part in result]), pcm))
 
     def test_two_to_three_second_window_gets_symmetric_padding(self):
         class FakeDiarizer:

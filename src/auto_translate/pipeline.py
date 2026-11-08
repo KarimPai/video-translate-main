@@ -117,6 +117,7 @@ def run_asr(
                 cached,
                 generation=utt.generation,
                 timings=utt.timings,
+                speaker_handoff=utt.speaker_handoff,
             ))
             continue
 
@@ -214,6 +215,7 @@ def run_asr(
                 utt.timings,
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
+                speaker_handoff=utt.speaker_handoff,
             )
         )
 
@@ -347,6 +349,7 @@ def run_translate(
                 tr.timings,
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
+                speaker_handoff=tr.speaker_handoff,
             )
         )
 

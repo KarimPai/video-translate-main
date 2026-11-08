@@ -124,6 +124,15 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
     if (re.fullmatch(r"(?:できる|出来る|勝てる|行ける|見える|聞こえる)(?:よ|ね|よね)?", appraisal)
             and "?" not in source and re.search(r"\b(?:can't|cannot|unable to)\b", english, re.I)):
         return "affirmative_ability_reversed"
+    # Negative-sounding colloquial しかねえ/しかない expresses necessity,
+    # not inability. Flag only explicit false "can't do it" translations.
+    if (re.search(r"しか(?:ない|ねえ|ねぇ)", source)
+            and re.search(r"\b(?:can't|cannot|unable to)\b", english, re.I)
+            and not re.search(
+                r"\b(?:can't|cannot)\s+(?:help\s+but|avoid|do\s+(?:anything|much)\s+but)",
+                english, re.I,
+            )):
+        return "exclusive_necessity_reversed"
     # Context-specific meaning reversals seen in live ARK subtitles.
     if (re.search(r"読み込み.{0,10}軽くな|軽くなっちま|ロード.{0,8}軽くな", source)
             and re.search(r"\b(?:slowed?|slower|sluggish|heavier)\b", english, re.I)):
@@ -164,6 +173,13 @@ def repair_high_confidence_meaning(japanese: str, english: str) -> str:
             "The load is lighter now",
             english, count=1, flags=re.I,
         )
+    # A tightly bounded correction for the observed live-stream reversal:
+    # もつ煮食うしかねえ is an obligation, not an inability to eat it.
+    if (re.fullmatch(
+        r"もつ煮(?:を)?(?:食う|食べる)しか(?:ねえ|ねぇ|ない)[。!！\s]*",
+        source,
+    ) and re.search(r"\b(?:can't|cannot)\s+eat\b", english, re.I)):
+        return "Guess I'll have to eat motsuni stew."
     # Meaning is explicit in Japanese regardless of how Qwen mistranslates
     # the number or repeated refusal (including "fourth, fifth, sixth").
     if match := _LEVEL_REJECTION.fullmatch(source):

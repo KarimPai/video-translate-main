@@ -6,6 +6,7 @@ from auto_translate.translate.quality import (
     is_obvious_nonverbal_japanese,
     is_skip_token,
     translation_review_reason,
+    repair_high_confidence_meaning,
 )
 
 
@@ -79,6 +80,37 @@ class TranslationQualityTests(unittest.TestCase):
         )
         self.assertIsNone(
             translation_review_reason("えぐいな", "It's not that bad.")
+        )
+
+    def test_colloquial_shika_nee_means_no_choice_not_cannot(self):
+        self.assertEqual(
+            translation_review_reason(
+                "もつ煮食うしかねえ", "I can't eat that stewed dish."
+            ), "exclusive_necessity_reversed",
+        )
+        for english in (
+            "Guess I'll have to eat motsuni stew.",
+            "I can't help but eat motsuni.",
+            "There's nothing else to do but eat it.",
+        ):
+            with self.subTest(english=english):
+                self.assertIsNone(
+                    translation_review_reason("もつ煮食うしかねえ", english)
+                )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "もつ煮食うしかねえ", "I can't eat that stewed dish."
+            ), "Guess I'll have to eat motsuni stew.",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "もつ煮食うしかねえ", "I'll have to eat it."
+            ), "I'll have to eat it.",
+        )
+        # Do not rephrase an unrelated refusal.
+        self.assertEqual(
+            repair_high_confidence_meaning("もつ煮食えねえ", "I can't eat motsuni."),
+            "I can't eat motsuni.",
         )
 
     def test_only_exact_skip_token_is_accepted(self):

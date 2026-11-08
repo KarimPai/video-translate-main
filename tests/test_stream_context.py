@@ -77,6 +77,7 @@ class TestStreamContext(unittest.TestCase):
         self.assertTrue(is_horse_racing_context("", "パドックでは", ["推奨馬は6番"]))
         self.assertFalse(is_horse_racing_context("", "推奨バーとして"))
         self.assertTrue(is_horse_racing_context("", "ワイドに軸馬", ["馬券買おう"]))
+        self.assertTrue(is_horse_racing_context("", "払い戻し行こうか", ["馬券買ったの?"]))
         self.assertFalse(is_horse_racing_context("", "ワイド画面にして"))
         self.assertEqual(
             repair_horse_racing_spelling(

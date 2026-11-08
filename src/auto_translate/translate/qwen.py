@@ -37,11 +37,13 @@ _SYSTEM_PROMPT = (
     "You translate Japanese speech from VTuber and gaming streams into English subtitles. "
     "Return ONLY a clear, concise, natural English translation of the CURRENT Japanese line, "
     "never commentary, explanations, multiple options, or Japanese text. "
-    "Preserve tone, humor, strong language, names, honorifics, numbers, negation, "
+    "Preserve tone, humor, strong language, names, honorifics, numbers, "
+    "negation, uncertainty, and meaning without adding or censoring information. "
     "When Arabic numerals occur together in Japanese ASR without separators, "
     "preserve their exact order and digit count: do not add thousands commas, "
     "insert zeros, or reinterpret an ambiguous number string as currency. "
-    "uncertainty, and meaning without adding or censoring information. "
+    "The colloquial pattern verb + しかねえ/しかない means there is no choice "
+    "BUT to do the verb, NOT an inability to do it. "
     "Do not reverse praise, rejection, or other sentiment. "
     "Spoken names ending with -chan, -san or -sama retain those suffixes in English. "
     "Do not expand a nickname to a full name or invent a member name based on context. "
@@ -87,6 +89,10 @@ _REVIEW_HINTS = {
         "isn't that crazy/brutal? It does not mean things are not so bad."
     ),
     "possible_missing_negation": "Recheck explicit Japanese negation without inventing one.",
+    "exclusive_necessity_reversed": (
+        "Japanese しかねえ/しかない after a verb means there is no choice BUT to do it. "
+        "The speaker is going to do it, not saying they cannot do it."
+    ),
     "affirmative_ability_reversed": "The Japanese says someone CAN do it; retain that ability.",
     "unexpected_skip": "This is meaningful speech: provide its translation, not [SKIP].",
     "untranslated_japanese": "Translate the Japanese; do not repeat Japanese characters.",
@@ -317,6 +323,8 @@ class QwenTranslator:
                 "三連複": "trio bet (three horses in top three, any order)",
                 "複勝": "place bet",
                 "単勝": "win bet",
+                "払い戻し": "cash-out / payout for horse-racing bets (NOT a retail refund)",
+                "払戻し": "cash-out / payout for horse-racing bets (NOT a retail refund)",
             }
             existing = {source for source, _ in hits}
             for src, target in racing_terms.items():
@@ -369,6 +377,16 @@ class QwenTranslator:
         english = _remove_unmentioned_full_names(ja, english)
         english = _remove_unspoken_insult(ja, english)
         english = neutralize_unsupported_subjects(ja, english)
+        # In Japanese horse racing, 払い戻し is cashing out a bet,
+        # not returning purchased goods to a retailer.
+        if ("払い戻し" in ja or "払戻し" in ja) and is_horse_racing_context(
+            self.vod_title, ja, [source for source, _ in history[-8:]]
+        ):
+            english = re.sub(
+                r"\brefund(s?)\b",
+                lambda m: "payouts" if m.group(1) else "payout",
+                english, flags=re.I,
+            )
         return english if english else "[translation failed]"
 
     def _chat(self, ja: str, history: list[tuple[str, str]],
@@ -398,6 +416,8 @@ class QwenTranslator:
                 "推奨馬 is a recommended horse, never a bar. ワイド is a "
                 "place-quinella bet where both selected horses finish in the "
                 "top three; 軸 is a key or anchor horse, not a straight bet. "
+                "払い戻し/払戻し in this betting context is collecting a payout, "
+                "not refunding a purchased item. "
                 "Unseparated digits may be spoken horse numbers: preserve "
                 "their exact sequence, never turn 62468 into 62,468 or 468 "
                 "into 4,680. Keep racehorse names as proper names. Do not "

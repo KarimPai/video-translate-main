@@ -241,6 +241,23 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertIn("do not add thousands commas", data["messages"][0]["content"])
         self.assertIn("never turn 62468 into 62,468", data["messages"][1]["content"])
 
+    def test_betting_payout_not_retail_refund(self):
+        instance = translator()
+        instance.vod_title = "Horse racing event"
+        raw = json.dumps({"choices": [
+            {"message": {"content": "Let's go get our refund."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            result = instance.translate("払い戻し行こうか", [("馬券買ったの?", "Did you bet?")])
+        self.assertEqual(result, "Let's go get our payout.")
+        # Retail refunds remain refunds when there is no racing evidence.
+        instance.vod_title = "Shopping"
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            result = instance.translate("払い戻し行こうか", [])
+        self.assertEqual(result, "Let's go get our refund.")
+
     def test_ark_glossary_in_qwen_prompt(self):
         instance = translator()
         response = io.BytesIO(json.dumps({"choices": [

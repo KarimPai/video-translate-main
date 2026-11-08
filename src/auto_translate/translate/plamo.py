@@ -52,9 +52,17 @@ _BAD_META = re.compile(
 _PUNCT_LOOP = re.compile(r"(?:[.!?…]\s*){12,}")
 
 
-def build_plamo_prompt(japanese: str, matched_terms: list[tuple[str, str]] | None = None) -> str:
-    """Build Japanese-source/English-target PFML3 with only matched glossary hits."""
+def build_plamo_prompt(
+    japanese: str,
+    matched_terms: list[tuple[str, str]] | None = None,
+    *,
+    reference_context: str | None = None,
+) -> str:
+    """Build PFML3 from current Japanese, verified prior Japanese and glossary."""
     prompt = _PFML3_START
+    if reference_context:
+        # PFML3 context is reference material, not dialogue to translate.
+        prompt += "<|plamo:tag|>context<|plamo:msg|>" + reference_context
     for ja_term, english_term in (matched_terms or [])[:8]:
         if not ja_term or not english_term:
             continue
@@ -105,6 +113,7 @@ class PlamoTranslator:
         self.cfg = cfg
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
+        self._reference_context: str | None = None
         self.vod_title = " ".join(vod_title.split())[:200]
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.url = self.base_url + "/completions"
@@ -215,10 +224,22 @@ class PlamoTranslator:
             time.sleep(0.5)
         raise TimeoutError("PLaMo translator warm-up timed out; see logs/plamo8b-server.log")
 
+    def set_reference_context(self, text: str | None) -> None:
+        """For the very next request only; never inject mixed or old history."""
+        if not text or "<|plamo:" in text or "\\n" in text or "\\r" in text:
+            self._reference_context = None
+            return
+        self._reference_context = text[-140:]
+
     def _complete(self, japanese: str, *, timeout: float) -> str:
+        reference = getattr(self, "_reference_context", None)
+        self._reference_context = None
         payload = {
             "model": self.cfg.plamo_model,
-            "prompt": build_plamo_prompt(japanese, self.glossary.find(japanese)),
+            "prompt": build_plamo_prompt(
+                japanese, self.glossary.find(japanese),
+                reference_context=reference,
+            ),
             "temperature": 0,
             "max_tokens": self.cfg.max_tokens,
             "stop": _STOP,

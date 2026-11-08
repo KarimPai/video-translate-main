@@ -27,6 +27,7 @@ class IndexTranslationTests(unittest.TestCase):
         self.assertNotIn("〖", prompt)
         self.assertNotIn("Constraint Requirements", prompt)
         self.assertNotIn("硬性要求", prompt)
+        self.assertIn("被打断的句子只译出已经说出的部分", prompt)
         self.assertNotIn("Hololive GTA RP", prompt)
         self.assertEqual(prompt.count("角巻わためと行くよ"), 1)
         self.assertTrue(prompt.endswith("\n\n角巻わためと行くよ"))

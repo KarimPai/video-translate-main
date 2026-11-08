@@ -1,7 +1,8 @@
-"""Best-effort, offline-window Sherpa-ONNX speaker segmentation on CPU.
+"""Sherpa-ONNX per-window speaker-turn segmentation on CPU.
 
-No source separation: on overlapping speech or uncertain turns, preserve
-FireRedVAD's original utterance. Speaker IDs are anonymous cosine clusters.
+Only turn boundaries are used. No session-wide voice identity tracking,
+speaker labels, or source separation. Unsafe cuts leave the original
+FireRedVAD utterance untouched rather than invent a speaker boundary.
 """
 from __future__ import annotations
 
@@ -162,8 +163,55 @@ def _download(
     )
 
 
-def split_turns(length: float, raw: list[Turn], min_seconds: float) -> list[Turn]:
-    """Use only clear non-overlapping boundaries, keeping every PCM sample."""
+def _quiet_cut(
+    audio: np.ndarray | None,
+    center: float,
+    left: float,
+    right: float,
+    length: float,
+) -> float:
+    """Snap a trusted turn boundary to a nearby low-energy pause.
+
+    This adjusts only the placement of an already-confirmed speaker change,
+    never creates another change. No audio is dropped or duplicated.
+    """
+    if audio is None or left >= right:
+        return center
+    lo = max(0.0, left, center - 0.09)
+    hi = min(length, right, center + 0.09)
+    if hi - lo < 0.025:
+        return center
+    half = max(1, round(0.015 * SAMPLE_RATE))
+    step = max(1, round(0.01 * SAMPLE_RATE))
+
+    def energy(sample: int) -> float:
+        a = max(0, sample - half)
+        b = min(len(audio), sample + half)
+        return float(np.mean(np.abs(audio[a:b]))) if b > a else float("inf")
+
+    baseline = energy(round(center * SAMPLE_RATE))
+    best = center
+    lowest = baseline
+    for sample in range(round(lo * SAMPLE_RATE), round(hi * SAMPLE_RATE) + 1, step):
+        score = energy(sample)
+        if score < lowest:
+            lowest, best = score, sample / SAMPLE_RATE
+    # In steady speech or noise, do not chase insignificant fluctuations.
+    return best if lowest < baseline * 0.55 else center
+
+
+def split_turns(
+    length: float,
+    raw: list[Turn],
+    min_seconds: float,
+    audio: np.ndarray | None = None,
+) -> list[Turn]:
+    """Divide a VAD utterance at clear non-overlapping Sherpa turns.
+
+    Sherpa's speaker numbers are temporary *within the current window* only.
+    Return the original utterance on overlap or tiny/ambiguous turns. Each
+    output owns a contiguous non-overlapping span of the original audio.
+    """
     unknown = [Turn(0.0, length, None)]
     if length <= 0 or not raw:
         return unknown
@@ -180,165 +228,31 @@ def split_turns(length: float, raw: list[Turn], min_seconds: float) -> list[Turn
         return unknown
     if len(merged) == 1:
         return [Turn(0.0, length, merged[0].speaker)]
+
     cuts: list[float] = []
     labels = [merged[0].speaker]
-    for prev, next_ in zip(merged, merged[1:]):
-        if next_.speaker == prev.speaker:
+    for prev, following in zip(merged, merged[1:]):
+        if following.speaker == prev.speaker:
             continue
-        if prev.end > next_.start + 0.12:
-            return unknown  # overlapping voices require another model
-        boundary = max(0.0, min(length, (prev.end + next_.start) / 2))
-        if boundary - (cuts[-1] if cuts else 0.0) < min_seconds:
+        # Sherpa overlap is not speaker-separated PCM; do not assign the
+        # two voices to separate cues by slicing through mixed speech.
+        if prev.end > following.start + 0.12:
             return unknown
-        cuts.append(boundary)
-        labels.append(next_.speaker)
+        center = max(0.0, min(length, (prev.end + following.start) / 2))
+        cut = _quiet_cut(
+            audio, center, min(prev.end, following.start),
+            max(prev.end, following.start), length,
+        )
+        if cut - (cuts[-1] if cuts else 0.0) < min_seconds:
+            return unknown
+        cuts.append(cut)
+        labels.append(following.speaker)
     if cuts and length - cuts[-1] < min_seconds:
         return unknown
     if not cuts:
         return [Turn(0.0, length, merged[0].speaker)]
     edges = [0.0, *cuts, length]
-    return [Turn(edges[i], edges[i+1], labels[i]) for i in range(len(labels))]
-
-
-class VoiceProfiles:
-    """Bounded, session-long voice memory with confirmation before enrollment.
-
-    Single, noisy utterances must not consume A/B/C labels. New voices become
-    visible only after matching twice on separate utterances. Once a voice is
-    enrolled, keep several distinct exemplars as well as a running centroid:
-    a shout or a change of microphone level must not immediately become B/C.
-    All profiles persist through VOD seeks within the current session.
-    """
-
-    def __init__(
-        self, threshold: float, limit: int, *,
-        min_enroll_s: float = 1.3,
-        enroll_samples: int = 2,
-        max_exemplars: int = 6,
-    ) -> None:
-        self.threshold = threshold
-        self.limit = limit
-        self.min_enroll_s = min_enroll_s
-        self.enroll_samples = enroll_samples
-        self.max_exemplars = max_exemplars
-        # Keep these public names for compatibility with existing tests.
-        self.vectors: list[np.ndarray] = []  # stable centroids
-        self.counts: list[int] = []
-        self._examples: list[list[np.ndarray]] = []
-        self._pending: list[tuple[list[np.ndarray], int, float]] = []
-        self._pending_limit = max(4, min(limit * 2, 8))
-
-    @staticmethod
-    def _normalize(embedding: np.ndarray) -> np.ndarray | None:
-        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        if vector.size == 0 or not np.isfinite(vector).all():
-            return None
-        norm = float(np.linalg.norm(vector))
-        if not math.isfinite(norm) or norm < 1e-6:
-            return None
-        return vector / norm
-
-    @staticmethod
-    def _similarity(vector: np.ndarray, center: np.ndarray,
-                    examples: list[np.ndarray]) -> float:
-        if len(vector) != len(center):
-            return float("-inf")
-        center_score = float(np.dot(vector, center))
-        # Allow altered voice pitch/intensity to match a prior *example*
-        # without continually drifting the centroid toward the latest sound.
-        exemplar_score = max(
-            (float(np.dot(vector, example)) for example in examples
-             if len(example) == len(vector)),
-            default=float("-inf"),
-        )
-        return max(center_score, exemplar_score - 0.025)
-
-    def _remember_example(self, idx: int, vector: np.ndarray) -> None:
-        examples = self._examples[idx]
-        if max((float(np.dot(vector, e)) for e in examples),
-               default=-1.0) < 0.96:
-            if len(examples) >= self.max_exemplars:
-                # Retain the original reference anchor for the session.
-                examples.pop(1 if len(examples) > 1 else 0)
-            examples.append(vector.copy())
-
-    def identify(self, embedding: np.ndarray, duration_s: float = 2.0,
-                 blocked_ids: set[int] | None = None) -> int | None:
-        vector = self._normalize(embedding)
-        if vector is None:
-            return None
-        unavailable = blocked_ids or set()
-        candidates = [
-            (self._similarity(vector, center, self._examples[idx]), idx)
-            for idx, center in enumerate(self.vectors)
-            if idx not in unavailable
-        ]
-        candidates.sort(reverse=True)
-        if candidates:
-            best_score, best_id = candidates[0]
-            runner_up = candidates[1][0] if len(candidates) > 1 else -1.0
-            if best_score >= self.threshold:
-                # A near-tie is not a valid identity; prefer no label rather
-                # than incorrectly claiming two speakers are the same person.
-                if runner_up >= best_score - 0.04 and best_score < self.threshold + 0.12:
-                    return None
-                count = min(self.counts[best_id], 8)
-                updated = self.vectors[best_id] * count + vector
-                norm = float(np.linalg.norm(updated))
-                if norm > 1e-6:
-                    self.vectors[best_id] = updated / norm
-                self.counts[best_id] += 1
-                self._remember_example(best_id, vector)
-                return best_id
-            # Near an established speaker but below the threshold: this is
-            # uncertain, not evidence for enrolling a brand-new voice.
-            if best_score >= self.threshold - 0.07:
-                return None
-
-        if not math.isfinite(duration_s) or duration_s < self.min_enroll_s:
-            return None
-        if len(self.vectors) >= self.limit:
-            return None  # Never overflow labels into E/F/...
-        # Provisional voice evidence: two independent utterances are required
-        # before any new speaker label is allocated.
-        provisional_matches = []
-        for idx, (examples, count, seconds) in enumerate(self._pending):
-            center = self._normalize(np.mean(examples, axis=0))
-            if center is not None:
-                score = self._similarity(vector, center, examples)
-                provisional_matches.append((score, idx))
-        if provisional_matches:
-            best_score, pending_index = max(provisional_matches)
-            if best_score >= self.threshold:
-                examples, count, seconds = self._pending[pending_index]
-                examples.append(vector.copy())
-                if len(examples) > self.max_exemplars:
-                    examples.pop(0)
-                count += 1
-                seconds += duration_s
-                if count >= self.enroll_samples and seconds >= 2 * self.min_enroll_s:
-                    center = self._normalize(np.mean(examples, axis=0))
-                    if center is None:
-                        return None
-                    label = len(self.vectors)
-                    self.vectors.append(center)
-                    self.counts.append(count)
-                    self._examples.append([ex.copy() for ex in examples])
-                    self._pending.pop(pending_index)
-                    log.info("Speaker memory: confirmed anonymous voice %s "
-                             "after %d matching samples", chr(65 + label), count)
-                    return label
-                self._pending[pending_index] = (examples, count, seconds)
-                return None
-            # Similar but not convincing enough to be a new voice:
-            # don't multiply provisional clusters on short fluctuations.
-            if best_score >= self.threshold - 0.07:
-                return None
-
-        self._pending.append(([vector.copy()], 1, duration_s))
-        if len(self._pending) > self._pending_limit:
-            self._pending.pop(0)
-        return None
+    return [Turn(edges[i], edges[i + 1], labels[i]) for i in range(len(labels))]
 
 
 class SherpaSplitter:
@@ -368,10 +282,6 @@ class SherpaSplitter:
         if not opts.validate():
             raise RuntimeError("Sherpa diarization model configuration invalid")
         self.diarizer = sherpa_onnx.OfflineSpeakerDiarization(opts)
-        self.extractor = sherpa_onnx.SpeakerEmbeddingExtractor(
-            sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                model=str(emb), num_threads=cfg.num_threads, provider="cpu"))
-        self.profiles = VoiceProfiles(cfg.similarity_threshold, cfg.max_speakers)
         self.failures = 0
         print("Speaker diarization: Sherpa CPU ready.", flush=True)
 
@@ -386,77 +296,92 @@ class SherpaSplitter:
         return np.asarray(self.extractor.compute(stream), dtype=np.float32)
 
     def split(self, original: Utterance) -> list[Utterance]:
-        if original.probe or len(original.audio) < SAMPLE_RATE:
+        if original.probe:
             return [original]
-        # Offline pyannote segmentation needs a larger observation window.
-        # For brief utterances do voice identification only, without trying
-        # to hallucinate a speaker boundary in a 1-2 second speech sample.
-        if len(original.audio) < 3 * SAMPLE_RATE:
-            try:
-                v = self._embedding(original.audio)
-                speaker = self.profiles.identify(v, len(original.audio) / SAMPLE_RATE) if v is not None else None
-                return [replace(original, speaker_id=speaker)] if speaker is not None else [original]
-            except Exception as exc:
-                log.debug("Short-turn voice embedding unavailable: %s", exc)
-                return [original]
+        samples = len(original.audio)
+        if samples < 2 * SAMPLE_RATE:
+            # At this duration there isn't enough evidence to confidently
+            # distinguish two full speech turns with the offline model.
+            return [original]
         try:
             audio = np.ascontiguousarray(original.audio, dtype=np.float32)
-            raw = self.diarizer.process(audio).sort_by_start_time()
-            turns = [
-                Turn(max(0.0, float(t.start)), min(len(audio) / SAMPLE_RATE, float(t.end)), int(t.speaker))
-                for t in raw if math.isfinite(float(t.start)) and math.isfinite(float(t.end))
-            ]
-            windows = split_turns(len(audio) / SAMPLE_RATE, turns, self.cfg.min_turn_s)
-            if len(windows) > self.cfg.max_turns:
+            length = samples / SAMPLE_RATE
+
+            # Sherpa's offline window benefits from at least three seconds
+            # of observation. Symmetric silence padding lets 2-3s segments
+            # participate without inventing speech or shifting real timestamps.
+            if length < 3.0:
+                left_pad = (3 * SAMPLE_RATE - samples) // 2
+                right_pad = 3 * SAMPLE_RATE - samples - left_pad
+                model_audio = np.pad(audio, (left_pad, right_pad))
+                offset = left_pad / SAMPLE_RATE
+            else:
+                model_audio = audio
+                offset = 0.0
+
+            raw = self.diarizer.process(model_audio).sort_by_start_time()
+            turns: list[Turn] = []
+            for turn in raw:
+                start = float(turn.start) - offset
+                end = float(turn.end) - offset
+                if not (math.isfinite(start) and math.isfinite(end)):
+                    continue
+                start = max(0.0, start)
+                end = min(length, end)
+                if end > start:
+                    turns.append(Turn(start, end, int(turn.speaker)))
+
+            windows = split_turns(length, turns, self.cfg.min_turn_s, audio)
+            if len(windows) <= 1 or len(windows) > self.cfg.max_turns:
+                self.failures = 0
                 return [original]
-            ids: dict[int, int | None] = {}
-            used_labels: set[int] = set()
+
             result: list[Utterance] = []
             for window in windows:
                 lo = max(0, round(window.start * SAMPLE_RATE))
-                hi = min(len(audio), round(window.end * SAMPLE_RATE))
+                hi = min(samples, round(window.end * SAMPLE_RATE))
                 if hi <= lo:
                     return [original]
-                part = audio[lo:hi]
-                identity = None
-                if window.speaker is not None:
-                    if window.speaker not in ids:
-                        v = self._embedding(part)
-                        ids[window.speaker] = (
-                            self.profiles.identify(
-                                v, len(part) / SAMPLE_RATE, blocked_ids=used_labels
-                            ) if v is not None else None
-                        )
-                        if ids[window.speaker] is not None:
-                            used_labels.add(ids[window.speaker])
-                    identity = ids[window.speaker]
                 start = original.start_s + lo / SAMPLE_RATE
                 end = original.start_s + hi / SAMPLE_RATE
-                onset = max(start, original.speech_start_s if original.speech_start_s is not None else start)
+                onset = max(
+                    start,
+                    original.speech_start_s
+                    if original.speech_start_s is not None else start,
+                )
                 result.append(replace(
-                    original, start_s=start, end_s=end, audio=part.copy(),
-                    speaker_id=identity, speech_start_s=min(end, onset),
-                    timings=replace(original.timings)))
+                    original, start_s=start, end_s=end,
+                    audio=audio[lo:hi].copy(),
+                    speech_start_s=min(end, onset),
+                    timings=replace(original.timings),
+                ))
+            # Enforce exact conservation of PCM before emitting any split cue.
+            if sum(len(part.audio) for part in result) != samples:
+                log.warning("Sherpa cut validation failed; preserving original audio")
+                return [original]
             self.failures = 0
-            if len(result) > 1:
-                log.info("Sherpa separated %.2f-%.2f into %d turns",
-                         original.start_s, original.end_s, len(result))
+            log.info(
+                "Sherpa separated %.2f-%.2f into %d non-overlapping turns",
+                original.start_s, original.end_s, len(result),
+            )
             return result
         except Exception as exc:
             self.failures += 1
-            log.warning("Sherpa failure %d/3; preserving original audio: %s", self.failures, exc)
+            log.warning(
+                "Sherpa failure %d/3; preserving original audio: %s",
+                self.failures, exc,
+            )
             if self.failures >= 3:
                 self.diarizer = None
-                log.warning("Sherpa disabled for the session after repeated errors")
+                log.warning("Sherpa disabled for this session after repeated errors")
             return [original]
 
 
 def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = None) -> None:
     splitter: SherpaSplitter | None = None
     checked = 0
-    labeled_cues = 0
-    unlabeled_cues = 0
-    multi_turn_windows = 0
+    split_windows = 0
+    separated_cues = 0
     if cfg.enabled:
         print("Speaker diarization: loading Sherpa CPU models...", flush=True)
         try:
@@ -479,16 +404,14 @@ def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = Non
             continue
         parts = splitter.split(item)
         checked += 1
-        multi_turn_windows += int(len(parts) > 1)
-        labeled_cues += sum(piece.speaker_id is not None for piece in parts)
-        unlabeled_cues += sum(piece.speaker_id is None for piece in parts)
+        if len(parts) > 1:
+            split_windows += 1
+            separated_cues += len(parts)
         if checked % 12 == 0:
-            profiles = splitter.profiles
             log.info(
-                "speaker tracking: windows=%d confirmed=%d provisional=%d "
-                "labeled=%d unlabeled=%d split_windows=%d",
-                checked, len(profiles.vectors), len(profiles._pending),
-                labeled_cues, unlabeled_cues, multi_turn_windows,
+                "speaker turns: windows=%d split_windows=%d separated_cues=%d "
+                "unsplit_windows=%d",
+                checked, split_windows, separated_cues, checked - split_windows,
             )
         for part in parts:
             if generation is not None and part.generation != generation():

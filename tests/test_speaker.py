@@ -105,11 +105,60 @@ class SpeakerTurnTests(unittest.TestCase):
                          [Turn(0, 2, None)])
 
     def test_anonymous_voice_embeddings_reuse_identity(self):
-        profiles = VoiceProfiles(0.72, 4)
-        self.assertEqual(profiles.identify(np.array([1, 0])), 0)
+        profiles = VoiceProfiles(0.68, 4)
+        self.assertIsNone(profiles.identify(np.array([1, 0])))
         self.assertEqual(profiles.identify(np.array([0.96, 0.04])), 0)
-        self.assertEqual(profiles.identify(np.array([0, 1])), 1)
+        self.assertEqual(profiles.identify(np.array([1, 0.04])), 0)
+        self.assertIsNone(profiles.identify(np.array([0, 1])))
+        self.assertEqual(profiles.identify(np.array([0, 0.99])), 1)
         self.assertIsNone(profiles.identify(np.array([float("nan"), 0])))
+
+    def test_same_speaker_variations_reuse_anonymous_label(self):
+        profiles = VoiceProfiles(0.68, 4)
+        self.assertIsNone(profiles.identify(np.array([1, 0, 0])))
+        self.assertEqual(profiles.identify(np.array([.97, .24, 0])), 0)
+        for variant in ([.90, .42, 0], [.86, .50, 0], [1, .03, 0],
+                        [.82, .56, 0], [.92, .39, 0]):
+            self.assertEqual(profiles.identify(np.array(variant)), 0)
+        self.assertEqual(len(profiles.vectors), 1)
+        self.assertLessEqual(len(profiles._examples[0]), 6)
+
+    def test_no_unbounded_letter_creation_for_new_or_noisy_voices(self):
+        profiles = VoiceProfiles(0.68, 2)
+        self.assertIsNone(profiles.identify(np.array([1., 0., 0.])))
+        self.assertEqual(profiles.identify(np.array([.99, .02, 0.])), 0)
+        self.assertIsNone(profiles.identify(np.array([0., 1., 0.])))
+        self.assertEqual(profiles.identify(np.array([0., .99, 0.])), 1)
+        for variant in ([0., 0., 1.], [.4, 0., .9], [-1., 0., 0.],
+                        [-.2, -.2, .95]):
+            self.assertIsNone(profiles.identify(np.array(variant)))
+        self.assertEqual(len(profiles.vectors), 2)
+
+    def test_short_unfamiliar_speech_never_registers_new_label(self):
+        profiles = VoiceProfiles(0.68, 4)
+        for _ in range(8):
+            self.assertIsNone(profiles.identify(np.array([1., 0., 0.]),
+                                                duration_s=0.75))
+        self.assertEqual(len(profiles.vectors), 0)
+        self.assertEqual(len(profiles._pending), 0)
+        self.assertIsNone(profiles.identify(np.array([1., 0., 0.])))
+        self.assertEqual(profiles.identify(np.array([1., 0., 0.])), 0)
+        self.assertEqual(profiles.identify(np.array([1., 0., 0.]),
+                                           duration_s=0.8), 0)
+
+    def test_ties_between_known_speakers_are_unknown(self):
+        profiles = VoiceProfiles(0.65, 4)
+        for variant in ([1., 0.], [.99, .05], [0., 1.], [.05, .99]):
+            profiles.identify(np.array(variant))
+        self.assertEqual(len(profiles.vectors), 2)
+        self.assertIsNone(profiles.identify(np.array([.707, .707])))
+
+    def test_identity_memory_survives_seek_replay(self):
+        profiles = VoiceProfiles(0.68, 4)
+        self.assertIsNone(profiles.identify(np.array([1., 0.])))
+        self.assertEqual(profiles.identify(np.array([1., .02])), 0)
+        self.assertEqual(profiles.identify(np.array([1., .01])), 0)
+        self.assertEqual(len(profiles.vectors), 1)
 
 
 class SpeakerPipelineTests(unittest.TestCase):
@@ -125,7 +174,11 @@ class SpeakerPipelineTests(unittest.TestCase):
         backend = object.__new__(SherpaSplitter)
         backend.cfg = SpeakerConfig()
         backend.diarizer = FakeDiarizer()
-        backend.profiles = VoiceProfiles(0.72, 4)
+        backend.profiles = VoiceProfiles(0.68, 4)
+        # Seed two already-confirmed voices for independent-turn testing.
+        for voice in (np.array([1., 0.]), np.array([0., 1.])):
+            self.assertIsNone(backend.profiles.identify(voice))
+            self.assertIsNotNone(backend.profiles.identify(voice))
         backend.failures = 0
         backend._embedding = lambda samples: np.array(
             [1.0, 0.0] if float(np.mean(samples)) > 0 else [0.0, 1.0],

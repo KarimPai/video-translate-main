@@ -55,8 +55,9 @@ class SpeakerConfig:
     model_dir: str = ""
     num_threads: int = 2
     min_turn_s: float = 0.55
-    similarity_threshold: float = 0.72
-    max_speakers: int = 8
+    # More tolerant matching; unknown voice samples remain unlabeled.
+    similarity_threshold: float = 0.68
+    max_speakers: int = 4
     max_turns: int = 5
 
 

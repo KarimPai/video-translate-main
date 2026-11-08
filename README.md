@@ -160,8 +160,8 @@ must be measured on the target i7-9700K.
 enabled = true
 num_threads = 2
 min_turn_s = 0.55
-similarity_threshold = 0.72
-max_speakers = 8
+similarity_threshold = 0.68
+max_speakers = 4
 max_turns = 5
 ```
 
@@ -175,9 +175,15 @@ MPV prioritizes distinct speakers (A:, B:, etc.) among its three lines,
 with the newest lines above. A single speaker can still have multiple
 stacked lines if there are no other speakers to prioritize.
 
-Anonymous IDs are best-effort and may drift across scenes or seeks. Brief
-phrases without sufficient embedding evidence remain unlabeled. Genuine
-simultaneous speech cannot be unmixed by diarization and is left intact.
+Speaker IDs now use session-long voice memory, retaining multiple
+reference embeddings per speaker. The first voice sample is provisional; a
+second independent, matching utterance is needed before a new letter is
+allocated. Identity memory persists through VOD seeks and resets on exit.
+The registry is strictly capped at max_speakers (default four labels A-D);
+unfamiliar or ambiguous voices are left unlabeled, not displayed as E/F or
+assigned to the closest voice without adequate evidence. Very short samples
+also cannot create new identities. This reduces label fragmentation but
+cannot guarantee perfect identity matching or unmix overlapping speech.
 Enable pitch_shift_semitones = 0.0 for the first speaker-label benchmark;
 pitch changes can also change speaker embeddings.
 

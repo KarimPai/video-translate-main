@@ -6,7 +6,7 @@ The `main` and `test-cat-translate-3.3b` branches remain untouched for compariso
 
 ## Experimental: verified speaker context and stricter caption repair
 
-This branch `experiment/plamo8b-context-captions` adds two optional-quality
+This branch `experiment/plamo8b-context-captions` adds three optional-quality
 improvements over `test-plamo8b-q3`. The original PLaMo 8B Q3_K_M branch
 remains an unchanged comparison baseline.
 
@@ -45,6 +45,25 @@ context_enabled = false
 - This is **not forced alignment to the audio waveform**: the timestamps
   come from YouTube VTT and source PCM, so captions may still be inaccurate
   or unavailable on some streams.
+
+### Filtering laughter and nonverbal audio
+
+- After Haas/YouTube caption reconciliation and proper-name fixes, the
+  subtitle pipeline removes **obvious laughter fragments inside otherwise
+  meaningful Japanese speech** before PLaMo inference. Example:
+  `何それわかんないアハハ` → `何それわかんない`.
+- Laughter-only utterances (e.g. `アハハ`, `ふふふ`, `www`) are
+  discarded without model inference; isolated short exhale laughs such
+  as `フッ` are also suppressed.
+- Existing explicit sound-event labels (`[笑い声]`, `[音楽]`,
+  `[拍手]`) and VAD-negative noise/tone filtering remain active.
+- This is deliberately **not a generic onomatopoeia ban**:
+  `来い来い来い`, `待って待って`, `笑った`, `草原`,
+  and actual conversational content are preserved. Laughter that is
+  only audible but not reflected in the ASR text cannot be reliably
+  removed by this text filter.
+- This runs before the PLaMo translator and short-term speaker context,
+  without loading another GPU model or adding translation requests.
 
 ### Switch an existing single-branch clone to the experiment
 

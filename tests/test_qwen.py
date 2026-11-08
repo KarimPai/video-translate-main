@@ -374,6 +374,31 @@ class QwenTranslatorTests(unittest.TestCase):
             )
         self.assertIsNone(fresh._scene_topic())
 
+    def test_cached_short_translation_keeps_ascendant_and_game_corrections(self):
+        from unittest.mock import patch
+        instance = translator()
+        instance.memory_lines = 12
+        instance.vod_title = "Hololive ARK"
+        with patch(
+            "auto_translate.translate.qwen.reuse_recent_short_term",
+            return_value="The ultimate saddle is god-tier.",
+        ), patch.object(QwenTranslator, "_chat") as chat:
+            result = instance.translate("至高のサドルは神", [])
+        self.assertEqual(result, "The Ascendant saddle is god-tier.")
+        chat.assert_not_called()
+
+        instance.reset_scene_context()
+        instance.vod_title = "Hololive talking"
+        with patch(
+            "auto_translate.translate.qwen.reuse_recent_short_term",
+            return_value="Baro-land is fun.",
+        ), patch.object(QwenTranslator, "_chat") as chat:
+            result = instance.translate(
+                "バローランドはおもしろい", [("バロラントやってる?", "VALORANT")],
+            )
+        self.assertEqual(result, "VALORANT is fun.")
+        chat.assert_not_called()
+
     def test_ark_ascendant_saddle_repair_and_ambiguous_homophone(self):
         instance = translator()
         instance.vod_title = "Hololive ARK"

@@ -438,10 +438,15 @@ class QwenTranslator:
         if self.memory_lines:
             cached = reuse_recent_short_term(ja, history)
             if cached is not None:
-                return repair_valorant_translation(
-                    ja, cached, [src for src, _ in history[-8:]],
-                    self._scene_topic() == "valorant",
+                recent_ja = [src for src, _ in history[-8:]]
+                cached = repair_valorant_translation(
+                    ja, cached, recent_ja, self._scene_topic() == "valorant",
                 )
+                cached = repair_barotrauma_translation(ja, cached)
+                cached = repair_ark_tier_translation(
+                    ja, cached, self.vod_title, recent_ja,
+                )
+                return repair_high_confidence_meaning(ja, cached)
         hits = self._glossary_hits(ja, history)
         if not hits and is_obvious_nonverbal_japanese(ja):
             return SKIP_TOKEN

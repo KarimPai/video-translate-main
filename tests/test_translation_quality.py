@@ -91,6 +91,67 @@ class TranslationQualityTests(unittest.TestCase):
             "Level 95? No, no, no.",
         )
 
+    def test_CAT_thirty_second_duration_is_not_fifteen(self):
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "30秒待つと言ったな",
+                "You said you’d wait 15 seconds, didn’t you?",
+            ),
+            "You said you’d wait 30 seconds, didn’t you?",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "30秒待つと言ったな",
+                "You said you’d wait 30 seconds, didn’t you?",
+            ),
+            "You said you’d wait 30 seconds, didn’t you?",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("15秒待て", "Wait 15 seconds."),
+            "Wait 15 seconds.",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("30秒後に15秒待て", "Wait 15 seconds."),
+            "Wait 15 seconds.",
+        )
+
+    def test_CAT_hearing_statement_is_not_dont_listen(self):
+        self.assertEqual(
+            repair_high_confidence_meaning("聞こえるな!", "Don't listen!"),
+            "I can hear it!",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("聞こえるな!", "I can hear you!"),
+            "I can hear you!",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning("聞くな!", "Don't listen!"),
+            "Don't listen!",
+        )
+
+    def test_CAT_greeting_only_repairs_attested_professional_hallucination(self):
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "よろしくお願いします!",
+                "Please find me 100% reliable and professional.",
+            ),
+            "Nice to meet you!",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "よろしくお願いします!",
+                "Thanks in advance!",
+            ),
+            "Thanks in advance!",
+        )
+        self.assertEqual(
+            repair_high_confidence_meaning(
+                "よろしくお願いしますが質問です",
+                "Please find me reliable and professional.",
+            ),
+            "Please find me reliable and professional.",
+        )
+
     def test_only_exact_skip_token_is_accepted(self):
         self.assertTrue(is_skip_token("[SKIP]"))
         self.assertTrue(is_skip_token(" [skip] "))

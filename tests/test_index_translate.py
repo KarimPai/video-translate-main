@@ -14,19 +14,23 @@ from auto_translate.translate.index import (
 
 
 class IndexTranslationTests(unittest.TestCase):
-    def test_official_insttrans_prompt_is_single_source_with_glossary(self):
+    def test_short_translation_prompt_has_no_leak_prone_constraint_headers(self):
         glossary = Glossary({"角巻わため": "Tsunomaki Watame", "兎田ぺこら": "Usada Pekora"})
         prompt = build_index_prompt(
             "角巻わためと行くよ", [("兎田ぺこらだよ", "I'm Pekora")],
             glossary, vod_title="Hololive GTA RP", context_lines=4,
         )
-        self.assertIn("〖源文〗\n角巻わためと行くよ\n\n〖约束要求〗", prompt.replace("〖約束要求〗", "〖约束要求〗"))
-        self.assertIn("角巻わため→Tsunomaki Watame", prompt)
-        self.assertNotIn("兎田ぺこら→Usada Pekora", prompt)
-        self.assertIn("先前的日语对话", prompt)
-        self.assertIn("只输出译文", prompt)
-        self.assertEqual(prompt.count("〖源文〗\n"), 1)
+        self.assertIn("角巻わためと行くよ", prompt)
+        self.assertIn("角巻わため = Tsunomaki Watame", prompt)
+        self.assertNotIn("兎田ぺこら = Usada Pekora", prompt)
         self.assertNotIn("I'm Pekora", prompt)
+        self.assertNotIn("〖", prompt)
+        self.assertNotIn("Constraint Requirements", prompt)
+        self.assertNotIn("硬性要求", prompt)
+        self.assertNotIn("Hololive GTA RP", prompt)
+        self.assertEqual(prompt.count("角巻わためと行くよ"), 1)
+        self.assertTrue(prompt.endswith("\\n\\n角巻わためと行くよ"))
+
 
     @staticmethod
     def _unit():
@@ -58,6 +62,9 @@ class IndexTranslationTests(unittest.TestCase):
         self.assertNotIn("system", str([msg["role"] for msg in data["messages"]]))
         self.assertNotIn("top_p", data)
         self.assertNotIn("qwen", data)
+        self.assertIn("〖", data["stop"])
+        self.assertIn("Constraint Requirements", data["stop"])
+        self.assertNotIn("〖源文〗", data["messages"][0]["content"])
 
     def test_short_casual_line_is_preserved_without_model_rewrite(self):
         obj = self._unit()
@@ -73,6 +80,50 @@ class IndexTranslationTests(unittest.TestCase):
 
     def test_clean_thinking_and_headers(self):
         self.assertEqual(_clean("<think>notes</think>Translation: Let's go!"), "Let's go!")
+
+
+    def test_real_stream_leakage_english_instructions_are_truncated(self):
+        observed = (
+            "Come on, come on! This is it!  〖Constraint Requirements〗 "
+            "1. 〖Hard Requirement〗Only translate the Japanese in〖Source〗into English"
+        )
+        self.assertEqual(_clean(observed), "Come on, come on! This is it!")
+
+    def test_real_stream_leakage_chinese_instructions_are_truncated(self):
+        observed = (
+            "I'm coming with you!  〖约束要求〗 "
+            "1. 〖硬性要求〗只翻译日语"
+        )
+        self.assertEqual(_clean(observed), "I'm coming with you!")
+
+    def test_meta_only_output_is_never_used_as_a_subtitle(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", return_value=(
+            "〖Constraint Requirements〗 1. 〖Hard Requirement〗Only translate..."
+        )):
+            self.assertEqual(
+                obj.translate("行ってきます", []), "[translation failed]"
+            )
+
+    def test_leaked_instruction_is_removed_before_translation_corrections(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", return_value=(
+            "It's okay!  〖Source〗 Go away  〖Constraint Requirements〗"
+        )):
+            result = obj.translate("大丈夫です", [])
+        self.assertEqual(result, "It's okay!")
+        self.assertNotIn("〖", result)
+
+    def test_clean_handles_plain_english_metadata_and_preserves_dialogue(self):
+        self.assertEqual(
+            _clean("Let's go.  Constraint Requirements: 1. Hard Requirement: translate"),
+            "Let's go."
+        )
+        self.assertEqual(_clean("No, no, no!"), "No, no, no!")
+        self.assertEqual(
+            _clean("Translation: I'll head to the carjacking scene."),
+            "I'll head to the carjacking scene."
+        )
 
     def test_managed_server_selects_index_hf_model_and_new_port(self):
         obj = self._unit()

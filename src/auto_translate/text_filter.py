@@ -82,12 +82,14 @@ def strip_incidental_laughter(text: str) -> str:
     cleaned = _INLINE_CHAT_LAUGH.sub(" ", cleaned)
     if cleaned == text:
         return text
-    cleaned = _CONSECUTIVE_COMMAS.sub("、", cleaned)
     cleaned = re.sub(r"\s+([、，,。！？!?])", r"\1", cleaned)
+    cleaned = _CONSECUTIVE_COMMAS.sub("、", cleaned)
     cleaned = _SPACES.sub(" ", cleaned)
-    # Punctuation left by a removed laugh is never useful on its own.
-    cleaned = cleaned.strip(" \t\r\n、，,。！？!?")
-    return cleaned
+    # Remove leading orphan punctuation, but keep spoken sentence endings
+    # such as the question mark in 「何それ？アハハ」.
+    cleaned = cleaned.strip(" \t\r\n、，,")
+    cleaned = re.sub(r"^[。！？!?]+", "", cleaned).strip()
+    return cleaned if _compact(cleaned) else ""
 
 
 # These stock decoder completions are also legitimate dialogue. Suppress them

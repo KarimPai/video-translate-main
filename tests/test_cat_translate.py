@@ -176,15 +176,27 @@ class CatTranslationTests(unittest.TestCase):
         with patch.object(obj, "_chat", return_value="Good morning!</s>"):
             self.assertEqual(obj.translate("おはようございます", []), "Good morning!")
 
-    def test_eos_only_is_not_shown_as_translation(self):
+    def test_eos_only_is_suppressed_after_one_bounded_retry(self):
         obj = self._unit()
-        with patch.object(obj, "_chat", return_value="</s>"):
-            self.assertEqual(obj.translate("おはようございます", []), "[translation failed]")
+        with patch.object(obj, "_chat", return_value="</s>") as chat:
+            self.assertEqual(obj.translate("おはようございます", []), "[SKIP]")
+        self.assertEqual(chat.call_count, 2)
+        self.assertTrue(chat.call_args_list[1].kwargs["retry"])
+        self.assertLessEqual(chat.call_args_list[1].kwargs["timeout"], 4.0)
 
-    def test_missing_output_is_not_displayed_as_valid_english(self):
+    def test_missing_output_is_suppressed_after_one_bounded_retry(self):
         obj = self._unit()
-        with patch.object(obj, "_chat", return_value=""):
-            self.assertEqual(obj.translate("行ってきます", []), "[translation failed]")
+        with patch.object(obj, "_chat", return_value="") as chat:
+            self.assertEqual(obj.translate("行ってきます", []), "[SKIP]")
+        self.assertEqual(chat.call_count, 2)
+        self.assertTrue(chat.call_args_list[1].kwargs["retry"])
+
+    def test_empty_first_response_can_recover_on_retry(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", side_effect=["", "I'm heading out."]) as chat:
+            self.assertEqual(obj.translate("行ってきます", []), "I'm heading out.")
+        self.assertEqual(chat.call_count, 2)
+        self.assertTrue(chat.call_args_list[1].kwargs["retry"])
 
     def test_server_selects_exact_nonbeta_3b_file_and_safe_port(self):
         obj = self._unit()

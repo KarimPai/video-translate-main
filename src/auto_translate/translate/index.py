@@ -83,6 +83,10 @@ def build_index_prompt(
             "仅在原句出现时使用这些译名：" +
             "；".join(src + " = " + target for src, target in hits) + "。"
         )
+    # Ohara/Oozora is a documented GTA name correction; never force
+    # standalone 大空 to a person's name outside this explicit contrast.
+    if re.search(r"大原.{0,12}(?:じゃねえ|じゃない|ではない|でなく).{0,12}大空", japanese):
+        parts.append("这句在纠正人名：大原 = Ohara；大空 = Oozora。")
     count = min(2, max(0, context_lines))
     if count:
         previous = [

@@ -561,7 +561,7 @@ def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = Non
         if generation is not None and item.generation != generation():
             continue
         if matcher is not None and (
-            item.reset if isinstance(item, AudioProgress) else False
+            (isinstance(item, AudioProgress) and item.reset)
             or (last_generation is not None and item.generation != last_generation)
         ):
             matcher.reset()

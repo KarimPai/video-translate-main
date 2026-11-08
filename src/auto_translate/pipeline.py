@@ -75,6 +75,7 @@ def run_asr(
     """Transcribe utterances, optionally using aligned captions as a fallback."""
     recent_japanese: deque[str] = deque(maxlen=12)
     last_generation: int | None = None
+    empty_voiced_streak = 0
     while True:
         item = in_q.get()
 
@@ -163,7 +164,16 @@ def run_asr(
             )
 
         if not text:
+            if not utt.probe:
+                empty_voiced_streak += 1
+                if empty_voiced_streak % 8 == 0:
+                    log.warning(
+                        "ASR returned no Japanese for %d successive voiced "
+                        "utterances (last %.2f-%.2fs); check speech worker",
+                        empty_voiced_streak, utt.start_s, utt.end_s,
+                    )
             continue
+        empty_voiced_streak = 0
         log.debug("transcript source at %.2f-%.2fs: %s", utt.start_s, utt.end_s, source)
 
         # Proper names must be repaired before translation and glossary lookup.
@@ -495,6 +505,12 @@ def run(
                 last_pipeline_event = time.monotonic()
 
                 if item is None:
+                    # An upstream stage can send its final sentinel in a
+                    # finally-block, then report a crash to _guard_stage.
+                    # Join briefly before declaring normal completion.
+                    for thread in threads:
+                        thread.join(timeout=0.3)
+                    _raise_stage_failure(stage_failures)
                     for out in outputs:
                         finish = getattr(out, "finish", None)
                         if finish is not None:

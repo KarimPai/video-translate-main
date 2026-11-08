@@ -131,6 +131,7 @@ class QwenASR:
             # inside readline() indefinitely while its process stays alive.
             self._reader = threading.Thread(
                 target=self._read_worker,
+                args=(self.process.stdout,),
                 name="qwen-asr-output",
                 daemon=True,
             )
@@ -143,11 +144,10 @@ class QwenASR:
             cfg.device, ready.get("version", "?"),
         )
 
-    def _read_worker(self) -> None:
+    def _read_worker(self, stdout) -> None:
         """Feed all worker responses to a queue so requests can time out."""
         try:
-            assert self.process is not None and self.process.stdout is not None
-            for line in self.process.stdout:
+            for line in stdout:
                 self._messages.put(line)
         except (OSError, ValueError) as exc:
             self._messages.put(exc)

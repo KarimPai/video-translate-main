@@ -989,8 +989,10 @@ class Ingest:
                         self._live_retry_count += 1
                         attempt = self._live_retry_count
                     if attempt > 3:
-                        log.error("live audio recovery exhausted after 3 consecutive failures")
-                        break
+                        raise RuntimeError(
+                            "live audio recovery exhausted after 3 "
+                            "consecutive failures; subtitles cannot continue"
+                        )
                     log.warning("live audio disconnected; reconnect attempt %d/3", attempt)
                     time.sleep(float(attempt))
                     with self._proc_lock:

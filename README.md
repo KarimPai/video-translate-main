@@ -226,7 +226,9 @@ seconds of stalled queued work. A legitimately quiet stream with no queued
 audio is not treated as a stall.
 
 Inspect `logs\\run.log` for `pipeline stage`, `response timeout`,
-`no pipeline output`, `pipeline stalled` and `Sherpa unsplit` messages.
+`no pipeline output`, `pipeline stalled`, `ASR returned no Japanese`
+and `Sherpa unsplit` messages. Excessive live ingest reconnect failures
+also produce a fatal error rather than silently stopping subtitles.
 This does not separate simultaneous voices; clean changes on either side of
 overlap are now preserved when possible.
 

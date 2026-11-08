@@ -1,86 +1,61 @@
-# Japanese Video Translator — Index-Translate-2B experiment
+# Japanese Video Translator — CAT-Translate-3.3B experiment
 
-This independent branch contains **one ASR** and **one translation model**:
+This separate branch runs one Japanese ASR and one local translation LLM:
 
-- **Japanese speech recognition:** Haas-ja-v1.0 **Q8_0**, speech.cpp Vulkan0, CPU decoder.
-- **Japanese → English translation:** **Index-Translate-2B Q4_K_M**, local CUDA llama.cpp.
-- **Speech segmentation:** FireRedVAD on CUDA, with pause-aware 6–7s boundaries.
-- **Speaker-turn splitting:** Sherpa-ONNX on CPU (pyannote segmentation + NeMo TitaNet).
-- **Playback:** original YouTube video in MPV, English-only stacked subtitles, synchronized seek support for VOD.
+- **ASR:** Haas-ja-v1.0 Q8_0 (speech.cpp Vulkan0, CPU decoding).
+- **Translation:** **CyberAgent CAT-Translate-3.3B**, **Q4_K_M GGUF**, via managed local CUDA llama.cpp.
+- **VAD:** FireRedVAD CUDA, with natural-pause splitting.
+- **Diarization:** Sherpa-ONNX CPU speaker turns and interruption-aware cuts.
+- **Video:** MPV plays the original YouTube stream; English-only stacked subtitles and native VOD seeking.
+- **Other:** Hololive names, conservative glossary corrections, caption reconciliation, game-context fixes, VOD subtitle cache.
 
-No other translation backends, provider APIs, or model-selection presets. The old translator, its sampling controls, its tests, and its sampling benchmark have been removed **from this branch only**.
+CAT is the **sole translator**. There is no Index-Translate implementation, Index-style constraint prompting, Qwen model, PLaMo model, Ollama, external translation API, model chooser, or Index-specific retry workflow in this branch.
 
-## Why Index-Translate-2B
+## Exact model
 
-Official model: https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF
+**Original model (non-beta):** https://huggingface.co/cyberagent/CAT-Translate-3.3b
 
-The **Q4_K_M** file is approximately **1.31 GB**. It is a GGUF derived from a translation-focused model, not the general-purpose Qwen3.5-4B model. The official client uses **greedy decoding (temperature 0)** and **thinking disabled**.
+**Community Q4_K_M GGUF:** https://huggingface.co/Sundowner123/cat-translate-3.3b-gguf
 
-The translator uses Index's **short, plain Japanese-to-English translation prompt** for casual English. The current Japanese utterance is the only source translated. Up to **two previous Japanese lines** are provided as explicitly labeled context for meaning and omitted subjects; previous **English translations and the video title are never copied into the prompt**. This avoids passing earlier mistranslations forward.
+**Exact GGUF filename:** `cat-translate-3.3b-Q4_K_M.gguf` (2,066,389,824 bytes; about 2.07 GB). The community repository also contains 1.4B and Gemma Q4 files. The launcher specifies **`-hf` plus `-hff`** to prevent accidental loading of a different model.
 
-Only glossary terms appearing in the current utterance are included. High-confidence mistakes (e.g. missing negation, untranslated Japanese, badly phonetic output, or missing priority GTA terminology) trigger **at most one extra Index attempt**, with an independent **4-second HTTP timeout** by default. A second result replaces the first only when it clears the deterministic checks, or the first was empty. This adds latency only to flagged lines; automatic review cannot guarantee the semantics are correct.
+The server uses `--jinja` to apply the GGUF's embedded **Sarashina 2.2 instruct chat template**. CAT's official inference format is a **single USER message**:
 
-Very short unambiguous "オリ曲" / "オリジナル曲" utterances are translated directly to "Original song" instead of being romanized. No new translator or external provider was added.
+```text
+Translate the following Japanese text into English.
 
-To prevent **prompt leakage** into subtitles, the llama.cpp request stops at known instruction markers, and output validation truncates any generated `〖Constraint Requirements〗`, `〖约束要求〗`, `〖Source〗`, or similar metadata before the text reaches MPV. A response containing only leaked instructions is treated as a translation failure rather than displayed.
-
-This remains a reliability trade-off: short Japanese context is restored, but scene-title prompting and long instTrans sections stay disabled to minimize instruction leakage and translation of earlier dialogue. Speaker interruptions remain separate ASR/translation requests; Index is told not to complete cut-off speech.
-
-**No vision projector is loaded**; this is text-to-text translation only.
-
-The model may be more conversational, but actual Japanese ASR-based subtitle fidelity and latency must be validated against your existing branch.
-
-## Independent installation (Windows)
-
-Use a **new folder**, separate from the main and Qwen translator checkouts:
-
-```cmd
-cd /d C:\Games
-git clone --branch test-index-translate-2b --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-index
-cd /d C:\Games\video-translate-index
-uv sync --extra diarization
-"Start translate.bat"
+行ってきます
 ```
 
-Requirements:
+No previous Japanese/English dialogue, video title, long instructions, leaked constraint sections, Index stop markers, or Qwen thinking parameters are injected. **Temperature is 0** for deterministic comparison. CAT is not guaranteed to understand VTuber slang or broken ASR perfectly; validate on actual audio.
 
-- Python 3.12+, uv, ffmpeg, yt-dlp, MPV.
-- NVIDIA CUDA-enabled PyTorch for FireRedVAD.
-- **Recent CUDA-enabled llama.cpp** with Qwen3.5 architecture support; `llama-server.exe` in PATH.
-- `speech.exe` / speech.cpp 0.10+ with Haas and Vulkan support.
+### Clean default CAT settings
 
-The first launch may download the Index Q4_K_M GGUF through llama.cpp and the speech/speaker/VAD model files if not cached. Models stay on your machine after download.
-
-The batch launcher uses automatic YouTube live/VOD detection, original source MPV video, and a translation prebuffer. It runs from the checkout's `src` directory with `uv run --no-sync`. Closing MPV or finishing the VOD closes the owned model processes.
-
-## Translation settings — clean slate
-
-`config.toml` is **git-ignored**. You do not need to create one; defaults are:
+The configuration file is optional. Model defaults are:
 
 ```toml
 [translate]
-index_base_url = "http://127.0.0.1:8002/v1"
-index_model = "index-translate-2b"
-index_hf_model = "IndexTeam/Index-Translate-2B-GGUF:Q4_K_M"
-index_context = 4096
-index_gpu_layers = 99
-max_tokens = 160
+cat_base_url = "http://127.0.0.1:8003/v1"
+cat_model = "cat-translate-3.3b"
+cat_hf_repo = "Sundowner123/cat-translate-3.3b-gguf"
+cat_hf_file = "cat-translate-3.3b-Q4_K_M.gguf"
+cat_context = 2048
+cat_gpu_layers = 99
+max_tokens = 192
 timeout_s = 20.0
 load_timeout_s = 300.0
-context_lines = 2
+context_lines = 0
 memory_lines = 12
-quality_retry_enabled = true
-quality_retry_timeout_s = 4.0
 glossary = "glossary.toml"
 ```
 
-**Port 8002** is deliberately separate from older translator experiments. The program refuses to adopt a server already listening on that port, preventing wrong-model reuse and unsafe cleanup.
+`context_lines = 0` ensures the CAT LLM sees only the current speech turn. `memory_lines` supports existing non-LLM ASR/context corrections and short-term repeat consistency, **not model prompt history**.
 
-All old translation fields (model selectors, Qwen or PLaMo references, sampling presets, quality-recheck toggles, and unused context settings) are ignored if you carry over an older `config.toml`. Only the Index fields above take effect.
+Old translation keys such as `index_*`, `quality_retry_enabled`, `qwen_*`, `plamo_*` and old model selectors are ignored if they appear in an existing git-ignored `config.toml`.
 
-Index's decoding uses the **official temperature 0** recommendation, not old top-k/top-p/temperature tuning. There is **no Ollama dependency** and **no external translation API**.
+CAT's server runs on **port 8003**, deliberately separate from Index's port 8002. It will **not adopt or terminate** a previously running server on that port.
 
-## Speech and subtitle settings retained
+### Preserved speech segmentation settings
 
 ```toml
 [asr]
@@ -91,75 +66,49 @@ haas_keywords_enabled = true
 haas_keywords_file = "haas_vocabulary.toml"
 haas_keywords_alpha = 1.5
 haas_keywords_guard = true
-response_timeout_s = 30.0
 
 [vad]
 threshold = 0.35
-neg_threshold = 0.25
 min_silence_ms = 400
-speech_pad_ms = 200
 min_speech_ms = 100
 max_utterance_s = 6.0
 max_split_extension_s = 1.0
-split_pause_min_ms = 80
-split_context_ms = 120
 
 [speaker]
 enabled = true
-num_threads = 2
 min_turn_s = 0.55
-max_turns = 5
-boundary_search_ms = 180
-boundary_quiet_ms = 40
-boundary_quiet_ratio = 0.45
 interruption_handoffs = true
 interruption_min_continuation_s = 0.25
 ```
 
-These are existing defaults. Haas guarded vocabulary boosting helps with Hololive names; if unsupported by the installed speech.cpp version, it retries without hints. FireRedVAD prefers natural pauses and conserves PCM during forced cuts. Sherpa detects speaker changes without inventing persistent speaker identities. When speaker 2 clearly interrupts speaker 1 and continues speaking, it ends speaker 1's audio at speaker 2's onset; each segment is recognized and translated independently. The original English cue also disappears on a confirmed speaker handoff, including after a cached VOD seek. Normal three-line stacking remains for speech without such a handoff. Set `interruption_handoffs = false` to restore conservative mixed-overlap behavior.
+Speaker 2 interrupting speaker 1 yields **two separately transcribed and translated turns** at a confident takeover boundary. This does not physically isolate simultaneous voices; overlap remains challenging. Previous subtitles stop lingering after a confirmed handoff, including cached VOD seek playback.
 
-**Limitation:** This is speaker-turn editing, **not voice source separation**. If speaker 1 continues talking audibly while speaker 2 begins, speaker 2's audio may still contain both voices. Near-simultaneous speakers, very short turns and uncertain overlaps remain mixed rather than falsely attributed to one speaker.
+## Install in a separate Windows checkout
 
-Japanese YouTube captions can still provide cautious correction when aligned and reliable. The existing glossary, Japanese name fixes, GTA/game term corrections, non-verbal noise filtering, VOD subtitle cache and MPV timing are preserved.
+```bat
+cd /d C:\Games
+git clone --branch test-cat-translate-3.3b --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-cat
+cd /d C:\Games\video-translate-cat
+uv sync --extra diarization
+"Start translate.bat"
+```
 
-## Troubleshooting
+Prerequisites: Windows, Python 3.12+, `uv`, ffmpeg/yt-dlp/MPV, CUDA-enabled Torch for FireRedVAD, working Haas/speech.cpp Vulkan ASR, and a **recent CUDA llama-server.exe** in PATH with `-hf`, `-hff`, and `--jinja` support.
 
-- `logs\run.log` — pipeline, speech recognition, translation and synchronization messages.
-- `logs\index-server.log` — Index model download, llama.cpp startup, unsupported binaries, and CUDA allocation errors.
-- If an older model server occupies **8002**, close it before starting. This branch will not silently use it.
-- You can monitor GPU memory with `nvidia-smi` during playback. This branch is expected to use less translator weight memory than the 4B model, but actual runtime allocations depend on context and backend.
+The first CAT startup downloads its GGUF if not cached. It remains local afterwards. Model-server startup/download issues are recorded in **`logs\cat-server.log`**. The main pipeline logs to **`logs\run.log`**. The server is automatically terminated when the session ends.
 
 ## Offline regression tests
 
-```cmd
-cd /d C:\Games\video-translate-index
+```bat
+cd /d C:\Games\video-translate-cat
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Tests mock the speech.cpp and llama.cpp processes; the suite does **not** prove translation accuracy or end-to-end GPU integration.
+Tests include the exact CAT translation prompt, API request, correct non-beta GGUF filename, managed server lifecycle, and absence of previous dialogue in prompts. They mock model/ASR processes and **do not prove runtime translation quality**. Recheck the same Hololive VOD and measure meaning, subtitles, and latency manually.
 
-## Optional Index vs Qwen3.5 comparison
+## Experimental branch isolation
 
-A fixed **18-line Japanese GTA sample** is available at `tests/data/gta_translation_eval.jsonl`. The optional `tools/compare_translation_models.py` sends the **same source text to each model**, saves English and response latency, and prints the results side by side. It **does not** run a second model inside the live subtitle pipeline.
-
-Run **one model at a time** on an 8 GB GPU; leave its existing local llama.cpp server active while collecting its results. These commands only attach to already-running model servers—they do not launch or replace them:
-
-```cmd
-uv run --no-sync python tools/compare_translation_models.py run --backend index --url http://127.0.0.1:8002/v1 --output logs/index-eval.jsonl
-```
-
-Stop Index, then start Qwen in its own independent checkout (using its actual llama.cpp server port; 8001 is an example):
-
-```cmd
-uv run --no-sync python tools/compare_translation_models.py run --backend qwen --url http://127.0.0.1:8001/v1 --output logs/qwen-eval.jsonl
-uv run --no-sync python tools/compare_translation_models.py compare --index logs/index-eval.jsonl --qwen logs/qwen-eval.jsonl
-```
-
-The sample includes suggested readings for manual checking and several lines with potentially garbled ASR; these are **not verified audio transcripts**. The comparison script intentionally reports no automated accuracy score. Review the original audio for ambiguous Japanese. For best fairness, compare the same fixed Japanese text, keep both server settings documented, and do not compare end-to-end latency to the timing of an unrelated live VOD.
-
-## Branches
-
-- `main` — stable pipeline.
-- `test` — existing test translator pipeline.
-- `test-qwen35-4b` — previous Qwen3.5-4B translator experiment.
-- **`test-index-translate-2b` — isolated Index-Translate-2B Q4_K_M experiment.**
+- `main`, `test` — unchanged.
+- `test-qwen35-4b` — unchanged.
+- `test-index-translate-2b` — previous Index model experiment retained.
+- **`test-cat-translate-3.3b` — clean CAT-Translate-3.3B replacement.**

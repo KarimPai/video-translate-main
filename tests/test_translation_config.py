@@ -68,11 +68,11 @@ class TranslationConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.toml"
             path.write_text(
-                '[translate]\\nselective_retry_enabled = false\\n'
-                'selective_retry_timeout_s = 2.0\\n'
-                'fragment_join_enabled = false\\n'
-                'fragment_join_wait_s = 0.2\\n'
-                'fragment_join_gap_s = 0.25\\n',
+                '[translate]\nselective_retry_enabled = false\n'
+                'selective_retry_timeout_s = 2.0\n'
+                'fragment_join_enabled = false\n'
+                'fragment_join_wait_s = 0.2\n'
+                'fragment_join_gap_s = 0.25\n',
                 encoding="utf-8",
             )
             cfg = load_config(path).translate

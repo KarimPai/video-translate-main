@@ -55,6 +55,10 @@ class AsrConfig:
     haas_device: str = "Vulkan0"
     # Q8_0's CPU decoder leaves more VRAM for Qwen3.5 translation.
     haas_decode_on_cpu: bool = True
+    haas_keywords_enabled: bool = True
+    haas_keywords_file: str = "haas_vocabulary.toml"
+    haas_keywords_alpha: float = 1.5
+    haas_keywords_guard: bool = True
     response_timeout_s: float = 30.0
     blocklist: list[str] = field(default_factory=list)
 

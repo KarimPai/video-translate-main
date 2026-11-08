@@ -145,6 +145,49 @@ class CaptionFallbackTests(unittest.TestCase):
         self.assertIsNone(out_q.get_nowait())
 
 
+class ConservativeCaptionRepairTests(unittest.TestCase):
+    def test_strong_time_aligned_caption_repairs_two_localized_spelling_errors(self):
+        from auto_translate.stream_context import repair_strongly_aligned_caption
+        source = "今日はカージヤックをずっとみてたんだよね"
+        caption = "今日はカージャックをずっと見てたんだよね"
+        self.assertEqual(repair_strongly_aligned_caption(source, caption), caption)
+        index = CaptionIndex([CaptionCue(1.0, 3.0, caption)])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.1, 2.9, np.zeros(16000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR(source), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, caption)
+
+    def test_caption_disagreement_never_rewrites_numbers_or_polarity(self):
+        from auto_translate.stream_context import repair_strongly_aligned_caption
+        asr = "今日は9時過ぎからずっと待ってたんだ"
+        caption = "今日は10時過ぎからずっと待ってたんだ"
+        self.assertEqual(repair_strongly_aligned_caption(asr, caption), asr)
+        neg_asr = "今日は戻らないから大丈夫だと思います"
+        neg_caption = "今日は戻るから大丈夫だと思います"
+        self.assertEqual(repair_strongly_aligned_caption(neg_asr, neg_caption), neg_asr)
+        for a, c in ((asr, caption), (neg_asr, neg_caption)):
+            incoming, outgoing = queue.Queue(), queue.Queue()
+            incoming.put(Utterance(1.1, 2.9, np.zeros(16000, dtype=np.float32)))
+            incoming.put(None)
+            run_asr(TextASR(a), incoming, outgoing,
+                    captions=CaptionIndex([CaptionCue(1.0, 3.0, c)]))
+            self.assertEqual(outgoing.get_nowait().ja, a)
+
+    def test_weak_or_broad_caption_does_not_override_haas(self):
+        source = "今日はカージヤックをずっとみてたんだよね"
+        caption = "今日はカージャックをずっと見てたんだよね"
+        # One long rolling YouTube cue doesn't prove which tiny excerpt
+        # was spoken at these timestamps.
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(2, 3, np.zeros(16000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR(source), incoming, outgoing,
+                captions=CaptionIndex([CaptionCue(0, 8, caption)]))
+        self.assertEqual(outgoing.get_nowait().ja, source)
+
+
+
 class ReactionPipelineTests(unittest.TestCase):
     @staticmethod
     def _queues(*texts):

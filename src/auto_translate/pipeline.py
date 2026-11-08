@@ -296,6 +296,10 @@ def run_translate(
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
     speaker_reference = RecentSpeakerJapanese()
     memory_generation: int | None = None
+    last_scene_end_s: float | None = None
+    scene_gap_reset_s = max(
+        5.0, float(getattr(getattr(translator, "cfg", None), "scene_gap_reset_s", 30.0))
+    )
 
     def reset_scene() -> None:
         reset = getattr(translator, "reset_scene_context", None)
@@ -319,6 +323,7 @@ def run_translate(
                 history.clear()
                 speaker_reference.reset()
                 reset_scene()
+                last_scene_end_s = None
             memory_generation = item.generation
 
             out_q.put(item)
@@ -333,8 +338,21 @@ def run_translate(
         # against a new generation reaching this queue before its marker.
         if memory_generation is not None and tr.generation != memory_generation:
             history.clear()
+            speaker_reference.reset()
             reset_scene()
+            last_scene_end_s = None
         memory_generation = tr.generation
+
+        # A long speech gap indicates an unobserved scene transition.
+        # Also guard against a backward timeline discontinuity with no marker.
+        # Do not reset merely because a different speaker joins the same scene.
+        if last_scene_end_s is not None and (
+            tr.start_s - last_scene_end_s > scene_gap_reset_s
+            or tr.start_s < last_scene_end_s - 1.0
+        ):
+            reset_scene()
+            speaker_reference.reset()
+        last_scene_end_s = tr.end_s
 
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call the translator again for the same VOD cue.

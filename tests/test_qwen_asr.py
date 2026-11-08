@@ -3,6 +3,7 @@ import base64
 import hashlib
 import io
 import json
+import queue
 import tempfile
 import unittest
 from pathlib import Path
@@ -130,6 +131,51 @@ class QwenASRTests(unittest.TestCase):
             recognizer.close()
         args = popen.call_args.args[0]
         self.assertEqual(args[args.index("--prompt") + 1], "角巻わため、風真いろは")
+
+    def test_qwen_worker_progress_then_result_has_absolute_deadline(self):
+        proc = worker_stream(
+            {"type": "progress", "id": "1", "done": 0.5},
+            {"type": "end", "id": "1", "text": "大丈夫ですよ"},
+        )
+        with patch("auto_translate.asr.qwen_asr.resolve_qwen_asr_model",
+                   return_value=Path("model.gguf")), patch(
+            "auto_translate.asr.qwen_asr.shutil.which", return_value="speech.exe",
+        ), patch("auto_translate.asr.qwen_asr.subprocess.Popen",
+                 return_value=proc):
+            recognizer = QwenASR(AsrConfig())
+            self.assertEqual(
+                recognizer.transcribe(np.ones(8000, dtype=np.float32)),
+                "大丈夫ですよ",
+            )
+            recognizer.close()
+
+    def test_missing_worker_response_times_out_instead_of_hanging_forever(self):
+        proc = worker_stream()
+        with patch("auto_translate.asr.qwen_asr.resolve_qwen_asr_model",
+                   return_value=Path("model.gguf")), patch(
+            "auto_translate.asr.qwen_asr.shutil.which", return_value="speech.exe",
+        ), patch("auto_translate.asr.qwen_asr.subprocess.Popen",
+                 return_value=proc):
+            recognizer = QwenASR(AsrConfig(response_timeout_s=2.0))
+            # A live worker may keep its pipe open without producing a
+            # matching response. Force queue.Empty deterministically;
+            # do not sleep or require an actual model during tests.
+            with patch.object(recognizer._messages, "get", side_effect=queue.Empty):
+                with self.assertRaisesRegex(TimeoutError, "Qwen ASR response timeout"):
+                    recognizer.transcribe(np.ones(8000, dtype=np.float32))
+            recognizer.close()
+
+    def test_worker_stdout_close_raises_instead_of_waiting_indefinitely(self):
+        proc = worker_stream()
+        with patch("auto_translate.asr.qwen_asr.resolve_qwen_asr_model",
+                   return_value=Path("model.gguf")), patch(
+            "auto_translate.asr.qwen_asr.shutil.which", return_value="speech.exe",
+        ), patch("auto_translate.asr.qwen_asr.subprocess.Popen",
+                 return_value=proc):
+            recognizer = QwenASR(AsrConfig())
+            with self.assertRaisesRegex(RuntimeError, "closed the stdout pipe"):
+                recognizer.transcribe(np.ones(1600, dtype=np.float32))
+            recognizer.close()
 
     def test_recognition_error_does_not_fall_back_to_other_model(self):
         proc = worker_stream({

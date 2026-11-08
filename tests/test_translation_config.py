@@ -65,6 +65,7 @@ model = "ignored"
         self.assertEqual(cfg.device, "Vulkan0")
         self.assertEqual(cfg.model_path, "")
         self.assertEqual(cfg.prompt, "")
+        self.assertEqual(cfg.response_timeout_s, 30.0)
         self.assertFalse(hasattr(cfg, "haas_model"))
         self.assertFalse(hasattr(cfg, "haas_keywords_enabled"))
 

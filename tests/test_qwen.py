@@ -163,7 +163,7 @@ class QwenTranslatorTests(unittest.TestCase):
         instance.observe_scene("オッズを見た")
         self.assertIsNone(instance._scene_topic())
 
-    def test_gist_style_is_default_and_faithful_style_is_selectable(self):
+    def test_gist_and_faithful_styles_are_both_selectable(self):
         instance = translator()
         response = json.dumps({
             "choices": [{"message": {"content": "A Giganotosaurus attacked the base."}}]

@@ -73,6 +73,7 @@ top_k = 20
 min_p = 0.0
 repeat_penalty = 1.0
 presence_penalty = 0.0
+# Optional: sampling_seed = 42  # for repeatable experiments
 context_lines = 5
 memory_lines = 12
 max_tokens = 128
@@ -115,6 +116,45 @@ sent to the managed Qwen3.5 llama.cpp server. The starting values are
 recheck uses the same values unless `quality_recheck_temperature` is
 configured; this affects only a flagged second request, never every line.
 Thinking remains disabled and the context window remains 4096 tokens.
+
+### Compare Qwen sampling temperatures on your PC
+
+Close `Start translate.bat` and any other process using local Qwen port
+8001, then double-click `Benchmark sampling.bat`. This launches **only
+Qwen3.5-4B translation**, not Qwen ASR, FireRed, Sherpa or MPV. It loads
+the translator **once**, then compares the same 50 Japanese/reference pairs
+using temperature `0.1`, `0.35`, `0.5` and `0.7`. All other sampling
+values, the faithful prompt, the glossary, source-only context and the
+optional fixed seed are held constant. Quality rechecks and previous English
+memory are disabled to isolate the sampling setting. No `config.toml`
+changes are made; any pre-existing local settings are respected except
+benchmark-only temperature, style, seed and recheck overrides.
+
+The benchmark writes two files under `logs`: detailed English outputs
+and per-temperature summary CSV. The **reference character similarity**
+is a text-string comparison, **not** semantic translation accuracy.
+Terms/number checks only validate explicitly listed strings. The 50
+examples are curated from previous Japanese transcript snippets and
+edited examples: **not** verified against the original audio, so they
+cannot measure ASR accuracy. Review the actual English outputs manually,
+especially names, context, negatives and unsupported guesses.
+
+You can supply your own Japanese/reference pairs (one JSON object per line):
+
+```json
+{"ja":"30万だろ!?","reference_en":"300,000, right?!","title":"Hololive GTA","must_include":["300,000"],"must_exclude":["30,000"]}
+```
+
+Run an additional repeatability comparison with:
+
+```cmd
+uv run --no-sync python tools\benchmark_qwen_sampling.py --rounds 2 --seed 42
+```
+
+`--temperatures`, `--samples` and `--output` are also supported.
+**Do not choose the winner using reference similarity alone.** If a local
+`config.toml` has `subtitle_style = "gist"`, change it to `"faithful"`
+to adopt the new runtime default.
 
 ### Prompts and terminology
 

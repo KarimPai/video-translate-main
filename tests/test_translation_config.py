@@ -24,6 +24,7 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.repeat_penalty, 1.0)
         self.assertEqual(cfg.presence_penalty, 0.0)
         self.assertIsNone(cfg.quality_recheck_temperature)
+        self.assertIsNone(cfg.sampling_seed)
         self.assertTrue(cfg.quality_recheck_enabled)
         self.assertFalse(hasattr(cfg, "backend"))
 

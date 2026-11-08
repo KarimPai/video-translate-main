@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from auto_translate.config import MpvConfig
-from auto_translate.output.mpv import MpvError, MpvIpc, MpvOutput, _WindowsPipe, _Line, _ass_many
+from auto_translate.output.mpv import MpvError, MpvIpc, MpvOutput, _WindowsPipe, _Line, _ass_many, _after_speaker_handoff
 from auto_translate.types import Subtitle
 
 
@@ -536,6 +536,41 @@ class CachedSeekTests(unittest.TestCase):
 
 
 class TurnSubtitleDisplayTests(unittest.TestCase):
+    def test_confirmed_handoff_hides_previous_speakers_while_preserving_current_cues(self):
+        previous = _Line(
+            Subtitle(0, 1.7, "speaker one", "I was going to—"),
+            0, 4.7,
+        )
+        interrupting = _Line(
+            Subtitle(1.7, 3.0, "speaker two", "Wait!", speaker_handoff=True),
+            1.7, 6.0,
+        )
+        continuing = _Line(
+            Subtitle(3.0, 4.0, "speaker two", "Come over here."),
+            3.0, 7.0,
+        )
+        self.assertEqual(
+            _after_speaker_handoff([previous, interrupting, continuing]),
+            [interrupting, continuing],
+        )
+        self.assertEqual(_after_speaker_handoff([previous]), [previous])
+
+    def test_newer_handoff_replaces_previous_speaker_stack(self):
+        first = _Line(Subtitle(0, 1, "a", "First"), 0, 4)
+        second = _Line(
+            Subtitle(1, 2, "b", "Second", speaker_handoff=True), 1, 5)
+        third = _Line(
+            Subtitle(2, 3, "c", "Third", speaker_handoff=True), 2, 6)
+        self.assertEqual(_after_speaker_handoff([first, second, third]), [third])
+
+    def test_normal_three_line_stacking_remains_available(self):
+        lines = [
+            _Line(Subtitle(float(i), float(i+1), "ja", str(i)),
+                  float(i), float(i+4))
+            for i in range(3)
+        ]
+        self.assertEqual(_after_speaker_handoff(lines), lines)
+
     def test_ass_overlay_stacks_english_without_identity_labels(self):
         body = _ass_many([
             Subtitle(5, 6, "ja", "Watch out!"),

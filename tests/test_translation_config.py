@@ -17,6 +17,9 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.index_context, 4096)
         self.assertEqual(cfg.index_gpu_layers, 99)
         self.assertEqual(cfg.max_tokens, 160)
+        self.assertEqual(cfg.context_lines, 2)
+        self.assertTrue(cfg.quality_retry_enabled)
+        self.assertEqual(cfg.quality_retry_timeout_s, 8.0)
         self.assertEqual(cfg.glossary, "glossary.toml")
         self.assertFalse(hasattr(cfg, "qwen_model"))
         self.assertFalse(hasattr(cfg, "plamo_model"))
@@ -28,7 +31,8 @@ class TranslationConfigurationTests(unittest.TestCase):
             path = Path(temp) / "config.toml"
             path.write_text(
                 '[translate]\nindex_context = 2048\nindex_gpu_layers = 50\n'
-                'context_lines = 6\nmax_tokens = 192\n',
+                'context_lines = 6\nmax_tokens = 192\n'
+                'quality_retry_enabled = false\nquality_retry_timeout_s = 5.0\n',
                 encoding="utf-8",
             )
             cfg = load_config(path).translate
@@ -36,6 +40,8 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.index_gpu_layers, 50)
         self.assertEqual(cfg.context_lines, 6)
         self.assertEqual(cfg.max_tokens, 192)
+        self.assertFalse(cfg.quality_retry_enabled)
+        self.assertEqual(cfg.quality_retry_timeout_s, 5.0)
 
     def test_old_qwen_and_other_translator_settings_ignored(self):
         with tempfile.TemporaryDirectory() as temp:

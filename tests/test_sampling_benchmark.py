@@ -16,6 +16,10 @@ class _FakeTranslator:
     def __init__(self):
         self.cfg = SimpleNamespace(
             temperature=0.35, quality_recheck_enabled=True,
+            quality_recheck_temperature=None,
+            top_p=0.8, top_k=20, min_p=0.0,
+            repeat_penalty=1.0, presence_penalty=0.0,
+            sampling_seed=42, subtitle_style="faithful",
         )
         self.vod_title = ""
         self.calls = []

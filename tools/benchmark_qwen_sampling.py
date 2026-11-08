@@ -112,7 +112,7 @@ def run_comparison(
         translator.cfg.quality_recheck_enabled = False
         for temperature in temperatures:
             translator.cfg.temperature = float(temperature)
-            sampling_parameters(translator.cfg)
+            parameters = sampling_parameters(translator.cfg)
             for trial in range(1, rounds + 1):
                 for index, example in enumerate(examples, 1):
                     translator.reset_scene_context()
@@ -130,8 +130,16 @@ def run_comparison(
                     metrics = assess(example, translation)
                     row = {
                         "temperature": float(temperature),
+                        "seed": parameters.get("seed", "random"),
+                        "top_p": parameters["top_p"], "top_k": parameters["top_k"],
+                        "min_p": parameters["min_p"],
+                        "repeat_penalty": parameters["repeat_penalty"],
+                        "presence_penalty": parameters["presence_penalty"],
+                        "style": translator.cfg.subtitle_style,
                         "trial": trial, "example": index,
-                        "title": example.title, "ja": example.ja,
+                        "title": example.title,
+                        "history_ja": " / ".join(example.history_ja),
+                        "ja": example.ja,
                         "reference_en": example.reference_en,
                         "translated_en": translation, "latency_s": round(elapsed, 4),
                         "failed": int(translation == "[translation failed]"),

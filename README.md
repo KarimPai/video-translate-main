@@ -106,9 +106,13 @@ max_turns = 5
 boundary_search_ms = 180
 boundary_quiet_ms = 40
 boundary_quiet_ratio = 0.45
+interruption_handoffs = true
+interruption_min_continuation_s = 0.25
 ```
 
-These are existing defaults. Haas guarded vocabulary boosting helps with Hololive names; if unsupported by the installed speech.cpp version, it retries without hints. FireRedVAD prefers natural pauses and conserves PCM during forced cuts. Sherpa detects speaker changes without inventing persistent speaker identities; overlapping voices are not separated into isolated audio sources.
+These are existing defaults. Haas guarded vocabulary boosting helps with Hololive names; if unsupported by the installed speech.cpp version, it retries without hints. FireRedVAD prefers natural pauses and conserves PCM during forced cuts. Sherpa detects speaker changes without inventing persistent speaker identities. When speaker 2 clearly interrupts speaker 1 and continues speaking, it ends speaker 1's audio at speaker 2's onset; each segment is recognized and translated independently. The original English cue also disappears on a confirmed speaker handoff, including after a cached VOD seek. Normal three-line stacking remains for speech without such a handoff. Set `interruption_handoffs = false` to restore conservative mixed-overlap behavior.
+
+**Limitation:** This is speaker-turn editing, **not voice source separation**. If speaker 1 continues talking audibly while speaker 2 begins, speaker 2's audio may still contain both voices. Near-simultaneous speakers, very short turns and uncertain overlaps remain mixed rather than falsely attributed to one speaker.
 
 Japanese YouTube captions can still provide cautious correction when aligned and reliable. The existing glossary, Japanese name fixes, GTA/game term corrections, non-verbal noise filtering, VOD subtitle cache and MPV timing are preserved.
 

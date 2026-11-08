@@ -21,7 +21,7 @@ from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import (
     is_isolated_reaction, is_nonspeech_probe, is_sound_caption_artifact,
-    is_usable_transcript, strip_nonverbal_labels,
+    is_usable_transcript, strip_nonverbal_labels, strip_incidental_laughter,
 )
 from .config import Config
 from .ingest import Ingest
@@ -204,6 +204,20 @@ def run_asr(
         if new_name != text:
             log.debug("Supported nickname correction: %r -> %r", text, new_name)
             text = new_name
+
+        # Keep spoken words but remove obvious laughs before translation or
+        # speaker context memory sees the Japanese text. Caption/name repairs
+        # have already run, so they cannot reinsert a removed laugh.
+        before_laughter = text
+        text = strip_incidental_laughter(text)
+        if text != before_laughter:
+            log.debug(
+                "Removed incidental laughter at %.2fs: %r -> %r",
+                utt.start_s, before_laughter, text,
+            )
+        if not text:
+            log.debug("Discarding laughter-only utterance at %.2fs", utt.start_s)
+            continue
 
         # Filter only complete interjections, after ASR/caption reconciliation
         # and name repair, before any translation request or subtitle output.

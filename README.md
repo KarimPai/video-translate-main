@@ -4,6 +4,68 @@ This **separate test branch** replaces CAT with **PLaMo 3 Translate 8B Q3_K_M**.
 
 The `main` and `test-cat-translate-3.3b` branches remain untouched for comparison.
 
+## Experimental: verified speaker context and stricter caption repair
+
+This branch `experiment/plamo8b-context-captions` adds two optional-quality
+improvements over `test-plamo8b-q3`. The original PLaMo 8B Q3_K_M branch
+remains an unchanged comparison baseline.
+
+### Speaker-aware Japanese reference context
+
+- Sherpa still does CPU speaker turn splitting. A second **CPU** embedding
+  check, using the already downloaded NeMo model, compares **only immediately
+  adjacent voice segments**. Sherpa's local per-window speaker numbers are
+  **never** treated as stable speaker identities across windows.
+- A short Japanese `context` element is added to the official PLaMo PFML3
+  prompt only if the last verified voice matches the current voice,
+  their timestamps are consecutive (gap <= 1.25 seconds), and there was no
+  confirmed speaker handoff. At most two prior Japanese utterances / 140
+  characters are included. No previous English model outputs are injected.
+- Missing embeddings, short audio (under 1.5 seconds), interrupted speakers,
+  unrelated voices, long gaps, skipped translations, errors and VOD seeks
+  reset context. Nothing is displayed or stored as a person's identity.
+- On CPU, inference may be slower; the effect on natural language accuracy
+  and timing must be measured. Disable without reverting other changes:
+
+```toml
+[speaker]
+context_enabled = false
+```
+
+### Audio-aligned YouTube caption correction
+
+- Haas remains the primary transcript. A reliable VTT match now also allows
+  up to **two tiny text insertions/replacements**, if audio-time overlap is
+  at least **0.75 s**, utterance coverage at least **90%**, and the complete
+  Japanese strings agree at least **90%**.
+- No broad caption replacement. Disagreements, changing numbers/negation,
+  untrusted sound cues, long rolling VTT captions, and clearly different
+  sentences retain the Haas text. Existing accurate corrections and caption
+  fallback remain intact.
+- This is **not forced alignment to the audio waveform**: the timestamps
+  come from YouTube VTT and source PCM, so captions may still be inaccurate
+  or unavailable on some streams.
+
+### Switch an existing single-branch clone to the experiment
+
+```bat
+cd /d C:\Games\video-translate-plamo8b
+git fetch origin experiment/plamo8b-context-captions:refs/remotes/origin/experiment/plamo8b-context-captions
+git switch -c experiment/plamo8b-context-captions --track origin/experiment/plamo8b-context-captions
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+"Start translate.bat"
+```
+
+To restore the original PLaMo 8B baseline, close MPV and run
+`git switch test-plamo8b-q3`.
+
+The model size/quantization, 1024-token context allocation, Flash Attention,
+Q8 KV cache, one inference slot, MPV transport and subtitle style are
+**unchanged**. Only the variable-length reference text and CPU embedding
+work may add processing latency.
+
+---
+
 ## Model and verified prompting
 
 Official model/quantization: https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF

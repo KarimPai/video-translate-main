@@ -156,11 +156,19 @@ class SpeakerTurnTests(unittest.TestCase):
         )
         self.assertEqual(result[0].end, 2.0)
 
-    def test_short_ambiguous_speaker_overlap_keeps_original_utterance(self):
+    def test_brief_overlap_still_cuts_at_confirmed_new_speaker_onset(self):
         pcm = np.full(4 * SAMPLE_RATE, .4, dtype=np.float32)
         self.assertEqual(
             split_turns(4.0, [Turn(0.0, 2.05, 0),
                               Turn(2.00, 4.0, 1)], .55, pcm),
+            [Turn(0.0, 2.0, 0), Turn(2.0, 4.0, 1)],
+        )
+
+    def test_interruption_handoffs_can_be_disabled_without_changing_other_splits(self):
+        self.assertEqual(
+            split_turns(4.0, [Turn(0.0, 2.5, 0),
+                              Turn(1.7, 4.0, 1)], .55,
+                        interruption_handoffs=False),
             [Turn(0.0, 4.0, None)],
         )
 
@@ -169,6 +177,8 @@ class SpeakerTurnTests(unittest.TestCase):
         self.assertEqual(cfg.boundary_search_ms, 180)
         self.assertEqual(cfg.boundary_quiet_ms, 40)
         self.assertEqual(cfg.boundary_quiet_ratio, .45)
+        self.assertTrue(cfg.interruption_handoffs)
+        self.assertEqual(cfg.interruption_min_continuation_s, .25)
 
 
 class SpeakerPipelineTests(unittest.TestCase):

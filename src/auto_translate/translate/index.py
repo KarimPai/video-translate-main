@@ -12,7 +12,6 @@ import re
 import shutil
 import subprocess
 import time
-import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request

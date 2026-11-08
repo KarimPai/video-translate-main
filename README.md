@@ -144,9 +144,13 @@ but Sherpa is an optional Python package. Install it once in this checkout:
 uv sync --extra diarization
 ```
 
-On the first run the launcher prints an explicit download message for the
-official pyannote segmentation 3.0 INT8 and NeMo TitaNet Small ONNX models.
-Models are cached under `%LOCALAPPDATA%\auto-translate\speaker-models`.
+On the first run the launcher prints an explicit download message for
+pyannote segmentation 3.0 INT8 (1.54 MB) and NeMo TitaNet Small (40.3 MB).
+The downloader first uses official maintainer-hosted Hugging Face standalone
+ONNX files, retries temporary errors, then falls back to Sherpa's GitHub
+release assets. It checks SHA256 before accepting either model, rejects
+partial caches, and preserves the original non-diarized audio path if both
+sources fail. The files are cached under `%LOCALAPPDATA%\auto-translate\speaker-models`.
 Model setup failure falls back to the unchanged unsplit FireRedVAD path.
 No separate model runs on the GPU. The CPU cost and extra subtitle delay
 must be measured on the target i7-9700K.

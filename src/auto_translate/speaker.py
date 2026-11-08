@@ -5,12 +5,14 @@ FireRedVAD's original utterance. Speaker IDs are anonymous cosine clusters.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
 import shutil
 import tarfile
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -28,6 +30,19 @@ EMB_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
            "speaker-recongition-models/nemo_en_titanet_small.onnx")
 SEG_MEMBER = "sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx"
 
+# Official maintainer-hosted standalone weights: avoid GitHub's tarball,
+# which sometimes responds with HTTP 504. GitHub releases are fallback only.
+SEG_HF_URL = (
+    "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/"
+    "resolve/main/model.int8.onnx"
+)
+EMB_HF_URL = (
+    "https://huggingface.co/csukuangfj/speaker-embedding-models/"
+    "resolve/main/nemo_en_titanet_small.onnx"
+)
+SEG_SHA256 = "d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"
+EMB_SHA256 = "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e"
+
 
 @dataclass(frozen=True)
 class Turn:
@@ -42,46 +57,101 @@ def _model_root() -> Path:
         Path.home() / ".cache" / "auto-translate" / "speaker-models")
 
 
-def _download(url: str, target: Path, member: str = "") -> None:
-    if target.is_file() and target.stat().st_size > 1024:
-        return
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download(
+    url: str,
+    target: Path,
+    member: str = "",
+    *,
+    fallback_url: str = "",
+    expected_sha256: str = "",
+) -> None:
+    """Download validated ONNX weights, retrying and switching official hosts.
+
+    Hugging Face serves the standalone ONNX files, avoiding a large GitHub
+    release archive. The original GitHub releases remain as fallback. All
+    writes are atomic and validated against maintainer-published SHA256.
+    """
+    if target.is_file():
+        if target.stat().st_size > 1024 and (
+            not expected_sha256 or _sha256(target) == expected_sha256
+        ):
+            return
+        log.warning("Invalid or partial speaker model cache: %s; downloading again", target)
+        target.unlink()
+
     target.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Speaker diarization: downloading {target.name}...", flush=True)
-    log.info("Downloading Sherpa model: %s", url)
-    temporary = []
-    try:
-        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
-            source_path = Path(output.name)
-            temporary.append(source_path)
-            received = 0
-            with urllib.request.urlopen(url, timeout=25) as response:
-                while chunk := response.read(1024 * 1024):
-                    received += len(chunk)
-                    if received > 150 * 1024 * 1024:
-                        raise ValueError("Unexpectedly large diarization model")
-                    output.write(chunk)
-        if member:
-            with tarfile.open(source_path, "r:bz2") as archive:
-                info = archive.getmember(member)
-                if not info.isfile() or info.size > 25 * 1024 * 1024:
-                    raise ValueError("Unsafe Sherpa model archive member")
-                stream = archive.extractfile(info)
-                if stream is None:
-                    raise ValueError("Speaker model missing from archive")
-                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as out:
-                    model_tmp = Path(out.name)
-                    temporary.append(model_tmp)
-                    shutil.copyfileobj(stream, out)
-                model_tmp.replace(target)
-        else:
-            source_path.replace(target)
-        if target.stat().st_size <= 1024:
-            target.unlink(missing_ok=True)
-            raise ValueError("Diarization model was empty")
-        log.info("Speaker model cached: %s", target)
-    finally:
-        for path in temporary:
-            path.unlink(missing_ok=True)
+    print(f"Speaker diarization: downloading {target.name} from Hugging Face...", flush=True)
+    sources = [(url, "")]
+    if fallback_url:
+        sources.append((fallback_url, member))
+    errors: list[str] = []
+    for source_url, archive_member in sources:
+        host = "Hugging Face" if "huggingface.co/" in source_url else "GitHub releases"
+        for attempt in range(1, 3):
+            temporary: list[Path] = []
+            try:
+                log.info("Sherpa model download %s attempt %d/2: %s",
+                         host, attempt, source_url)
+                request = urllib.request.Request(
+                    source_url,
+                    headers={"User-Agent": "auto-translate-sherpa/1.0"},
+                )
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
+                    downloaded = Path(output.name)
+                    temporary.append(downloaded)
+                    with urllib.request.urlopen(request, timeout=45) as response:
+                        size = 0
+                        while chunk := response.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > 150 * 1024 * 1024:
+                                raise ValueError("Speaker model download exceeded 150 MB")
+                            output.write(chunk)
+                candidate = downloaded
+                if archive_member:
+                    with tarfile.open(downloaded, "r:bz2") as archive:
+                        info = archive.getmember(archive_member)
+                        if not info.isfile() or info.size > 25 * 1024 * 1024:
+                            raise ValueError("Unsafe Sherpa model archive member")
+                        source = archive.extractfile(info)
+                        if source is None:
+                            raise ValueError("Speaker model missing from archive")
+                        with tempfile.NamedTemporaryFile(
+                            dir=target.parent, delete=False
+                        ) as output:
+                            candidate = Path(output.name)
+                            temporary.append(candidate)
+                            shutil.copyfileobj(source, output)
+                if candidate.stat().st_size <= 1024:
+                    raise ValueError("Speaker model download was empty")
+                if expected_sha256 and _sha256(candidate) != expected_sha256:
+                    raise ValueError("Speaker model SHA256 verification failed")
+                candidate.replace(target)
+                log.info("Speaker model downloaded and verified: %s", target)
+                print(f"Speaker diarization: {target.name} ready.", flush=True)
+                return
+            except (OSError, ValueError, tarfile.TarError) as exc:
+                errors.append(f"{host} attempt {attempt}: {exc}")
+                log.warning("Sherpa model download failed (%s attempt %d/2): %s",
+                            host, attempt, exc)
+                if attempt == 1:
+                    time.sleep(1.0)
+            finally:
+                for path in temporary:
+                    path.unlink(missing_ok=True)
+        if source_url != sources[-1][0]:
+            print("Speaker diarization: switching to GitHub fallback...", flush=True)
+    raise RuntimeError(
+        f"Unable to download {target.name} from official sources: "
+        + "; ".join(errors[-4:])
+    )
 
 
 def split_turns(length: float, raw: list[Turn], min_seconds: float) -> list[Turn]:
@@ -158,8 +228,10 @@ class SherpaSplitter:
         root = Path(cfg.model_dir).expanduser() if cfg.model_dir else _model_root()
         seg = root / "pyannote-segmentation3-int8.onnx"
         emb = root / "nemo_en_titanet_small.onnx"
-        _download(SEG_URL, seg, SEG_MEMBER)
-        _download(EMB_URL, emb)
+        _download(SEG_HF_URL, seg, SEG_MEMBER,
+                  fallback_url=SEG_URL, expected_sha256=SEG_SHA256)
+        _download(EMB_HF_URL, emb,
+                  fallback_url=EMB_URL, expected_sha256=EMB_SHA256)
         opts = sherpa_onnx.OfflineSpeakerDiarizationConfig(
             segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
                 pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(

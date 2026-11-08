@@ -1,16 +1,82 @@
 """CPU speaker turn and subtitle handoff tests (no model downloads)."""
+import hashlib
+import io
 import queue
+import tempfile
 import unittest
+import urllib.error
 from types import SimpleNamespace
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from auto_translate.config import SpeakerConfig
 from auto_translate.speaker import (
-    SherpaSplitter, Turn, VoiceProfiles, run_speaker, split_turns,
+    SherpaSplitter, Turn, VoiceProfiles, run_speaker, split_turns, _download,
 )
 from auto_translate.types import AudioProgress, SAMPLE_RATE, Utterance
 
+
+
+class ModelDownloadTests(unittest.TestCase):
+    def test_primary_standalone_file_download_and_cache_reuse(self):
+        model = b"M" * 4096
+        expected = hashlib.sha256(model).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "segmentation.onnx"
+            with patch("auto_translate.speaker.urllib.request.urlopen",
+                       return_value=io.BytesIO(model)) as request:
+                _download("https://huggingface.co/example/model.onnx", path,
+                          fallback_url="https://github.com/example/backup.onnx",
+                          expected_sha256=expected)
+                _download("https://huggingface.co/example/model.onnx", path,
+                          expected_sha256=expected)
+            self.assertEqual(path.read_bytes(), model)
+            self.assertEqual(request.call_count, 1)
+
+    def test_github_fallback_after_two_huggingface_gateway_errors(self):
+        model = b"F" * 4096
+        expected = hashlib.sha256(model).hexdigest()
+        attempts = []
+
+        def urlopen(request, timeout):
+            attempts.append(request.full_url)
+            if "huggingface.co/" in request.full_url:
+                raise urllib.error.HTTPError(request.full_url, 504,
+                                             "Gateway Time-out", {}, None)
+            return io.BytesIO(model)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "embedding.onnx"
+            with patch("auto_translate.speaker.urllib.request.urlopen",
+                       side_effect=urlopen), patch("auto_translate.speaker.time.sleep"):
+                _download("https://huggingface.co/emb.onnx", path,
+                          fallback_url="https://github.com/emb.onnx",
+                          expected_sha256=expected)
+            self.assertEqual(path.read_bytes(), model)
+            self.assertEqual(len(attempts), 3)
+            self.assertIn("github.com/", attempts[-1])
+
+    def test_bad_cache_and_corrupt_download_cannot_be_used(self):
+        valid = b"Z" * 4096
+        expected = hashlib.sha256(valid).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "embedding.onnx"
+            path.write_bytes(b"broken cache" * 300)
+            with patch("auto_translate.speaker.urllib.request.urlopen",
+                       return_value=io.BytesIO(valid)):
+                _download("https://huggingface.co/emb.onnx", path,
+                          expected_sha256=expected)
+            self.assertEqual(path.read_bytes(), valid)
+            path.unlink()
+            with patch("auto_translate.speaker.urllib.request.urlopen",
+                       return_value=io.BytesIO(b"invalid" * 500)), patch(
+                       "auto_translate.speaker.time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, "SHA256"):
+                    _download("https://huggingface.co/emb.onnx", path,
+                              expected_sha256=expected)
+            self.assertFalse(path.exists())
 
 class SpeakerTurnTests(unittest.TestCase):
     def test_two_speakers_are_separate_nonoverlapping_windows(self):

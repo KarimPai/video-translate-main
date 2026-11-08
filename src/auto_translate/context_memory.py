@@ -99,8 +99,14 @@ class SceneMemory:
         return {
             topic: sum(
                 weight for word, weight in cues.items()
-                if (word in normalized if word == word.upper() and not word.isascii()
-                    else word.upper() in upper)
+                if (
+                    bool(re.search(
+                        r"(?<![A-Z])" + re.escape(word.upper()) + r"(?![A-Z])",
+                        upper,
+                    ))
+                    if word.isascii()
+                    else word in normalized
+                )
             )
             for topic, cues in _SCENE_CUES.items()
         }

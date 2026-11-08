@@ -3,7 +3,10 @@
 import queue
 import unittest
 
-from auto_translate.context_memory import build_recent_context, repair_near_repeated_word, reuse_recent_short_term
+from auto_translate.context_memory import (
+    SceneMemory, build_recent_context, repair_near_repeated_word,
+    reuse_recent_short_term,
+)
 from auto_translate.pipeline import run_translate
 from auto_translate.types import AudioProgress, Transcript, Subtitle
 
@@ -126,6 +129,81 @@ class ContextMemoryTests(unittest.TestCase):
         )
         self.assertEqual(translator.calls[1][0], "シャッター")
         self.assertEqual(translator.calls[2][1], [])
+
+    def test_scene_memory_survives_many_unrelated_lines_without_hallucinating(self):
+        memory = SceneMemory(max_idle_lines=24)
+        self.assertEqual(memory.hint(), "")
+        memory.observe("新聞買ったよ")
+        self.assertEqual(memory.hint(), "")  # A newspaper alone isn't a race.
+        memory.observe("馬券買おう")
+        memory.observe("オッズを確認")
+        for _ in range(10):
+            memory.observe("そうだね")
+        self.assertEqual(memory.current_topic(), "horse_racing")
+        self.assertIn("betting tickets", memory.hint())
+        self.assertIn("betting odds", memory.hint())
+        self.assertNotIn("新聞", memory.hint())
+        self.assertLess(len(memory.hint()), 200)
+
+    def test_scene_switch_requires_evidence_and_suppresses_stale_hint(self):
+        memory = SceneMemory()
+        memory.observe("競馬で馬券を買う")
+        self.assertEqual(memory.current_topic(), "horse_racing")
+        memory.observe("恐竜がいる")
+        self.assertIsNone(memory.current_topic())  # Pending ARK: no old racing hint.
+        self.assertEqual(memory.hint(), "")
+        memory.observe("ギガノトをテイムする")
+        self.assertEqual(memory.current_topic(), "ark")
+        self.assertIn("ARK survival gameplay", memory.hint())
+        self.assertNotIn("horse racing", memory.hint())
+        memory.reset()
+        self.assertEqual(memory.hint(), "")
+
+    def test_stale_scene_expires_and_weak_terms_do_not_create_one(self):
+        memory = SceneMemory(max_idle_lines=8)
+        memory.observe("ワイド画面で新聞を見る")
+        self.assertEqual(memory.hint(), "")
+        memory.observe("パドックを見よう")
+        self.assertEqual(memory.current_topic(), "horse_racing")
+        for _ in range(9):
+            memory.observe("うん")
+        self.assertEqual(memory.hint(), "")
+
+    def test_cached_utterances_reconstruct_scene_and_seek_clears_it(self):
+        class SceneFakeTranslator(FakeTranslator):
+            def __init__(self):
+                super().__init__()
+                self.scene = SceneMemory()
+                self.seen = []
+                self.resets = 0
+
+            def reset_scene_context(self):
+                self.scene.reset()
+                self.resets += 1
+
+            def observe_scene(self, ja):
+                self.scene.observe(ja)
+
+            def translate(self, ja, history):
+                self.observe_scene(ja)
+                self.seen.append(self.scene.hint())
+                return super().translate(ja, history)
+
+        fake = SceneFakeTranslator()
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        # Cached subtitle bypasses the translator but must still seed context.
+        incoming.put(Subtitle(1, 2, "競馬の馬券を買う", "Buy a bet."))
+        incoming.put(Transcript(2, 3, "そうだよ"))
+        incoming.put(AudioProgress(sample=5 * 16000, reset=True, generation=1))
+        incoming.put(Transcript(6, 7, "そうだよ", generation=1))
+        incoming.put(Transcript(7, 8, "オッズを見る", generation=1))
+        incoming.put(None)
+        run_translate(fake, 5, incoming, outgoing)
+        self.assertEqual(len(fake.seen), 3)
+        self.assertIn("horse racing", fake.seen[0])
+        self.assertEqual(fake.seen[1], "")
+        self.assertIn("horse racing", fake.seen[2])
+        self.assertEqual(fake.resets, 1)
 
     def test_pipeline_memory_extends_beyond_dialogue_context(self):
         translator = FakeTranslator()

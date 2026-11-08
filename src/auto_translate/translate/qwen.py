@@ -328,7 +328,14 @@ class QwenTranslator:
         if not getattr(self.cfg, "scene_context_enabled", True):
             return None
         memory = getattr(self, "_scene_memory", None)
-        return memory.current_topic() if memory is not None else None
+        if memory is None:
+            return None
+        topic = memory.current_topic()
+        if topic is None and memory.topic is not None:
+            # An unconfirmed topic change must not resurrect stale
+            # title-only/game-specific guidance from the previous scene.
+            return "__transition__"
+        return topic
 
     def _glossary_hits(self, ja: str, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
         hits = self.glossary.find(ja)

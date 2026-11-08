@@ -62,6 +62,41 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertNotIn("source_lang", data["chat_template_kwargs"])
         self.assertNotIn("stop", data)
 
+    def test_scene_memory_in_qwen_request_beyond_last_five_lines(self):
+        instance = translator()
+        instance.cfg.context_lines = 5
+        instance.observe_scene("馬券を買う")
+        instance.observe_scene("オッズは7倍")
+        history = [("なるほど", "Mistaken earlier translation")] * 12
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "What should we do next?"}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=response) as call:
+            self.assertEqual(instance._chat("次どうする?", history, 5),
+                             "What should we do next?")
+        body = json.loads(call.call_args.args[0].data.decode())
+        prompt = body["messages"][1]["content"]
+        self.assertIn("Scene memory (prior recognized Japanese", prompt)
+        self.assertIn("Japanese horse racing and betting", prompt)
+        self.assertIn("betting tickets", prompt)
+        self.assertNotIn("Mistaken earlier translation", prompt)
+        self.assertIn("CURRENT JAPANESE (translate only this line)", prompt)
+        self.assertEqual(body["messages"][0]["role"], "system")
+        self.assertEqual(len(body["messages"]), 2)
+
+    def test_scene_memory_can_be_disabled_and_reset_without_model_call(self):
+        instance = translator()
+        with patch.object(QwenTranslator, "_chat", return_value="Hello.") as call:
+            instance.translate("馬券買った", [])
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(instance._scene_topic(), "horse_racing")
+        instance.reset_scene_context()
+        self.assertIsNone(instance._scene_topic())
+        instance.cfg.scene_context_enabled = False
+        instance.observe_scene("オッズを見た")
+        self.assertIsNone(instance._scene_topic())
+
     def test_gist_style_is_default_and_faithful_style_is_selectable(self):
         instance = translator()
         response = json.dumps({

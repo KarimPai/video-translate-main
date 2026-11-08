@@ -1,8 +1,7 @@
-"""Sherpa-ONNX per-window speaker-turn segmentation on CPU.
+"""Sherpa-ONNX speaker-turn segmentation plus optional adjacent voice continuity.
 
-Only turn boundaries are used. No session-wide voice identity tracking,
-speaker labels, or source separation. Unsafe cuts leave the original
-FireRedVAD utterance untouched rather than invent a speaker boundary.
+No persistent public speaker identities, speaker labels or source separation.
+Only a verified short-range embedding match permits PLaMo reference context.
 """
 from __future__ import annotations
 
@@ -460,18 +459,100 @@ class SherpaSplitter:
             return [original]
 
 
+class AdjacentSpeakerContinuity:
+    """Verify ONLY immediate adjacent turns via CPU embeddings.
+
+    Local diarization speaker numbers cannot identify people across windows.
+    No profiles are persisted and a gap, interruption, poor/short audio or
+    uncertain score breaks continuity. Keys are session-local counters.
+    """
+
+    def __init__(self, cfg: SpeakerConfig, model_path: Path) -> None:
+        import sherpa_onnx
+        self.cfg = cfg
+        self.extractor = sherpa_onnx.SpeakerEmbeddingExtractor(
+            sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=str(model_path), num_threads=cfg.num_threads,
+                provider="cpu",
+            )
+        )
+        self._counter = 0
+        self.reset()
+
+    def reset(self) -> None:
+        self._last_vector: np.ndarray | None = None
+        self._last_end_s: float | None = None
+        self._last_key: int | None = None
+
+    def tag(self, part: Utterance) -> Utterance:
+        def break_chain() -> Utterance:
+            self.reset()
+            return replace(part, speaker_context_key=None)
+
+        if part.probe or len(part.audio) < int(1.5 * SAMPLE_RATE):
+            return break_chain()
+        try:
+            stream = self.extractor.create_stream()
+            stream.accept_waveform(
+                sample_rate=SAMPLE_RATE,
+                waveform=np.ascontiguousarray(part.audio, dtype=np.float32),
+            )
+            stream.input_finished()
+            if not self.extractor.is_ready(stream):
+                return break_chain()
+            vector = np.asarray(self.extractor.compute(stream), dtype=np.float32)
+            norm = float(np.linalg.norm(vector))
+            if not np.isfinite(norm) or norm <= 1e-6 or not np.all(np.isfinite(vector)):
+                return break_chain()
+            vector = vector / norm
+        except Exception as exc:
+            log.debug("Speaker continuity unavailable for %.2fs: %s", part.start_s, exc)
+            return break_chain()
+
+        # Do not reuse a speaker key across a handoff or timeline gap.
+        confirmed = (
+            not part.speaker_handoff
+            and self._last_vector is not None
+            and self._last_end_s is not None
+            and self._last_key is not None
+            and -0.03 <= part.start_s - self._last_end_s <= self.cfg.context_max_gap_s
+            and float(np.dot(vector, self._last_vector))
+            >= self.cfg.context_cosine_threshold
+        )
+        if confirmed:
+            key = self._last_key
+        else:
+            self._counter += 1
+            key = self._counter
+        self._last_vector = vector
+        self._last_end_s = part.end_s
+        self._last_key = key
+        return replace(part, speaker_context_key=key)
+
+
 def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = None) -> None:
     splitter: SherpaSplitter | None = None
     checked = 0
     split_windows = 0
     separated_cues = 0
+    matcher: AdjacentSpeakerContinuity | None = None
     if cfg.enabled:
         print("Speaker diarization: loading Sherpa CPU models...", flush=True)
         try:
             splitter = SherpaSplitter(cfg)
+            if cfg.context_enabled:
+                try:
+                    root = Path(cfg.model_dir).expanduser() if cfg.model_dir else _model_root()
+                    matcher = AdjacentSpeakerContinuity(
+                        cfg, root / "nemo_en_titanet_small.onnx",
+                    )
+                    log.info("Speaker-aware Japanese context enabled (CPU, verified adjacent turns)")
+                except Exception as exc:
+                    log.warning("Speaker context unavailable; falling back to no context: %s", exc)
         except Exception as exc:
             log.warning("Speaker diarization unavailable: %s", exc)
             print(f"Speaker diarization unavailable: {exc}; original audio retained.", flush=True)
+    last_generation: int | None = None
     while True:
         item = in_q.get()
         if item is None:
@@ -479,6 +560,12 @@ def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = Non
             return
         if generation is not None and item.generation != generation():
             continue
+        if matcher is not None and (
+            item.reset if isinstance(item, AudioProgress) else False
+            or (last_generation is not None and item.generation != last_generation)
+        ):
+            matcher.reset()
+        last_generation = item.generation
         if isinstance(item, AudioProgress):
             out_q.put(item)
             continue
@@ -499,4 +586,4 @@ def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = Non
         for part in parts:
             if generation is not None and part.generation != generation():
                 break
-            out_q.put(part)
+            out_q.put(matcher.tag(part) if matcher is not None else part)

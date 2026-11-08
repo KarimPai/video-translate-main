@@ -22,6 +22,7 @@ from ..context_memory import reuse_recent_short_term
 from ..glossary import Glossary
 from ..process_cleanup import _close_job, _create_kill_job
 from ..stream_context import (
+    is_incomplete_fragment,
     repair_ark_tier_translation,
     repair_barotrauma_translation,
     repair_valorant_translation,
@@ -33,6 +34,7 @@ from .quality import (
     is_obvious_nonverbal_japanese,
     is_skip_token,
     repair_high_confidence_meaning,
+    translation_review_reason,
 )
 
 log = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ log = logging.getLogger(__name__)
 _PROMPT_PREFIX = (
     "请将以下日语游戏直播对话翻译成自然、简洁、口语化的英语字幕。"
     "保留原意、否定、称呼与语气，不要添加未说出的内容。"
-    "被打断的句子只译出已经说出的部分，不要补全。"
+    "被打断或未说完的句子只翻译已经说出的内容，不要补全。"
     "直接输出译文，不要解释。"
 )
 
@@ -66,13 +68,13 @@ def build_index_prompt(
     glossary: Glossary,
     *,
     vod_title: str = "",
-    context_lines: int = 4,
+    context_lines: int = 2,
+    review_reason: str = "",
 ) -> str:
-    """Short official-style translation request; input line is the only source.
+    """Brief translation prompt with bounded non-authoritative Japanese context.
 
-    Intentionally omit earlier dialogue and long scene descriptions: the 2B
-    model was echoing them instead of stopping after one translated cue.
-    Current-line glossary hits are retained for correct names.
+    Only the final Japanese line is a source to translate. Prior EN output is
+    never injected, so previous model mistakes cannot become new evidence.
     """
     hits = glossary.find(japanese)[:6]
     parts = [_PROMPT_PREFIX]
@@ -81,6 +83,28 @@ def build_index_prompt(
             "仅在原句出现时使用这些译名：" +
             "；".join(src + " = " + target for src, target in hits) + "。"
         )
+    count = min(2, max(0, context_lines))
+    if count:
+        previous = [
+            ja.strip().replace("\n", " ")[:64]
+            for ja, _ in history[-count:]
+            if ja.strip()
+        ]
+        if previous:
+            parts.append(
+                "之前的日语对话（仅用于理解语境，不要翻译或重复）：" +
+                " / ".join(previous)[-135:] + "。"
+            )
+    if is_incomplete_fragment(japanese):
+        parts.append("当前日语是句子片段，保持未说完的结尾。")
+    if review_reason:
+        # A *single* evidence-driven retry. The model never receives the
+        # previous English candidate, avoiding anchoring on a bad translation.
+        parts.append(
+            "请重新核对本句的否定、问句、专有名词与动作方向，"
+            "不要凭空添加人物或事件。"
+        )
+    parts.append("请只翻译下一行的日语，不要翻译参考对话。")
     return "\n".join(parts) + "\n\n" + japanese.strip()
 
 
@@ -224,10 +248,13 @@ class IndexTranslator:
                     raise RuntimeError("Index server stopped during warm-up.")
             time.sleep(min(1, remaining))
 
-    def _chat(self, japanese: str, history: list[tuple[str, str]], *, timeout: float) -> str:
+    def _chat(
+        self, japanese: str, history: list[tuple[str, str]], *,
+        timeout: float, review_reason: str = "",
+    ) -> str:
         prompt = build_index_prompt(
             japanese, history, self.glossary, vod_title=self.vod_title,
-            context_lines=self.cfg.context_lines,
+            context_lines=self.cfg.context_lines, review_reason=review_reason,
         )
         # The official Index client uses one USER message and greedy decoding.
         body = {
@@ -249,6 +276,37 @@ class IndexTranslator:
             result = json.load(response)
         return str(result["choices"][0]["message"].get("content") or "")
 
+    def _review_reason(self, japanese: str, english: str) -> str | None:
+        """Only retry errors with a cheap, concrete failure indicator."""
+        if not english or is_skip_token(english):
+            return "empty_english"
+        reason = translation_review_reason(japanese, english)
+        if reason in {
+            "untranslated_japanese", "romanized_syllable_loop",
+            "phonetic_transliteration", "japanese_man_unit_wrong",
+            "lost_sight_as_lost_way", "duration_extension_one_minute",
+            "positive_appraisal_reversed", "affirmative_ability_reversed",
+            "exclusive_necessity_reversed", "loading_performance_reversed",
+            "rejection_reversed", "rhetorical_egunai_reversed",
+            "possible_missing_negation",
+        }:
+            return reason
+        # These source-side terms have unambiguous technical meanings in
+        # GTA/Hololive roleplay. Guard only these particular anchors; avoid
+        # forcing every nickname or ambiguous single-kanji glossary entry.
+        protected = (
+            ("オリ曲", r"\boriginal\b"),
+            ("現行犯", r"\b(?:caught|red.hand|in the act)\b"),
+            ("指名手配", r"\bwanted\b"),
+            ("張り込み", r"\b(?:stakeout|stake.out|surveillance|watching)\b"),
+            ("税金の使い込み", r"\b(?:misus|embezz|squander|misappropriat)\w*"),
+            ("大空部長", r"\boozora\b"),
+        )
+        for term, pattern in protected:
+            if term in japanese and not re.search(pattern, english, re.I):
+                return "missing_priority_term:" + term
+        return None
+
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         if not ja.strip():
             return SKIP_TOKEN
@@ -259,12 +317,47 @@ class IndexTranslator:
             if reused is not None:
                 return reused
 
+        # Short, exact glossary interjections do not need a language model.
+        # The constraint is scoped to the entire utterance, never a substring.
+        stripped = ja.strip().strip(" 　。、!?！？…")
+        if stripped in {"オリ曲", "オリジナル曲"}:
+            target = "Original song"
+            if ja.rstrip().endswith(("!", "！")):
+                target += "!"
+            elif ja.rstrip().endswith(("?", "？")):
+                target += "?"
+            return target
+
         english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        reason = self._review_reason(ja, english)
+        if self.cfg.quality_retry_enabled and reason:
+            log.info("Index quality review: %s (Japanese=%r)", reason, ja[:100])
+            try:
+                alternative = _clean(self._chat(
+                    ja, history,
+                    timeout=min(self.cfg.quality_retry_timeout_s, self.cfg.timeout_s),
+                    review_reason=reason,
+                ))
+                # Never replace a usable subtitle with another suspect line.
+                # A failed/empty first pass may be replaced by any clean,
+                # meaningful second pass.
+                if (alternative and not is_skip_token(alternative)
+                    and (
+                        self._review_reason(ja, alternative) is None
+                        or not english
+                        or is_skip_token(english)
+                    )
+                ):
+                    english = alternative
+                    log.info("Index quality review accepted corrected translation")
+            except (TimeoutError, OSError, ValueError, KeyError, IndexError) as exc:
+                log.warning("Index quality review unavailable; keeping first result: %s", exc)
+
         if not english or is_skip_token(english):
             log.warning("Index returned no translation for meaningful speech: %r", ja)
             return "[translation failed]"
 
-        # Shared conservative output safeguards, not a second translation model.
+        # Shared conservative output safeguards, not another model.
         english = repair_high_confidence_meaning(ja, english)
         recent_ja = [j for j, _ in history[-8:]]
         english = repair_valorant_translation(ja, english, recent_ja, False)

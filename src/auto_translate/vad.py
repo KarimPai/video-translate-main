@@ -4,7 +4,7 @@ Loads the FireRed streaming model from Hugging Face on first use and keeps its
 recurrent model state across calls so it works on a live stream.
 
 Audio rejected by VAD isn't necessarily discarded: every `fallback_s` it can send a
-"probe" utterance to Qwen ASR, helping retain speech mixed with loud music or singing.
+"probe" utterance to Haas ASR, helping retain speech mixed with loud music or singing.
 """
 
 import logging
@@ -156,6 +156,11 @@ class Segmenter:
         self.pad = _ms_to_frames(cfg.speech_pad_ms)
         self.min_speech = _ms_to_frames(cfg.min_speech_ms)
         self.max_frames = _ms_to_frames(cfg.max_utterance_s * 1000)
+        self.hard_max_frames = self.max_frames + max(
+            0, round(cfg.max_split_extension_s * SAMPLE_RATE / FRAME)
+        )
+        self.split_pause_frames = _ms_to_frames(cfg.split_pause_min_ms)
+        self.split_context_frames = _ms_to_frames(cfg.split_context_ms)
         self.split_search = _ms_to_frames(2000)  # look this far back for a quiet split point
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
         self.fallback_min = _ms_to_frames(cfg.fallback_min_s * 1000)
@@ -245,7 +250,7 @@ class Segmenter:
         cfg = self.cfg
         if not self._in_speech:
             if prob >= cfg.threshold:
-                # Idle audio before the preroll goes to Qwen ASR; the preroll joins the utterance.
+                # Idle audio before the preroll goes to Haas ASR; the preroll joins the utterance.
                 self._emit_probe(len(self._idle) - len(self._preroll))
                 self._in_speech = True
                 self._frames = [*self._preroll, frame]
@@ -269,10 +274,20 @@ class Segmenter:
             n = min(len(self._frames), len(self._frames) - self._silence + self.pad)
             self._emit(n, keep_rest=False)
         elif len(self._frames) >= self.max_frames:
-            # Too long: split at the quietest frame in the last ~2 s, keep the rest going.
-            lo = len(self._frames) - self.split_search
-            cut = lo + int(np.argmin(self._probs[lo:])) + 1
-            self._emit(cut, keep_rest=True)
+            # Prefer a real sustained pause; extend at most 1s before
+            # a smoothed-energy forced cut. Timestamped PCM remains contiguous.
+            hard = len(self._frames) >= self.hard_max_frames
+            if hard or len(self._frames) == self.max_frames or len(self._frames) % 5 == 0:
+                cut = _select_longform_cut(
+                    self._frames, self._probs,
+                    search_frames=self.split_search,
+                    pause_frames=self.split_pause_frames,
+                    context_frames=self.split_context_frames,
+                    negative_threshold=cfg.neg_threshold,
+                    hard=hard,
+                )
+                if cut is not None:
+                    self._emit(cut, keep_rest=True)
 
     def _emit(self, n: int, keep_rest: bool) -> None:
         frames, probs = self._frames[:n], self._probs[:n]
@@ -323,7 +338,7 @@ class Segmenter:
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
-        """Send the first `n` idle frames to Qwen ASR as a probe (if long and loud enough)."""
+        """Send the first `n` idle frames to Haas ASR as a probe (if long and loud enough)."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME

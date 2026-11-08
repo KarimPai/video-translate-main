@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 # https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF
 # PFML3 should be sent to /v1/completions WITHOUT any chat wrapper.
 _PFML3_START = "<|plamo:tag|>dataset<|plamo:msg|>translation"
-_PFML3_INPUT = "<|plamo:tag|>input<|plamo:msg|>"
+_PFML3_INPUT = "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
 _PFML3_OUTPUT_EN = "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
 _STOP = ["<|plamo:tag|>", "<|plamo:bos|>"]
 _BAD_META = re.compile(
@@ -53,7 +53,7 @@ _PUNCT_LOOP = re.compile(r"(?:[.!?…]\s*){12,}")
 
 
 def build_plamo_prompt(japanese: str, matched_terms: list[tuple[str, str]] | None = None) -> str:
-    """Build official source-only PFML3 input with optional exact glossary hits."""
+    """Build Japanese-source/English-target PFML3 with only matched glossary hits."""
     prompt = _PFML3_START
     for ja_term, english_term in (matched_terms or [])[:8]:
         if not ja_term or not english_term:

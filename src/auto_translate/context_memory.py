@@ -20,6 +20,177 @@ _IGNORE_EN = {
     "wait", "what", "there", "right", "yeah", "oh", "huh", "hey",
 }
 
+# A small, evidence-based scene tag is kept separately from the 5-line Qwen
+# dialogue window. Never summarize previous English model output or guess
+# names, horses, locations, game outcomes or actions.
+_SCENE_LABELS = {
+    "horse_racing": "Japanese horse racing and betting",
+    "ark": "ARK survival gameplay",
+    "gta": "GTA driving/crime gameplay",
+}
+# Evidence strength: 2 = independently diagnostic, 1 = weak on its own.
+# A single generic mention of 車, 新聞, レース, etc. must not invent a scene.
+_SCENE_CUES = {
+    "horse_racing": {
+        "競馬": 2, "馬券": 2, "オッズ": 2, "パドック": 2,
+        "推奨馬": 2, "三連複": 2, "三連単": 2, "単勝": 2,
+        "複勝": 2, "払戻し": 2, "払い戻し": 2,
+        "ダート": 1, "ワイド": 1, "レース": 1,
+    },
+    "ark": {
+        "ギガノト": 2, "テイム": 2, "クライオポッド": 2,
+        "アルゲンタヴィス": 2, "恐竜": 2,
+        "アークサバイバル": 2, "ARK": 2, "サドル": 1,
+    },
+    "gta": {
+        "グラセフ": 2, "グランドセフト": 2, "GTA": 2,
+        "カージャック": 2, "カーチェイス": 2,
+        "パトカー": 1, "警察": 1, "逃走": 1,
+    },
+}
+_SCENE_DETAILS = {
+    "horse_racing": (
+        ("馬券", "betting tickets"), ("新聞", "racing newspapers"),
+        ("オッズ", "betting odds"), ("パドック", "paddock"),
+        ("払戻し", "payouts"), ("払い戻し", "payouts"),
+        ("ワイド", "wide bets"), ("ダート", "dirt races"),
+        ("推奨馬", "recommended horses"),
+    ),
+    "ark": (
+        ("ギガノト", "Giganotosaurus"), ("テイム", "taming"),
+        ("恐竜", "dinosaurs"), ("サドル", "saddles"),
+        ("クライオポッド", "Cryopods"),
+    ),
+    "gta": (
+        ("カージャック", "carjacking"), ("カーチェイス", "car chases"),
+        ("パトカー", "police cars"), ("警察", "police"),
+    ),
+}
+
+
+class SceneMemory:
+    """Small scene context inferred only from recognized current Japanese.
+
+    Scene hints are optional background for the current Qwen request, never
+    evidence that a specific word/name was spoken in that request. One clear
+    topic activates immediately; switching between established scenes needs
+    two separate cues unless several independent signals occur together.
+    Unconfirmed switches suppress the old hint instead of leaking stale
+    context into a new topic.
+    """
+
+    def __init__(self, max_idle_lines: int = 32) -> None:
+        self.max_idle_lines = max(8, int(max_idle_lines))
+        self.reset()
+
+    def reset(self) -> None:
+        self.topic: str | None = None
+        self.lines = 0
+        self.last_supported = 0
+        self._details: dict[str, int] = {}
+        self._pending_topic: str | None = None
+        self._pending_count = 0
+        self._pending_at = 0
+
+    @staticmethod
+    def _scores(text: str) -> dict[str, int]:
+        normalized = unicodedata.normalize("NFKC", text)
+        upper = normalized.upper()
+        return {
+            topic: sum(
+                weight for word, weight in cues.items()
+                if (word in normalized if word == word.upper() and not word.isascii()
+                    else word.upper() in upper)
+            )
+            for topic, cues in _SCENE_CUES.items()
+        }
+
+    def _activate(self, topic: str) -> None:
+        self.topic = topic
+        self.last_supported = self.lines
+        self._details.clear()
+        self._pending_topic = None
+        self._pending_count = 0
+        self._pending_at = 0
+
+    def observe(self, japanese: str) -> None:
+        self.lines += 1
+        source = unicodedata.normalize("NFKC", japanese[:512])
+        scores = self._scores(source)
+        ranked = sorted(scores, key=lambda name: scores[name], reverse=True)
+        strongest = ranked[0] if ranked and scores[ranked[0]] > 0 else None
+        score = scores[strongest] if strongest else 0
+
+        if self.topic and self.lines - self.last_supported > self.max_idle_lines:
+            self._activate_topic_expired()
+        if self._pending_topic and self.lines - self._pending_at > 6:
+            self._pending_topic = None
+            self._pending_count = 0
+
+        if self.topic is None:
+            if strongest and score >= 2:
+                self._activate(strongest)
+        elif scores[self.topic] > 0 and (
+            scores[self.topic] >= score or strongest is None
+        ):
+            self.last_supported = self.lines
+            self._pending_topic = None
+            self._pending_count = 0
+        elif strongest and strongest != self.topic and score >= 2:
+            if score >= 4:
+                self._activate(strongest)
+            elif self._pending_topic == strongest:
+                self._pending_count += 1
+                self._pending_at = self.lines
+                if self._pending_count >= 2:
+                    self._activate(strongest)
+            else:
+                self._pending_topic = strongest
+                self._pending_count = 1
+                self._pending_at = self.lines
+
+        if not self.topic:
+            return
+        for word, label in _SCENE_DETAILS[self.topic]:
+            if word in source:
+                self._details[label] = self.lines
+        self._details = {
+            name: at for name, at in self._details.items()
+            if self.lines - at <= self.max_idle_lines
+        }
+
+    def _activate_topic_expired(self) -> None:
+        # Expire stale scene without resetting the monotonic line counter.
+        self.topic = None
+        self._details.clear()
+        self._pending_topic = None
+        self._pending_count = 0
+        self._pending_at = 0
+
+    def current_topic(self) -> str | None:
+        if self.topic is None or self.lines - self.last_supported > self.max_idle_lines:
+            return None
+        # An emerging different scene is better left unclassified than
+        # feeding the previous topic into an unrelated sentence.
+        if self._pending_topic and self.lines - self._pending_at <= 6:
+            return None
+        return self.topic
+
+    def hint(self) -> str:
+        topic = self.current_topic()
+        if topic is None:
+            return ""
+        recent = sorted(
+            (
+                (at, label) for label, at in self._details.items()
+                if self.lines - at <= self.max_idle_lines
+            ),
+            reverse=True,
+        )
+        descriptions = [label for _, label in recent[:3]]
+        suffix = "; earlier recognized terms: " + ", ".join(descriptions) if descriptions else ""
+        return _SCENE_LABELS[topic] + suffix
+
 
 def _word(text: str) -> str:
     return unicodedata.normalize("NFKC", text.strip(_TRIM))

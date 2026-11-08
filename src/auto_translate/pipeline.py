@@ -200,6 +200,11 @@ def run_translate(
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
     memory_generation: int | None = None
 
+    def reset_scene() -> None:
+        reset = getattr(translator, "reset_scene_context", None)
+        if callable(reset):
+            reset()
+
     while True:
         item = in_q.get()
 
@@ -215,6 +220,7 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                reset_scene()
             memory_generation = item.generation
 
             out_q.put(item)
@@ -229,11 +235,17 @@ def run_translate(
         # against a new generation reaching this queue before its marker.
         if memory_generation is not None and tr.generation != memory_generation:
             history.clear()
+            reset_scene()
         memory_generation = tr.generation
 
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call the translator again for the same VOD cue.
         if isinstance(tr, Subtitle):
+            # Reused VOD captions bypass Qwen; replay their Japanese speech
+            # into scene state so the scene is reconstructed after seeks.
+            observe_scene = getattr(translator, "observe_scene", None)
+            if callable(observe_scene) and tr.ja:
+                observe_scene(tr.ja)
             if tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))
             tr.timings.mt_start = time.monotonic()

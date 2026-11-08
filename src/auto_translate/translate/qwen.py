@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 from ..config import TranslateConfig
-from ..context_memory import reuse_recent_short_term
+from ..context_memory import SceneMemory, reuse_recent_short_term
 from ..glossary import Glossary
 from ..process_cleanup import _create_kill_job, _close_job
 from ..stream_context import (
@@ -172,6 +172,9 @@ class QwenTranslator:
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
         self.vod_title = " ".join(vod_title.split())[:200]
+        self._scene_memory = SceneMemory(
+            getattr(cfg, "scene_context_max_idle_lines", 32)
+        )
         self.base_url = cfg.qwen_base_url.rstrip("/")
         self.url = self.base_url + "/chat/completions"
         self.process: subprocess.Popen | None = None
@@ -305,6 +308,28 @@ class QwenTranslator:
                 self._server_log = None
             atexit.unregister(self.close)
 
+    def reset_scene_context(self) -> None:
+        """Discard scene evidence on a seek or timeline generation change."""
+        scene = getattr(self, "_scene_memory", None)
+        if scene is not None:
+            scene.reset()
+
+    def observe_scene(self, japanese: str) -> None:
+        """Update scene evidence from the recognized Japanese, never English."""
+        if not getattr(self.cfg, "scene_context_enabled", True):
+            return
+        if not hasattr(self, "_scene_memory"):
+            self._scene_memory = SceneMemory(
+                getattr(self.cfg, "scene_context_max_idle_lines", 32)
+            )
+        self._scene_memory.observe(japanese)
+
+    def _scene_topic(self) -> str | None:
+        if not getattr(self.cfg, "scene_context_enabled", True):
+            return None
+        memory = getattr(self, "_scene_memory", None)
+        return memory.current_topic() if memory is not None else None
+
     def _glossary_hits(self, ja: str, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
         hits = self.glossary.find(ja)
         # Use an exact current-cue gaming term. Do not alter the original
@@ -312,10 +337,14 @@ class QwenTranslator:
         if "カージャック" in ja and not any(term == "カージャック" for term, _ in hits):
             hits.append(("カージャック", "carjack / carjacking (vehicle theft, not kidnapping)"))
         recent_ja = [jp for jp, _ in history[-8:]]
-        if is_ark_context(self.vod_title, ja, recent_ja):
+        if (self._scene_topic() == "ark" or
+                (self._scene_topic() is None and
+                 is_ark_context(self.vod_title, ja, recent_ja))):
             existing = {source for source, _ in hits}
             hits.extend((src, target) for src, target in ark_glossary_hits(ja) if src not in existing)
-        if is_horse_racing_context(self.vod_title, ja, recent_ja):
+        if (self._scene_topic() == "horse_racing" or
+                (self._scene_topic() is None and
+                 is_horse_racing_context(self.vod_title, ja, recent_ja))):
             racing_terms = {
                 "ワイド": "wide bet (Japanese place quinella; NOT a straight win bet)",
                 "軸馬": "key horse / anchor horse in betting combinations",
@@ -333,6 +362,8 @@ class QwenTranslator:
         return hits[:10]
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        # Observe once per current speech cue; no extra Qwen invocation.
+        self.observe_scene(ja)
         short = unicodedata.normalize("NFKC", ja).strip().rstrip("!.。…").strip()
         if short in _SUGOI:
             return "Wow!"
@@ -379,8 +410,11 @@ class QwenTranslator:
         english = neutralize_unsupported_subjects(ja, english)
         # In Japanese horse racing, 払い戻し is cashing out a bet,
         # not returning purchased goods to a retailer.
-        if ("払い戻し" in ja or "払戻し" in ja) and is_horse_racing_context(
-            self.vod_title, ja, [source for source, _ in history[-8:]]
+        if ("払い戻し" in ja or "払戻し" in ja) and (
+            self._scene_topic() == "horse_racing"
+            or (self._scene_topic() is None and is_horse_racing_context(
+                self.vod_title, ja, [source for source, _ in history[-8:]]
+            ))
         ):
             english = re.sub(
                 r"\brefund(s?)\b",
@@ -399,16 +433,32 @@ class QwenTranslator:
             blocks.append("Video context (NOT spoken words): " + self.vod_title)
         if recent:
             blocks.append("Recent Japanese (context only): " + " / ".join(recent)[-420:])
+        scene = getattr(self, "_scene_memory", None)
+        if getattr(self.cfg, "scene_context_enabled", True) and scene is not None:
+            hint = scene.hint()
+            if hint:
+                blocks.append(
+                    "Scene memory (prior recognized Japanese; NOT spoken in the "
+                    "current line, do not add details): " + hint
+                )
         hits = self._glossary_hits(ja, history)
         if hits:
             blocks.append(
                 "Term mappings ONLY if present in the current Japanese:\n"
                 + "\n".join(src + " => " + target for src, target in hits)
             )
-        if is_ark_context(self.vod_title, ja, [jp for jp, _ in history[-8:]]):
+        if (
+            self._scene_topic() == "ark"
+            or (self._scene_topic() is None and is_ark_context(
+                self.vod_title, ja, [jp for jp, _ in history[-8:]]
+            ))
+        ):
             blocks.append("Game context: ARK dinosaurs and survival gameplay. ギガノト is Giganotosaurus.")
-        if is_horse_racing_context(
-            self.vod_title, ja, [jp for jp, _ in history[-8:]]
+        if (
+            self._scene_topic() == "horse_racing"
+            or (self._scene_topic() is None and is_horse_racing_context(
+                self.vod_title, ja, [jp for jp, _ in history[-8:]]
+            ))
         ):
             blocks.append(
                 "Event context: Japanese horse racing and betting. Odds are "

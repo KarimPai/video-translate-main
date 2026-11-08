@@ -97,6 +97,14 @@ limits are unchanged, allowing a cleaner comparison against the previous run.
   and honorifics, and not invent speakers or missing words.
 - Sends up to `context_lines` **recent Japanese lines**, never the prior
   generated English translations, to avoid repeating earlier model mistakes.
+- Maintains a **small scene context** from current Japanese ASR/captions.
+  Known topics (horse racing, ARK, GTA) and up to three evidenced terms can
+  persist beyond the five-line prompt window. Scene memory expires after
+  32 utterances without support, updates when a different topic becomes
+  established, and resets on VOD seeks. It never invents names, outcomes or
+  speech, never uses prior English guesses, and makes no extra model calls.
+  Local `[translate] scene_context_enabled = false` disables this feature
+  for A/B comparisons; `scene_context_max_idle_lines = 32` adjusts expiry.
 - Only includes matching **current-cue** entries from the unchanged
   `glossary.toml`, up to ten terms. ARK terms apply only when game context
   is supported by the title or recent Japanese speech.

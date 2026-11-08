@@ -78,6 +78,9 @@ class TranslateConfig:
     load_timeout_s: float = 300.0
     context_lines: int = 5
     memory_lines: int = 12
+    # Tiny rule-based, source-only scene topic; no extra Qwen requests.
+    scene_context_enabled: bool = True
+    scene_context_max_idle_lines: int = 32
     glossary: str = "glossary.toml"
     quality_recheck_enabled: bool = True
     quality_recheck_timeout_s: float = 3.0

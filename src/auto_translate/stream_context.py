@@ -11,8 +11,8 @@ ARK_GLOSSARY = {
     # ARK's Japanese item tier 至高 is officially called Ascendant.
     # Longer exact phrases take precedence over the generic saddle term.
     "至高のサドル": "Ascendant saddle (ARK quality tier)",
-    # Only offered by Qwen when ARK context is independently established.
-    # This homophone is a known Qwen ASR error in ARK streams.
+    # Only offered by ASR when ARK context is independently established.
+    # This homophone is a known Japanese ASR error in ARK streams.
     "思考のサドル": "Ascendant saddle (ARK quality tier; likely 至高のサドル)",
 }
 _ARK_TITLE = re.compile(r"(?i)(?<![a-z])ark(?![a-z])|アークサバイバル|アーク：|アーク:|恐竜サバイバル")
@@ -235,7 +235,7 @@ def repair_ark_spelling(text: str, title: str = "", recent: tuple[str, ...] | li
     # Preserve genuine "ギガの土地", don't rewrite broad homophones.
     text = re.sub(r"ギガのと(?=$|[、。！？!? \t]|[がをにはで]|討伐|チェック|えぐ)", "ギガノト", text)
     text = re.sub(r"ギガノと(?=$|[、。！？!? \t]|[がをにはで]|討伐|チェック|えぐ)", "ギガノト", text)
-    # Observed Qwen ASR homophone in ARK equipment dialogue. Restrict it
+    # Observed Japanese ASR homophone in ARK equipment dialogue. Restrict it
     # to the full compound: 思考 alone can genuinely mean thinking.
     text = text.replace("思考のサドル", "至高のサドル")
     # Small, attested ARK-only recognition confusions. Never globally rewrite

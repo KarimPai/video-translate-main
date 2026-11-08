@@ -45,7 +45,7 @@ class CatTranslationTests(unittest.TestCase):
         self.assertEqual(body["model"], "cat-translate-3.3b")
         self.assertEqual(body["temperature"], 0)
         self.assertEqual(body["repeat_penalty"], 1.05)
-        self.assertEqual(body["max_tokens"], 192)
+        self.assertEqual(body["max_tokens"], 128)
         self.assertEqual([part["role"] for part in body["messages"]], ["user"])
         self.assertEqual(
             body["messages"][0]["content"],

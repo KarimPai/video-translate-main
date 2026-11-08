@@ -93,6 +93,11 @@ class TranslateConfig:
     scene_memory_enabled: bool = True  # independent evidence-based scene classification
     scene_max_idle_lines: int = 24  # expire after this many unsupported utterances
     scene_gap_reset_s: float = 30.0  # discard stale scenes after a long audio gap
+    selective_retry_enabled: bool = True  # at most one retry for proven contradictions
+    selective_retry_timeout_s: float = 4.0
+    fragment_join_enabled: bool = True  # verified same speaker only
+    fragment_join_wait_s: float = 0.5  # max waiting time for next transcript
+    fragment_join_gap_s: float = 0.35
     glossary: str = "glossary.toml"
 
 @dataclass

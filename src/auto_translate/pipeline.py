@@ -36,6 +36,7 @@ from .types import (
     Utterance,
 )
 from .vad import run_segmenter
+from .speaker import run_speaker
 
 log = logging.getLogger(__name__)
 
@@ -181,6 +182,7 @@ def run_asr(
                 utt.timings,
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
+                speaker_id=utt.speaker_id,
             )
         )
 
@@ -298,6 +300,7 @@ def run_translate(
                 tr.timings,
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
+                speaker_id=tr.speaker_id,
             )
         )
 
@@ -372,12 +375,14 @@ def run(
     # at most 16 complete utterances/transcripts/subtitles each.
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
+    speaker_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
 
     queues = {
         "audio": audio_q,
         "utt": utt_q,
+        "speaker": speaker_q,
         "text": text_q,
         "subtitle": sub_q,
     }
@@ -396,10 +401,16 @@ def run(
             daemon=True,
         ),
         threading.Thread(
+            target=run_speaker,
+            args=(cfg.speaker, utt_q, speaker_q, lambda: ingest.generation),
+            name="speaker",
+            daemon=True,
+        ),
+        threading.Thread(
             target=run_asr,
             args=(
                 asr,
-                utt_q,
+                speaker_q,
                 text_q,
                 lambda: ingest.generation,
                 captions,

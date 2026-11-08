@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+diarization = ["sherpa-onnx>=1.10.28"]
 # Install only the heavy runtime packages for features you actually enable.
 separation = [
     "audio-separator>=0.48.0",

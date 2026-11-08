@@ -49,6 +49,18 @@ class VadConfig:
 
 
 @dataclass
+class SpeakerConfig:
+    """CPU Sherpa speaker diarization of each bounded VAD utterance."""
+    enabled: bool = True
+    model_dir: str = ""
+    num_threads: int = 2
+    min_turn_s: float = 0.55
+    similarity_threshold: float = 0.72
+    max_speakers: int = 8
+    max_turns: int = 5
+
+
+@dataclass
 class AsrConfig:
     haas_model: str = "haas-ja-v1.0"
     haas_device: str = "Vulkan0"
@@ -117,6 +129,7 @@ class Config:
     separation: SeparationConfig = field(default_factory=SeparationConfig)
     deepfilter: DeepFilterConfig = field(default_factory=DeepFilterConfig)
     vad: VadConfig = field(default_factory=VadConfig)
+    speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -167,6 +180,7 @@ def load_config(path: Path) -> Config:
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),
+        speaker=SpeakerConfig(**data.get("speaker", {})),
         asr=AsrConfig(**asr_data),
         translate=TranslateConfig(**translate_data),
         output=OutputConfig(**data.get("output", {})),

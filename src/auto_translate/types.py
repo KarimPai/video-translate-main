@@ -47,6 +47,7 @@ class Utterance:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None  # first FireRed speech-positive frame; excludes VAD pre-roll
+    speaker_id: int | None = None
 
 @dataclass
 class Transcript:
@@ -56,6 +57,7 @@ class Transcript:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None
+    speaker_id: int | None = None
 
 
 @dataclass
@@ -67,3 +69,4 @@ class Subtitle:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None
+    speaker_id: int | None = None

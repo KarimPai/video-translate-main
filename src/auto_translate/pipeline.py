@@ -297,8 +297,10 @@ def run_translate(
     speaker_reference = RecentSpeakerJapanese()
     memory_generation: int | None = None
     last_scene_end_s: float | None = None
-    scene_gap_reset_s = max(
-        5.0, float(getattr(getattr(translator, "cfg", None), "scene_gap_reset_s", 30.0))
+    configured_gap = getattr(getattr(translator, "cfg", None), "scene_gap_reset_s", 30.0)
+    scene_gap_reset_s = (
+        max(5.0, float(configured_gap))
+        if isinstance(configured_gap, (int, float)) else 30.0
     )
 
     def reset_scene() -> None:

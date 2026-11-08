@@ -229,6 +229,26 @@
 "ラオーラパンテーラ" = "Raora Panthera"
 "セレスファウナ" = "Ceres Fauna"
 
+# Conversational Hololive and GTA roleplay terminology.
+# Avoid the single word 大空: it can mean the sky. Use the full title instead.
+"オリ曲" = "original song"
+"オリジナル曲" = "original song"
+"大空部長" = "Chief Oozora"
+"現行犯" = "caught in the act"
+"現行犯逮捕" = "arrested at the scene"
+"指名手配" = "wanted by the police"
+"指名手配犯" = "wanted suspect"
+"張り込み" = "stakeout"
+"税金の使い込み" = "misuse of tax funds"
+"公金の使い込み" = "misuse of public funds"
+"カージャック" = "carjacking"
+"車上荒らし" = "car break-in"
+"銀行強盗" = "bank robbery"
+"コンビニ強盗" = "convenience store robbery"
+"逮捕" = "arrest"
+"証拠" = "evidence"
+"署" = "police station"
+
 # Gaming vocabulary
 "エイム" = "aim"
 "エイム力" = "aim skill"

@@ -431,7 +431,7 @@ def run_translate(
             # Reused VOD captions bypass ASR; replay their Japanese speech
             # into scene state so the scene is reconstructed after seeks.
             observe_scene = getattr(translator, "observe_scene", None)
-            if callable(observe_scene) and tr.ja:
+            if callable(observe_scene) and tr.ja and not tr.asr_uncertain:
                 observe_scene(tr.ja)
             if tr.en and tr.en != "[translation failed]" and not tr.asr_uncertain:
                 history.append((tr.ja, tr.en))
@@ -439,8 +439,6 @@ def run_translate(
             else:
                 # A possibly garbled Japanese fragment must not poison
                 # future name repairs, prompt history or scene hints.
-                speaker_reference.reset()
-            else:
                 speaker_reference.reset()
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start

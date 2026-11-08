@@ -51,15 +51,15 @@ class TranslationConfigurationTests(unittest.TestCase):
                 'index_hf_model = "IndexTeam/Index-Translate-2B-GGUF:Q4_K_M"\n'
                 'index_base_url = "http://127.0.0.1:8002/v1"\n'
                 'quality_retry_enabled = true\nquality_retry_timeout_s = 4\n'
-                'qwen_model = "qwen3.5-4b"\nplamo_model = "plamo"\n'
+                'qwen_model = "qwen3.5-4b"\nlegacy_plamo_model = "plamo"\n'
                 'temperature = 0.7\ncontext_lines = 3\n'
                 'plamo_context = 1536\ncat_context = 4096\ncat_model = "retired"\n',
                 encoding="utf-8",
             )
             cfg = load_config(path).translate
-        self.assertEqual(cfg.cat_model, "cat-translate-3.3b")
+        self.assertEqual(cfg.plamo_model, "plamo-3-translate-8b")
         self.assertEqual(cfg.plamo_context, 1536)
-        self.assertEqual(cfg.cat_base_url, "http://127.0.0.1:8003/v1")
+        self.assertEqual(cfg.plamo_base_url, "http://127.0.0.1:8005/v1")
         self.assertFalse(hasattr(cfg, "index_model"))
         self.assertFalse(hasattr(cfg, "quality_retry_enabled"))
 
@@ -89,7 +89,7 @@ class TranslationConfigurationTests(unittest.TestCase):
     def test_missing_config_uses_plamo8b(self):
         with tempfile.TemporaryDirectory() as temp:
             cfg = load_config(Path(temp) / "missing.toml")
-        self.assertEqual(cfg.translate.cat_model, "cat-translate-3.3b")
+        self.assertEqual(cfg.translate.plamo_model, "plamo-3-translate-8b")
 
 
 if __name__ == "__main__":

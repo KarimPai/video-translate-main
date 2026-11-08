@@ -228,6 +228,8 @@ def split_turns(
     boundary_search_ms: int = 180,
     boundary_quiet_ms: int = 40,
     boundary_quiet_ratio: float = 0.45,
+    interruption_handoffs: bool = True,
+    interruption_min_continuation_s: float = 0.25,
 ) -> list[Turn]:
     """Cut independent speaker turns, including clear interruptions.
 
@@ -263,33 +265,39 @@ def split_turns(
     # voices to Haas in one utterance. This is not source separation: the
     # handoff's later audio may still contain background speech.
     #
-    # Short overlaps (<120ms), same-onset voices, and interventions that
-    # end before the original speaker remain ambiguous/mixed.
+    # Nearly simultaneous voices and interventions that end before the
+    # original speaker remain ambiguous/mixed.
     groups: list[Turn] = []
     for turn in merged:
-        if groups and turn.start < groups[-1].end - 0.12:
+        if groups and turn.start < groups[-1].end:
             prev = groups[-1]
+            # Even a brief interruption should cut at the second speaker's
+            # onset when they clearly take over and continue speaking.
             takeover = (
-                prev.speaker is not None
+                interruption_handoffs
+                and prev.speaker is not None
                 and turn.speaker is not None
                 and turn.speaker != prev.speaker
                 and turn.start - prev.start >= min_seconds
                 and turn.end - turn.start >= min_seconds
-                and turn.end >= prev.end + 0.25
+                and turn.end >= prev.end + interruption_min_continuation_s
             )
             if takeover:
-                # Preserve the first speaker's interrupted fragment exactly;
-                # all subsequent samples belong to the next ASR request.
                 groups[-1] = Turn(prev.start, turn.start, prev.speaker)
                 groups.append(Turn(turn.start, turn.end, turn.speaker))
                 log.debug(
                     "Sherpa detected speaker interruption at %.2fs (previous "
                     "turn expected through %.2fs)", turn.start, prev.end,
                 )
-            else:
+            elif turn.start < prev.end - 0.12:
+                # True simultaneous speech without a clear takeover cannot
+                # be isolated by diarization; keep the mixed audio intact.
                 groups[-1] = Turn(
                     prev.start, max(prev.end, turn.end), None,
                 )
+            else:
+                # Uncertain micro-overlap: retain the old quiet-boundary guard.
+                groups.append(turn)
         else:
             groups.append(turn)
     if len(groups) < 2:
@@ -395,6 +403,8 @@ class SherpaSplitter:
                 boundary_search_ms=self.cfg.boundary_search_ms,
                 boundary_quiet_ms=self.cfg.boundary_quiet_ms,
                 boundary_quiet_ratio=self.cfg.boundary_quiet_ratio,
+                interruption_handoffs=self.cfg.interruption_handoffs,
+                interruption_min_continuation_s=self.cfg.interruption_min_continuation_s,
             )
             if len(windows) <= 1 or len(windows) > self.cfg.max_turns:
                 self.failures = 0

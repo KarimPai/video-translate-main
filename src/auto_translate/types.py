@@ -60,6 +60,7 @@ class Transcript:
     speech_start_s: float | None = None
     speaker_handoff: bool = False
     speaker_context_key: int | None = None  # verified adjacent-speaker continuity; not a public identity
+    asr_uncertain: bool = False  # heuristic, not an acoustic confidence score
 
 
 @dataclass
@@ -73,3 +74,4 @@ class Subtitle:
     speech_start_s: float | None = None
     speaker_handoff: bool = False
     speaker_context_key: int | None = None  # verified adjacent-speaker continuity; not a public identity
+    asr_uncertain: bool = False  # heuristic, not an acoustic confidence score

@@ -212,6 +212,8 @@ class Ingest:
     ):
         self.source = source
         self._vod_audio_url: str | None = None
+        # Used after a YouTube audio stream fails before delivering PCM.
+        self._audio_format_override: str | None = None
         self.cfg = cfg
         self.video_format = video_format
         # Keep the temporary fMP4 cache beside the project instead of
@@ -773,13 +775,16 @@ class Ingest:
                     "connection refused",
                     "connection reset",
                     "broken pipe",
+                    "forbidden", "unauthorized", "http error",
+                    "server returned", "403", "404", "429",
                 )
             )
-
+            # Signed YouTube direct URLs carry private ephemeral tokens.
+            safe_line = re.sub(r"https?://\S+", "[media URL]", line)
             if important:
-                log.error("ffmpeg: %s", line)
+                log.error("ffmpeg: %s", safe_line)
             elif receiver_gone:
-                log.debug("ffmpeg: %s", line)
+                log.debug("ffmpeg: %s", safe_line)
 
     def _watch_video_progress(self, proc: subprocess.Popen) -> None:
         """Warn when FFmpeg stops reporting output progress for too long."""
@@ -905,7 +910,7 @@ class Ingest:
             "--remote-components",
             "ejs:github",
             "-f",
-            self.cfg.ytdlp_format,
+            self._audio_format_override or self.cfg.ytdlp_format,
             "-g",
         ]
         resolve_cmd += _cookie_args(self.cfg) + [self.source.location]
@@ -1126,7 +1131,7 @@ class Ingest:
                         cmd,
                         stdin=stdin,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE if self.video_out or self.source.live else None,
+                        stderr=subprocess.PIPE,
                     )
 
                     procs.append(p)
@@ -1171,15 +1176,15 @@ class Ingest:
                 ]
                 raise
 
-        if self.video_out or self.source.live:
-            assert procs[0].stderr is not None
-
-            threading.Thread(
-                target=self._read_stderr,
-                args=(procs[0].stderr, session),
-                name="ffmpeg-audio-log",
-                daemon=True,
-            ).start()
+        # Always collect FFmpeg stderr: VOD stream failures otherwise show
+        # only a generic no-PCM error and lose the real HTTP/codec cause.
+        assert procs[0].stderr is not None
+        threading.Thread(
+            target=self._read_stderr,
+            args=(procs[0].stderr, session),
+            name="ffmpeg-audio-log",
+            daemon=True,
+        ).start()
 
         log.info(
             "ingest started (%s): %s",

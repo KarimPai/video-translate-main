@@ -1,0 +1,13 @@
+{# Exact single-message Sarashina 2.2 markers for CAT-Translate.
+   Official HF template renders <|user|>text</s><|assistant|> for a user turn.
+   This file is deliberately minimal: production sends one user role only. #}
+{%- for message in messages %}
+{%- if message['role'] == 'user' -%}
+{{- '<|user|>' + message['content'] + eos_token -}}
+{%- elif message['role'] == 'assistant' -%}
+{{- '<|assistant|>' + message['content'] + eos_token -}}
+{%- endif -%}
+{%- if loop.last and add_generation_prompt -%}
+{{- '<|assistant|>' -}}
+{%- endif -%}
+{%- endfor -%}

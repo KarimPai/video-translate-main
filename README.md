@@ -47,6 +47,7 @@ qwen_model = "qwen3.5-4b"
 qwen_hf_model = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
 qwen_context = 4096
 qwen_gpu_layers = 99
+subtitle_style = "gist"  # "gist" (short meaning-focused) or "faithful"
 context_lines = 5
 memory_lines = 12
 max_tokens = 128
@@ -73,6 +74,20 @@ VRAM is freed when the server process terminates.
 
 This does not terminate unrelated llama.cpp processes or a server started
 outside this translator. Logs: `logs\\qwen-server.log`.
+
+### Subtitle style
+
+This experimental branch defaults to `subtitle_style = "gist"`: short,
+natural, meaning-first English rather than literal transcription. It trims
+fillers and repetition without dropping names, numbers, essential facts,
+negation, questions, or important gaming terminology. It does not summarize
+across separate utterances or change the number of speakers. For the
+previous, more faithful style, use `subtitle_style = "faithful"` under
+`[translate]` in your local `config.toml`.
+
+The style prompt is appended to the existing Qwen system message, so glossary
+and accuracy safeguards still apply. Sampling parameters and output token
+limits are unchanged, allowing a cleaner comparison against the previous run.
 
 ### Prompts and terminology
 

@@ -63,6 +63,8 @@ class TranslateConfig:
     qwen_hf_model: str = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
     qwen_context: int = 4096
     qwen_gpu_layers: int = 99
+    # "gist" favors short meaning-first subtitles; "faithful" is closer to literal.
+    subtitle_style: str = "gist"
     max_tokens: int = 128
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0

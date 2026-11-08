@@ -52,6 +52,23 @@ _SYSTEM_PROMPT = (
     "Skip only if the WHOLE line is clearly nonverbal noise; then reply exactly [SKIP]. "
     "Otherwise always translate the meaningful Japanese, even if unclear."
 )
+_GIST_STYLE = (
+    "Subtitle style: concise gist, not a word-for-word transcript. "
+    "Express the main point in one short, natural English sentence or fragment, "
+    "usually 5 to 16 words when the source allows. "
+    "Remove hesitations, filler, duplicate words and redundant conversational framing. "
+    "Preserve every meaningful negation, question, uncertainty, important number, "
+    "explicit speaker reference, proper name, game term, and essential action. "
+    "Do not soften strong language, reverse sentiment, invent details, or guess "
+    "what garbled recognition was meant to say. "
+    "Shorten phrasing, NEVER change what happened or who did it. "
+    "An unfinished Japanese sentence must remain an unfinished English thought."
+)
+_FAITHFUL_STYLE = (
+    "Subtitle style: faithful natural translation. Preserve the spoken details "
+    "and conversational structure without unnecessary filler or embellishment."
+)
+
 _REVIEW_HINTS = {
     "positive_appraisal_reversed": "Japanese clearly praises something; do not turn it into criticism.",
     "loading_performance_reversed": "軽くなった means lighter or less demanding, NOT slower loading.",
@@ -352,10 +369,14 @@ class QwenTranslator:
         if review_hint:
             blocks.append("RECHECK: " + _REVIEW_HINTS.get(review_hint, "Preserve the Japanese meaning exactly."))
         blocks.append("CURRENT JAPANESE (translate only this line):\n" + ja)
+        style = getattr(self.cfg, "subtitle_style", "gist")
+        if style not in {"gist", "faithful"}:
+            raise ValueError(f"Invalid subtitle_style {style!r}: expected 'gist' or 'faithful'")
+        style_prompt = _GIST_STYLE if style == "gist" else _FAITHFUL_STYLE
         body = {
             "model": self.cfg.qwen_model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": _SYSTEM_PROMPT + " " + style_prompt},
                 {"role": "user", "content": "\n\n".join(blocks)},
             ],
             "temperature": 0.1,

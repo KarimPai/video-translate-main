@@ -16,6 +16,7 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.qwen_context, 4096)
         self.assertEqual(cfg.qwen_base_url, "http://127.0.0.1:8001/v1")
         self.assertEqual(cfg.glossary, "glossary.toml")
+        self.assertEqual(cfg.subtitle_style, "gist")
         self.assertTrue(cfg.quality_recheck_enabled)
         self.assertFalse(hasattr(cfg, "backend"))
 

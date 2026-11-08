@@ -62,6 +62,27 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertNotIn("source_lang", data["chat_template_kwargs"])
         self.assertNotIn("stop", data)
 
+    def test_gist_style_is_default_and_faithful_style_is_selectable(self):
+        instance = translator()
+        response = json.dumps({
+            "choices": [{"message": {"content": "A Giganotosaurus attacked the base."}}]
+        }).encode("utf-8")
+
+        def prompt_for(style=None):
+            instance.cfg.subtitle_style = style or "gist"
+            with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                       return_value=io.BytesIO(response)) as urlopen:
+                result = instance._chat("ギガノトが拠点を襲った", [], timeout=5)
+            self.assertEqual(result, "A Giganotosaurus attacked the base.")
+            return json.loads(urlopen.call_args.args[0].data)["messages"][0]["content"]
+
+        gist = prompt_for("gist")
+        faithful = prompt_for("faithful")
+        self.assertIn("concise gist", gist)
+        self.assertIn("Preserve every meaningful negation", gist)
+        self.assertIn("faithful natural translation", faithful)
+        self.assertNotIn("concise gist", faithful)
+
     def test_hololive_name_expansion_guard(self):
         self.assertEqual(
             _remove_unmentioned_full_names("他の人", "Ichijou Ririka"), ""

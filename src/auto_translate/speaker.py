@@ -173,14 +173,14 @@ def _quiet_cut(
     search_ms: int = 180,
     quiet_ms: int = 40,
     quiet_ratio: float = 0.45,
-) -> float:
+) -> tuple[float, bool]:
     """Move an estimated speaker turn only into a sustained quiet valley.
 
     A one-frame dip is not sufficient evidence to relocate a turn boundary.
-    Return the model midpoint unchanged when the evidence is ambiguous.
+    Return the model midpoint unchanged when evidence is ambiguous; mark it untrusted.
     """
     if audio is None or left >= right:
-        return center
+        return center, False
     radius = max(0.0, search_ms / 1000)
     lo = max(0.0, left, center - radius)
     hi = min(length, right, center + radius)
@@ -188,7 +188,7 @@ def _quiet_cut(
     half = max(1, round(0.008 * SAMPLE_RATE))
     samples = np.arange(round(lo * SAMPLE_RATE), round(hi * SAMPLE_RATE) + 1, step)
     if len(samples) < 4:
-        return center
+        return center, False
     rms = np.asarray([
         float(np.sqrt(np.mean(audio[max(0, int(k) - half):
                                      min(len(audio), int(k) + half)] ** 2)))
@@ -196,7 +196,7 @@ def _quiet_cut(
     ])
     baseline = float(np.percentile(rms, 75))
     if baseline <= 1e-5:
-        return center
+        return center, False
     quiet = rms <= max(1e-5, baseline * quiet_ratio)
     required = max(2, int(math.ceil(quiet_ms / 10)))
     runs: list[tuple[int, int]] = []
@@ -210,13 +210,13 @@ def _quiet_cut(
                 runs.append((start, end))
             start = None
     if not runs:
-        return center
+        return center, False
     closest = min(
         runs,
         key=lambda run: abs(samples[(run[0] + run[1] - 1) // 2] / SAMPLE_RATE - center),
     )
     middle = (closest[0] + closest[1] - 1) // 2
-    return float(samples[middle] / SAMPLE_RATE)
+    return float(samples[middle] / SAMPLE_RATE), True
 
 
 def split_turns(
@@ -278,7 +278,7 @@ def split_turns(
         if prev.speaker is not None and prev.speaker == following.speaker:
             continue
         center = max(0.0, min(length, (prev.end + following.start) / 2))
-        cut = _quiet_cut(
+        cut, trusted = _quiet_cut(
             audio, center, min(prev.end, following.start),
             max(prev.end, following.start), length,
             search_ms=boundary_search_ms,
@@ -288,7 +288,7 @@ def split_turns(
         if audio is not None and following.start < prev.end - 0.015:
             # Small speaker overlaps have no reliable cut point unless
             # a sustained acoustic valley independently confirms the turn.
-            if abs(cut - center) < 0.005:
+            if not trusted:
                 return unknown
         if cut - (cuts[-1] if cuts else 0.0) < min_seconds:
             # An unreliable tiny prefix invalidates the proposed cuts.

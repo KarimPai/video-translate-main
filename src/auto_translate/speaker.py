@@ -229,12 +229,11 @@ def split_turns(
     boundary_quiet_ms: int = 40,
     boundary_quiet_ratio: float = 0.45,
 ) -> list[Turn]:
-    """Cut at clear speaker changes; keep any inseparable overlap together.
+    """Cut independent speaker turns, including clear interruptions.
 
-    One ambiguous pair of overlapping speakers must not erase unrelated,
-    well-supported changes elsewhere in the same VAD window. Overlap is
-    isolated into one *mixed* segment, not falsely attributed to either
-    voice. Audio samples are never duplicated or dropped.
+    A confirmed takeover truncates the first speaker at the new onset.
+    Uncertain simultaneous voices remain mixed. No PCM is dropped or
+    duplicated and each output is independently transcribed.
     """
     unknown = [Turn(0.0, length, None)]
     if length <= 0 or not raw:
@@ -258,15 +257,39 @@ def split_turns(
     if len(merged) == 1:
         return [Turn(0.0, length, merged[0].speaker)]
 
-    # Collapse genuine overlapping speakers into mixed groups, preserving
-    # other speaker changes before or after the overlap.
+    # A later speaker who starts while the current one is still talking
+    # and clearly continues beyond that speaker's endpoint has taken the
+    # floor. Cut the first at the *new onset*, rather than sending both
+    # voices to Haas in one utterance. This is not source separation: the
+    # handoff's later audio may still contain background speech.
+    #
+    # Short overlaps (<120ms), same-onset voices, and interventions that
+    # end before the original speaker remain ambiguous/mixed.
     groups: list[Turn] = []
     for turn in merged:
         if groups and turn.start < groups[-1].end - 0.12:
             prev = groups[-1]
-            groups[-1] = Turn(
-                prev.start, max(prev.end, turn.end), None,
+            takeover = (
+                prev.speaker is not None
+                and turn.speaker is not None
+                and turn.speaker != prev.speaker
+                and turn.start - prev.start >= min_seconds
+                and turn.end - turn.start >= min_seconds
+                and turn.end >= prev.end + 0.25
             )
+            if takeover:
+                # Preserve the first speaker's interrupted fragment exactly;
+                # all subsequent samples belong to the next ASR request.
+                groups[-1] = Turn(prev.start, turn.start, prev.speaker)
+                groups.append(Turn(turn.start, turn.end, turn.speaker))
+                log.debug(
+                    "Sherpa detected speaker interruption at %.2fs (previous "
+                    "turn expected through %.2fs)", turn.start, prev.end,
+                )
+            else:
+                groups[-1] = Turn(
+                    prev.start, max(prev.end, turn.end), None,
+                )
         else:
             groups.append(turn)
     if len(groups) < 2:
@@ -383,7 +406,7 @@ class SherpaSplitter:
                 return [original]
 
             result: list[Utterance] = []
-            for window in windows:
+            for index, window in enumerate(windows):
                 lo = max(0, round(window.start * SAMPLE_RATE))
                 hi = min(samples, round(window.end * SAMPLE_RATE))
                 if hi <= lo:
@@ -399,6 +422,10 @@ class SherpaSplitter:
                     original, start_s=start, end_s=end,
                     audio=audio[lo:hi].copy(),
                     speech_start_s=min(end, onset),
+                    # The previous cue must stop displaying when this new
+                    # speaker takes over, including after cached VOD seeks.
+                    speaker_handoff=(index > 0 and
+                                     window.speaker != windows[index - 1].speaker),
                     timings=replace(original.timings),
                 ))
             # Enforce exact conservation of PCM before emitting any split cue.

@@ -283,6 +283,9 @@ class PlamoTranslator:
                 "without adding or dropping information. Return only the "
                 "English translation, or [SKIP] if no meaningful speech exists."
             )
+        options["context"] += ("\nPreserve spoken Hololive nicknames and honorifics (-chan, -san, -sama). "
+                               "Do not expand nicknames into full names or introduce member names "
+                               "that are absent from the current Japanese speech.")
         if hits := self.glossary.find(ja):
             options["glossary"] = [
                 {"source": source, "target": target}

@@ -128,7 +128,7 @@ def main() -> None:
             cfg.translate, glossary, vod_title=vod_context,
         )
         log.info(
-            "Index-Translate-2B Q4_K_M ready (%d glossary terms) in %.1fs",
+            "CAT-Translate-3.3B Q4_K_M ready (%d glossary terms) in %.1fs",
             len(glossary.terms),
             time.perf_counter() - t0,
         )

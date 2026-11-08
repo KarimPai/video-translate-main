@@ -79,7 +79,14 @@ def strip_incidental_laughter(text: str) -> str:
     """
     if not text:
         return ""
-    cleaned = _INLINE_LAUGH_KANA.sub(" ", text)
+    def drop_obvious_laugh(match: re.Match[str]) -> str:
+        # 「はははと笑った」 reports someone laughing; it is spoken
+        # language rather than a nonverbal burst.
+        if text[match.end():].startswith(("と笑", "と言")):
+            return match.group()
+        return " "
+
+    cleaned = _INLINE_LAUGH_KANA.sub(drop_obvious_laugh, text)
     cleaned = _INLINE_CHAT_LAUGH.sub(" ", cleaned)
     if cleaned == text:
         return text

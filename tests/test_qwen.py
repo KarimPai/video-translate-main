@@ -308,6 +308,38 @@ class QwenTranslatorTests(unittest.TestCase):
             )
         self.assertIsNone(fresh._scene_topic())
 
+    def test_hololive_second_generation_is_not_second_year_students(self):
+        from pathlib import Path
+        from auto_translate.glossary import Glossary
+        from auto_translate.config import TranslateConfig
+
+        gloss = Glossary.load(Path(__file__).resolve().parents[1] / "glossary.toml")
+        self.assertIn(("二期生", "second-generation members"), gloss.find("ええ、二期生です。"))
+        self.assertIn(("２期生", "second-generation members"), gloss.find("ホロライブ２期生"))
+        self.assertIn(("2期生", "second-generation members"), gloss.find("2期生オフコラボ"))
+
+        instance = translator()
+        instance.glossary = gloss
+        instance.vod_title = "【２期生オフコラボ】クリスマスパーティ【ホロライブ/大空スバル】"
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "Yeah, I'm a second-generation member."}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen", return_value=response) as call:
+            self.assertEqual(instance._chat("ええ、二期生です。", [], 5),
+                             "Yeah, I'm a second-generation member.")
+        prompt = json.loads(call.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("二期生 => second-generation members", prompt)
+        self.assertIn("not school-year students", prompt)
+        self.assertNotIn("Yuzuki Choco", prompt)
+        # An unrelated school-year sentence must never receive the Hololive hint.
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(json.dumps({"choices": [
+                       {"message": {"content": "I am a second-year student."}},
+                   ]}).encode("utf-8"))) as call:
+            instance._chat("小学二年生です。", [], 5)
+        school = json.loads(call.call_args.args[0].data)["messages"][1]["content"]
+        self.assertNotIn("not school-year students", school)
+
     def test_gta_context_guides_building_back_and_missing_target(self):
         instance = translator()
         instance.vod_title = "Hololive GTA"

@@ -459,6 +459,19 @@ class QwenTranslator:
                 "Term mappings ONLY if present in the current Japanese:\n"
                 + "\n".join(src + " => " + target for src, target in hits)
             )
+        # A Hololive X期生 group is a generation, not a school year.
+        # Only add this hint when a generation term was actually recognized;
+        # never use the title to supply missing words or identities.
+        if (
+            re.search(r"(?:[一二三四五六七八九十0-9０-９]+期生)", ja)
+            and re.search(r"ホロライブ|hololive", self.vod_title, re.I)
+        ):
+            blocks.append(
+                "Hololive terminology: X期生 means Xth-generation members, "
+                "not school-year students. Translate only the generation "
+                "actually present in the current Japanese; do not infer "
+                "member names or add absent speech."
+            )
         if (
             self._scene_topic() == "ark"
             or (self._scene_topic() is None and is_ark_context(

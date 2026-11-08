@@ -8,6 +8,16 @@
 # Hololive / general
 "ホロライブ" = "Hololive"
 "ホロメン" = "Hololive member"
+# "期生" is a VTuber generation/cohort, not a school year.
+"二期生" = "second-generation members"
+"２期生" = "second-generation members"
+"2期生" = "second-generation members"
+"一期生" = "first-generation members"
+"１期生" = "first-generation members"
+"1期生" = "first-generation members"
+"三期生" = "third-generation members"
+"３期生" = "third-generation members"
+"3期生" = "third-generation members"
 "ホロリス" = "Hololive fan"
 "ホロックス" = "holoX"
 "ホロアース" = "Holoearth"

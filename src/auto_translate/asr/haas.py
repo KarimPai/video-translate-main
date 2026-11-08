@@ -14,6 +14,8 @@ import time
 import shutil
 import subprocess
 import sys
+import tomllib
+from pathlib import Path
 
 import numpy as np
 
@@ -22,6 +24,44 @@ from ..process_cleanup import _close_job, _create_kill_job
 from ..text_filter import is_whole_utterance_blocked, rejection_reason
 
 log = logging.getLogger(__name__)
+
+def load_haas_keywords(filename: str) -> str:
+    """Load a small, editable, newline-separated Haas keyword list from TOML.
+
+    speech.cpp takes a *string*, not a JSON array, in worker requests.
+    Each line is preferred written form, optionally =kana readings.
+    """
+    path = Path(filename)
+    if not path.is_absolute():
+        # Works from the launcher directory and from an installed package.
+        from_cwd = Path.cwd() / path
+        path = from_cwd if from_cwd.is_file() else Path(__file__).resolve().parents[3] / path
+    try:
+        with path.open("rb") as source:
+            data = tomllib.load(source)
+    except FileNotFoundError:
+        log.warning("Haas vocabulary file not found: %s; continuing without keyword boosting", path)
+        return ""
+
+    entries = data.get("keywords")
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: expected a top-level keywords = [...] array")
+    seen: set[str] = set()
+    selected: list[str] = []
+    for index, item in enumerate(entries, start=1):
+        if not isinstance(item, str) or not item.strip() or any(c in item for c in "\r\n"):
+            raise ValueError(f"{path}: invalid keyword at index {index}")
+        keyword = item.strip()
+        written, separator, readings = keyword.partition("=")
+        if not written.strip() or (separator and not readings.strip()):
+            raise ValueError(f"{path}: invalid keyword format at index {index}")
+        if written in seen:
+            log.warning("Ignoring duplicate Haas vocabulary entry: %s", written)
+            continue
+        seen.add(written)
+        selected.append(keyword)
+    return "\n".join(selected)
+
 
 class HaasASR:
     """Japanese-only Haas recognition on the Vulkan GPU.
@@ -38,6 +78,10 @@ class HaasASR:
         self._job = None
         self._messages: queue.Queue[str | BaseException | None] = queue.Queue()
         self._reader: threading.Thread | None = None
+        self.keywords = (
+            load_haas_keywords(cfg.haas_keywords_file)
+            if cfg.haas_keywords_enabled else ""
+        )
         exe = shutil.which("speech")
         if not exe:
             raise RuntimeError(
@@ -89,6 +133,9 @@ class HaasASR:
             "Haas-ja-v1.0 Q8_0 ready (%s, speech.cpp %s)",
             cfg.haas_device, ready.get("version", "?"),
         )
+        if self.keywords:
+            log.info("Haas vocabulary enabled: %d guarded terms (alpha=%.2f)",
+                     len(self.keywords.splitlines()), cfg.haas_keywords_alpha)
 
     def _read_worker(self, stdout) -> None:
         """Feed all worker responses to a queue so requests can time out."""

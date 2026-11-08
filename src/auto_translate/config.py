@@ -73,7 +73,7 @@ class TranslateConfig:
     subtitle_style: str = "faithful"
     # These map directly to llama.cpp's OpenAI-compatible chat completion
     # sampling keys. Defaults are experiments, not proven optimum values.
-    temperature: float = 0.35
+    temperature: float = 0.1
     top_p: float = 0.8
     top_k: int = 20
     min_p: float = 0.0

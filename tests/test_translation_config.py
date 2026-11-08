@@ -17,7 +17,7 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.qwen_base_url, "http://127.0.0.1:8001/v1")
         self.assertEqual(cfg.glossary, "glossary.toml")
         self.assertEqual(cfg.subtitle_style, "faithful")
-        self.assertEqual(cfg.temperature, 0.35)
+        self.assertEqual(cfg.temperature, 0.1)
         self.assertEqual(cfg.top_p, 0.8)
         self.assertEqual(cfg.top_k, 20)
         self.assertEqual(cfg.min_p, 0.0)

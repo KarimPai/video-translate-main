@@ -24,6 +24,7 @@ from ..stream_context import (
     ark_glossary_hits, is_ark_context, is_gta_context,
     is_horse_racing_context, is_incomplete_fragment,
     valorant_glossary_hits, repair_valorant_translation,
+    repair_barotrauma_translation, repair_ark_tier_translation,
 )
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -99,6 +100,10 @@ _REVIEW_HINTS = {
     ),
     "japanese_man_unit_wrong": "30万 is 300,000 (thirty times ten thousand), NOT 30,000.",
     "lost_sight_as_lost_way": "見失う is to lose sight of someone/something, NOT to lose one's way.",
+    "duration_extension_one_minute": (
+        "1分に延ばせ means extend TO a total of one minute, "
+        "NOT for one additional minute. Preserve the original speaker and event."
+    ),
     "affirmative_ability_reversed": "The Japanese says someone CAN do it; retain that ability.",
     "unexpected_skip": "This is meaningful speech: provide its translation, not [SKIP].",
     "untranslated_japanese": "Translate the Japanese; do not repeat Japanese characters.",
@@ -470,10 +475,15 @@ class QwenTranslator:
             return "[translation failed]"
 
         english = repair_high_confidence_meaning(ja, english)
+        recent_ja = [src for src, _ in history[-8:]]
         english = repair_valorant_translation(
-            ja, english, [src for src, _ in history[-8:]],
+            ja, english, recent_ja,
             self._scene_topic() == "valorant",
         )
+        english = repair_barotrauma_translation(ja, english)
+        # Also run in the benchmark, which invokes translate() directly
+        # without the separate live pipeline spelling-repair stage.
+        english = repair_ark_tier_translation(ja, english, self.vod_title, recent_ja)
         english = correct_translation(ja, english)
         # The actual honorific is explicit: never render チョコさん as Choco-chan.
         if "チョコさん" in ja or "ちょこさん" in ja:
@@ -552,7 +562,15 @@ class QwenTranslator:
                 self.vod_title, ja, [jp for jp, _ in history[-8:]]
             ))
         ):
-            blocks.append("Game context: ARK dinosaurs and survival gameplay. ギガノト is Giganotosaurus.")
+            blocks.append(
+                "Game context: ARK dinosaurs and survival gameplay. "
+                "ギガノト is Giganotosaurus. ARK equipment quality tier "
+                "至高 is Ascendant (official in-game tier), not a generic "
+                "'ultimate' adjective; 思考のサドル in this ARK context may "
+                "be a recognition error for 至高のサドル, Ascendant saddle. "
+                "Only apply this interpretation to an explicitly mentioned "
+                "saddle/item; do not transform unrelated praise."
+            )
         if (
             self._scene_topic() == "gta"
             or (self._scene_topic() is None and is_gta_context(self.vod_title))

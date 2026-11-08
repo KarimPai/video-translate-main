@@ -8,6 +8,12 @@ ARK_GLOSSARY = {
     "アルゲン": "Argentavis", "クライオポッド": "Cryopod",
     "ティラノサウルス": "Tyrannosaurus", "ティラノ": "Tyrannosaurus",
     "サドル": "saddle",
+    # ARK's Japanese item tier 至高 is officially called Ascendant.
+    # Longer exact phrases take precedence over the generic saddle term.
+    "至高のサドル": "Ascendant saddle (ARK quality tier)",
+    # Only offered by Qwen when ARK context is independently established.
+    # This homophone is a known Qwen ASR error in ARK streams.
+    "思考のサドル": "Ascendant saddle (ARK quality tier; likely 至高のサドル)",
 }
 _ARK_TITLE = re.compile(r"(?i)(?<![a-z])ark(?![a-z])|アークサバイバル|アーク：|アーク:|恐竜サバイバル")
 _ARK_SIGNALS = ("ギガノト", "ギガのと", "ギガノと", "テイム", "テーム",
@@ -28,7 +34,13 @@ _VALORANT_STRONG = (
 )
 _VALORANT_WEAK = ("バローランド", "バロランと")
 _MISNAMED_VALORANT_EN = re.compile(
-    r"(?i)\b(?:barotrauma|baroland|baro[\s-]?rant|valourant)\b"
+    r"(?i)\b(?:barotrauma|baro[\s-]?(?:land|rando|rant)|valourant)\b"
+)
+# Do not confuse a separately named game with VALORANT. Repair only these
+# directly observed bad English spellings when Japanese says バロトラウマ.
+_MISNAMED_BAROTRAUMA_EN = re.compile(
+    r"(?i)\b(?:valentine[’']s[\s-]+trauma|bartourma|barttrauma|"
+    r"barotroma|baro[\s-]?trauma)\b"
 )
 
 
@@ -88,6 +100,43 @@ def repair_valorant_translation(
     if "バロトラウマ" in japanese or re.search(r"(?i)barotrauma", japanese):
         return english
     return _MISNAMED_VALORANT_EN.sub("VALORANT", english)
+
+
+def repair_barotrauma_translation(japanese: str, english: str) -> str:
+    """Keep an explicitly spoken second game distinct from VALORANT."""
+    if "バロトラウマ" not in japanese:
+        return english
+    return _MISNAMED_BAROTRAUMA_EN.sub("Barotrauma", english)
+
+
+def repair_ark_tier_translation(
+    japanese: str,
+    english: str,
+    title: str = "",
+    recent: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Repair ARK's exact Ascendant-saddle phrase, not general 至高 praise.
+
+    This corrects the observed 'ultimate saddle' and 'saddle of thought'
+    mistakes. A literal 'thinking saddle' outside ARK stays unchanged.
+    """
+    if not is_ark_context(title, japanese, recent):
+        return english
+    if not any(phrase in japanese for phrase in ("至高のサドル", "思考のサドル")):
+        return english
+    if re.search(r"\bAscendant\s+saddles?\b", english, re.I):
+        return english
+    return re.sub(
+        r"(?i)\b(?:saddles?\s+of\s+(?:thought|thinking)|"
+        r"(?:ultimate|supreme|highest[\s-]tier|top[\s-]tier|"
+        r"highest[\s-]quality)\s+saddles?)\b",
+        lambda match: (
+            "Ascendant saddles" if "saddles" in match.group().lower()
+            else "Ascendant saddle"
+        ),
+        english,
+    )
+
 
 def is_gta_context(title: str = "") -> bool:
     """Only use GTA-specific prompt interpretations with an explicit title."""
@@ -186,7 +235,10 @@ def repair_ark_spelling(text: str, title: str = "", recent: tuple[str, ...] | li
     # Preserve genuine "ギガの土地", don't rewrite broad homophones.
     text = re.sub(r"ギガのと(?=$|[、。！？!? \t]|[がをにはで]|討伐|チェック|えぐ)", "ギガノト", text)
     text = re.sub(r"ギガノと(?=$|[、。！？!? \t]|[がをにはで]|討伐|チェック|えぐ)", "ギガノト", text)
-    # Small, attested ARK-only Haas confusions. Never globally rewrite
+    # Observed Qwen ASR homophone in ARK equipment dialogue. Restrict it
+    # to the full compound: 思考 alone can genuinely mean thinking.
+    text = text.replace("思考のサドル", "至高のサドル")
+    # Small, attested ARK-only recognition confusions. Never globally rewrite
     # homophones such as ギガの土地 ("Giga's land").
     text = re.sub(r"気がの都(?=$|[がをにはで]|討伐|襲来)", "ギガノト", text)
     text = re.sub(r"ギガナと(?=$|[がをにはで]|討伐|どっち)", "ギガノト", text)

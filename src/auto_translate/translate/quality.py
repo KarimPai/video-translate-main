@@ -69,6 +69,12 @@ _LOST_SIGHT_LINE = re.compile(
 _WRONG_LOST_SIGHT_EN = re.compile(
     r"\b(?:lost my way|lost our way|got lost|am lost|we're lost)\b", re.I
 )
+_ONE_MINUTE_EXTENSION = re.compile(r"(?:1|１|一)分に延ばせ")
+_EXTRA_MINUTE_EN = re.compile(r"\b(?:one more|another|an additional) minute\b", re.I)
+_KEEP_EXTRA_MINUTE_EN = re.compile(
+    r"\b(?:keep (?:it|this|that) going|extend (?:it|this|that))"
+    r"\s+for (?:one more|another|an additional) minute\b", re.I
+)
 
 
 def is_skip_token(text: str) -> bool:
@@ -129,6 +135,8 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
         return "japanese_man_unit_wrong"
     if _LOST_SIGHT_LINE.fullmatch(source) and _WRONG_LOST_SIGHT_EN.search(english):
         return "lost_sight_as_lost_way"
+    if _ONE_MINUTE_EXTENSION.search(source) and _EXTRA_MINUTE_EN.search(english):
+        return "duration_extension_one_minute"
     appraisal = source.strip(" !?。、.…")
     if (_PRAISE.fullmatch(appraisal) and "?" not in source
             and not _POSITIVE_IDIOM.search(english)
@@ -187,6 +195,10 @@ def repair_high_confidence_meaning(japanese: str, english: str) -> str:
     if (_LOST_SIGHT_LINE.fullmatch(source)
             and _WRONG_LOST_SIGHT_EN.search(english)):
         english = "I lost sight of them."
+    if _ONE_MINUTE_EXTENSION.search(source):
+        # Preserve the speaker and the crash narration. Only rewrite a
+        # phrase which wrongly adds an extra minute to the agreed duration.
+        english = _KEEP_EXTRA_MINUTE_EN.sub("extend it to one minute", english)
     if re.search(r"読み込み.{0,8}軽くな(?:っ|った|る|い)", source):
         # Japanese says loading became lighter, *not* that it slowed down.
         english = re.sub(

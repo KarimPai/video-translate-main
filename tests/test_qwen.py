@@ -20,7 +20,7 @@ def translator(**kwargs):
     settings = {
         "qwen_model": "qwen3.5-4b", "context_lines": 3,
         "timeout_s": 10.0, "max_tokens": 128,
-        "temperature": 0.35, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+        "temperature": 0.1, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
         "repeat_penalty": 1.0, "presence_penalty": 0.0,
         "sampling_seed": None,
         "quality_recheck_temperature": None,
@@ -48,7 +48,7 @@ class QwenTranslatorTests(unittest.TestCase):
             self.assertEqual(instance._chat("行けると思う", [], 5), "I think I can go.")
         body = json.loads(call.call_args.args[0].data)
         for key, expected in {
-            "temperature": 0.35, "top_p": 0.8,
+            "temperature": 0.1, "top_p": 0.8,
             "top_k": 20, "min_p": 0.0,
             "repeat_penalty": 1.0, "presence_penalty": 0.0,
         }.items():

@@ -67,7 +67,7 @@ qwen_context = 4096
 qwen_gpu_layers = 99
 subtitle_style = "faithful"  # accuracy-first; "gist" is optional
 # Experimental sampling, now explicitly sent to llama.cpp per line:
-temperature = 0.35
+temperature = 0.1
 top_p = 0.8
 top_k = 20
 min_p = 0.0
@@ -108,6 +108,12 @@ The experimental branch now defaults to `subtitle_style = "faithful"`:
 keep more spoken details rather than compressing every line to a gist.
 `subtitle_style = "gist"` remains available in local `config.toml`.
 Neither option changes the speaker-turn logic or the Japanese ASR text.
+
+The default `temperature = 0.1` was selected after reviewing the
+50-case Japanese transcript experiment (single seed, no verified source
+audio). It favors faithful wording but is not a universal optimum.
+An existing, git-ignored `config.toml` with `temperature = 0.35`
+continues to override the default until edited.
 
 Sampling controls (`temperature`, `top_p`, `top_k`, `min_p`,
 `repeat_penalty`, `presence_penalty`) are explicit per-request values

@@ -77,6 +77,19 @@ class CatTranslationTests(unittest.TestCase):
             obj.translate("逃げるな", [])
         chat.assert_called_once()
 
+    def test_sarashina_template_renders_exact_official_single_turn(self):
+        from jinja2 import Template
+        template = Path(__file__).resolve().parents[1] / (
+            "src/auto_translate/translate/cat_sarashina.jinja"
+        )
+        source = build_cat_prompt("なるほど")
+        rendered = Template(template.read_text(encoding="utf-8")).render(
+            messages=[{"role": "user", "content": source}],
+            eos_token="</s>",
+            add_generation_prompt=True,
+        )
+        self.assertEqual(rendered, "<|user|>" + source + "</s><|assistant|>")
+
     def test_short_general_phrases_are_not_given_to_generating_model(self):
         obj = self._unit()
         with patch.object(obj, "_chat") as request:

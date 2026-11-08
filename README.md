@@ -30,30 +30,30 @@ The model may be more conversational, but actual Japanese ASR-based subtitle fid
 
 Use a **new folder**, separate from the main and Qwen translator checkouts:
 
-\`\`\`cmd
+```cmd
 cd /d C:\Games
 git clone --branch test-index-translate-2b --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-index
 cd /d C:\Games\video-translate-index
 uv sync --extra diarization
 "Start translate.bat"
-\`\`\`
+```
 
 Requirements:
 
 - Python 3.12+, uv, ffmpeg, yt-dlp, MPV.
 - NVIDIA CUDA-enabled PyTorch for FireRedVAD.
-- **Recent CUDA-enabled llama.cpp** with Qwen3.5 architecture support; \`llama-server.exe\` in PATH.
-- \`speech.exe\` / speech.cpp 0.10+ with Haas and Vulkan support.
+- **Recent CUDA-enabled llama.cpp** with Qwen3.5 architecture support; `llama-server.exe` in PATH.
+- `speech.exe` / speech.cpp 0.10+ with Haas and Vulkan support.
 
 The first launch may download the Index Q4_K_M GGUF through llama.cpp and the speech/speaker/VAD model files if not cached. Models stay on your machine after download.
 
-The batch launcher uses automatic YouTube live/VOD detection, original source MPV video, and a translation prebuffer. It runs from the checkout's \`src\` directory with \`uv run --no-sync\`. Closing MPV or finishing the VOD closes the owned model processes.
+The batch launcher uses automatic YouTube live/VOD detection, original source MPV video, and a translation prebuffer. It runs from the checkout's `src` directory with `uv run --no-sync`. Closing MPV or finishing the VOD closes the owned model processes.
 
 ## Translation settings — clean slate
 
-\`config.toml\` is **git-ignored**. You do not need to create one; defaults are:
+`config.toml` is **git-ignored**. You do not need to create one; defaults are:
 
-\`\`\`toml
+```toml
 [translate]
 index_base_url = "http://127.0.0.1:8002/v1"
 index_model = "index-translate-2b"
@@ -66,17 +66,17 @@ load_timeout_s = 300.0
 context_lines = 4
 memory_lines = 12
 glossary = "glossary.toml"
-\`\`\`
+```
 
 **Port 8002** is deliberately separate from older translator experiments. The program refuses to adopt a server already listening on that port, preventing wrong-model reuse and unsafe cleanup.
 
-All old translation fields (model selectors, Qwen or PLaMo references, sampling presets, quality-recheck toggles, and unused context settings) are ignored if you carry over an older \`config.toml\`. Only the Index fields above take effect.
+All old translation fields (model selectors, Qwen or PLaMo references, sampling presets, quality-recheck toggles, and unused context settings) are ignored if you carry over an older `config.toml`. Only the Index fields above take effect.
 
 Index's decoding uses the **official temperature 0** recommendation, not old top-k/top-p/temperature tuning. There is **no Ollama dependency** and **no external translation API**.
 
 ## Speech and subtitle settings retained
 
-\`\`\`toml
+```toml
 [asr]
 haas_model = "haas-ja-v1.0:q8_0"
 haas_device = "Vulkan0"
@@ -106,7 +106,7 @@ max_turns = 5
 boundary_search_ms = 180
 boundary_quiet_ms = 40
 boundary_quiet_ratio = 0.45
-\`\`\`
+```
 
 These are existing defaults. Haas guarded vocabulary boosting helps with Hololive names; if unsupported by the installed speech.cpp version, it retries without hints. FireRedVAD prefers natural pauses and conserves PCM during forced cuts. Sherpa detects speaker changes without inventing persistent speaker identities; overlapping voices are not separated into isolated audio sources.
 
@@ -114,23 +114,23 @@ Japanese YouTube captions can still provide cautious correction when aligned and
 
 ## Troubleshooting
 
-- \`logs\run.log\` — pipeline, speech recognition, translation and synchronization messages.
-- \`logs\index-server.log\` — Index model download, llama.cpp startup, unsupported binaries, and CUDA allocation errors.
+- `logs\run.log` — pipeline, speech recognition, translation and synchronization messages.
+- `logs\index-server.log` — Index model download, llama.cpp startup, unsupported binaries, and CUDA allocation errors.
 - If an older model server occupies **8002**, close it before starting. This branch will not silently use it.
-- You can monitor GPU memory with \`nvidia-smi\` during playback. This branch is expected to use less translator weight memory than the 4B model, but actual runtime allocations depend on context and backend.
+- You can monitor GPU memory with `nvidia-smi` during playback. This branch is expected to use less translator weight memory than the 4B model, but actual runtime allocations depend on context and backend.
 
 ## Offline regression tests
 
-\`\`\`cmd
+```cmd
 cd /d C:\Games\video-translate-index
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
-\`\`\`
+```
 
 Tests mock the speech.cpp and llama.cpp processes; the suite does **not** prove translation accuracy or end-to-end GPU integration. For a fair comparison, run the same VOD and compare the Japanese transcript and resulting English subtitles against the original audio.
 
 ## Branches
 
-- \`main\` — stable pipeline.
-- \`test\` — existing test translator pipeline.
-- \`test-qwen35-4b\` — previous Qwen3.5-4B translator experiment.
-- **\`test-index-translate-2b\` — isolated Index-Translate-2B Q4_K_M experiment.**
+- `main` — stable pipeline.
+- `test` — existing test translator pipeline.
+- `test-qwen35-4b` — previous Qwen3.5-4B translator experiment.
+- **`test-index-translate-2b` — isolated Index-Translate-2B Q4_K_M experiment.**

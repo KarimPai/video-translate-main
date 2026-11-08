@@ -23,6 +23,11 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertTrue(cfg.scene_memory_enabled)
         self.assertEqual(cfg.scene_max_idle_lines, 24)
         self.assertEqual(cfg.scene_gap_reset_s, 30.0)
+        self.assertTrue(cfg.selective_retry_enabled)
+        self.assertEqual(cfg.selective_retry_timeout_s, 4.0)
+        self.assertTrue(cfg.fragment_join_enabled)
+        self.assertEqual(cfg.fragment_join_wait_s, 0.5)
+        self.assertEqual(cfg.fragment_join_gap_s, 0.35)
         self.assertEqual(cfg.glossary, "glossary.toml")
         for obsolete in (
             "index_model", "index_hf_model", "index_base_url", "index_context",
@@ -58,6 +63,25 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertFalse(cfg.scene_memory_enabled)
         self.assertEqual(cfg.scene_max_idle_lines, 12)
         self.assertEqual(cfg.scene_gap_reset_s, 18.0)
+
+    def test_quality_controls_can_be_disabled_without_changing_model(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text(
+                '[translate]\\nselective_retry_enabled = false\\n'
+                'selective_retry_timeout_s = 2.0\\n'
+                'fragment_join_enabled = false\\n'
+                'fragment_join_wait_s = 0.2\\n'
+                'fragment_join_gap_s = 0.25\\n',
+                encoding="utf-8",
+            )
+            cfg = load_config(path).translate
+        self.assertFalse(cfg.selective_retry_enabled)
+        self.assertEqual(cfg.selective_retry_timeout_s, 2.0)
+        self.assertFalse(cfg.fragment_join_enabled)
+        self.assertEqual(cfg.fragment_join_wait_s, 0.2)
+        self.assertEqual(cfg.fragment_join_gap_s, 0.25)
+        self.assertEqual(cfg.plamo_model, "plamo-3-translate-8b")
 
     def test_retired_index_and_qwen_settings_ignored(self):
         with tempfile.TemporaryDirectory() as temp:

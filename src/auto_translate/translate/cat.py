@@ -264,7 +264,7 @@ class CatTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 return reused
-        bare = ja.strip().strip(" \	\r\n。、!?！？")
+        bare = ja.strip().strip(" \t\r\n。、!?！？")
         if bare in _COMMON_JP:
             return _COMMON_JP[bare]
 

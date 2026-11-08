@@ -9,11 +9,11 @@ class PipelineWorkerFailureTests(unittest.TestCase):
     def test_background_exception_is_reported_to_main_thread(self):
         errors = queue.Queue()
         def crash():
-            raise RuntimeError("simulated Qwen worker crash")
+            raise RuntimeError("simulated ASR worker crash")
 
         self._call_guard("asr", crash, errors)
         with self.assertRaisesRegex(
-            RuntimeError, "pipeline stage 'asr' failed: simulated Qwen",
+            RuntimeError, "pipeline stage 'asr' failed: simulated ASR",
         ):
             _raise_stage_failure(errors)
 

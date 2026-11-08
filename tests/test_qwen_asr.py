@@ -34,6 +34,16 @@ def worker_stream(*messages):
 
 
 class QwenASRTests(unittest.TestCase):
+    def setUp(self):
+        # A mocked Popen has no real Windows handle. Never assign it to a
+        # Windows Job Object when tests run on the user's Windows machine.
+        job_patch = patch(
+            "auto_translate.asr.qwen_asr._create_kill_job",
+            return_value=None,
+        )
+        job_patch.start()
+        self.addCleanup(job_patch.stop)
+
     def test_selected_proper_noun_finetune_is_speechcpp_specific(self):
         self.assertEqual(MODEL_REPO, "kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF")
         self.assertEqual(MODEL_FILENAME, "Qwen3-ASR-1.7B-JA-Q8_0.gguf")

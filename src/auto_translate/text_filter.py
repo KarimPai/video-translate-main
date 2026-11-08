@@ -105,7 +105,7 @@ def rejection_reason(text: str) -> str | None:
     if re.fullmatch(r"(?:\[|\(|【)\s*(?:笑い声|笑い|爆笑|laughter|laughs)\s*(?:\]|\)|】)", label):
         return "laughter_only"
 
-    # Haas may spell the same laugh in hiragana or katakana.
+    # Japanese ASR may spell the same laugh in hiragana or katakana.
     laugh_kana = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in compact)
     without_laughter = _LAUGHTER.sub("", laugh_kana)
     if compact and not without_laughter:
@@ -181,7 +181,7 @@ def is_isolated_reaction(text: str) -> bool:
 
 
 def is_whole_utterance_blocked(text: str, blocklist: list[str]) -> bool:
-    """Match a custom Haas blocklist item exactly, ignoring punctuation.
+    """Match a custom ASR blocklist item exactly, ignoring punctuation.
 
     Do not reject an otherwise meaningful sentence merely because it contains
     a blocked filler word.

@@ -79,7 +79,7 @@ class TextASR:
 
 
 class CaptionFallbackTests(unittest.TestCase):
-    def test_aligned_caption_fills_empty_haas_result(self):
+    def test_aligned_caption_fills_empty_asr_result(self):
         index = CaptionIndex.from_vtt(VTT)
         in_q = queue.Queue()
         out_q = queue.Queue()
@@ -106,7 +106,7 @@ class CaptionFallbackTests(unittest.TestCase):
             asr.transcribe.assert_not_called()
             self.assertIsNone(outgoing.get_nowait())
 
-    def test_sound_cue_requires_independent_evidence_to_drop_haas(self):
+    def test_sound_cue_requires_independent_evidence_to_drop_asr(self):
         audio = np.random.default_rng(7).normal(0, .1, 16000).astype("f")
         for text, expected in [("ご視聴ありがとうございました", None), ("パチパチ", None),
                                ("この音楽が好き", "この音楽が好き")]:
@@ -126,7 +126,7 @@ class CaptionFallbackTests(unittest.TestCase):
         run_asr(EmptyASR(), in_q, out_q, captions=index)
         self.assertIsNone(out_q.get_nowait())
 
-    def test_haas_remains_primary_when_both_sources_disagree(self):
+    def test_qwen_asr_remains_primary_when_both_sources_disagree(self):
         index = CaptionIndex.from_vtt(VTT)
         in_q = queue.Queue()
         out_q = queue.Queue()
@@ -134,14 +134,14 @@ class CaptionFallbackTests(unittest.TestCase):
         in_q.put(None)
 
         run_asr(
-            TextASR("ハースの認識結果"),
+            TextASR("Qwenの認識結果"),
             in_q,
             out_q,
             captions=index,
         )
 
         result = out_q.get_nowait()
-        self.assertEqual(result.ja, "ハースの認識結果")
+        self.assertEqual(result.ja, "Qwenの認識結果")
         self.assertIsNone(out_q.get_nowait())
 
 

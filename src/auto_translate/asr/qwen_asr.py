@@ -85,13 +85,13 @@ class QwenASR:
         self._closed = False
         self.process: subprocess.Popen | None = None
         self._job = None
-        model = resolve_qwen_asr_model(cfg)
         exe = shutil.which("speech")
         if not exe:
             raise RuntimeError(
                 "Qwen ASR needs speech.cpp 0.8.10+ (Windows Vulkan). "
                 "Install speech.exe and check 'speech --version' and 'speech devices'."
             )
+        model = resolve_qwen_asr_model(cfg)
         command = [exe, "worker", str(model), "--device", cfg.device,
                    "--language", "ja"]
         # Qwen accepts a short vocabulary hint, but an overlong/global

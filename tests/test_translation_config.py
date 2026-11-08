@@ -1,4 +1,4 @@
-"""Qwen-only configuration and legacy-config regression checks."""
+"""Index-only translation configuration and existing Haas/Sherpa settings."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,121 +9,96 @@ from auto_translate.translate import create_translator
 
 
 class TranslationConfigurationTests(unittest.TestCase):
-    def test_defaults_are_local_qwen_only(self):
+    def test_only_index_translator_is_configured(self):
         cfg = TranslateConfig()
-        self.assertEqual(cfg.qwen_hf_model, "unsloth/Qwen3.5-4B-GGUF:Q4_K_M")
-        self.assertEqual(cfg.qwen_model, "qwen3.5-4b")
-        self.assertEqual(cfg.qwen_context, 4096)
-        self.assertEqual(cfg.qwen_base_url, "http://127.0.0.1:8001/v1")
+        self.assertEqual(cfg.index_model, "index-translate-2b")
+        self.assertEqual(cfg.index_hf_model, "IndexTeam/Index-Translate-2B-GGUF:Q4_K_M")
+        self.assertEqual(cfg.index_base_url, "http://127.0.0.1:8002/v1")
+        self.assertEqual(cfg.index_context, 4096)
+        self.assertEqual(cfg.index_gpu_layers, 99)
+        self.assertEqual(cfg.max_tokens, 160)
         self.assertEqual(cfg.glossary, "glossary.toml")
-        self.assertEqual(cfg.subtitle_style, "faithful")
-        self.assertEqual(cfg.temperature, 0.1)
-        self.assertEqual(cfg.top_p, 0.8)
-        self.assertEqual(cfg.top_k, 20)
-        self.assertEqual(cfg.min_p, 0.0)
-        self.assertEqual(cfg.repeat_penalty, 1.0)
-        self.assertEqual(cfg.presence_penalty, 0.0)
-        self.assertIsNone(cfg.quality_recheck_temperature)
-        self.assertIsNone(cfg.sampling_seed)
-        self.assertTrue(cfg.quality_recheck_enabled)
-        self.assertFalse(hasattr(cfg, "backend"))
+        self.assertFalse(hasattr(cfg, "qwen_model"))
+        self.assertFalse(hasattr(cfg, "plamo_model"))
+        self.assertFalse(hasattr(cfg, "temperature"))
+        self.assertFalse(hasattr(cfg, "quality_recheck_enabled"))
 
-    def test_config_sampling_fields_load_without_touching_other_engines(self):
-        custom = """
-[translate]
-temperature = 0.7
-top_p = 0.9
-top_k = 40
-min_p = 0.04
-repeat_penalty = 1.05
-presence_penalty = 0.2
-quality_recheck_temperature = 0.1
-subtitle_style = "gist"
-"""
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "config.toml"
-            path.write_text(custom, encoding="utf-8")
+    def test_index_specific_settings_are_loaded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text(
+                '[translate]\nindex_context = 2048\nindex_gpu_layers = 50\n'
+                'context_lines = 6\nmax_tokens = 192\n',
+                encoding="utf-8",
+            )
             cfg = load_config(path).translate
-        self.assertEqual(cfg.temperature, 0.7)
-        self.assertEqual(cfg.top_p, 0.9)
-        self.assertEqual(cfg.top_k, 40)
-        self.assertEqual(cfg.min_p, 0.04)
-        self.assertEqual(cfg.repeat_penalty, 1.05)
-        self.assertEqual(cfg.presence_penalty, 0.2)
-        self.assertEqual(cfg.quality_recheck_temperature, 0.1)
-        self.assertEqual(cfg.subtitle_style, "gist")
+        self.assertEqual(cfg.index_context, 2048)
+        self.assertEqual(cfg.index_gpu_layers, 50)
+        self.assertEqual(cfg.context_lines, 6)
+        self.assertEqual(cfg.max_tokens, 192)
 
-    def test_legacy_local_config_does_not_reenable_old_engine(self):
-        legacy = """
-[translate]
-backend = "legacy"
-model = "ignored"
-plamo_model = "unused"
-plamo_hf_model = "unused"
-plamo_base_url = "http://127.0.0.1:8000/v1"
-plamo_gpu_layers = 66
-context_lines = 4
-memory_lines = 12
-qwen_context = 3072
-[translate.presets.old]
-model = "ignored"
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            file = Path(tmp) / "config.toml"
-            file.write_text(legacy, encoding="utf-8")
-            cfg = load_config(file)
-        self.assertEqual(cfg.translate.qwen_model, "qwen3.5-4b")
-        self.assertEqual(cfg.translate.qwen_context, 3072)
-        self.assertEqual(cfg.translate.context_lines, 4)
-        self.assertFalse(hasattr(cfg.translate, "plamo_model"))
+    def test_old_qwen_and_other_translator_settings_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text(
+                '[translate]\nqwen_model = "old-model"\n'
+                'qwen_hf_model = "unsloth/legacy"\nqwen_context = 8192\n'
+                'qwen_base_url = "http://127.0.0.1:8001/v1"\n'
+                'temperature = 0.7\ntop_p = 0.8\n'
+                'quality_recheck_enabled = true\n'
+                'plamo_model = "legacy"\nbackend = "qwen"\n'
+                'index_context = 3072\n'
+                '[translate.presets.old]\nmodel = "ignored"\n',
+                encoding="utf-8",
+            )
+            cfg = load_config(path).translate
+        self.assertEqual(cfg.index_model, "index-translate-2b")
+        self.assertEqual(cfg.index_context, 3072)
+        self.assertEqual(cfg.index_base_url, "http://127.0.0.1:8002/v1")
+        self.assertFalse(hasattr(cfg, "qwen_model"))
+        self.assertFalse(hasattr(cfg, "plamo_model"))
 
-    def test_factory_uses_qwen_and_preserves_glossary(self):
+    def test_factory_creates_index_with_glossary(self):
         cfg, glossary = TranslateConfig(), object()
-        with patch("auto_translate.translate.QwenTranslator") as constructor:
-            actual = create_translator(cfg, glossary, vod_title="Hololive ARK")
-        self.assertIs(actual, constructor.return_value)
-        constructor.assert_called_once_with(cfg, glossary, vod_title="Hololive ARK")
+        with patch("auto_translate.translate.IndexTranslator") as construct:
+            result = create_translator(cfg, glossary, vod_title="Hololive GTA")
+        self.assertIs(result, construct.return_value)
+        construct.assert_called_once_with(cfg, glossary, vod_title="Hololive GTA")
 
-    def test_cpu_speaker_diarization_setting_and_fallback(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            file = Path(tmp) / "config.toml"
+    def test_speaker_diarization_stays_available(self):
+        with tempfile.TemporaryDirectory() as temp:
+            file = Path(temp) / "config.toml"
             self.assertTrue(load_config(file).speaker.enabled)
             file.write_text("[speaker]\nenabled = false\nnum_threads = 1\n", encoding="utf-8")
             cfg = load_config(file)
-            self.assertFalse(cfg.speaker.enabled)
-            self.assertEqual(cfg.speaker.num_threads, 1)
+        self.assertFalse(cfg.speaker.enabled)
+        self.assertEqual(cfg.speaker.num_threads, 1)
 
-    def test_haas_q8_vulkan_cpu_decode_is_the_only_asr_default(self):
+    def test_haas_q8_backend_is_unchanged(self):
         cfg = AsrConfig()
         self.assertEqual(cfg.haas_model, "haas-ja-v1.0:q8_0")
         self.assertEqual(cfg.haas_device, "Vulkan0")
         self.assertTrue(cfg.haas_decode_on_cpu)
-        self.assertEqual(cfg.response_timeout_s, 30.0)
+        self.assertTrue(cfg.haas_keywords_enabled)
         self.assertFalse(hasattr(cfg, "model_path"))
         self.assertFalse(hasattr(cfg, "prompt"))
 
-    def test_legacy_qwen_asr_config_is_ignored(self):
-        legacy = """
-[asr]
-model_path = "qwen.gguf"
-device = "cpu"
-prompt = "old keyword"
-haas_device = "Vulkan0"
-haas_decode_on_cpu = true
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config.toml"
-            path.write_text(legacy, encoding="utf-8")
+    def test_old_asr_config_is_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text(
+                '[asr]\nmodel_path = "old.gguf"\ndevice = "cpu"\n'
+                'haas_device = "Vulkan0"\n',
+                encoding="utf-8",
+            )
             cfg = load_config(path).asr
         self.assertEqual(cfg.haas_model, "haas-ja-v1.0:q8_0")
         self.assertEqual(cfg.haas_device, "Vulkan0")
-        self.assertTrue(cfg.haas_decode_on_cpu)
-        self.assertFalse(hasattr(cfg, "model_path"))
 
-    def test_missing_config_is_qwen(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = load_config(Path(tmp) / "missing.toml")
-        self.assertEqual(cfg.translate.qwen_model, "qwen3.5-4b")
+    def test_missing_config_uses_index(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = load_config(Path(temp) / "missing.toml")
+        self.assertEqual(cfg.translate.index_model, "index-translate-2b")
 
 
 if __name__ == "__main__":

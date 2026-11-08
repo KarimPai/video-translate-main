@@ -1,6 +1,6 @@
 """Index-Translate-2B Q4_K_M: sole offline Japanese-to-English translator.
 
-Uses the Index team's one-message instTrans prompt and a managed llama.cpp
+Uses the Index team's plain one-message translation prompt and a managed llama.cpp
 server. No Qwen3.5 chat engine, external provider, or translator fallback.
 """
 from __future__ import annotations
@@ -22,7 +22,6 @@ from ..context_memory import reuse_recent_short_term
 from ..glossary import Glossary
 from ..process_cleanup import _close_job, _create_kill_job
 from ..stream_context import (
-    is_incomplete_fragment,
     repair_ark_tier_translation,
     repair_barotrauma_translation,
     repair_valorant_translation,
@@ -38,14 +37,27 @@ from .quality import (
 
 log = logging.getLogger(__name__)
 
-# These are Index-Translate's documented instTrans constraints, not a second
-# model's system prompt. Context is labeled as reference, never source.
-_SOFT_STYLE = (
-    "使用自然、简洁、口语化的英语游戏直播字幕风格，保留说话者的情绪、玩笑、"
-    "俚语和粗口，不要写成生硬的正式书面语。忠实保留否定、疑问、动作方向、"
-    "人物关系、语气和不确定性。日语省略主语时不要凭空指定说话者或动作主体。"
-    "识别文本可能有误，不要擅自补齐没有说出的内容；未完的句子仍保持未完。"
+# For short streaming subtitles use Index's official *plain translation*
+# format, rather than the multi-page instTrans constraints that the Q4 model
+# sometimes copied into the English output. Keep only one brief style hint and
+# glossary mappings actually heard in the current Japanese.
+_PROMPT_PREFIX = (
+    "请将以下日语游戏直播对话翻译成自然、简洁、口语化的英语字幕。"
+    "保留原意、否定、称呼与语气，不要添加未说出的内容。"
+    "直接输出译文，不要解释。"
 )
+
+# The model occasionally continues into copies/translations of its instructions.
+# These delimiters are not legitimate streaming subtitles. Catch them even if
+# the server ignores stop sequences, or starts the response with a leaked header.
+_LEAK_MARKERS = re.compile(
+    r"〖|【(?:源文|原文|约束要求|約束要求|硬性要求|注意|"
+    r"Source|Constraints?|Constraint Requirements|Hard Requirement)】"
+    r"|(?:^|\\n|\\s{2,})(?:Constraint Requirements|Hard Requirements?|"
+    r"Translation Requirements?)\\s*[:：]?",
+    flags=re.IGNORECASE,
+)
+
 
 def build_index_prompt(
     japanese: str,
@@ -55,49 +67,39 @@ def build_index_prompt(
     vod_title: str = "",
     context_lines: int = 4,
 ) -> str:
-    """Official-style instTrans prompt; ONLY japanese is source text."""
-    hits = glossary.find(japanese)[:8]
-    hard = (
-        "只翻译〖源文〗中的日语为英语；保留原有的否定、数字、明确的专名、"
-        "游戏术语和语义。不要添加源文没有说出的人物、行为、对象或信息。"
-    )
+    """Short official-style translation request; input line is the only source.
+
+    Intentionally omit earlier dialogue and long scene descriptions: the 2B
+    model was echoing them instead of stopping after one translated cue.
+    Current-line glossary hits are retained for correct names.
+    """
+    hits = glossary.find(japanese)[:6]
+    parts = [_PROMPT_PREFIX]
     if hits:
-        hard += " 专名/术语对照（仅在源文确实出现时使用）: " + "、".join(
-            src + "→" + target for src, target in hits
+        parts.append(
+            "仅在原句出现时使用这些译名：" +
+            "；".join(src + " = " + target for src, target in hits) + "。"
         )
-    guidance = []
-    if vod_title:
-        guidance.append("视频背景（不是要翻译的文字）: " + vod_title[:140])
-    recent = [ja.strip()[:70] for ja, _ in history[-max(0, context_lines):]
-              if ja.strip()]
-    if recent:
-        guidance.append(
-            "先前的日语对话（仅用于理解上下文，不可重复翻译）: "
-            + " / ".join(recent)[-300:]
-        )
-    if is_incomplete_fragment(japanese):
-        guidance.append("当前源文是不完整的片段，只翻译听到的部分。")
-    note = _SOFT_STYLE
-    if guidance:
-        note += " " + " ".join(guidance)
-    return (
-        "请将以下日语游戏直播对话翻译成英语，并且严格遵守所有约束要求。\n\n"
-        "〖源文〗\n" + japanese.strip() + "\n\n"
-        "〖约束要求〗\n"
-        "1. 〖硬性要求〗" + hard + "\n"
-        "2. 〖注意〗" + note + "\n\n"
-        "只输出译文，不要有任何额外说明。"
-    )
+    return "\\n".join(parts) + "\\n\\n" + japanese.strip()
 
 
 def _clean(text: str) -> str:
-    """Remove reasoning tags and response prefixes, but keep spoken content."""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.I | re.S)
+    """Strip thinking, translation prefixes, and leaked meta-instructions.
+
+    Truncate at the *first* prompt marker. Never allow the instructions
+    following it to be shown in MPV or printed as translation output.
+    """
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I)
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[-1]
     text = text.strip().removeprefix("<think>").strip()
-    text = re.sub(r"^(?:English|Translation|EN)\s*:\s*", "", text, flags=re.I)
-    return " ".join(text.strip(' "“”').splitlines()).strip()
+    text = re.sub(r"^(?:English|Translation|EN)\\s*:\\s*", "", text, flags=re.I)
+    leak = _LEAK_MARKERS.search(text)
+    if leak:
+        log.warning("Index generated prompt instructions; truncating subtitle")
+        text = text[:leak.start()]
+    return " ".join(text.strip(' \\t\\r\\n\"“”').splitlines()).strip()
+
 
 
 def _model_ids(base_url: str) -> list[str] | None:
@@ -232,6 +234,8 @@ class IndexTranslator:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
             "max_tokens": self.cfg.max_tokens,
+            # Prevent the known continuation into translated prompt metadata.
+            "stop": ["〖", "【约束", "Constraint Requirements", "Hard Requirement"],
             "stream": False,
             "chat_template_kwargs": {"enable_thinking": False},
         }

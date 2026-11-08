@@ -53,8 +53,8 @@ _PROMPT_PREFIX = (
 _LEAK_MARKERS = re.compile(
     r"〖|【(?:源文|原文|约束要求|約束要求|硬性要求|注意|"
     r"Source|Constraints?|Constraint Requirements|Hard Requirement)】"
-    r"|(?:^|\\n|\\s{2,})(?:Constraint Requirements|Hard Requirements?|"
-    r"Translation Requirements?)\\s*[:：]?",
+    r"|(?:^|\n|\s{2,})(?:Constraint Requirements|Hard Requirements?|"
+    r"Translation Requirements?)\s*[:：]?",
     flags=re.IGNORECASE,
 )
 
@@ -80,7 +80,7 @@ def build_index_prompt(
             "仅在原句出现时使用这些译名：" +
             "；".join(src + " = " + target for src, target in hits) + "。"
         )
-    return "\\n".join(parts) + "\\n\\n" + japanese.strip()
+    return "\n".join(parts) + "\n\n" + japanese.strip()
 
 
 def _clean(text: str) -> str:
@@ -93,12 +93,12 @@ def _clean(text: str) -> str:
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[-1]
     text = text.strip().removeprefix("<think>").strip()
-    text = re.sub(r"^(?:English|Translation|EN)\\s*:\\s*", "", text, flags=re.I)
+    text = re.sub(r"^(?:English|Translation|EN)\s*:\s*", "", text, flags=re.I)
     leak = _LEAK_MARKERS.search(text)
     if leak:
         log.warning("Index generated prompt instructions; truncating subtitle")
         text = text[:leak.start()]
-    return " ".join(text.strip(' \\t\\r\\n\"“”').splitlines()).strip()
+    return " ".join(text.strip(' \t\r\n\"“”').splitlines()).strip()
 
 
 

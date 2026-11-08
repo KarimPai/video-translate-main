@@ -14,40 +14,30 @@ class AudioCommandTests(unittest.TestCase):
         self.ingest.source = SimpleNamespace(
             start_s=0.0, live=False, paced=False, location=str(Path(__file__).resolve())
         )
-        self.ingest.pitch_semitones = 0.0
         self.ingest.separation_enabled = False
         self.ingest.deepfilter_enabled = False
 
-    def test_pitch_shift_is_disabled_by_default(self):
-        self.assertEqual(IngestConfig().pitch_shift_semitones, 0.0)
-        self.assertEqual(self.ingest._pitch_filter(16000), [])
-        cmd = self.ingest._audio_commands()[0]
-        self.assertNotIn("asetrate=", " ".join(cmd))
-        self.assertNotIn("atempo=", " ".join(cmd))
-
-    def test_two_semitones_down_uses_duration_corrected_asr_audio_only(self):
-        self.ingest.pitch_semitones = -2.0
+    def test_direct_audio_uses_original_pitch_only(self):
         cmd = self.ingest._audio_commands()[0]
         graph = cmd[cmd.index("-af") + 1]
-        self.assertIn("asetrate=", graph)
+        self.assertNotIn("asetrate=", graph)
+        self.assertNotIn("atempo=", graph)
         self.assertIn("aresample=16000", graph)
-        self.assertIn("atempo=", graph)
         self.assertIn("aformat=sample_fmts=s16:channel_layouts=mono", graph)
-        ratio = 2 ** (-2 / 12)
-        self.assertIn(f"asetrate={16000 * ratio:.8f}", graph)
-        self.assertIn(f"atempo={1 / ratio:.8f}", graph)
         self.assertEqual(cmd[cmd.index("-ar") + 1], "16000")
+        self.assertFalse(hasattr(IngestConfig(), "pitch_shift_semitones"))
+        self.assertFalse(hasattr(self.ingest, "_pitch_filter"))
 
-    def test_explicit_opt_in_and_legacy_pitch_override(self):
+    def test_both_retired_pitch_config_keys_are_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "config.toml"
-            file.write_text("[ingest]\npitch_semitones = -3.0\n", encoding="utf-8")
-            self.assertEqual(load_config(file).ingest.pitch_shift_semitones, 0.0)
-            file.write_text("[ingest]\npitch_shift_semitones = -2.0\n", encoding="utf-8")
-            self.assertEqual(load_config(file).ingest.pitch_shift_semitones, -2.0)
-            file.write_text("[ingest]\npitch_shift_semitones = -6.0\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "pitch_shift_semitones"):
-                load_config(file)
+            file.write_text(
+                "[ingest]\npitch_semitones = -3.0\npitch_shift_semitones = -2.0\n",
+                encoding="utf-8",
+            )
+            cfg = load_config(file)
+            self.assertFalse(hasattr(cfg.ingest, "pitch_semitones"))
+            self.assertFalse(hasattr(cfg.ingest, "pitch_shift_semitones"))
 
     def test_direct_audio_command_disables_per_frame_diagnostics(self):
         cmd = self.ingest._audio_commands()[0]
@@ -79,6 +69,8 @@ class AudioCommandTests(unittest.TestCase):
         self.assertNotIn("ashowinfo", " ".join(cmd))
         self.assertEqual(cmd[cmd.index("-loglevel") + 1], "warning")
         self.assertIn("http://127.0.0.1:8971/session-1/playlist.m3u8", cmd)
+        self.assertNotIn("asetrate=", " ".join(cmd))
+        self.assertNotIn("atempo=", " ".join(cmd))
 
 
 if __name__ == "__main__":

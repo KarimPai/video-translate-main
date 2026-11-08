@@ -112,27 +112,13 @@ The model file plus GPU/Vulkan recognition, VAD and MPV compete for 8 GB
 VRAM. Start with Q4_K_M, a 4096-token context, and a single server slot.
 A larger context may increase memory pressure or latency.
 
-## Optional lower-pitch VAD + ASR experiment
+## Original-pitch audio
 
-The input to FireRedVAD and Haas can be pitched down in the existing
-FFmpeg audio-only ingest path. This is **disabled by default**; there is no
-published evidence that lowering pitch improves FireRedVAD detection on
-high-pitched Japanese voices. In your git-ignored `config.toml`, opt in with:
-
-```toml
-[ingest]
-pitch_shift_semitones = -2.0  # experiment: compare against 0.0 (default)
-```
-
-Allowed values are -4.0 through 0.0 semitones. Start at -2.0 and compare
-speech detection, Japanese recognition, subtitle latency and false positives
-against 0.0 using the **same VOD**. The FFmpeg chain uses `asetrate`,
-`aresample` and `atempo` to approximately maintain audio duration, but may
-introduce artifacts, filtering delay or small alignment differences.
-Both FireRedVAD and Haas receive the modified audio; Qwen and the MPV video
-source do not directly receive the altered sound. This does **not** separate
-speakers. The previous `[ingest] pitch_semitones` field is ignored on
-purpose: old settings will not unexpectedly enable pitch shifting.
+The old experimental FFmpeg pitch shift has been removed. FireRedVAD,
+Sherpa speaker diarization, and Haas all receive original-pitch PCM audio
+(resampled only as required). MPV playback remains unmodified.
+Both legacy `pitch_semitones` and `pitch_shift_semitones` config entries
+are ignored for compatibility with existing local `config.toml` files.
 
 ## Sherpa-ONNX speaker-aware subtitles
 
@@ -184,8 +170,6 @@ unfamiliar or ambiguous voices are left unlabeled, not displayed as E/F or
 assigned to the closest voice without adequate evidence. Very short samples
 also cannot create new identities. This reduces label fragmentation but
 cannot guarantee perfect identity matching or unmix overlapping speech.
-Enable pitch_shift_semitones = 0.0 for the first speaker-label benchmark;
-pitch changes can also change speaker embeddings.
 
 ## Tests
 

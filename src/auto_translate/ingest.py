@@ -213,7 +213,6 @@ class Ingest:
         self.source = source
         self._vod_audio_url: str | None = None
         self.cfg = cfg
-        self.pitch_semitones = cfg.pitch_shift_semitones
         self.video_format = video_format
         # Keep the temporary fMP4 cache beside the project instead of
         # using the per-user Windows TEMP directory. Each run still gets
@@ -637,12 +636,11 @@ class Ingest:
         else:
             output_rate = SAMPLE_RATE
 
-        audio_filters = self._pitch_filter(output_rate)
         output_layout = "stereo" if self.separation_enabled else "mono"
         # PCM bytes are the authoritative audio clock; _read_session()
         # initializes first_pts from the first decoded chunk, including for
         # fallback fMP4 playback. No per-frame ashowinfo filter is needed.
-        audio_filters += [
+        audio_filters = [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
         ]
@@ -818,28 +816,6 @@ class Ingest:
             )
             self._video_failed.set()
 
-    def _pitch_filter(self, sample_rate: int) -> list[str]:
-        """Shift VAD and ASR input pitch without deliberately changing duration.
-
-        Original MPV playback audio is never processed by this filter.
-        FFmpeg atempo may add a small filter delay; compare timing in tests.
-        """
-        semitones = self.pitch_semitones
-
-        if abs(semitones) < 1e-6:
-            return []
-
-        ratio = 2 ** (semitones / 12.0)
-        tempo = 1.0 / ratio
-
-        log.info("Experimental VAD+ASR pitch shift: %.1f semitones (MPV unchanged)", semitones)
-
-        return [
-            f"asetrate={sample_rate * ratio:.8f}",
-            f"aresample={sample_rate}",
-            f"atempo={tempo:.8f}",
-        ]
-
     def _audio_commands(self) -> list[list[str]]:
         """Decode PCM and sample the first live transport timestamp once."""
         src = self.source
@@ -885,14 +861,13 @@ class Ingest:
             ]
 
         output_layout = "stereo" if self.separation_enabled else "mono"
-        filters = self._pitch_filter(output_rate)
-        filters += [
+        filters = [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
         ]
         graph = ",".join(filters)
         if src.live:
-            # Observe the input PTS before any resampling or pitch processing.
+            # Observe the input PTS before audio resampling.
             graph = (
                 "asplit[pcm][probe];[probe]atrim=end_sample=1,"
                 f"asettb=1/{SAMPLE_RATE},ashowinfo@live_anchor,anullsink;[pcm]"

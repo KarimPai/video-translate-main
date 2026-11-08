@@ -149,6 +149,7 @@ class QwenTranslator:
             "-c", str(self.cfg.qwen_context),
             "--host", host, "--port", str(port),
             "--alias", self.cfg.qwen_model, "--jinja",
+            "--no-mmproj",  # text-only translation; save ~0.7 GB GPU projector
             "--reasoning", "off",
             "-ngl", str(self.cfg.qwen_gpu_layers),
             "-np", "1",
@@ -278,7 +279,9 @@ class QwenTranslator:
 
     def _chat(self, ja: str, history: list[tuple[str, str]],
               timeout: float, review_hint: str = "") -> str:
-        recent = [source.strip()[:80] for source, _ in history[-max(0, self.cfg.context_lines):] if source.strip()]
+        count = max(0, self.cfg.context_lines)
+        relevant = history[-count:] if count else []
+        recent = [source.strip()[:80] for source, _ in relevant if source.strip()]
         blocks = []
         if self.vod_title:
             blocks.append("Video context (NOT spoken words): " + self.vod_title)

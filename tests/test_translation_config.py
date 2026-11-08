@@ -51,6 +51,15 @@ model = "ignored"
         self.assertIs(actual, constructor.return_value)
         constructor.assert_called_once_with(cfg, glossary, vod_title="Hololive ARK")
 
+    def test_cpu_speaker_diarization_setting_and_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / "config.toml"
+            self.assertTrue(load_config(file).speaker.enabled)
+            file.write_text("[speaker]\nenabled = false\nnum_threads = 1\n", encoding="utf-8")
+            cfg = load_config(file)
+            self.assertFalse(cfg.speaker.enabled)
+            self.assertEqual(cfg.speaker.num_threads, 1)
+
     def test_missing_config_is_qwen(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load_config(Path(tmp) / "missing.toml")

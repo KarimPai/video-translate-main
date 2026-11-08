@@ -134,6 +134,49 @@ source do not directly receive the altered sound. This does **not** separate
 speakers. The previous `[ingest] pitch_semitones` field is ignored on
 purpose: old settings will not unexpectedly enable pitch shifting.
 
+## Sherpa-ONNX speaker-aware subtitles
+
+The isolated Qwen experiment now includes a CPU-only Sherpa-ONNX speaker
+segmentation stage **before Haas**. It is enabled in configuration by default,
+but Sherpa is an optional Python package. Install it once in this checkout:
+
+```cmd
+uv sync --extra diarization
+```
+
+On the first run the launcher prints an explicit download message for the
+official pyannote segmentation 3.0 INT8 and NeMo TitaNet Small ONNX models.
+Models are cached under `%LOCALAPPDATA%\auto-translate\speaker-models`.
+Model setup failure falls back to the unchanged unsplit FireRedVAD path.
+No separate model runs on the GPU. The CPU cost and extra subtitle delay
+must be measured on the target i7-9700K.
+
+```toml
+[speaker]
+enabled = true
+num_threads = 2
+min_turn_s = 0.55
+similarity_threshold = 0.72
+max_speakers = 8
+max_turns = 5
+```
+
+Set `enabled = false` to restore the original pipeline immediately. The
+optional `model_dir = ""` uses the default model cache directory.
+
+The implementation processes completed FireRedVAD utterances through
+Sherpa's **offline** diarization API. Clear speaker changes produce separate
+audio slices, Haas transcriptions, Qwen translations and MPV subtitle lines.
+MPV prioritizes distinct speakers (A:, B:, etc.) among its three lines,
+with the newest lines above. A single speaker can still have multiple
+stacked lines if there are no other speakers to prioritize.
+
+Anonymous IDs are best-effort and may drift across scenes or seeks. Brief
+phrases without sufficient embedding evidence remain unlabeled. Genuine
+simultaneous speech cannot be unmixed by diarization and is left intact.
+Enable pitch_shift_semitones = 0.0 for the first speaker-label benchmark;
+pitch changes can also change speaker embeddings.
+
 ## Tests
 
 ```cmd

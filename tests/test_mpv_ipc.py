@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from auto_translate.config import MpvConfig
-from auto_translate.output.mpv import MpvError, MpvIpc, MpvOutput, _WindowsPipe, _Line
+from auto_translate.output.mpv import MpvError, MpvIpc, MpvOutput, _WindowsPipe, _Line, _ass_many, _prefer_speaker_rows
 from auto_translate.types import Subtitle
 
 
@@ -532,6 +532,33 @@ class CachedSeekTests(unittest.TestCase):
         self.assertEqual(out._now, 400.0)
         self.assertEqual(renders, [400.0])
         self.assertEqual(restarts, [])
+
+
+
+class SpeakerSubtitlePriorityTests(unittest.TestCase):
+    def test_distinct_speakers_get_priority_over_old_same_speaker_cues(self):
+        latest = _Line(Subtitle(5, 6, "ja", "Latest A", speaker_id=0), 5, 9)
+        older_a = _Line(Subtitle(4, 5, "ja", "Older A", speaker_id=0), 4, 8)
+        older_b = _Line(Subtitle(3, 4, "ja", "Older B", speaker_id=1), 3, 7)
+        self.assertEqual(
+            _prefer_speaker_rows([latest, older_a, older_b], 2),
+            [latest, older_b],
+        )
+        self.assertEqual(
+            _prefer_speaker_rows([latest, older_a, older_b], 3),
+            [latest, older_a, older_b],
+        )
+
+    def test_ass_overlay_displays_compact_anonymous_speaker_prefix(self):
+        body = _ass_many([
+            Subtitle(5, 6, "ja", "Watch out!", speaker_id=0),
+            Subtitle(4, 5, "ja", "On my way.", speaker_id=1),
+            Subtitle(3, 4, "ja", "Unknown"),
+        ], MpvConfig())
+        self.assertIn("A: Watch out!", body)
+        self.assertIn("B: On my way.", body)
+        self.assertIn("Unknown", body)
+        self.assertNotIn("C: Unknown", body)
 
 
 if __name__ == '__main__':

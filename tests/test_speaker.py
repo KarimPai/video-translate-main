@@ -133,6 +133,30 @@ class SpeakerTurnTests(unittest.TestCase):
         self.assertLessEqual(cut, 1.98)
 
 
+    def test_single_frame_dip_is_not_a_trusted_speaker_pause(self):
+        pcm = np.full(4 * SAMPLE_RATE, .5, dtype=np.float32)
+        pcm[round(1.96 * SAMPLE_RATE):round(1.97 * SAMPLE_RATE)] = 0
+        result = split_turns(
+            4.0, [Turn(0.0, 1.85, 0), Turn(2.15, 4.0, 1)],
+            .55, pcm,
+        )
+        self.assertEqual(result[0].end, 2.0)
+
+    def test_short_ambiguous_speaker_overlap_keeps_original_utterance(self):
+        pcm = np.full(4 * SAMPLE_RATE, .4, dtype=np.float32)
+        self.assertEqual(
+            split_turns(4.0, [Turn(0.0, 2.05, 0),
+                              Turn(2.00, 4.0, 1)], .55, pcm),
+            [Turn(0.0, 4.0, None)],
+        )
+
+    def test_speaker_boundary_settings_have_conservative_defaults(self):
+        cfg = SpeakerConfig()
+        self.assertEqual(cfg.boundary_search_ms, 180)
+        self.assertEqual(cfg.boundary_quiet_ms, 40)
+        self.assertEqual(cfg.boundary_quiet_ratio, .45)
+
+
 class SpeakerPipelineTests(unittest.TestCase):
     def test_fake_model_split_preserves_pcm_timestamps(self):
         class FakeDiarizer:

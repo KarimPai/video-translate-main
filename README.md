@@ -16,11 +16,15 @@ Official model: https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF
 
 The **Q4_K_M** file is approximately **1.31 GB**. It is a GGUF derived from a translation-focused model, not the general-purpose Qwen3.5-4B model. The official client uses **greedy decoding (temperature 0)** and **thinking disabled**.
 
-The translator uses Index's **short, plain Japanese-to-English translation prompt**, with a single brief instruction requesting natural conversational English. Only matching glossary terms are included; long instTrans sections, repeated context, and past English subtitles are not passed to the model.
+The translator uses Index's **short, plain Japanese-to-English translation prompt** for casual English. The current Japanese utterance is the only source translated. Up to **two previous Japanese lines** are provided as explicitly labeled context for meaning and omitted subjects; previous **English translations and the video title are never copied into the prompt**. This avoids passing earlier mistranslations forward.
+
+Only glossary terms appearing in the current utterance are included. High-confidence mistakes (e.g. missing negation, untranslated Japanese, badly phonetic output, or missing priority GTA terminology) trigger **at most one extra Index attempt**, with an independent **8-second HTTP timeout** by default. A second result replaces the first only when it clears the deterministic checks, or the first was empty. This adds latency only to flagged lines; automatic review cannot guarantee the semantics are correct.
+
+Very short unambiguous "オリ曲" / "オリジナル曲" utterances are translated directly to "Original song" instead of being romanized. No new translator or external provider was added.
 
 To prevent **prompt leakage** into subtitles, the llama.cpp request stops at known instruction markers, and output validation truncates any generated `〖Constraint Requirements〗`, `〖约束要求〗`, `〖Source〗`, or similar metadata before the text reaches MPV. A response containing only leaked instructions is treated as a translation failure rather than displayed.
 
-This is a deliberate reliability trade-off: earlier Japanese history and video-title context are temporarily omitted from individual Index requests until the compact prompt is validated against real VTuber audio.
+This remains a reliability trade-off: short Japanese context is restored, but scene-title prompting and long instTrans sections stay disabled to minimize instruction leakage and translation of earlier dialogue. Speaker interruptions remain separate ASR/translation requests; Index is told not to complete cut-off speech.
 
 **No vision projector is loaded**; this is text-to-text translation only.
 
@@ -63,8 +67,10 @@ index_gpu_layers = 99
 max_tokens = 160
 timeout_s = 20.0
 load_timeout_s = 300.0
-context_lines = 4
+context_lines = 2
 memory_lines = 12
+quality_retry_enabled = true
+quality_retry_timeout_s = 8.0
 glossary = "glossary.toml"
 ```
 
@@ -130,7 +136,26 @@ cd /d C:\Games\video-translate-index
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Tests mock the speech.cpp and llama.cpp processes; the suite does **not** prove translation accuracy or end-to-end GPU integration. For a fair comparison, run the same VOD and compare the Japanese transcript and resulting English subtitles against the original audio.
+Tests mock the speech.cpp and llama.cpp processes; the suite does **not** prove translation accuracy or end-to-end GPU integration.
+
+## Optional Index vs Qwen3.5 comparison
+
+A fixed **18-line Japanese GTA sample** is available at `tests/data/gta_translation_eval.jsonl`. The optional `tools/compare_translation_models.py` sends the **same source text to each model**, saves English and response latency, and prints the results side by side. It **does not** run a second model inside the live subtitle pipeline.
+
+Run **one model at a time** on an 8 GB GPU; leave its existing local llama.cpp server active while collecting its results. These commands only attach to already-running model servers—they do not launch or replace them:
+
+```cmd
+uv run --no-sync python tools/compare_translation_models.py run --backend index --url http://127.0.0.1:8002/v1 --output logs/index-eval.jsonl
+```
+
+Stop Index, then start Qwen in its own independent checkout (using its actual llama.cpp server port; 8001 is an example):
+
+```cmd
+uv run --no-sync python tools/compare_translation_models.py run --backend qwen --url http://127.0.0.1:8001/v1 --output logs/qwen-eval.jsonl
+uv run --no-sync python tools/compare_translation_models.py compare --index logs/index-eval.jsonl --qwen logs/qwen-eval.jsonl
+```
+
+The sample includes suggested readings for manual checking and several lines with potentially garbled ASR; these are **not verified audio transcripts**. The comparison script intentionally reports no automated accuracy score. Review the original audio for ambiguous Japanese. For best fairness, compare the same fixed Japanese text, keep both server settings documented, and do not compare end-to-end latency to the timing of an unrelated live VOD.
 
 ## Branches
 

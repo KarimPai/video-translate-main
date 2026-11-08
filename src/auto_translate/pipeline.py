@@ -15,7 +15,7 @@ from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
-from .text_filter import is_isolated_reaction, is_usable_transcript
+from .text_filter import is_isolated_reaction, is_usable_transcript, strip_nonverbal_labels
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
@@ -85,15 +85,30 @@ def run_asr(
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         utt.timings.asr_end = time.monotonic()
+        original_asr = text
+        text = strip_nonverbal_labels(text)
+        if original_asr != text:
+            log.debug("filtered Haas nonverbal labels at %.2fs: %r -> %r", utt.start_s, original_asr, text)
 
         caption_match = (
             captions.match(utt.start_s, utt.end_s)
             if captions is not None
             else None
         )
+        if caption_match is not None:
+            cleaned_caption = strip_nonverbal_labels(caption_match.text)
+            if cleaned_caption != caption_match.text:
+                log.debug("filtered YouTube sound labels at %.2fs: %r -> %r", utt.start_s, caption_match.text, cleaned_caption)
+            caption_match = replace(caption_match, text=cleaned_caption) if cleaned_caption else None
+
+        source = "haas"
         if text and caption_match is not None:
             if caption_match.reliable:
-                text = reconcile_caption(text, caption_match.text)
+                reconciled = strip_nonverbal_labels(reconcile_caption(text, caption_match.text))
+                if reconciled:
+                    if reconciled != text:
+                        source = "haas+youtube_correction"
+                    text = reconciled
             haas_compact = "".join(ch for ch in text if ch.isalnum()).casefold()
             caption_compact = "".join(ch for ch in caption_match.text if ch.isalnum()).casefold()
             similarity = SequenceMatcher(
@@ -111,6 +126,7 @@ def run_asr(
             and is_usable_transcript(caption_match.text)
         ):
             text = caption_match.text
+            source = "youtube_fallback"
             log.debug(
                 "using aligned YouTube caption because Haas returned no text "
                 "(%.2f-%.2fs, coverage=%.0f%%): %s",
@@ -119,6 +135,7 @@ def run_asr(
 
         if not text:
             continue
+        log.debug("transcript source at %.2f-%.2fs: %s", utt.start_s, utt.end_s, source)
 
         # Proper names must be repaired before translation and glossary lookup.
         # The VOD title is a stronger signal than kanji auto-caption spelling.

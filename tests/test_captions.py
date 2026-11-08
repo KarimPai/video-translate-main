@@ -236,6 +236,46 @@ class ReactionPipelineTests(unittest.TestCase):
         lines = self._queues("あっ！", "あっ、ペコちゃんのサインが")
         self.assertEqual([line.ja for line in lines], ["あっ、ペコちゃんのサインが"])
 
+    def test_inline_laughter_is_removed_before_transcription_reaches_plamo(self):
+        cleaned = self._queues(
+            "何それわかんないアハハ",
+            "これでいこうと思いますあはは",
+            "ハハハ、敵来た",
+            "アハハ",
+            "フッ",
+            "来い来い来い",
+            "それは笑った",
+        )
+        self.assertEqual(
+            [line.ja for line in cleaned],
+            [
+                "何それわかんない",
+                "これでいこうと思います",
+                "敵来た",
+                "来い来い来い",
+                "それは笑った",
+            ],
+        )
+
+    def test_laughter_only_is_not_sent_to_translator(self):
+        class CountTranslator:
+            memory_lines = 0
+            def __init__(self):
+                self.inputs = []
+            def translate(self, ja, history):
+                self.inputs.append(ja)
+                return "English"
+
+        transcripts, subtitles = queue.Queue(), queue.Queue()
+        for line in self._queues("アハハ", "何それわかんないアハハ", "ふふふ"):
+            transcripts.put(line)
+        transcripts.put(None)
+        spy = CountTranslator()
+        run_translate(spy, 0, transcripts, subtitles)
+        self.assertEqual(spy.inputs, ["何それわかんない"])
+        self.assertEqual(subtitles.get_nowait().ja, "何それわかんない")
+        self.assertIsNone(subtitles.get_nowait())
+
     def test_reliable_caption_fallback_cannot_restore_isolated_reaction(self):
         index = CaptionIndex.from_vtt(VTT.replace("今日はゲームをします", "うわー！"))
         incoming, outgoing = queue.Queue(), queue.Queue()

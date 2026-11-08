@@ -39,7 +39,8 @@ from .quality import (
 log = logging.getLogger(__name__)
 
 # https://huggingface.co/cyberagent/CAT-Translate-3.3b
-# Apply via llama.cpp --jinja and the GGUF's embedded Sarashina chat template.
+# Apply via llama.cpp --jinja and our pinned official Sarashina chat template.
+# Community GGUF metadata is not assumed to contain the correct template.
 # The Japanese source is the ONLY dialogue sent to CAT; the model never sees
 # earlier Japanese/English lines, preventing context-echo regressions.
 _PROMPT = "Translate the following Japanese text into English.\n\n"
@@ -62,6 +63,40 @@ def _clean(text: str) -> str:
     text = re.sub(r"^(?:Translation|English|EN)\s*:\s*", "", text, flags=re.I)
     text = text.strip(' \t\r\n"“”')
     return " ".join(text.splitlines()).strip()
+
+
+# These are translation-assistant *meta responses*, not a translation of
+# short conversational speech. Keep patterns narrow to avoid dropping a
+# genuine stream discussion about translation or help.
+_META_REPLY = re.compile(
+    r"(?:\bi(?:['’]m| am) (?:ready|here|happy) to (?:help )?translate\b|"
+    r"\bi (?:do not|don['’]t) (?:see|have) (?:the |any )?(?:[\w-]+ )?japanese (?:text|phrase)\b|"
+    r"\b(?:please|could you) (?:provide|paste|send) (?:me )?(?:the |some )?(?:japanese )?text\b|"
+    r"\b(?:the |a )?\d+-character japanese (?:text|phrase)\b)",
+    flags=re.IGNORECASE,
+)
+_PUNCTUATION_SPIRAL = re.compile(r"(?:[.!?…]\s*){12,}")
+
+
+def cat_output_problem(japanese: str, english: str) -> str | None:
+    """Detect only clearly invalid completions, not subjective translations."""
+    if not english or is_skip_token(english):
+        return "empty"
+    if _META_REPLY.search(english):
+        return "assistant_meta_reply"
+    if _PUNCTUATION_SPIRAL.search(english):
+        return "punctuation_loop"
+    if len(english) > max(300, len(japanese) * 8):
+        return "runaway_length"
+    return None
+
+
+# Very short, unambiguous conversational interjections. Exact full-line
+# matches only; never remove context or combine distinct speakers.
+_COMMON_JP = {
+    "なるほど": "I see.",
+    "あかんか": "So that won't work?",
+}
 
 
 def _model_ids(base_url: str) -> list[str] | None:
@@ -125,7 +160,9 @@ class CatTranslator:
             "-c", str(self.cfg.cat_context),
             "--host", host, "--port", str(port),
             "--alias", self.cfg.cat_model,
-            "--jinja", "--no-mmproj",
+            "--jinja",
+            "--chat-template-file", str(Path(__file__).with_name("cat_sarashina.jinja")),
+            "--no-mmproj",
             "-ngl", str(self.cfg.cat_gpu_layers),
             "-np", "1",
         ]
@@ -193,7 +230,7 @@ class CatTranslator:
             time.sleep(0.5)
         raise TimeoutError("CAT translator warm-up timed out; see logs/cat-server.log")
 
-    def _chat(self, japanese: str, *, timeout: float) -> str:
+    def _chat(self, japanese: str, *, timeout: float, retry: bool = False) -> str:
         # CAT's model card specifies exactly one user role and the short prompt.
         # No Index instruction/metadata stop strings, thinking flags, or
         # model-specific quality-retry chat parameters are sent here. The
@@ -201,8 +238,9 @@ class CatTranslator:
         payload = {
             "model": self.cfg.cat_model,
             "messages": [{"role": "user", "content": build_cat_prompt(japanese)}],
-            "temperature": 0,
-            "max_tokens": self.cfg.max_tokens,
+            "temperature": 0.35 if retry else 0,
+            "repeat_penalty": 1.08 if retry else 1.05,
+            "max_tokens": min(self.cfg.max_tokens, 96) if retry else self.cfg.max_tokens,
             # Sarashina's model EOS is </s>. Explicitly stop here in case
             # this community GGUF exposes EOS as an ordinary text token.
             "stop": ["</s>"],
@@ -226,10 +264,29 @@ class CatTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 return reused
+        bare = ja.strip().strip(" \	\r\n。、!?！？")
+        if bare in _COMMON_JP:
+            return _COMMON_JP[bare]
+
         english = _clean(self._chat(ja, timeout=self.cfg.timeout_s))
-        if not english or is_skip_token(english):
-            log.warning("CAT returned empty/nontranslation text for %r", ja)
-            return "[translation failed]"
+        problem = cat_output_problem(ja, english)
+        if problem:
+            log.warning("CAT output rejected (%s), source=%r", problem, ja[:100])
+            # One bounded re-attempt using the same model and source-only
+            # prompt. Slight sampling/rep penalty can escape an EOS loop;
+            # never show assistant instructions or repetitive punctuation.
+            try:
+                alternative = _clean(self._chat(
+                    ja, timeout=min(4.0, self.cfg.timeout_s), retry=True
+                ))
+                if cat_output_problem(ja, alternative) is None:
+                    english = alternative
+                    problem = None
+            except (OSError, ValueError, KeyError, IndexError) as exc:
+                log.warning("CAT invalid-output retry failed: %s", exc)
+        if problem:
+            log.warning("CAT skipped invalid subtitle (%s)", problem)
+            return SKIP_TOKEN
 
         # Shared conservative postprocessing only. These do not ask any
         # additional language model to finish interrupted speech.

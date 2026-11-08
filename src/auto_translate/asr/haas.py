@@ -211,7 +211,9 @@ class HaasASR:
                 if use_keywords and (
                     option in {"keywords", "keywords_alpha", "keywords_guard"}
                     or ("keyword" in detail.lower()
-                        and code in {"unsupported", "invalid_argument"})
+                        and code in {"unsupported", "invalid_argument",
+                                     "invalid_request", "invalid_option",
+                                     "bad_request", "validation_error"})
                 ):
                     # Older speech.cpp builds may not accept Haas keyword options.
                     # Retry once without hints; never switch ASR backends.

@@ -300,9 +300,9 @@ class IndexTranslator:
         # forcing every nickname or ambiguous single-kanji glossary entry.
         protected = (
             ("オリ曲", r"\boriginal\b"),
-            ("現行犯", r"\b(?:caught|red.hand|in the act)\b"),
+            ("現行犯", r"\b(?:caught|red.hand|in the act|arrest(?:ed)?)\b"),
             ("指名手配", r"\bwanted\b"),
-            ("張り込み", r"\b(?:stakeout|stake.out|surveillance|watching)\b"),
+            ("張り込み", r"\b(?:stakeout|stake.out|stak(?:e|ing)\s+out|surveillance|watching)\b"),
             ("税金の使い込み", r"\b(?:misus|embezz|squander|misappropriat)\w*"),
             ("大空部長", r"\boozora\b"),
         )

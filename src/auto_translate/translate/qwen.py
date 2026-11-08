@@ -225,6 +225,8 @@ class QwenTranslator:
         """
         process, self.process = self.process, None
         job, self._job = getattr(self, "_job", None), None
+        if process is None and job is None and self._server_log is None:
+            return  # Already closed, or never owned a server.
         try:
             if process is not None and process.poll() is None:
                 log.info("Stopping managed Qwen3.5-4B server (PID %s)", process.pid)
@@ -238,7 +240,8 @@ class QwenTranslator:
         finally:
             # A close of the kill-on-job-close handle guarantees shutdown even
             # when terminate()/wait() failed. On other OSes this is a no-op.
-            _close_job(job)
+            if job is not None:
+                _close_job(job)
             if self._server_log is not None:
                 self._server_log.close()
                 self._server_log = None

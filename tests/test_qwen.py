@@ -119,7 +119,7 @@ class QwenTranslatorTests(unittest.TestCase):
             "auto_translate.translate.qwen.atexit.unregister"
         ):
             instance.close()
-        close_job.assert_called_once_with(None)
+        close_job.assert_not_called()
 
     def test_start_server_rejects_unowned_existing_server(self):
         instance = translator()

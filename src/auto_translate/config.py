@@ -88,8 +88,11 @@ class TranslateConfig:
     max_tokens: int = 128
     timeout_s: float = 25.0
     load_timeout_s: float = 600.0
-    context_lines: int = 0  # short source-only PFML3 prompt, no dialogue history
-    memory_lines: int = 12  # previous local repeat consistency (no prompt history)
+    context_lines: int = 0  # no unverified dialogue history
+    memory_lines: int = 12  # local short-term repeat consistency
+    scene_memory_enabled: bool = True  # independent evidence-based scene classification
+    scene_max_idle_lines: int = 24  # expire after this many unsupported utterances
+    scene_gap_reset_s: float = 30.0  # discard stale scenes after a long audio gap
     glossary: str = "glossary.toml"
 
 @dataclass

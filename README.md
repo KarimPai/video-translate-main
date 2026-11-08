@@ -7,7 +7,7 @@ Isolated `test-qwen35-4b` branch:
 
 FireRedVAD, Sherpa CPU speaker segmentation, YouTube caption correction,
 Hololive glossary and English-only MPV subtitles remain unchanged.
-There is no Haas ASR or secondary recognition fallback.
+There is no secondary ASR fallback; Haas is the only recognizer.
 
 ## Requirements
 

@@ -285,16 +285,6 @@ class SherpaSplitter:
         self.failures = 0
         print("Speaker diarization: Sherpa CPU ready.", flush=True)
 
-    def _embedding(self, audio: np.ndarray) -> np.ndarray | None:
-        if len(audio) < SAMPLE_RATE:
-            return None
-        stream = self.extractor.create_stream()
-        stream.accept_waveform(sample_rate=SAMPLE_RATE, waveform=np.ascontiguousarray(audio))
-        stream.input_finished()
-        if not self.extractor.is_ready(stream):
-            return None
-        return np.asarray(self.extractor.compute(stream), dtype=np.float32)
-
     def split(self, original: Utterance) -> list[Utterance]:
         if original.probe:
             return [original]

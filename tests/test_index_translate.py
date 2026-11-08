@@ -29,7 +29,7 @@ class IndexTranslationTests(unittest.TestCase):
         self.assertNotIn("硬性要求", prompt)
         self.assertNotIn("Hololive GTA RP", prompt)
         self.assertEqual(prompt.count("角巻わためと行くよ"), 1)
-        self.assertTrue(prompt.endswith("\\n\\n角巻わためと行くよ"))
+        self.assertTrue(prompt.endswith("\n\n角巻わためと行くよ"))
 
 
     @staticmethod

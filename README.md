@@ -1,18 +1,18 @@
 # Japanese Video Translator — Qwen3.5-4B experiment
 
-Isolated `test-qwen35-4b` branch. Both models are Qwen-only:
+Isolated `test-qwen35-4b` branch:
 
-- **ASR:** Japanese-fine-tuned Qwen3-ASR-1.7B-JA Q8_0 in speech.cpp on Vulkan.
-- **Translation:** Qwen3.5-4B Q4_K_M in the managed llama-server on CUDA.
+- **ASR:** Haas-ja-v1.0 Q8_0 in speech.cpp on Vulkan, CPU decoder.
+- **Translation:** Qwen3.5-4B Q4_K_M via the managed CUDA llama-server.
 
-FireRedVAD, Sherpa voice-turn segmentation, optional YouTube captions, the
-Hololive glossary and MPV's English subtitle overlay are retained. There is
-no Haas ASR fallback.
+FireRedVAD, Sherpa CPU speaker segmentation, YouTube caption correction,
+Hololive glossary and English-only MPV subtitles remain unchanged.
+There is no Haas ASR or secondary recognition fallback.
 
 ## Requirements
 
 - Windows, Python 3.12+, `uv`, `ffmpeg`, `yt-dlp`, and MPV.
-- `speech` / speech.cpp 0.8.10+ with Qwen3-ASR and Vulkan support; CUDA for FireRedVAD.
+- `speech` / speech.cpp 0.10+ with Haas and Vulkan support; CUDA for FireRedVAD.
 - **Recent CUDA-enabled llama.cpp `llama-server`** with Qwen3.5 GGUF model
   support, `--jinja` and `--reasoning off`. Older binaries may exit during
   startup; check `logs\qwen-server.log` and upgrade them if necessary.
@@ -20,16 +20,11 @@ no Haas ASR fallback.
   using the published `Q4_K_M` quantization (~2.74 GB of weights). The
   server downloads the model on first use and caches it through llama.cpp.
   No vision projector is required for text translation.
-- Japanese ASR model: [kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF](https://huggingface.co/kznkzn/Qwen3-ASR-1.7B-JA-speechcpp-GGUF),
-  Q8_0, 2,176,109,280 bytes (2.03 GiB). It is the speech.cpp-specific
-  conversion of Neosophie's proper-noun Japanese fine-tune, not a llama.cpp
-  GGUF. The application downloads it via the existing huggingface-hub
-  dependency on first use, verifies its SHA-256, and caches it.
-  First download requires roughly 2.18 GB. To pre-download:
-  `uv run --no-sync python -c "from auto_translate.asr.qwen_asr import resolve_qwen_asr_model; from auto_translate.config import AsrConfig; print(resolve_qwen_asr_model(AsrConfig()))"`.
-  The full Q8_0 fine-tune was conversion-tested but has no published
-  Hololive/stream accuracy benchmark. Expect higher VRAM and potentially
-  slower ASR than the former small recognizer.
+- Japanese ASR model: [sakasegawa/Haas-ja-v1.0-GGUF](https://huggingface.co/sakasegawa/Haas-ja-v1.0-GGUF).
+  Selected as `haas-ja-v1.0:q8_0` (656 MB). speech.cpp fetches and checks
+  it automatically; run `speech info haas-ja-v1.0:q8_0` to prefetch.
+  Haas is not a llama.cpp GGUF. The Qwen3-ASR model and Python loader
+  are not used.
 
 ## Starting the independent branch
 
@@ -55,9 +50,10 @@ inspect these logs. The original `test` branch is not changed.
 
 ```toml
 [asr]
-device = "Vulkan0"
-model_path = ""         # optional verified local .gguf path for offline setup
-prompt = ""             # optional SHORT names/terms hint; off to avoid hallucinations
+haas_model = "haas-ja-v1.0:q8_0"
+haas_device = "Vulkan0"
+haas_decode_on_cpu = true  # conserve GPU memory for Qwen3.5
+response_timeout_s = 30.0
 
 [translate]
 qwen_base_url = "http://127.0.0.1:8001/v1"
@@ -145,7 +141,7 @@ The 50-case benchmark now checks these exact names and duration words.
 
 Close `Start translate.bat` and any other process using local Qwen port
 8001, then double-click `Benchmark sampling.bat`. This launches **only
-Qwen3.5-4B translation**, not Qwen ASR, FireRed, Sherpa or MPV. It loads
+Qwen3.5-4B translation**, not Haas ASR, FireRed, Sherpa or MPV. It loads
 the translator **once**, then compares the same 50 Japanese/reference pairs
 using temperature `0.1`, `0.35`, `0.5` and `0.7`. All other sampling
 values, the faithful prompt, the glossary, source-only context and the
@@ -213,32 +209,28 @@ to adopt the new runtime default.
 - Explicit Choco-san honorific and conversational idioms such as
   `空気を探り合ってる` are kept natural without inferring missing speech.
 
-If the stream has no Japanese YouTube captions, recognition uses Qwen3-ASR-1.7B-JA.
+If the stream has no Japanese YouTube captions, recognition uses Haas-ja-v1.0 Q8_0.
 A translation model cannot recover what ASR never heard correctly. A nickname
 resolver must not automatically replace genuine `猫ちゃん` with `ぺこちゃん`.
 
-The two Qwen models compete for 8 GB VRAM with FireRedVAD, MPV and the
-Windows desktop. Qwen3-ASR-1.7B Q8_0 is a 2.18 GB file, while Qwen3.5-4B
-Q4_K_M has about 2.74 GB of weights; actual allocations are larger and
-hardware-dependent. On an RTX 3070 8 GB, test concurrent loading and latency
-before assuming both models can stay fully GPU-resident. If the ASR worker
-cannot load due to VRAM pressure, try `[asr] device = "cpu"` as a diagnostic
-rather than silently substituting another ASR model. That will be slower.
-The `[asr] prompt` can provide a few confirmed Japanese terms, but is empty
-by default to avoid falsely transcribing unspoken prompt names. A larger
-translation context may increase memory pressure or latency.
+Haas Q8_0 is a 656 MB file, while Qwen3.5-4B Q4_K_M has about 2.74 GB
+of weights; total runtime allocations are higher. Haas uses Vulkan for
+recognition with CPU decoding enabled to preserve GPU memory on RTX 3070 8 GB.
+Monitor `nvidia-smi` during playback if VRAM remains constrained.
+Retired `[asr]` keys such as `model_path`, `device` and `prompt` are ignored
+when an older git-ignored `config.toml` exists.
 
 ## Original-pitch audio
 
 The old experimental FFmpeg pitch shift has been removed. FireRedVAD,
-Sherpa speaker diarization, and Qwen ASR all receive original-pitch PCM audio
+Sherpa speaker diarization, and Haas ASR all receive original-pitch PCM audio
 (resampled only as required). MPV playback remains unmodified.
 Both legacy `pitch_semitones` and `pitch_shift_semitones` config entries
 are ignored for compatibility with existing local `config.toml` files.
 
 ## Sherpa-ONNX voice-turn-separated subtitles
 
-The optional Sherpa CPU stage runs after FireRedVAD and before Qwen ASR. It
+The optional Sherpa CPU stage runs after FireRedVAD and before Haas ASR. It
 uses pyannote segmentation 3.0 INT8 and NeMo TitaNet Small *internally*
 to detect voice changes **within each VAD utterance**. No session-long
 speaker memory or A/B/C identities are generated.
@@ -271,7 +263,7 @@ the overlapping part remains one mixed cue (not falsely attributed to one
 voice). When a clean
 non-overlapping speaker change is detected, the system picks a nearby
 low-energy boundary, ensures all PCM is preserved exactly once, and sends
-each slice independently through Qwen ASR and Qwen3.5 translation. MPV retains up to three
+each slice independently through Haas ASR and Qwen3.5 translation. MPV retains up to three
 English-only rows, newest above, with no speaker letters in MPV or CMD.
 
 **Limitations:** Diarization is not source separation. Simultaneous
@@ -290,7 +282,7 @@ ingest stage re-resolves the signed YouTube audio URL and resumes from the
 processed position (up to three attempts). Repeated early EOF is an explicit
 error rather than a silent stop while MPV continues to play.
 
-The Qwen ASR speech.cpp worker has a 30-second response deadline for each
+The Haas ASR speech.cpp worker has a 30-second response deadline for each
 utterance (`[asr] response_timeout_s = 30.0`). A crashed ingestion, VAD,
 Sherpa, ASR or translation thread now reports a fatal stage error rather than
 leaving MPV playing without subtitles. If queued audio stops advancing,
@@ -329,4 +321,4 @@ recorded Japanese clip against the `test` branch for accuracy and speed.
 
 - `main`: original stable baseline.
 - `test`: existing Haas + original translator pipeline.
-- `test-qwen35-4b`: isolated Qwen Japanese ASR + Qwen3.5 translator.
+- `test-qwen35-4b`: isolated Haas Q8_0 ASR + Qwen3.5 translator.

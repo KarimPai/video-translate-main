@@ -93,37 +93,32 @@ model = "ignored"
             self.assertFalse(cfg.speaker.enabled)
             self.assertEqual(cfg.speaker.num_threads, 1)
 
-    def test_japanese_qwen_asr_is_the_only_asr_default(self):
+    def test_haas_q8_vulkan_cpu_decode_is_the_only_asr_default(self):
         cfg = AsrConfig()
-        self.assertEqual(cfg.device, "Vulkan0")
-        self.assertEqual(cfg.model_path, "")
-        self.assertEqual(cfg.prompt, "")
+        self.assertEqual(cfg.haas_model, "haas-ja-v1.0:q8_0")
+        self.assertEqual(cfg.haas_device, "Vulkan0")
+        self.assertTrue(cfg.haas_decode_on_cpu)
         self.assertEqual(cfg.response_timeout_s, 30.0)
-        self.assertFalse(hasattr(cfg, "haas_model"))
-        self.assertFalse(hasattr(cfg, "haas_keywords_enabled"))
+        self.assertFalse(hasattr(cfg, "model_path"))
+        self.assertFalse(hasattr(cfg, "prompt"))
 
-    def test_old_haas_fields_are_ignored_in_local_config(self):
-        old = """
+    def test_legacy_qwen_asr_config_is_ignored(self):
+        legacy = """
 [asr]
-haas_model = "haas-ja-v1.0"
+model_path = "qwen.gguf"
+device = "cpu"
+prompt = "old keyword"
 haas_device = "Vulkan0"
 haas_decode_on_cpu = true
-haas_keywords_enabled = true
-haas_keywords_file = "haas_vocabulary.toml"
-haas_keywords_alpha = 1.5
-haas_keywords_guard = true
-backend = "haas"
-device = "cpu"
-prompt = "角巻わため"
 """
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "config.toml"
-            path.write_text(old, encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(legacy, encoding="utf-8")
             cfg = load_config(path).asr
-        self.assertEqual(cfg.device, "cpu")
-        self.assertEqual(cfg.prompt, "角巻わため")
-        self.assertFalse(hasattr(cfg, "haas_model"))
-        self.assertFalse(hasattr(cfg, "haas_keywords_file"))
+        self.assertEqual(cfg.haas_model, "haas-ja-v1.0:q8_0")
+        self.assertEqual(cfg.haas_device, "Vulkan0")
+        self.assertTrue(cfg.haas_decode_on_cpu)
+        self.assertFalse(hasattr(cfg, "model_path"))
 
     def test_missing_config_is_qwen(self):
         with tempfile.TemporaryDirectory() as tmp:

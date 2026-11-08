@@ -74,7 +74,7 @@ def main() -> None:
     )
 
     # Fetch VOD captions in parallel with model loading. Captions are optional:
-    # download/parse failures leave Qwen ASR as the sole recognizer.
+    # download/parse failures leave Haas ASR as the sole recognizer.
     captions = None
     video_id = (
         source.timeline.get("video_id")
@@ -90,7 +90,7 @@ def main() -> None:
                     str(video_id), source.location, cfg.ingest
                 )
             except Exception:
-                log.exception("caption preparation failed; continuing with Qwen ASR")
+                log.exception("caption preparation failed; continuing with Haas ASR")
 
         caption_thread = threading.Thread(
             target=load_captions,
@@ -113,13 +113,13 @@ def main() -> None:
     asr = create_asr(cfg.asr)
 
     log.info(
-        "ASR ready (Qwen3-ASR-1.7B-JA, %s speech.cpp) in %.1fs",
-        cfg.asr.device,
+        "ASR ready (Haas-ja-v1.0 Q8_0, %s speech.cpp) in %.1fs",
+        cfg.asr.haas_device,
         time.perf_counter() - t0,
     )
 
     # If the translation model cannot start, close the already loaded
-    # speech.cpp Qwen ASR worker rather than leaving GPU memory occupied.
+    # speech.cpp Haas ASR worker rather than leaving GPU memory occupied.
     translator = None
     try:
         t0 = time.perf_counter()

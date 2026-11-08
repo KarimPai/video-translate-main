@@ -126,7 +126,7 @@ class CaptionFallbackTests(unittest.TestCase):
         run_asr(EmptyASR(), in_q, out_q, captions=index)
         self.assertIsNone(out_q.get_nowait())
 
-    def test_qwen_asr_remains_primary_when_both_sources_disagree(self):
+    def test_haas_asr_remains_primary_when_both_sources_disagree(self):
         index = CaptionIndex.from_vtt(VTT)
         in_q = queue.Queue()
         out_q = queue.Queue()
@@ -134,14 +134,14 @@ class CaptionFallbackTests(unittest.TestCase):
         in_q.put(None)
 
         run_asr(
-            TextASR("Qwenの認識結果"),
+            TextASR("Haasの認識結果"),
             in_q,
             out_q,
             captions=index,
         )
 
         result = out_q.get_nowait()
-        self.assertEqual(result.ja, "Qwenの認識結果")
+        self.assertEqual(result.ja, "Haasの認識結果")
         self.assertIsNone(out_q.get_nowait())
 
 

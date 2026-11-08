@@ -142,13 +142,13 @@ def run_asr(
             log.debug("Discarding likely ASR hallucination over sound-only caption at %.2fs", utt.start_s)
             continue
 
-        source = "qwen_asr"
+        source = "haas_asr"
         if text and caption_match is not None:
             reconciled = reconcile_caption(text, caption_match.text)
             if caption_match.coverage >= 0.80 and caption_match.overlap_s >= 0.45:
                 reconciled = repair_verified_caption(reconciled, caption_match.text)
             if reconciled != text:
-                source = "qwen_asr+youtube_correction"
+                source = "haas_asr+youtube_correction"
                 text = reconciled
 
         if (
@@ -158,7 +158,7 @@ def run_asr(
             text = caption_match.text
             source = "youtube_fallback"
             log.debug(
-                "using aligned YouTube caption because Qwen ASR returned no text "
+                "using aligned YouTube caption because Haas ASR returned no text "
                 "(%.2f-%.2fs, coverage=%.0f%%): %s",
                 utt.start_s, utt.end_s, caption_match.coverage * 100, text,
             )
@@ -273,7 +273,7 @@ def run_translate(
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call the translator again for the same VOD cue.
         if isinstance(tr, Subtitle):
-            # Reused VOD captions bypass Qwen; replay their Japanese speech
+            # Reused VOD captions bypass ASR; replay their Japanese speech
             # into scene state so the scene is reconstructed after seeks.
             observe_scene = getattr(translator, "observe_scene", None)
             if callable(observe_scene) and tr.ja:

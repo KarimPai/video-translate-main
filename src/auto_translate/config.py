@@ -50,12 +50,12 @@ class SpeakerConfig:
 
 @dataclass
 class AsrConfig:
-    """Qwen3-ASR-1.7B-JA GGUF on speech.cpp. No Haas or fallback backend."""
-
-    model_path: str = ""  # empty: verified cached Hugging Face Q8_0 conversion
-    device: str = "Vulkan0"
-    prompt: str = ""  # optional small Japanese name hint; default off
-    response_timeout_s: float = 30.0  # detect hung Vulkan recognition
+    """Haas-ja-v1.0 Q8_0 on speech.cpp Vulkan; sole ASR backend."""
+    haas_model: str = "haas-ja-v1.0:q8_0"
+    haas_device: str = "Vulkan0"
+    # Q8_0's CPU decoder leaves more VRAM for Qwen3.5 translation.
+    haas_decode_on_cpu: bool = True
+    response_timeout_s: float = 30.0
     blocklist: list[str] = field(default_factory=list)
 
 
@@ -152,8 +152,7 @@ def load_config(path: Path) -> Config:
     ingest_data.pop("pitch_semitones", None)
     ingest_data.pop("pitch_shift_semitones", None)
 
-    # Old Haas/config values may still exist in the git-ignored config.toml.
-    # Ignore them instead of re-enabling a retired engine.
+    # Ignore retired ASR fields in existing git-ignored config.toml.
     asr_data = dict(data.get("asr", {}))
     valid_asr_keys = {entry.name for entry in fields(AsrConfig)}
     asr_data = {

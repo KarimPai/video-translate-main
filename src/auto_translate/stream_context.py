@@ -72,14 +72,23 @@ def repair_verified_caption(asr: str, caption: str) -> str:
     if len(asr) < 12 or len(caption) < 12:
         return asr
     matcher = SequenceMatcher(None, asr, caption, autojunk=False)
-    if matcher.ratio() < 0.92:
-        return asr
     changes = [entry for entry in matcher.get_opcodes() if entry[0] != "equal"]
     if len(changes) != 1:
         return asr
     tag, i, j, x, y = changes[0]
     old, new = asr[i:j], caption[x:y]
     if tag != "replace" or not old or not new or max(len(old), len(new)) > 2:
+        return asr
+    # Two different kana in テコちゃん -> ぺこちゃん score 0.9167,
+    # just below the generic 0.92 threshold. Permit ONLY this well-aligned
+    # known nickname pair at 0.90; do not weaken unrelated caption repairs.
+    peko_nickname = (
+        old in {"テコ", "てこ"}
+        and new in {"ぺこ", "ペコ"}
+        and asr[j:j + 3] == "ちゃん"
+        and caption[y:y + 3] == "ちゃん"
+    )
+    if matcher.ratio() < (0.90 if peko_nickname else 0.92):
         return asr
     if _NUMBERS.search(old + new) or not _JAPANESE.search(old + new):
         return asr

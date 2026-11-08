@@ -201,29 +201,144 @@ def split_turns(length: float, raw: list[Turn], min_seconds: float) -> list[Turn
 
 
 class VoiceProfiles:
-    def __init__(self, threshold: float, limit: int) -> None:
-        self.threshold, self.limit = threshold, limit
-        self.vectors: list[np.ndarray] = []
-        self.counts: list[int] = []
+    """Bounded, session-long voice memory with confirmation before enrollment.
 
-    def identify(self, embedding: np.ndarray) -> int | None:
+    Single, noisy utterances must not consume A/B/C labels. New voices become
+    visible only after matching twice on separate utterances. Once a voice is
+    enrolled, keep several distinct exemplars as well as a running centroid:
+    a shout or a change of microphone level must not immediately become B/C.
+    All profiles persist through VOD seeks within the current session.
+    """
+
+    def __init__(
+        self, threshold: float, limit: int, *,
+        min_enroll_s: float = 1.3,
+        enroll_samples: int = 2,
+        max_exemplars: int = 6,
+    ) -> None:
+        self.threshold = threshold
+        self.limit = limit
+        self.min_enroll_s = min_enroll_s
+        self.enroll_samples = enroll_samples
+        self.max_exemplars = max_exemplars
+        # Keep these public names for compatibility with existing tests.
+        self.vectors: list[np.ndarray] = []  # stable centroids
+        self.counts: list[int] = []
+        self._examples: list[list[np.ndarray]] = []
+        self._pending: list[tuple[list[np.ndarray], int, float]] = []
+        self._pending_limit = max(4, min(limit * 2, 8))
+
+    @staticmethod
+    def _normalize(embedding: np.ndarray) -> np.ndarray | None:
         vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if vector.size == 0 or not np.isfinite(vector).all():
+            return None
         norm = float(np.linalg.norm(vector))
-        if not math.isfinite(norm) or norm <= 1e-6:
+        if not math.isfinite(norm) or norm < 1e-6:
             return None
-        vector = vector / norm
-        scores = [float(np.dot(vector, ref)) for ref in self.vectors]
-        if scores and max(scores) >= self.threshold:
-            idx = int(np.argmax(scores))
-            updated = self.vectors[idx] * min(6, self.counts[idx]) + vector
-            self.vectors[idx] = updated / np.linalg.norm(updated)
-            self.counts[idx] += 1
-            return idx
+        return vector / norm
+
+    @staticmethod
+    def _similarity(vector: np.ndarray, center: np.ndarray,
+                    examples: list[np.ndarray]) -> float:
+        if len(vector) != len(center):
+            return float("-inf")
+        center_score = float(np.dot(vector, center))
+        # Allow altered voice pitch/intensity to match a prior *example*
+        # without continually drifting the centroid toward the latest sound.
+        exemplar_score = max(
+            (float(np.dot(vector, example)) for example in examples
+             if len(example) == len(vector)),
+            default=float("-inf"),
+        )
+        return max(center_score, exemplar_score - 0.025)
+
+    def _remember_example(self, idx: int, vector: np.ndarray) -> None:
+        examples = self._examples[idx]
+        if max((float(np.dot(vector, e)) for e in examples),
+               default=-1.0) < 0.96:
+            if len(examples) >= self.max_exemplars:
+                # Retain the original reference anchor for the session.
+                examples.pop(1 if len(examples) > 1 else 0)
+            examples.append(vector.copy())
+
+    def identify(self, embedding: np.ndarray, duration_s: float = 2.0,
+                 blocked_ids: set[int] | None = None) -> int | None:
+        vector = self._normalize(embedding)
+        if vector is None:
+            return None
+        unavailable = blocked_ids or set()
+        candidates = [
+            (self._similarity(vector, center, self._examples[idx]), idx)
+            for idx, center in enumerate(self.vectors)
+            if idx not in unavailable
+        ]
+        candidates.sort(reverse=True)
+        if candidates:
+            best_score, best_id = candidates[0]
+            runner_up = candidates[1][0] if len(candidates) > 1 else -1.0
+            if best_score >= self.threshold:
+                # A near-tie is not a valid identity; prefer no label rather
+                # than incorrectly claiming two speakers are the same person.
+                if runner_up >= best_score - 0.04 and best_score < self.threshold + 0.12:
+                    return None
+                count = min(self.counts[best_id], 8)
+                updated = self.vectors[best_id] * count + vector
+                norm = float(np.linalg.norm(updated))
+                if norm > 1e-6:
+                    self.vectors[best_id] = updated / norm
+                self.counts[best_id] += 1
+                self._remember_example(best_id, vector)
+                return best_id
+            # Near an established speaker but below the threshold: this is
+            # uncertain, not evidence for enrolling a brand-new voice.
+            if best_score >= self.threshold - 0.07:
+                return None
+
+        if not math.isfinite(duration_s) or duration_s < self.min_enroll_s:
+            return None
         if len(self.vectors) >= self.limit:
-            return None
-        self.vectors.append(vector)
-        self.counts.append(1)
-        return len(self.vectors) - 1
+            return None  # Never overflow labels into E/F/...
+        # Provisional voice evidence: two independent utterances are required
+        # before any new speaker label is allocated.
+        provisional_matches = []
+        for idx, (examples, count, seconds) in enumerate(self._pending):
+            center = self._normalize(np.mean(examples, axis=0))
+            if center is not None:
+                score = self._similarity(vector, center, examples)
+                provisional_matches.append((score, idx))
+        if provisional_matches:
+            best_score, pending_index = max(provisional_matches)
+            if best_score >= self.threshold:
+                examples, count, seconds = self._pending[pending_index]
+                examples.append(vector.copy())
+                if len(examples) > self.max_exemplars:
+                    examples.pop(0)
+                count += 1
+                seconds += duration_s
+                if count >= self.enroll_samples and seconds >= 2 * self.min_enroll_s:
+                    center = self._normalize(np.mean(examples, axis=0))
+                    if center is None:
+                        return None
+                    label = len(self.vectors)
+                    self.vectors.append(center)
+                    self.counts.append(count)
+                    self._examples.append([ex.copy() for ex in examples])
+                    self._pending.pop(pending_index)
+                    log.info("Speaker memory: confirmed anonymous voice %s "
+                             "after %d matching samples", chr(65 + label), count)
+                    return label
+                self._pending[pending_index] = (examples, count, seconds)
+                return None
+            # Similar but not convincing enough to be a new voice:
+            # don't multiply provisional clusters on short fluctuations.
+            if best_score >= self.threshold - 0.07:
+                return None
+
+        self._pending.append(([vector.copy()], 1, duration_s))
+        if len(self._pending) > self._pending_limit:
+            self._pending.pop(0)
+        return None
 
 
 class SherpaSplitter:
@@ -279,7 +394,7 @@ class SherpaSplitter:
         if len(original.audio) < 3 * SAMPLE_RATE:
             try:
                 v = self._embedding(original.audio)
-                speaker = self.profiles.identify(v) if v is not None else None
+                speaker = self.profiles.identify(v, len(original.audio) / SAMPLE_RATE) if v is not None else None
                 return [replace(original, speaker_id=speaker)] if speaker is not None else [original]
             except Exception as exc:
                 log.debug("Short-turn voice embedding unavailable: %s", exc)
@@ -295,6 +410,7 @@ class SherpaSplitter:
             if len(windows) > self.cfg.max_turns:
                 return [original]
             ids: dict[int, int | None] = {}
+            used_labels: set[int] = set()
             result: list[Utterance] = []
             for window in windows:
                 lo = max(0, round(window.start * SAMPLE_RATE))
@@ -306,7 +422,13 @@ class SherpaSplitter:
                 if window.speaker is not None:
                     if window.speaker not in ids:
                         v = self._embedding(part)
-                        ids[window.speaker] = self.profiles.identify(v) if v is not None else None
+                        ids[window.speaker] = (
+                            self.profiles.identify(
+                                v, len(part) / SAMPLE_RATE, blocked_ids=used_labels
+                            ) if v is not None else None
+                        )
+                        if ids[window.speaker] is not None:
+                            used_labels.add(ids[window.speaker])
                     identity = ids[window.speaker]
                 start = original.start_s + lo / SAMPLE_RATE
                 end = original.start_s + hi / SAMPLE_RATE

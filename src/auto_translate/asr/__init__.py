@@ -1,7 +1,7 @@
 from ..config import AsrConfig
 from .base import ASR
-from .haas import HaasASR
+from .qwen_asr import QwenASR
 
 
 def create_asr(cfg: AsrConfig) -> ASR:
-    return HaasASR(cfg)
+    return QwenASR(cfg)

@@ -106,7 +106,7 @@ def run_asr(
         original_asr = text
         text = strip_nonverbal_labels(text)
         if original_asr != text:
-            log.debug("filtered Haas nonverbal labels at %.2fs: %r -> %r", utt.start_s, original_asr, text)
+            log.debug("filtered ASR nonverbal labels at %.2fs: %r -> %r", utt.start_s, original_asr, text)
 
         caption_match = (
             captions.match(utt.start_s, utt.end_s)
@@ -116,7 +116,7 @@ def run_asr(
         if caption_match is not None and not caption_match.reliable:
             caption_match = None
         if caption_match is not None and not caption_match.text and is_sound_caption_artifact(text):
-            log.debug("Discarding likely Haas hallucination over sound-only caption at %.2fs", utt.start_s)
+            log.debug("Discarding likely ASR hallucination over sound-only caption at %.2fs", utt.start_s)
             continue
 
         source = "haas"

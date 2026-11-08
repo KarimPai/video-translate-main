@@ -50,14 +50,11 @@ class SpeakerConfig:
 
 @dataclass
 class AsrConfig:
-    haas_model: str = "haas-ja-v1.0"
-    haas_device: str = "Vulkan0"
-    haas_decode_on_cpu: bool = False
-    # Optional Haas-ASR keyword boosting in speech.cpp 0.10+.
-    haas_keywords_enabled: bool = True
-    haas_keywords_file: str = "haas_vocabulary.toml"
-    haas_keywords_alpha: float = 1.5
-    haas_keywords_guard: bool = True
+    """Qwen3-ASR-1.7B-JA GGUF on speech.cpp. No Haas or fallback backend."""
+
+    model_path: str = ""  # empty: verified cached Hugging Face Q8_0 conversion
+    device: str = "Vulkan0"
+    prompt: str = ""  # optional small Japanese name hint; default off
     blocklist: list[str] = field(default_factory=list)
 
 
@@ -142,14 +139,14 @@ def load_config(path: Path) -> Config:
     ingest_data.pop("pitch_semitones", None)
     ingest_data.pop("pitch_shift_semitones", None)
 
+    # Old Haas/config values may still exist in the git-ignored config.toml.
+    # Ignore them instead of re-enabling a retired engine.
     asr_data = dict(data.get("asr", {}))
-    for key in (
-        "backend", "model", "device", "compute_type", "beam_size",
-        "initial_prompt", "no_speech_threshold", "log_prob_threshold",
-        "probe_no_speech_max", "probe_log_prob_min",
-        "qwen_model", "qwen_python", "parakeet_model", "parakeet_threads",
-    ):
-        asr_data.pop(key, None)
+    valid_asr_keys = {entry.name for entry in fields(AsrConfig)}
+    asr_data = {
+        key: value for key, value in asr_data.items()
+        if key in valid_asr_keys
+    }
 
     mpv_data = dict(data.get("mpv", {}))
     # Ignore removed playback and speaker settings in older configs.

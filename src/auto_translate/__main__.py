@@ -74,7 +74,7 @@ def main() -> None:
     )
 
     # Fetch VOD captions in parallel with model loading. Captions are optional:
-    # any download/parse failure leaves the Haas-only pipeline unchanged.
+    # download/parse failures leave Qwen ASR as the sole recognizer.
     captions = None
     video_id = (
         source.timeline.get("video_id")
@@ -90,7 +90,7 @@ def main() -> None:
                     str(video_id), source.location, cfg.ingest
                 )
             except Exception:
-                log.exception("caption preparation failed; continuing with Haas")
+                log.exception("caption preparation failed; continuing with Qwen ASR")
 
         caption_thread = threading.Thread(
             target=load_captions,
@@ -112,25 +112,25 @@ def main() -> None:
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
 
-    asr_model = cfg.asr.haas_model
     log.info(
-        "ASR ready (%s, Haas) in %.1fs",
-        asr_model,
+        "ASR ready (Qwen3-ASR-1.7B-JA, Vulkan speech.cpp) in %.1fs",
         time.perf_counter() - t0,
     )
 
-    t0 = time.perf_counter()
-    glossary = Glossary.load(Path(cfg.translate.glossary))
-    translator = create_translator(
-        cfg.translate, glossary, vod_title=vod_context,
-    )
-    log.info(
-        "Qwen3.5-4B ready (%d glossary terms) in %.1fs",
-        len(glossary.terms),
-        time.perf_counter() - t0,
-    )
-
+    # If the translation model cannot start, close the already loaded
+    # speech.cpp Qwen ASR worker rather than leaving GPU memory occupied.
+    translator = None
     try:
+        t0 = time.perf_counter()
+        glossary = Glossary.load(Path(cfg.translate.glossary))
+        translator = create_translator(
+            cfg.translate, glossary, vod_title=vod_context,
+        )
+        log.info(
+            "Qwen3.5-4B ready (%d glossary terms) in %.1fs",
+            len(glossary.terms),
+            time.perf_counter() - t0,
+        )
         use_mpv = args.mpv or cfg.mpv.enabled
         if use_mpv and not source.live and source.paced:
             # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
@@ -187,9 +187,13 @@ def main() -> None:
             session_cache=subtitle_cache,
         )
     finally:
-        # Always release the owned Qwen server: MPV close, Ctrl+C, EOF,
-        # or failure while initializing MPV / ingest.
-        translator.close()
+        # Free both owned model processes on MPV close, Ctrl+C, EOF,
+        # or a model/playback startup exception.
+        try:
+            if translator is not None:
+                translator.close()
+        finally:
+            asr.close()
 
 
 if __name__ == "__main__":

@@ -57,13 +57,20 @@ def translation_quality_flags(japanese: str, english: str) -> frozenset[str]:
     ja = unicodedata.normalize("NFKC", japanese)
     en = unicodedata.normalize("NFKC", english)
     flags: set[str] = set()
+    # Japanese 万/億/千 multipliers alter numeric magnitude; a bare
+    # numeric-token comparison would falsely flag correct "1000万" -> "10 million".
+    simple_number_source = not re.search(r"[0-9]+(?:[.,][0-9]+)*[千万億百]", ja)
     jp_numbers = [v.replace(",", "") for v in _JP_NUM.findall(ja)]
     en_numbers = [v.replace(",", "") for v in _EN_NUM.findall(en)]
-    if jp_numbers and en_numbers and jp_numbers != en_numbers:
+    if simple_number_source and jp_numbers and en_numbers and jp_numbers != en_numbers:
         flags.add("numbers")
     # Restrict to single-clause, unambiguous endings; complex / indirect
     # negative sentences are not safely classified by a single regex.
-    if _SIMPLE_NEGATIVE.fullmatch(ja.strip()) and not _EN_NEGATIVE.search(en):
+    # "すみません" normally means "sorry", not a literal negative.
+    polite_apologies = ("すみません", "すいません", "すみませんでした",
+                        "申し訳ありません", "かまいません", "構いません")
+    is_formula = any(ja.strip("。！？!?") == phrase for phrase in polite_apologies)
+    if not is_formula and _SIMPLE_NEGATIVE.fullmatch(ja.strip()) and not _EN_NEGATIVE.search(en):
         flags.add("negation")
     if "だっこ" in ja or "抱っこ" in ja:
         if re.search(r"\bon (?:my|your|his|her|their|our) shoulders?\b", en, re.I):

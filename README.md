@@ -16,11 +16,11 @@ Official model: https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF
 
 The **Q4_K_M** file is approximately **1.31 GB**. It is a GGUF derived from a translation-focused model, not the general-purpose Qwen3.5-4B model. The official client uses **greedy decoding (temperature 0)** and **thinking disabled**.
 
-The translator sends a single user message using Index's official **instTrans constrained-translation format**, with:
+The translator uses Index's **short, plain Japanese-to-English translation prompt**, with a single brief instruction requesting natural conversational English. Only matching glossary terms are included; long instTrans sections, repeated context, and past English subtitles are not passed to the model.
 
-- **Hard constraints:** retain meaning, negation, numbers, and glossary names that are **actually present** in the current Japanese.
-- **Soft constraints:** natural, concise, casual English for gaming/VTuber dialogue, no invented speakers, events, or unfinished sentence endings.
-- **Background only:** a small set of recent Japanese transcript lines and the video title. Past English output is not sent as authoritative source text.
+To prevent **prompt leakage** into subtitles, the llama.cpp request stops at known instruction markers, and output validation truncates any generated `〖Constraint Requirements〗`, `〖约束要求〗`, `〖Source〗`, or similar metadata before the text reaches MPV. A response containing only leaked instructions is treated as a translation failure rather than displayed.
+
+This is a deliberate reliability trade-off: earlier Japanese history and video-title context are temporarily omitted from individual Index requests until the compact prompt is validated against real VTuber audio.
 
 **No vision projector is loaded**; this is text-to-text translation only.
 

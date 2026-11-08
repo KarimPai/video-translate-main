@@ -169,35 +169,54 @@ def _quiet_cut(
     left: float,
     right: float,
     length: float,
+    *,
+    search_ms: int = 180,
+    quiet_ms: int = 40,
+    quiet_ratio: float = 0.45,
 ) -> float:
-    """Snap a trusted turn boundary to a nearby low-energy pause.
+    """Move an estimated speaker turn only into a sustained quiet valley.
 
-    This adjusts only the placement of an already-confirmed speaker change,
-    never creates another change. No audio is dropped or duplicated.
+    A one-frame dip is not sufficient evidence to relocate a turn boundary.
+    Return the model midpoint unchanged when the evidence is ambiguous.
     """
     if audio is None or left >= right:
         return center
-    lo = max(0.0, left, center - 0.09)
-    hi = min(length, right, center + 0.09)
-    if hi - lo < 0.025:
-        return center
-    half = max(1, round(0.015 * SAMPLE_RATE))
+    radius = max(0.0, search_ms / 1000)
+    lo = max(0.0, left, center - radius)
+    hi = min(length, right, center + radius)
     step = max(1, round(0.01 * SAMPLE_RATE))
-
-    def energy(sample: int) -> float:
-        a = max(0, sample - half)
-        b = min(len(audio), sample + half)
-        return float(np.mean(np.abs(audio[a:b]))) if b > a else float("inf")
-
-    baseline = energy(round(center * SAMPLE_RATE))
-    best = center
-    lowest = baseline
-    for sample in range(round(lo * SAMPLE_RATE), round(hi * SAMPLE_RATE) + 1, step):
-        score = energy(sample)
-        if score < lowest:
-            lowest, best = score, sample / SAMPLE_RATE
-    # In steady speech or noise, do not chase insignificant fluctuations.
-    return best if lowest < baseline * 0.55 else center
+    half = max(1, round(0.008 * SAMPLE_RATE))
+    samples = np.arange(round(lo * SAMPLE_RATE), round(hi * SAMPLE_RATE) + 1, step)
+    if len(samples) < 4:
+        return center
+    rms = np.asarray([
+        float(np.sqrt(np.mean(audio[max(0, int(k) - half):
+                                     min(len(audio), int(k) + half)] ** 2)))
+        for k in samples
+    ])
+    baseline = float(np.percentile(rms, 75))
+    if baseline <= 1e-5:
+        return center
+    quiet = rms <= max(1e-5, baseline * quiet_ratio)
+    required = max(2, int(math.ceil(quiet_ms / 10)))
+    runs: list[tuple[int, int]] = []
+    start = None
+    for i, silent in enumerate(quiet):
+        if silent and start is None:
+            start = i
+        if (not silent or i == len(quiet) - 1) and start is not None:
+            end = i + (1 if silent and i == len(quiet) - 1 else 0)
+            if end - start >= required:
+                runs.append((start, end))
+            start = None
+    if not runs:
+        return center
+    closest = min(
+        runs,
+        key=lambda run: abs(samples[(run[0] + run[1] - 1) // 2] / SAMPLE_RATE - center),
+    )
+    middle = (closest[0] + closest[1] - 1) // 2
+    return float(samples[middle] / SAMPLE_RATE)
 
 
 def split_turns(

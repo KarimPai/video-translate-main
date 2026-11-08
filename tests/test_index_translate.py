@@ -27,11 +27,46 @@ class IndexTranslationTests(unittest.TestCase):
         self.assertNotIn("〖", prompt)
         self.assertNotIn("Constraint Requirements", prompt)
         self.assertNotIn("硬性要求", prompt)
-        self.assertIn("被打断的句子只译出已经说出的部分", prompt)
+        self.assertIn("被打断或未说完的句子只翻译已经说出的内容", prompt)
         self.assertNotIn("Hololive GTA RP", prompt)
         self.assertEqual(prompt.count("角巻わためと行くよ"), 1)
         self.assertTrue(prompt.endswith("\n\n角巻わためと行くよ"))
 
+
+    def test_reference_context_uses_two_japanese_lines_only(self):
+        glossary = Glossary({"現行犯": "caught in the act"})
+        history = [
+            ("古い発言", "OLD ENGLISH"),
+            ("警察が来た", "POLICE COMING"),
+            ("現行犯だ", "Fugitive"),
+        ]
+        prompt = build_index_prompt("どうするの", history, glossary)
+        self.assertIn("警察が来た", prompt)
+        self.assertIn("現行犯だ", prompt)
+        self.assertNotIn("古い発言", prompt)
+        self.assertNotIn("OLD ENGLISH", prompt)
+        self.assertNotIn("POLICE COMING", prompt)
+        self.assertNotIn("Fugitive", prompt)
+        self.assertTrue(prompt.endswith("\n\nどうするの"))
+        self.assertNotIn("〖", prompt)
+
+    def test_context_is_disabled_by_zero_and_has_no_target_leak(self):
+        glossary = Glossary({})
+        prompt = build_index_prompt("今どこ", [("前の発言", "Where now")],
+                                    glossary, context_lines=0)
+        self.assertNotIn("前の発言", prompt)
+        self.assertNotIn("Where now", prompt)
+        self.assertTrue(prompt.endswith("今どこ"))
+
+    def test_retry_adds_short_quality_instruction_not_previous_english(self):
+        prompt = build_index_prompt(
+            "現行犯だ", [("張り込み", "Confront me")], Glossary({}),
+            review_reason="missing_priority_term:現行犯",
+        )
+        self.assertIn("重新核对本句的否定", prompt)
+        self.assertNotIn("Confront me", prompt)
+        self.assertIn("張り込み", prompt)
+        self.assertNotIn("〖", prompt)
 
     @staticmethod
     def _unit():
@@ -72,6 +107,65 @@ class IndexTranslationTests(unittest.TestCase):
         with patch.object(obj, "_chat", return_value="I'm off!") as call:
             self.assertEqual(obj.translate("行ってきます", []), "I'm off!")
         call.assert_called_once()
+
+    def test_exact_original_song_is_not_romanized(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat") as call:
+            self.assertEqual(obj.translate("オリ曲!", []), "Original song!")
+            self.assertEqual(obj.translate("オリジナル曲", []), "Original song")
+        call.assert_not_called()
+
+    def test_suspicious_roleplay_term_gets_only_one_bounded_retry(self):
+        obj = self._unit()
+        with patch.object(
+            obj, "_chat",
+            side_effect=["So, he's a fugitive.", "So, he was caught in the act."],
+        ) as call:
+            result = obj.translate("現行犯ということで", [])
+        self.assertEqual(result, "So, he was caught in the act.")
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(call.call_args_list[1].kwargs["review_reason"],
+                         "missing_priority_term:現行犯")
+        self.assertLessEqual(call.call_args_list[1].kwargs["timeout"], 8.0)
+
+    def test_suspicious_translation_keeps_first_if_retry_is_still_wrong(self):
+        obj = self._unit()
+        with patch.object(
+            obj, "_chat", side_effect=["Confront me.", "Go away."]
+        ) as call:
+            result = obj.translate("張り込みしてほしい", [])
+        self.assertEqual(result, "Confront me.")
+        self.assertEqual(call.call_count, 2)
+
+    def test_quality_retry_can_be_disabled_without_other_translator(self):
+        obj = self._unit()
+        obj.cfg.quality_retry_enabled = False
+        with patch.object(obj, "_chat", return_value="They called my name.") as call:
+            result = obj.translate("指名手配されてますよ", [])
+        self.assertEqual(result, "They called my name.")
+        call.assert_called_once()
+
+    def test_recheck_errors_keep_first_translation(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", side_effect=[
+            "They called my name.", TimeoutError("recheck time budget")
+        ]) as call:
+            result = obj.translate("指名手配されてますよ", [])
+        self.assertEqual(result, "They called my name.")
+        self.assertEqual(call.call_count, 2)
+
+    def test_clean_translation_does_not_retry(self):
+        obj = self._unit()
+        with patch.object(obj, "_chat", return_value="You're wanted by police.") as call:
+            result = obj.translate("指名手配されてますよ", [])
+        self.assertEqual(result, "You're wanted by police.")
+        call.assert_called_once()
+
+    def test_glossary_priority_anchors_not_triggered_without_source_terms(self):
+        obj = self._unit()
+        self.assertIsNone(obj._review_reason(
+            "何をしてる", "They're wanted by police."
+        ))
 
     def test_unintelligible_repetitions_skip_model_call(self):
         obj = self._unit()

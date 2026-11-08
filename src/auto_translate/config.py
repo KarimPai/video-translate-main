@@ -88,7 +88,7 @@ class TranslateConfig:
     context_lines: int = 2  # previous Japanese lines; no previous EN text
     memory_lines: int = 12
     quality_retry_enabled: bool = True
-    quality_retry_timeout_s: float = 8.0
+    quality_retry_timeout_s: float = 4.0
     glossary: str = "glossary.toml"
 
 

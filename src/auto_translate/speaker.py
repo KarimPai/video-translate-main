@@ -224,6 +224,10 @@ def split_turns(
     raw: list[Turn],
     min_seconds: float,
     audio: np.ndarray | None = None,
+    *,
+    boundary_search_ms: int = 180,
+    boundary_quiet_ms: int = 40,
+    boundary_quiet_ratio: float = 0.45,
 ) -> list[Turn]:
     """Cut at clear speaker changes; keep any inseparable overlap together.
 
@@ -277,7 +281,15 @@ def split_turns(
         cut = _quiet_cut(
             audio, center, min(prev.end, following.start),
             max(prev.end, following.start), length,
+            search_ms=boundary_search_ms,
+            quiet_ms=boundary_quiet_ms,
+            quiet_ratio=boundary_quiet_ratio,
         )
+        if audio is not None and following.start < prev.end - 0.015:
+            # Small speaker overlaps have no reliable cut point unless
+            # a sustained acoustic valley independently confirms the turn.
+            if abs(cut - center) < 0.005:
+                return unknown
         if cut - (cuts[-1] if cuts else 0.0) < min_seconds:
             # An unreliable tiny prefix invalidates the proposed cuts.
             return unknown
@@ -355,7 +367,12 @@ class SherpaSplitter:
                 if end > start:
                     turns.append(Turn(start, end, int(turn.speaker)))
 
-            windows = split_turns(length, turns, self.cfg.min_turn_s, audio)
+            windows = split_turns(
+                length, turns, self.cfg.min_turn_s, audio,
+                boundary_search_ms=self.cfg.boundary_search_ms,
+                boundary_quiet_ms=self.cfg.boundary_quiet_ms,
+                boundary_quiet_ratio=self.cfg.boundary_quiet_ratio,
+            )
             if len(windows) <= 1 or len(windows) > self.cfg.max_turns:
                 self.failures = 0
                 log.debug(

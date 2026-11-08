@@ -53,6 +53,10 @@ inspect these logs. The original `test` branch is not changed.
 haas_model = "haas-ja-v1.0:q8_0"
 haas_device = "Vulkan0"
 haas_decode_on_cpu = true  # conserve GPU memory for Qwen3.5
+haas_keywords_enabled = true
+haas_keywords_file = "haas_vocabulary.toml"
+haas_keywords_alpha = 1.5
+haas_keywords_guard = true
 response_timeout_s = 30.0
 
 [translate]
@@ -220,6 +224,28 @@ Monitor `nvidia-smi` during playback if VRAM remains constrained.
 Retired `[asr]` keys such as `model_path`, `device` and `prompt` are ignored
 when an older git-ignored `config.toml` exists.
 
+## Haas vocabulary and pause-aware chunking
+
+The default `haas_vocabulary.toml` supplies a small list of confirmed Hololive
+names and Japanese readings. Its guarded recognition hints apply to normal
+Haas speech only, not VAD probes. The worker retries without hints if speech.cpp
+rejects the keyword options. Adding too many words may bias recognition toward
+names that were never spoken.
+
+FireRedVAD still ends normal utterances after 400 ms of silence. At the
+6-second soft cap, it first looks for a sustained 80 ms low-energy/low-VAD
+pause within the preceding 2 seconds. If none exists, it extends for at most
+1 additional second before a smoothed-energy hard cut. Cuts retain available
+audio context and always keep PCM contiguous: no duplicates or time shifts.
+
+```toml
+[vad]
+max_utterance_s = 6.0
+max_split_extension_s = 1.0
+split_pause_min_ms = 80
+split_context_ms = 120
+```
+
 ## Original-pitch audio
 
 The old experimental FFmpeg pitch shift has been removed. FireRedVAD,
@@ -252,6 +278,9 @@ enabled = true
 num_threads = 2
 min_turn_s = 0.55
 max_turns = 5
+boundary_search_ms = 180
+boundary_quiet_ms = 40
+boundary_quiet_ratio = 0.45
 ```
 
 For 3s+ VAD utterances, Sherpa estimates speaker-turn boundaries directly.
@@ -262,7 +291,8 @@ boundaries before/after an overlapping pair can still be separated, while
 the overlapping part remains one mixed cue (not falsely attributed to one
 voice). When a clean
 non-overlapping speaker change is detected, the system picks a nearby
-low-energy boundary, ensures all PCM is preserved exactly once, and sends
+sustained quiet boundary (not a one-frame energy dip), ensures all PCM is
+preserved exactly once, and sends
 each slice independently through Haas ASR and Qwen3.5 translation. MPV retains up to three
 English-only rows, newest above, with no speaker letters in MPV or CMD.
 

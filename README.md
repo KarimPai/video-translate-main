@@ -18,7 +18,7 @@ The **Q4_K_M** file is approximately **1.31 GB**. It is a GGUF derived from a tr
 
 The translator uses Index's **short, plain Japanese-to-English translation prompt** for casual English. The current Japanese utterance is the only source translated. Up to **two previous Japanese lines** are provided as explicitly labeled context for meaning and omitted subjects; previous **English translations and the video title are never copied into the prompt**. This avoids passing earlier mistranslations forward.
 
-Only glossary terms appearing in the current utterance are included. High-confidence mistakes (e.g. missing negation, untranslated Japanese, badly phonetic output, or missing priority GTA terminology) trigger **at most one extra Index attempt**, with an independent **8-second HTTP timeout** by default. A second result replaces the first only when it clears the deterministic checks, or the first was empty. This adds latency only to flagged lines; automatic review cannot guarantee the semantics are correct.
+Only glossary terms appearing in the current utterance are included. High-confidence mistakes (e.g. missing negation, untranslated Japanese, badly phonetic output, or missing priority GTA terminology) trigger **at most one extra Index attempt**, with an independent **4-second HTTP timeout** by default. A second result replaces the first only when it clears the deterministic checks, or the first was empty. This adds latency only to flagged lines; automatic review cannot guarantee the semantics are correct.
 
 Very short unambiguous "オリ曲" / "オリジナル曲" utterances are translated directly to "Original song" instead of being romanized. No new translator or external provider was added.
 

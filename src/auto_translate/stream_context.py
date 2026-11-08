@@ -60,6 +60,36 @@ def repair_gta_carjacking(
     return _CARJACK_MISHEARD.sub("カージャック", text)
 
 
+_HORSE_RACING_TITLE = re.compile(r"(?i)競馬|ホロ[1１]GP|horse.?rac|derby|ダービー")
+_HORSE_RACING_SIGNALS = (
+    "競馬", "オッズ", "パドック", "推奨馬", "お馬", "競走馬",
+    "前走", "出走", "馬番", "着順",
+)
+
+
+def is_horse_racing_context(
+    title: str = "", current: str = "", recent: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """Require an explicit racing title or two distinct current/recent race terms."""
+    if _HORSE_RACING_TITLE.search(title):
+        return True
+    window = " ".join([*list(recent)[-8:], current])
+    found = {term for term in _HORSE_RACING_SIGNALS if term in window}
+    return len(found) >= 2
+
+
+def repair_horse_racing_spelling(
+    text: str, title: str = "", recent: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Repair only the attested 推奨バー homophone with prior 推奨馬 evidence."""
+    if "推奨バー" not in text or not any("推奨馬" in s for s in list(recent)[-8:]):
+        return text
+    if not is_horse_racing_context(title, text, recent):
+        return text
+    return re.sub(r"推奨バー(?=として|と|に|は|を|です|[、。!?！？]|$)",
+                  "推奨馬", text)
+
+
 def ark_glossary_hits(text: str) -> list[tuple[str, str]]:
     remaining, hits = text, []
     for source, target in sorted(ARK_GLOSSARY.items(), key=lambda item: -len(item[0])):

@@ -346,3 +346,11 @@
 "負け確" = "guaranteed loss"
 "GG" = "GG"
 "EZ" = "easy"
+
+# Racing streams (match only when the Japanese term occurs).
+"推奨馬" = "recommended horse"
+"パドック" = "paddock"
+"オッズ" = "betting odds"
+"競馬" = "horse racing"
+"前走" = "previous race"
+"馬番" = "horse number"

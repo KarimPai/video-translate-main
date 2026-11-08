@@ -453,6 +453,10 @@ class SherpaSplitter:
 
 def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = None) -> None:
     splitter: SherpaSplitter | None = None
+    checked = 0
+    labeled_cues = 0
+    unlabeled_cues = 0
+    multi_turn_windows = 0
     if cfg.enabled:
         print("Speaker diarization: loading Sherpa CPU models...", flush=True)
         try:
@@ -473,7 +477,20 @@ def run_speaker(cfg: SpeakerConfig, in_q: Any, out_q: Any, generation: Any = Non
         if splitter is None or splitter.diarizer is None:
             out_q.put(item)
             continue
-        for part in splitter.split(item):
+        parts = splitter.split(item)
+        checked += 1
+        multi_turn_windows += int(len(parts) > 1)
+        labeled_cues += sum(piece.speaker_id is not None for piece in parts)
+        unlabeled_cues += sum(piece.speaker_id is None for piece in parts)
+        if checked % 12 == 0:
+            profiles = splitter.profiles
+            log.info(
+                "speaker tracking: windows=%d confirmed=%d provisional=%d "
+                "labeled=%d unlabeled=%d split_windows=%d",
+                checked, len(profiles.vectors), len(profiles._pending),
+                labeled_cues, unlabeled_cues, multi_turn_windows,
+            )
+        for part in parts:
             if generation is not None and part.generation != generation():
                 break
             out_q.put(part)

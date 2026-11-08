@@ -5,7 +5,7 @@ import unittest
 from auto_translate.stream_context import (
     ark_glossary_hits, is_ark_context, is_incomplete_fragment,
     repair_ark_spelling, repair_peko_nickname, repair_verified_caption,
-    repair_gta_carjacking,
+    repair_gta_carjacking, is_horse_racing_context, repair_horse_racing_spelling,
 )
 from auto_translate.translate.quality import translation_review_reason, repair_high_confidence_meaning
 
@@ -70,6 +70,28 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(
             repair_gta_carjacking("カージャックする!", "Hololive GTA"),
             "カージャックする!",
+        )
+
+    def test_horse_racing_context_and_conservative_homophone_repair(self):
+        self.assertTrue(is_horse_racing_context("ホロ1GP", "オッズ"))
+        self.assertTrue(is_horse_racing_context("", "パドックでは", ["推奨馬は6番"]))
+        self.assertFalse(is_horse_racing_context("", "推奨バーとして"))
+        self.assertEqual(
+            repair_horse_racing_spelling(
+                "これを推奨バーとしてさせていただきたい",
+                "", ["今日の推奨馬は6番", "パドックで良かった"],
+            ),
+            "これを推奨馬としてさせていただきたい",
+        )
+        self.assertEqual(
+            repair_horse_racing_spelling(
+                "これを推奨バーとして", "競馬配信"
+            ), "これを推奨バーとして",
+        )
+        self.assertEqual(
+            repair_horse_racing_spelling(
+                "推奨バーを作ろう", "", ["推奨馬は6番"]
+            ), "推奨バーを作ろう",
         )
 
     def test_nickname(self):

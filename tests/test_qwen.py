@@ -197,6 +197,22 @@ class QwenTranslatorTests(unittest.TestCase):
         self.assertIn("カージャック => carjack / carjacking", data["messages"][1]["content"])
         self.assertIn("not kidnapping", data["messages"][1]["content"])
 
+    def test_racing_context_guidance_preserves_horse_and_names(self):
+        instance = translator()
+        instance.vod_title = "Hololive horse racing"
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "The first horse is Millefeuille d'Or."}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=response) as call:
+            self.assertEqual(
+                instance._chat("1番のミルフィーユドールは前走8着", [], 5),
+                "The first horse is Millefeuille d'Or.",
+            )
+        data = json.loads(call.call_args.args[0].data.decode())
+        self.assertIn("Event context: horse racing", data["messages"][1]["content"])
+        self.assertIn("not 'Milky Way Doll'", data["messages"][1]["content"])
+
     def test_ark_glossary_in_qwen_prompt(self):
         instance = translator()
         response = io.BytesIO(json.dumps({"choices": [

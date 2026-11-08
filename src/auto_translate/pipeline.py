@@ -14,7 +14,7 @@ from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .stream_context import (
     repair_peko_nickname, repair_verified_caption, repair_ark_spelling,
-    repair_gta_carjacking,
+    repair_gta_carjacking, repair_horse_racing_spelling,
 )
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
@@ -262,6 +262,10 @@ def run_translate(
             new_ja = repair_ark_spelling(tr.ja, title, context_ja)
             if new_ja != tr.ja:
                 log.debug("ARK spelling repair: %r -> %r", tr.ja, new_ja)
+                tr = replace(tr, ja=new_ja)
+            new_ja = repair_horse_racing_spelling(tr.ja, title, context_ja)
+            if new_ja != tr.ja:
+                log.debug("Horse-racing spelling repair: %r -> %r", tr.ja, new_ja)
                 tr = replace(tr, ja=new_ja)
             try:
                 en = translator.translate(tr.ja, list(history))

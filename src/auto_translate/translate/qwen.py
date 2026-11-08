@@ -20,7 +20,10 @@ from ..config import TranslateConfig
 from ..context_memory import reuse_recent_short_term
 from ..glossary import Glossary
 from ..process_cleanup import _create_kill_job, _close_job
-from ..stream_context import ark_glossary_hits, is_ark_context, is_incomplete_fragment
+from ..stream_context import (
+    ark_glossary_hits, is_ark_context, is_horse_racing_context,
+    is_incomplete_fragment,
+)
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
 from .quality import (
@@ -369,6 +372,20 @@ class QwenTranslator:
             )
         if is_ark_context(self.vod_title, ja, [jp for jp, _ in history[-8:]]):
             blocks.append("Game context: ARK dinosaurs and survival gameplay. ギガノト is Giganotosaurus.")
+        if is_horse_racing_context(
+            self.vod_title, ja, [jp for jp, _ in history[-8:]]
+        ):
+            blocks.append(
+                "Event context: horse racing. Odds are betting odds; the paddock "
+                "is where horses are inspected; 推奨馬 is a recommended horse, "
+                "never a bar. Keep racehorse names as proper names; don't "
+                "invent a horse's identity or rewrite unknown words."
+            )
+            if "ミルフィーユドール" in ja:
+                blocks.append(
+                    "ミルフィーユドール is a horse name; preserve its phonetic "
+                    "name (Millefeuille d'Or), not 'Milky Way Doll'."
+                )
         if is_incomplete_fragment(ja):
             blocks.append("Current sentence is unfinished; translate only the heard fragment.")
         elif history and is_incomplete_fragment(history[-1][0]):

@@ -13,7 +13,8 @@ from typing import Callable
 from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .stream_context import (
-    repair_peko_nickname, repair_verified_caption, repair_ark_spelling,
+    repair_peko_nickname, repair_verified_caption, repair_strongly_aligned_caption,
+    repair_ark_spelling,
     repair_gta_carjacking, repair_horse_racing_spelling,
 )
 from .captions import CaptionIndex, PendingCaptions
@@ -149,6 +150,12 @@ def run_asr(
             reconciled = reconcile_caption(text, caption_match.text)
             if caption_match.coverage >= 0.80 and caption_match.overlap_s >= 0.45:
                 reconciled = repair_verified_caption(reconciled, caption_match.text)
+            # The looser two-typo repair has stricter acoustic alignment
+            # requirements. Haas remains primary on genuine disagreements.
+            if caption_match.coverage >= 0.90 and caption_match.overlap_s >= 0.75:
+                reconciled = repair_strongly_aligned_caption(
+                    reconciled, caption_match.text,
+                )
             if reconciled != text:
                 source = "haas_asr+youtube_correction"
                 text = reconciled

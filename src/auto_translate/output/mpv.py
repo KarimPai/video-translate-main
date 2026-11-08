@@ -263,6 +263,7 @@ class MpvOutput:
         self._live_overlay_confirmed = False
         self._lags: list[float] = []
         self._session_start = ingest.source.start_s
+        self._original_vod_start = ingest.source.start_s
         self._buffer_condition = threading.Condition()
         self._translated_until = ingest.source.start_s
         self._source_finished = False
@@ -968,7 +969,7 @@ class MpvOutput:
             if self._replay_requested():
                 if self._now is not None and self.ipc.get("eof-reached"):
                     log.info("replay requested after VOD end; restarting from beginning")
-                    if self._jump(self.ingest.source.start_s - self._now):
+                    if self._jump(self._original_vod_start - self._now):
                         return
 
             if (delta := self._jump_request()) and self._jump(delta):

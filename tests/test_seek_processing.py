@@ -59,12 +59,27 @@ class SeekProcessingTests(unittest.TestCase):
                 return True
 
             with patch.object(ingest, "_read_session", side_effect=failed_session):
-                ingest.run(queue.Queue())
+                with self.assertRaisesRegex(
+                    RuntimeError, "VOD audio failed to open even after refreshing",
+                ):
+                    ingest.run(queue.Queue())
         self.assertEqual(resolve.call_count, 2)
         self.assertEqual(len(calls), 2)
         for cmd, url in zip(calls, ["first", "fresh"]):
             self.assertEqual(cmd[cmd.index("-i") + 1], url)
             self.assertEqual(cmd[cmd.index("-ss") + 1], "30.000")
+
+    def test_first_vod_audio_open_failure_reports_error(self):
+        ingest = Ingest(
+            Source("https://www.youtube.com/watch?v=EXAMPLE", live=False,
+                   duration=150.0),
+            IngestConfig(),
+        )
+        with patch.object(ingest, "_read_session", return_value=True):
+            with self.assertRaisesRegex(
+                RuntimeError, "decoder exited before producing any PCM",
+            ):
+                ingest.run(queue.Queue())
 
     def test_vod_premature_audio_eof_resumes_until_real_end(self):
         ingest = Ingest(

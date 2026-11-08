@@ -1025,7 +1025,23 @@ class Ingest:
                         self._vod_audio_url = None
                 if refresh:
                     log.info("cached VOD audio failed to open; resolving again")
-                    self._read_session(out_q)
+                    retry_failed = self._read_session(out_q)
+                    if retry_failed:
+                        raise RuntimeError(
+                            "VOD audio failed to open even after refreshing the "
+                            "signed YouTube URL; inspect FFmpeg logs"
+                        )
+                elif failed_to_open:
+                    with self._proc_lock:
+                        interrupted = (
+                            not self._stopped and self._restart_at is None
+                            and generation == self._generation
+                        )
+                    if interrupted:
+                        raise RuntimeError(
+                            "VOD audio decoder exited before producing any PCM; "
+                            "check yt-dlp, source availability and FFmpeg logs"
+                        )
 
                 with self._proc_lock:
                     if self._stopped or self._restart_at is None:

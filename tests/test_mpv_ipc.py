@@ -549,16 +549,18 @@ class SpeakerSubtitlePriorityTests(unittest.TestCase):
             [latest, older_a, older_b],
         )
 
-    def test_ass_overlay_displays_compact_anonymous_speaker_prefix(self):
+    def test_ass_overlay_hides_speaker_labels_but_preserves_subtitles(self):
         body = _ass_many([
             Subtitle(5, 6, "ja", "Watch out!", speaker_id=0),
             Subtitle(4, 5, "ja", "On my way.", speaker_id=1),
             Subtitle(3, 4, "ja", "Unknown"),
         ], MpvConfig())
-        self.assertIn("A: Watch out!", body)
-        self.assertIn("B: On my way.", body)
+        self.assertIn("Watch out!", body)
+        self.assertIn("On my way.", body)
         self.assertIn("Unknown", body)
-        self.assertNotIn("C: Unknown", body)
+        self.assertNotIn("A: ", body)
+        self.assertNotIn("B: ", body)
+        self.assertNotIn("C: ", body)
 
 
 if __name__ == '__main__':

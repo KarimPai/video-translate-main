@@ -20,6 +20,31 @@ class TerminalOutputTests(unittest.TestCase):
             "EN: Hello.",
         ])
 
+    def test_simple_mode_shows_speaker_only_in_cmd(self):
+        target = StringIO()
+        with redirect_stdout(target):
+            TerminalOutput(simple=True).show(
+                Subtitle(1.0, 2.0, "危ない！", "Watch out!", speaker_id=0)
+            )
+            TerminalOutput(simple=True).show(
+                Subtitle(2.0, 3.0, "わかった", "Got it.", speaker_id=1)
+            )
+        self.assertEqual(target.getvalue().splitlines(), [
+            "JP [A]: 危ない！",
+            "EN [A]: Watch out!",
+            "JP [B]: わかった",
+            "EN [B]: Got it.",
+        ])
+
+    def test_verbose_mode_shows_speaker_in_cmd(self):
+        target = StringIO()
+        with redirect_stdout(target):
+            TerminalOutput(simple=False).show(
+                Subtitle(1.0, 2.0, "危ない", "Watch out!", speaker_id=0)
+            )
+        self.assertIn("[A] 危ない", target.getvalue())
+        self.assertIn("→ [A] Watch out!", target.getvalue())
+
     def test_simple_mode_flushes_once_for_bilingual_subtitle(self):
         with patch("builtins.print") as output:
             TerminalOutput(simple=True).show(

@@ -1371,7 +1371,7 @@ def _ass_many(
         if sub.en:
             rows.append(
                 rf"{{\fs{cfg.en_size}\1c&HFFFFFF&}}"
-                + esc((f"{chr(65 + sub.speaker_id)}: " if sub.speaker_id is not None and 0 <= sub.speaker_id < 26 else "") + sub.en)
+                + esc(sub.en)
             )
 
         if not rows:

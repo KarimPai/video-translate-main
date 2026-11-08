@@ -24,6 +24,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ..config import MpvConfig
 from ..ingest import Ingest, fmt_hms
@@ -33,11 +34,6 @@ from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
 
-IPC_PATH = (
-    r"\\.\pipe\auto-translate-mpv"
-    if sys.platform == "win32"
-    else "/tmp/auto-translate-mpv.sock"
-)
 WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
 INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
@@ -396,11 +392,16 @@ class MpvOutput:
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
 
+        # Concurrent Windows launches must never attach to a previous player.
+        ipc_path = (
+            rf"\\.\pipe\auto-translate-mpv-{uuid4().hex}"
+            if sys.platform == "win32" else "/tmp/auto-translate-mpv.sock"
+        )
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
 
             "--pause",
-            f"--input-ipc-server={IPC_PATH}",
+            f"--input-ipc-server={ipc_path}",
 
             "--force-window=yes",
             "--title=auto-translate",
@@ -453,17 +454,16 @@ class MpvOutput:
                 )
 
         try:
-            self.ipc = MpvIpc(IPC_PATH)
+            self.ipc = MpvIpc(ipc_path)
 
             # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
 
-            while (
-                self.ipc.get("idle-active") is None
-                and time.monotonic() < deadline
-            ):
+            while self.ipc.get("idle-active") is None:
                 if self._proc.poll() is not None:
-                    raise RuntimeError("mpv exited during startup")
+                    raise RuntimeError(f"mpv exited during startup (code {self._proc.returncode})")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("mpv did not respond to the startup IPC check")
                 time.sleep(0.1)
 
             time.sleep(0.5)
@@ -477,6 +477,8 @@ class MpvOutput:
                     self._proc.kill()
                     self._proc.wait()
 
+            if hasattr(self, "ipc"):
+                self.ipc.close()
             _close_job(self._job)
             self._job = None
             raise
@@ -627,7 +629,13 @@ class MpvOutput:
             if self._proc.poll() is not None:
                 return
 
-            if self.ipc.get("eof-reached"):
+            try:
+                eof = self.ipc.get("eof-reached")
+            except ConnectionError:
+                if self._exit_code_after_disconnect() == 0:
+                    return
+                raise
+            if eof:
                 log.info(
                     "VOD playback finished; MPV will remain open until closed"
                 )
@@ -689,6 +697,16 @@ class MpvOutput:
 
     # ---- Scheduler ----
 
+    def _exit_code_after_disconnect(self) -> int | None:
+        code = self._proc.poll()
+        if code is not None:
+            return code
+        # Windows can close the pipe just before the process becomes signaled.
+        try:
+            return self._proc.wait(timeout=0.75)
+        except subprocess.TimeoutExpired:
+            return None
+
     def _run(self) -> None:
         try:
             first = True
@@ -707,7 +725,8 @@ class MpvOutput:
                 # WinError 232 means MPV's IPC pipe closed. Distinguish a
                 # normal window close from an unexpected player exit rather
                 # than reporting the pipe failure itself as the root cause.
-                returncode = self._proc.poll()
+                returncode = (self._exit_code_after_disconnect()
+                              if isinstance(exc, ConnectionError) else self._proc.poll())
                 if returncode == 0:
                     log.info("MPV window closed; stopping translator")
                 elif returncode is not None:
@@ -749,7 +768,9 @@ class MpvOutput:
                     started
                     and self._wait_for_event("file-loaded", timeout_s=30.0)
                 )
-            except (MpvError, ConnectionError, OSError):
+            except ConnectionError:
+                raise
+            except (MpvError, OSError):
                 log.exception(
                     "MPV rejected the original source; trying local fMP4 fallback"
                 )

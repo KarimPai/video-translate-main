@@ -4,7 +4,7 @@ import sys
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from auto_translate.config import MpvConfig
 from auto_translate.output.mpv import MpvError, MpvIpc, MpvOutput, _WindowsPipe, _Line
@@ -47,6 +47,26 @@ class WindowsPipeTests(unittest.TestCase):
 
 
 class IpcTests(unittest.TestCase):
+    def test_repeated_windows_launches_connect_to_their_own_player(self):
+        mod = "auto_translate.output.mpv"
+        ingest = SimpleNamespace(source=SimpleNamespace(start_s=0, live=False, location="video"))
+        with (
+            patch(mod + ".sys.platform", "win32"),
+            patch(mod + ".find_mpv", return_value="mpv"),
+            patch(mod + ".subprocess.Popen") as launch,
+            patch(mod + "._create_kill_job"),
+            patch(mod + ".MpvIpc") as connect,
+            patch(mod + ".time.sleep"),
+            patch(mod + ".threading.Thread.start"),
+        ):
+            for _ in range(2):
+                MpvOutput(MpvConfig(), ingest, threading.Event())
+        paths = [call.args[0] for call in connect.call_args_list]
+        self.assertNotEqual(*paths)
+        for path, call in zip(paths, launch.call_args_list):
+            self.assertTrue(path.startswith(r"\\.\pipe\auto-translate-mpv-"))
+            self.assertIn("--input-ipc-server=" + path, call.args[0])
+
     def test_reader_can_wait_while_command_is_sent(self):
         replies = queue.Queue()
         seen = []
@@ -168,6 +188,31 @@ class MpvShutdownTests(unittest.TestCase):
             log.info.assert_called_once()
             log.exception.assert_not_called()
             log.error.assert_not_called()
+
+    def test_pipe_can_close_before_process_exit_is_visible(self):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out._proc = Mock()
+        out._proc.poll.return_value = None
+        out._proc.wait.return_value = 0
+        out._play_session = Mock(side_effect=BrokenPipeError("pipe closing"))
+        with patch("auto_translate.output.mpv.log") as log:
+            out._run()
+            log.exception.assert_not_called()
+            log.error.assert_not_called()
+        self.assertTrue(out.stop.is_set())
+        out._proc.wait.assert_called_once_with(timeout=0.75)
+
+    def test_final_frame_poll_tolerates_clean_window_close(self):
+        out = object.__new__(MpvOutput)
+        out.stop = threading.Event()
+        out._proc = Mock()
+        out._proc.poll.return_value = None
+        out._proc.wait.return_value = 0
+        out.ipc = Mock()
+        out.ipc.get.side_effect = BrokenPipeError("pipe closing")
+        out.drain()
+        out._proc.wait.assert_called_once_with(timeout=0.75)
 
     def test_unexpected_mpv_exit_exposes_exit_code(self):
         out = object.__new__(MpvOutput)

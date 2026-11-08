@@ -1,6 +1,7 @@
 """Load config.toml into typed dataclasses (missing keys fall back to defaults)."""
 
 import tomllib
+import math
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -9,7 +10,14 @@ from pathlib import Path
 class IngestConfig:
     ytdlp_format: str = "bestaudio/93/best"
     cookies_from_browser: str = ""
-    pitch_semitones: float = 0.0
+    # Opt-in experimental pitch shift for the VAD+ASR PCM only. Legacy
+    # pitch_semitones is ignored to avoid silently restoring old overrides.
+    pitch_shift_semitones: float = 0.0
+
+    def __post_init__(self) -> None:
+        amount = self.pitch_shift_semitones
+        if not isinstance(amount, (float, int)) or not math.isfinite(amount) or not -4.0 <= amount <= 0.0:
+            raise ValueError("ingest.pitch_shift_semitones must be between -4.0 and 0.0")
 
 
 @dataclass
@@ -125,8 +133,8 @@ def load_config(path: Path) -> Config:
 
     # Ignore legacy fields so existing config.toml files remain compatible.
     ingest_data = dict(data.get("ingest", {}))
-    # Older configs may contain a -3 semitone ASR pitch workaround. Natural pitch
-    # is the default for Haas Japanese recognition; ignore that legacy override.
+    # Historical override is deliberately ignored: prevent an old -3 semitone
+    # setting from silently becoming active in a freshly cloned branch.
     ingest_data.pop("pitch_semitones", None)
 
     asr_data = dict(data.get("asr", {}))

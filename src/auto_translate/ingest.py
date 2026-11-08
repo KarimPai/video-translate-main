@@ -213,7 +213,7 @@ class Ingest:
         self.source = source
         self._vod_audio_url: str | None = None
         self.cfg = cfg
-        self.pitch_semitones = cfg.pitch_semitones
+        self.pitch_semitones = cfg.pitch_shift_semitones
         self.video_format = video_format
         # Keep the temporary fMP4 cache beside the project instead of
         # using the per-user Windows TEMP directory. Each run still gets
@@ -819,7 +819,11 @@ class Ingest:
             self._video_failed.set()
 
     def _pitch_filter(self, sample_rate: int) -> list[str]:
-        """Shift ASR input pitch while preserving its original duration."""
+        """Shift VAD and ASR input pitch without deliberately changing duration.
+
+        Original MPV playback audio is never processed by this filter.
+        FFmpeg atempo may add a small filter delay; compare timing in tests.
+        """
         semitones = self.pitch_semitones
 
         if abs(semitones) < 1e-6:
@@ -828,7 +832,7 @@ class Ingest:
         ratio = 2 ** (semitones / 12.0)
         tempo = 1.0 / ratio
 
-        log.info("ASR audio pitch shift: %.1f semitones", semitones)
+        log.info("Experimental VAD+ASR pitch shift: %.1f semitones (MPV unchanged)", semitones)
 
         return [
             f"asetrate={sample_rate * ratio:.8f}",

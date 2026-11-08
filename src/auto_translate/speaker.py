@@ -191,8 +191,19 @@ class SherpaSplitter:
         return np.asarray(self.extractor.compute(stream), dtype=np.float32)
 
     def split(self, original: Utterance) -> list[Utterance]:
-        if original.probe or len(original.audio) < 2 * self.cfg.min_turn_s * SAMPLE_RATE:
+        if original.probe or len(original.audio) < SAMPLE_RATE:
             return [original]
+        # Offline pyannote segmentation needs a larger observation window.
+        # For brief utterances do voice identification only, without trying
+        # to hallucinate a speaker boundary in a 1-2 second speech sample.
+        if len(original.audio) < 3 * SAMPLE_RATE:
+            try:
+                v = self._embedding(original.audio)
+                speaker = self.profiles.identify(v) if v is not None else None
+                return [replace(original, speaker_id=speaker)] if speaker is not None else [original]
+            except Exception as exc:
+                log.debug("Short-turn voice embedding unavailable: %s", exc)
+                return [original]
         try:
             audio = np.ascontiguousarray(original.audio, dtype=np.float32)
             raw = self.diarizer.process(audio).sort_by_start_time()

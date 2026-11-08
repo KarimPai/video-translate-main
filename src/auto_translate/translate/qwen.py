@@ -23,6 +23,7 @@ from ..process_cleanup import _create_kill_job, _close_job
 from ..stream_context import (
     ark_glossary_hits, is_ark_context, is_gta_context,
     is_horse_racing_context, is_incomplete_fragment,
+    valorant_glossary_hits, repair_valorant_translation,
 )
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -349,6 +350,12 @@ class QwenTranslator:
         if "カージャック" in ja and not any(term == "カージャック" for term, _ in hits):
             hits.append(("カージャック", "carjack / carjacking (vehicle theft, not kidnapping)"))
         recent_ja = [jp for jp, _ in history[-8:]]
+        existing = {src for src, _ in hits}
+        hits.extend(
+            (src, target) for src, target in valorant_glossary_hits(
+                ja, recent_ja, self._scene_topic() == "valorant",
+            ) if src not in existing
+        )
         if (self._scene_topic() == "ark" or
                 (self._scene_topic() is None and
                  is_ark_context(self.vod_title, ja, recent_ja))):
@@ -382,7 +389,10 @@ class QwenTranslator:
         if self.memory_lines:
             cached = reuse_recent_short_term(ja, history)
             if cached is not None:
-                return cached
+                return repair_valorant_translation(
+                    ja, cached, [src for src, _ in history[-8:]],
+                    self._scene_topic() == "valorant",
+                )
         hits = self._glossary_hits(ja, history)
         if not hits and is_obvious_nonverbal_japanese(ja):
             return SKIP_TOKEN
@@ -416,6 +426,10 @@ class QwenTranslator:
             return "[translation failed]"
 
         english = repair_high_confidence_meaning(ja, english)
+        english = repair_valorant_translation(
+            ja, english, [src for src, _ in history[-8:]],
+            self._scene_topic() == "valorant",
+        )
         english = correct_translation(ja, english)
         english = _remove_unmentioned_full_names(ja, english)
         english = _remove_unspoken_insult(ja, english)
@@ -458,6 +472,19 @@ class QwenTranslator:
             blocks.append(
                 "Term mappings ONLY if present in the current Japanese:\n"
                 + "\n".join(src + " => " + target for src, target in hits)
+            )
+        if any(target.startswith("VALORANT (") for _, target in hits):
+            blocks.append(
+                "Game title: VALORANT is Riot Games' 5v5 tactical shooter, "
+                "NOT Barotrauma or a different game. The current Japanese "
+                "game-name pronunciation refers to VALORANT; keep any "
+                "mentioned number of players and all other heard words."
+            )
+        if "空気読んでる" in ja or "空気を探り合ってる" in ja:
+            blocks.append(
+                "Conversation idiom: 空気を読む means reading the room / "
+                "sensing the mood, and 空気を探り合う means feeling each other "
+                "out / gauging the atmosphere, NOT literally reading air."
             )
         # A Hololive X期生 group is a generation, not a school year.
         # Only add this hint when a generation term was actually recognized;

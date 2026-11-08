@@ -19,6 +19,72 @@ _ARK_SIGNALS = ("ギガノト", "ギガのと", "ギガノと", "テイム", "�
 _GTA_TITLE = re.compile(r"(?i)(?<![a-z])gta(?:\s*[5v])?(?![a-z])|グラセフ|グランド[・\s]?セフト")
 
 
+
+# Strong variants are recognizably the title of Riot Games' 5v5 shooter.
+# Weak variants could be unrelated speech and require nearby direct evidence.
+_VALORANT_STRONG = (
+    "ヴァロラント", "ヴァローラント", "バローラント",
+    "バロラント", "VALORANT",
+)
+_VALORANT_WEAK = ("バローランド", "バロランと")
+_MISNAMED_VALORANT_EN = re.compile(
+    r"(?i)\b(?:barotrauma|baroland|baro[\s-]?rant|valourant)\b"
+)
+
+
+def valorant_glossary_hits(
+    current: str,
+    recent: tuple[str, ...] | list[str] = (),
+    established_scene: bool = False,
+) -> list[tuple[str, str]]:
+    """Only link explicit, audible game names to VALORANT.
+
+    Do not rewrite the Japanese ASR transcript or assume a game based on
+    unrelated shooter terms alone. An ambiguous mishearing is supported by
+    a clear name in nearby Japanese, an established scene, or repetitions
+    of the same name while directly discussing a game.
+    """
+    prior = list(recent)[-8:]
+    evidence = established_scene or any(
+        name in phrase for name in _VALORANT_STRONG for phrase in prior
+    )
+    result = []
+    for name in _VALORANT_STRONG:
+        if name in current:
+            result.append((name, "VALORANT (5v5 tactical shooter game)"))
+    for name in _VALORANT_WEAK:
+        supported = (
+            evidence
+            or (current.count(name) >= 2 and "ゲーム" in current)
+        )
+        if name in current and supported:
+            result.append((name, "VALORANT (5v5 tactical shooter game)"))
+    # Avoid subword hits such as バロラント inside ヴァロラント.
+    result.sort(key=lambda pair: -len(pair[0]))
+    selected = []
+    remaining = current
+    for name, target in result:
+        if name in remaining:
+            selected.append((name, target))
+            remaining = remaining.replace(name, "\0")
+    return selected
+
+
+def repair_valorant_translation(
+    japanese: str,
+    english: str,
+    recent: tuple[str, ...] | list[str] = (),
+    established_scene: bool = False,
+) -> str:
+    """Correct only known wrong English game *names*, not transcript content.
+
+    The intended game must be evidenced by the current Japanese cue; an
+    unrelated actual reference to Barotrauma must remain untouched.
+    """
+    if not valorant_glossary_hits(japanese, recent, established_scene):
+        return english
+    return _MISNAMED_VALORANT_EN.sub("VALORANT", english)
+
 def is_gta_context(title: str = "") -> bool:
     """Only use GTA-specific prompt interpretations with an explicit title."""
     return bool(_GTA_TITLE.search(title))

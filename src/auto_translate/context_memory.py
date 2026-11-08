@@ -27,6 +27,8 @@ _SCENE_LABELS = {
     "horse_racing": "Japanese horse racing and betting",
     "ark": "ARK survival gameplay",
     "gta": "GTA driving/crime gameplay",
+    "valorant": "VALORANT tactical shooter gameplay",
+    "apex": "Apex Legends battle royale gameplay",
 }
 # Evidence strength: 2 = independently diagnostic, 1 = weak on its own.
 # A single generic mention of 車, 新聞, レース, etc. must not invent a scene.
@@ -51,6 +53,15 @@ _SCENE_CUES = {
         "店舗強盗": 2, "コンビニ強盗": 2,
         "パトカー": 1, "警察": 1, "逃走": 1,
     },
+    "valorant": {
+        "VALORANT": 2, "ヴァロラント": 2,
+        "ヴァローラント": 2, "バロラント": 2,
+        "バローラント": 2,
+        "バローランド": 1, "バロランと": 1,
+    },
+    "apex": {
+        "APEX": 2, "エイペックス": 2,
+    },
 }
 _SCENE_DETAILS = {
     "horse_racing": (
@@ -70,6 +81,17 @@ _SCENE_DETAILS = {
         ("パトカー", "police cars"), ("警察", "police"),
         ("店舗強盗", "store robberies"), ("コンビニ強盗", "store robberies"),
         ("無線", "radio communication"),
+    ),
+    "valorant": (
+        ("ヴァロラント", "VALORANT"),
+        ("バロラント", "VALORANT"),
+        ("バローラント", "VALORANT"),
+        ("5人対5人", "5v5 matches"),
+        ("野良", "random teammates"),
+        ("NT", "NT (nice try) in game chat"),
+    ),
+    "apex": (
+        ("エイペックス", "Apex Legends"),
     ),
 }
 

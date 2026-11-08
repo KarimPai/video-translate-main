@@ -308,6 +308,71 @@ class QwenTranslatorTests(unittest.TestCase):
             )
         self.assertIsNone(fresh._scene_topic())
 
+    def test_valorant_game_name_is_consistent_without_extra_model_call(self):
+        instance = translator()
+        raw = json.dumps({"choices": [
+            {"message": {"content": "Let's try playing Barotrauma with three people."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)) as call:
+            actual = instance.translate("バローラント3人でバローラントやってみるか", [])
+        self.assertEqual(actual, "Let's try playing VALORANT with three people.")
+        self.assertEqual(call.call_count, 1)
+        prompt = json.loads(call.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("バローラント => VALORANT", prompt)
+        self.assertIn("NOT Barotrauma", prompt)
+
+        # The later misheard name is supported by an earlier clear mention.
+        instance.reset_scene_context()
+        other = json.dumps({"choices": [
+            {"message": {"content": "Ayame says Baroland is really fun."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(other)):
+            actual = instance.translate(
+                "あやめなんかバローランドめっちゃおもしろいぞ",
+                [("バロラントやってる?", "Are you playing VALORANT?")],
+            )
+        self.assertEqual(actual, "Ayame says VALORANT is really fun.")
+
+    def test_valorant_unrelated_games_are_preserved(self):
+        instance = translator()
+        raw = json.dumps({"choices": [
+            {"message": {"content": "Let's play Barotrauma."}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            self.assertEqual(
+                instance.translate("バロトラウマを遊ぼう", []),
+                "Let's play Barotrauma.",
+            )
+        instance.reset_scene_context()
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            self.assertEqual(
+                instance.translate("バローランドを遊ぼう", []),
+                "Let's play Barotrauma.",
+            )
+
+    def test_choco_honorific_and_reading_the_room(self):
+        instance = translator()
+        raw = json.dumps({"choices": [
+            {"message": {"content": "Choco-chan, Choco-chan, lately?"}},
+        ]}).encode("utf-8")
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=io.BytesIO(raw)):
+            self.assertEqual(instance.translate("最近チョコさん最近チョコさん", []),
+                             "Choco-san, Choco-san, lately?")
+        response = io.BytesIO(json.dumps({"choices": [
+            {"message": {"content": "Even the comments are reading the room."}},
+        ]}).encode("utf-8"))
+        with patch("auto_translate.translate.qwen.urllib.request.urlopen",
+                   return_value=response) as call:
+            instance._chat("なんかコメントも空気読んでるね", [], 5)
+        prompt = json.loads(call.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("reading the room", prompt)
+        self.assertIn("NOT literally reading air", prompt)
+
     def test_hololive_second_generation_is_not_second_year_students(self):
         from pathlib import Path
         from auto_translate.glossary import Glossary

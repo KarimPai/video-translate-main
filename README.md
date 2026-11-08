@@ -129,6 +129,16 @@ limits are unchanged, allowing a cleaner comparison against the previous run.
 - Preserves the existing caption reconciliation, Peko-chan name support,
   speech filtering, polarity review and selective one-time recheck.
   Known high-confidence translation inversions are repaired without a model call.
+- A short evidence-backed VALORANT/Apex game context now helps with streams
+  discussing multiple games. When the current Japanese clearly says
+  `バローラント` or `バロラント`, Qwen is guided to VALORANT, not
+  Barotrauma; less certain aliases (`バローランド`, `バロランと`) require
+  recent strong recognition or the established scene. The final subtitle
+  corrects only the *English game name*, leaving the raw Japanese ASR intact.
+  No additional ASR or translator inference is performed. Other games and
+  unverified names are not automatically changed.
+- Explicit Choco-san honorific and conversational idioms such as
+  `空気を探り合ってる` are kept natural without inferring missing speech.
 
 If the stream has no Japanese YouTube captions, recognition uses Qwen3-ASR-1.7B-JA.
 A translation model cannot recover what ASR never heard correctly. A nickname

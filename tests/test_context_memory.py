@@ -172,6 +172,31 @@ class ContextMemoryTests(unittest.TestCase):
         self.assertEqual(memory.current_topic(), "horse_racing")
         self.assertLessEqual(SceneMemory(max_idle_lines=10000).max_idle_lines, 96)
 
+    def test_valorant_scene_persists_then_switches_to_apex(self):
+        memory = SceneMemory()
+        memory.observe("バローラントって3人でもできるの?")
+        self.assertEqual(memory.current_topic(), "valorant")
+        self.assertIn("VALORANT tactical shooter", memory.hint())
+        for _ in range(9):
+            memory.observe("そうなの")
+        memory.observe("バローランドは面白い")
+        self.assertEqual(memory.current_topic(), "valorant")
+        memory.observe("Apexは今どうなってる?")
+        self.assertIsNone(memory.current_topic())
+        self.assertEqual(memory.hint(), "")
+        memory.observe("エイペックスって触れてない")
+        self.assertEqual(memory.current_topic(), "apex")
+        self.assertNotIn("VALORANT", memory.hint())
+        memory.reset()
+        self.assertEqual(memory.hint(), "")
+
+    def test_valorant_game_is_not_inferred_from_generic_5v5_or_baroland(self):
+        memory = SceneMemory()
+        memory.observe("5人対5人で銃で戦う")
+        self.assertEqual(memory.current_topic(), None)
+        memory.observe("バローランドって何?")
+        self.assertEqual(memory.current_topic(), None)
+
     def test_refund_or_payout_alone_does_not_invent_horse_racing(self):
         for japanese in ("払い戻し行こうか", "払戻しはどこ?", "返金して"):
             with self.subTest(japanese=japanese):

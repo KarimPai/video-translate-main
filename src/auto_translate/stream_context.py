@@ -83,6 +83,10 @@ def repair_valorant_translation(
     """
     if not valorant_glossary_hits(japanese, recent, established_scene):
         return english
+    # If a line actually compares two named games, the model's rendered
+    # Barotrauma may be the *other* game and must not be blindly renamed.
+    if "バロトラウマ" in japanese or re.search(r"(?i)barotrauma", japanese):
+        return english
     return _MISNAMED_VALORANT_EN.sub("VALORANT", english)
 
 def is_gta_context(title: str = "") -> bool:

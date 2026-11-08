@@ -431,6 +431,9 @@ class QwenTranslator:
             self._scene_topic() == "valorant",
         )
         english = correct_translation(ja, english)
+        # The actual honorific is explicit: never render チョコさん as Choco-chan.
+        if "チョコさん" in ja or "ちょこさん" in ja:
+            english = re.sub(r"\bChoco-chan\b", "Choco-san", english, flags=re.I)
         english = _remove_unmentioned_full_names(ja, english)
         english = _remove_unspoken_insult(ja, english)
         english = neutralize_unsupported_subjects(ja, english)

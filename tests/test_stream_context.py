@@ -6,6 +6,7 @@ from auto_translate.stream_context import (
     ark_glossary_hits, is_ark_context, is_incomplete_fragment,
     repair_ark_spelling, repair_peko_nickname, repair_verified_caption,
     repair_gta_carjacking, is_gta_context, is_horse_racing_context, repair_horse_racing_spelling,
+    valorant_glossary_hits, repair_valorant_translation,
 )
 from auto_translate.translate.quality import translation_review_reason, repair_high_confidence_meaning
 
@@ -41,6 +42,66 @@ class TestStreamContext(unittest.TestCase):
         self.assertEqual(repair_ark_spelling("おさらちが来た", "", ["更地になってる"]),
                          "おさらちが来た")
         self.assertIn(("ギガノト", "Giganotosaurus"), ark_glossary_hits("ギガノト討伐"))
+
+    def test_valorant_game_aliases_are_evidence_bound(self):
+        self.assertIn(
+            ("バローラント", "VALORANT (5v5 tactical shooter game)"),
+            valorant_glossary_hits("バローラント3人でやってみる?"),
+        )
+        self.assertIn(
+            ("バロランと", "VALORANT (5v5 tactical shooter game)"),
+            valorant_glossary_hits("バロランとってどんなゲーム?", ["バローラントだ"]),
+        )
+        self.assertIn(
+            ("バローランド", "VALORANT (5v5 tactical shooter game)"),
+            valorant_glossary_hits("バローランド面白い", ["バロラントやった?"]),
+        )
+        self.assertEqual(valorant_glossary_hits("バローランド面白い"), [])
+        self.assertEqual(valorant_glossary_hits("バロランと"), [])
+        self.assertEqual(valorant_glossary_hits("バロトラウマ"), [])
+        self.assertEqual(valorant_glossary_hits("バロランと", ["バロトラウマ"]), [])
+        self.assertIn(
+            ("バロランと", "VALORANT (5v5 tactical shooter game)"),
+            valorant_glossary_hits("バロランとだバロランとってどんなゲーム?"),
+        )
+
+    def test_valorant_output_repairs_names_not_dialogue(self):
+        self.assertEqual(
+            repair_valorant_translation(
+                "バローラント3人でバローラントやってみるか",
+                "Let's try playing Barotrauma with three people.",
+            ), "Let's try playing VALORANT with three people.",
+        )
+        self.assertEqual(
+            repair_valorant_translation(
+                "え、バローラントって3人でもできるの?",
+                "Can you play Baro-Rant with just three people?",
+            ), "Can you play VALORANT with just three people?",
+        )
+        self.assertEqual(
+            repair_valorant_translation(
+                "バローランドめっちゃおもしろい",
+                "Baroland is so fun!", ["ヴァロラントやる?"],
+            ), "VALORANT is so fun!",
+        )
+        self.assertEqual(
+            repair_valorant_translation(
+                "バローランドめっちゃおもしろい",
+                "Baroland is so fun!",
+            ), "Baroland is so fun!",
+        )
+        self.assertEqual(
+            repair_valorant_translation(
+                "バロトラウマを遊ぼう", "Let's play Barotrauma.",
+                ["VALORANTも遊びたい"],
+            ), "Let's play Barotrauma.",
+        )
+        self.assertEqual(
+            repair_valorant_translation(
+                "VALORANTとバロトラウマを比べよう",
+                "Let's compare Valorant and Barotrauma.",
+            ), "Let's compare Valorant and Barotrauma.",
+        )
 
     def test_gta_title_context_is_explicit(self):
         self.assertTrue(is_gta_context("Hololive GTA Day 4"))

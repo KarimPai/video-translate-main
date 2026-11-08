@@ -19,7 +19,7 @@ CAT is the **sole translator**. There is no Index-Translate implementation, Inde
 
 **Exact GGUF filename:** `cat-translate-3.3b-Q4_K_M.gguf` (2,066,389,824 bytes; about 2.07 GB). The community repository also contains 1.4B and Gemma Q4 files. The launcher specifies **`-hf` plus `-hff`** to prevent accidental loading of a different model.
 
-The server uses `--jinja` to apply the GGUF's embedded **Sarashina 2.2 instruct chat template**. CAT's official inference format is a **single USER message**:
+The server uses `--jinja --chat-template-file src/auto_translate/translate/cat_sarashina.jinja` to apply the official **Sarashina 2.2 chat markers** explicitly. This avoids relying on the community GGUF's embedded template. A single USER message is rendered as `<|user|>...<\/s><|assistant|>` (the EOS string is actually `</s>`). CAT's official inference format is:
 
 ```text
 Translate the following Japanese text into English.
@@ -27,13 +27,15 @@ Translate the following Japanese text into English.
 行ってきます
 ```
 
-No previous Japanese/English dialogue, video title, long instructions, leaked constraint sections, Index stop markers, or Qwen thinking parameters are injected. **Temperature is 0** for deterministic comparison. CAT is not guaranteed to understand VTuber slang or broken ASR perfectly; validate on actual audio.
+No previous Japanese/English dialogue, video title, long instructions, leaked constraint sections, Index stop markers, or Qwen thinking parameters are injected. **Temperature is 0 on the first pass**, with a small repetition penalty. CAT is not guaranteed to understand VTuber slang or broken ASR perfectly; validate against actual audio.
 
 ### Real-VOD output compatibility
 
-The community CAT GGUF has been observed returning the Sarashina end-of-sequence marker `</s>` **inside the English text**, even when using the officially specified prompt. The CAT request now explicitly stops on `</s>`, and output cleanup also strips it if the server exposes the marker. No extra inference or prompt history is used.
+The community CAT GGUF has been observed returning the Sarashina end-of-sequence marker `</s>` **inside the English text**, even when using the officially specified prompt. The CAT request explicitly stops on `</s>`, and output cleanup also strips it if the server exposes the marker. Extra inference is only used on obviously invalid completions, never as regular prompt context.
 
-Three source-evident GTA transcript errors have narrow, deterministic safeguards: `30秒` wrongly translated as `15 seconds`; a standalone `聞こえるな!` wrongly rendered `Don't listen!`; and a standalone `よろしくお願いします!` incorrectly generating an unrelated "reliable/professional" request. These are **not general translation-quality fixes**—other CAT errors, incomplete Japanese or incorrect Haas transcription can remain.
+**General failure protection:** CAT sometimes replies as a translation assistant (for example, asking the user to provide Japanese), or repeats punctuation for many tokens. The pipeline now flags these concrete failures, retries **once with the same Japanese text and a 4-second timeout**, and suppresses the subtitle if the second result is still invalid. Normal lines have **one inference only**. This does not censor legitimate speech or guarantee that fluent but incorrect translations will be detected. Common exact short reactions `なるほど` and `あかんか` are handled locally so they cannot trigger irrelevant assistant-style replies. The default maximum output is now **128 tokens**, down from 192.
+
+For deterministic diagnostics, compare the same saved Japanese sentences before and after the update. This is a compatibility experiment; whether it improves translation accuracy must be established on real VODs.Three source-evident GTA transcript errors have narrow, deterministic safeguards: `30秒` wrongly translated as `15 seconds`; a standalone `聞こえるな!` wrongly rendered `Don't listen!`; and a standalone `よろしくお願いします!` incorrectly generating an unrelated "reliable/professional" request. These are **not general translation-quality fixes**—other CAT errors, incomplete Japanese or incorrect Haas transcription can remain.
 
 ### Clean default CAT settings
 

@@ -19,6 +19,7 @@ from .stream_context import (
 )
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
+from .translation_guard import uncertain_asr_text, trusted_merge_candidate
 from .text_filter import (
     is_isolated_reaction, is_nonspeech_probe, is_sound_caption_artifact,
     is_usable_transcript, strip_nonverbal_labels, strip_incidental_laughter,
@@ -228,6 +229,17 @@ def run_asr(
         if get_generation is not None and utt.generation != get_generation():
             continue
 
+        # Haas exposes only text, not acoustic confidence scores.
+        # Mark speculative Katakana / strong caption disagreement as uncertain:
+        # do not discard real names or overwrite the transcript.
+        uncertainty = uncertain_asr_text(
+            text,
+            caption=caption_match.text if caption_match is not None else "",
+            caption_coverage=caption_match.coverage if caption_match is not None else 0.0,
+            caption_overlap_s=caption_match.overlap_s if caption_match is not None else 0.0,
+        )
+        if uncertainty:
+            log.debug("ASR text may be uncertain at %.2fs: %r", utt.start_s, text)
         recent_japanese.append(text)
         out_q.put(
             Transcript(
@@ -239,6 +251,7 @@ def run_asr(
                 speech_start_s=utt.speech_start_s,
                 speaker_handoff=utt.speaker_handoff,
                 speaker_context_key=utt.speaker_context_key,
+                asr_uncertain=uncertainty,
             )
         )
 

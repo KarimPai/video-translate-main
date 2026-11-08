@@ -1,4 +1,4 @@
-"""Cheap, conservative signals for selective Qwen translation review.
+"""Cheap, conservative signals for reviewing translation quality.
 
 Do not classify unfamiliar romanized words as gibberish: they may be VTuber
 names or game terminology. Only skip Japanese with clear syllable loops and
@@ -185,7 +185,7 @@ def translation_review_reason(japanese: str, english: str) -> str | None:
 def repair_high_confidence_meaning(japanese: str, english: str) -> str:
     """Fix two tightly bounded reversals found in real Japanese stream output.
 
-    Applies AFTER optional Qwen quality review, so a rejected or timed-out
+    Applies after translation-quality checks, so a rejected or timed-out
     model retry cannot leave these known meaning inversions on screen.
     Does not attempt to repair arbitrary garbled ASR sentences.
     """
@@ -213,7 +213,7 @@ def repair_high_confidence_meaning(japanese: str, english: str) -> str:
         source,
     ) and re.search(r"\b(?:can't|cannot)\s+eat\b", english, re.I)):
         return "Guess I'll have to eat motsuni stew."
-    # Meaning is explicit in Japanese regardless of how Qwen mistranslates
+    # Meaning is explicit in Japanese regardless of how the translator mistranslates
     # the number or repeated refusal (including "fourth, fifth, sixth").
     if match := _LEVEL_REJECTION.fullmatch(source):
         return f"Level {int(match.group(1))}? No, no, no."

@@ -97,6 +97,18 @@ Prerequisites: Windows, Python 3.12+, `uv`, ffmpeg/yt-dlp/MPV, CUDA-enabled Torc
 
 The first CAT startup downloads its GGUF if not cached. It remains local afterwards. Model-server startup/download issues are recorded in **`logs\cat-server.log`**. The main pipeline logs to **`logs\run.log`**. The server is automatically terminated when the session ends.
 
+### When FFmpeg produces no VOD audio
+
+This is an **ingest failure, not evidence of CAT inference failing**. On a first-audio-open error the program now (1) requests a fresh signed YouTube URL and retries, then (2) tries an AAC/m4a audio rendition if the second attempt also fails. Only after all three attempts does it stop. FFmpeg stderr (including HTTP/codec errors) is now written to `logs\run.log`; temporary signed media URLs are redacted.
+
+To inspect the actual failure without pasting long logs:
+
+```bat
+powershell -NoProfile -Command "Select-String -Path 'logs\run.log' -Pattern 'ffmpeg:','VOD audio','ingest session ended','pipeline stage' | Select-Object -Last 24 | ForEach-Object { $_.Line }"
+```
+
+If all attempts fail, check yt-dlp format availability with `yt-dlp -F "https://www.youtube.com/watch?v=nEdOU2p6fmU"` and verify FFmpeg is accessible with `ffmpeg -version`. Do **not** paste signed URLs returned by `yt-dlp -g`: they contain temporary access tokens.
+
 ## Offline regression tests
 
 ```bat

@@ -226,7 +226,7 @@ class PlamoTranslator:
 
     def set_reference_context(self, text: str | None) -> None:
         """For the very next request only; never inject mixed or old history."""
-        if not text or "<|plamo:" in text or "\\n" in text or "\\r" in text:
+        if not text or "<|plamo:" in text or "\n" in text or "\r" in text:
             self._reference_context = None
             return
         self._reference_context = text[-140:]

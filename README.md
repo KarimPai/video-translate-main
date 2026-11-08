@@ -10,6 +10,50 @@ This branch `experiment/plamo8b-context-captions` adds three optional-quality
 improvements over `test-plamo8b-q3`. The original PLaMo 8B Q3_K_M branch
 remains an unchanged comparison baseline.
 
+### PLaMo scene memory (enabled by default)
+
+PLaMo now uses the existing evidence-based `SceneMemory` classifier
+(`context_memory.py`) before every translation. A **short, optional
+scene hint** is included in the *same* PFML3 `context` block as the
+verified same-speaker Japanese reference (when available). Only recognized
+Japanese is considered; English model output never trains the memory.
+
+- Scene detection includes **GTA**, **ARK**, **VALORANT**, **Apex Legends**,
+  and **horse racing**. A distinctive recognized Japanese cue is required.
+  Generic phrases such as `車に乗りたい`, `新聞を買った`, or `服を買う`
+  do not establish a game scene, even when the VOD title names a game.
+- Once GTA is supported, scene details can mention carjacking, police,
+  casino roleplay, clothing shops, stakeouts, or in-game expenses when
+  those words occur in the Japanese dialogue. These details never
+  establish GTA on their own.
+- An uncertain scene switch **suppresses** the earlier scene hint rather
+  than continuing to feed it to an unrelated conversation. Unsupported
+  scenes expire after **24 observed utterances** (configurable); scenes
+  also reset after **30 seconds without translated Japanese speech**,
+  timeline discontinuities, and seeks.
+- Cached VOD subtitles rebuild the scene memory when replayed after
+  seeking. Scene metadata may span speakers, but **previous Japanese
+  dialogue only crosses into PLaMo when the same voice is verified**.
+- No extra LLM or audio inference is added by scene memory; only a few
+  prompt tokens. Benchmark accuracy/latency on the same VOD before
+  merging this experimental branch.
+
+To turn off scene memory without disabling speaker context:
+
+```toml
+[translate]
+scene_memory_enabled = false
+```
+
+To adjust scene expiry (optional):
+
+```toml
+[translate]
+scene_memory_enabled = true
+scene_max_idle_lines = 24
+scene_gap_reset_s = 30.0
+```
+
 ### Speaker-aware Japanese reference context
 
 - Sherpa still does CPU speaker turn splitting. A second **CPU** embedding

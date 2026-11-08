@@ -1,10 +1,10 @@
-"""CAT-Translate-3.3B: sole offline Japanese-to-English translator."""
+"""PLaMo 3 Translate 8B Q3_K_M: sole offline Japanese-to-English translator."""
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
 from .base import Translator
-from .cat import CatTranslator
+from .plamo import PlamoTranslator
 
 
 def create_translator(cfg: TranslateConfig, glossary: Glossary, *, vod_title: str = "") -> Translator:
-    return CatTranslator(cfg, glossary, vod_title=vod_title)
+    return PlamoTranslator(cfg, glossary, vod_title=vod_title)

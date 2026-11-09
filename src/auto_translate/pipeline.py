@@ -199,6 +199,13 @@ def run_asr(
         empty_voiced_streak = 0
         log.debug("transcript source at %.2f-%.2fs: %s", utt.start_s, utt.end_s, source)
 
+        # Correct a narrowly observed Burger King homophone only when
+        # adjacent speech independently confirms the restaurant topic.
+        if ("防御キング" in text
+                and any("バーガーキング" in previous for previous in recent_japanese)):
+            text = text.replace("防御キング", "バーガーキング")
+            log.debug("Burger King contextual homophone correction at %.2fs", utt.start_s)
+
         # Proper names must be repaired before translation and glossary lookup.
         # The VOD title is a stronger signal than kanji auto-caption spelling.
         corrected = correct_asr_name(

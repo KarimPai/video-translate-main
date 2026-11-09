@@ -68,6 +68,27 @@ class RetryScoringTests(unittest.TestCase):
         )
         self.assertEqual(choice.attempt, 1)
 
+    def test_known_burger_king_homophone_triggers_retry_without_captions(self):
+        asr = FakeHaas(["バーガーキング食べた"], keywords="バーガーキング")
+        audio = np.zeros(40000, dtype=np.float32)
+        result = choose_hypothesis(
+            asr, audio, "防号キング食べた",
+            start_s=0, end_s=2.5, speech_start_s=.2, live=True,
+        )
+        self.assertEqual(result, "バーガーキング食べた")
+        self.assertEqual(len(asr.calls), 1)
+
+    def test_reliable_caption_fallback_avoids_empty_asr_retry(self):
+        asr = FakeHaas([], keywords="Burger King")
+        audio = np.zeros(40000, dtype=np.float32)
+        result = choose_hypothesis(
+            asr, audio, "",
+            start_s=0, end_s=2.5,
+            caption=match("バーガーキング食べた"),
+        )
+        self.assertEqual(result, "")
+        self.assertFalse(asr.calls)
+
     def test_short_response_acceptable_for_short_audio(self):
         self.assertFalse(needs_retry("うん", duration_s=.4))
         self.assertTrue(needs_retry("うん", duration_s=2.7))

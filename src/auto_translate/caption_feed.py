@@ -109,7 +109,9 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
         if not text or cue.end_s <= cue.start_s:
             continue
         start = cue.start_s
-        overlapping = bool(previous_raw) and start <= previous_end + 0.05
+        # Equal boundaries can mean two genuinely repeated utterances.
+        # Rolling duplication requires actual time overlap, not adjacency.
+        overlapping = bool(previous_raw) and start < previous_end - 0.03
         if overlapping:
             if text == previous_raw or previous_raw.endswith(text):
                 # Duplicate rolling text, not another spoken occurrence.

@@ -37,6 +37,7 @@ from .types import (
 )
 from .vad import run_segmenter
 from .speaker import run_speaker
+from .contextualize import run_contextualize
 
 log = logging.getLogger(__name__)
 
@@ -198,13 +199,6 @@ def run_asr(
             continue
         empty_voiced_streak = 0
         log.debug("transcript source at %.2f-%.2fs: %s", utt.start_s, utt.end_s, source)
-
-        # Correct a narrowly observed Burger King homophone only when
-        # adjacent speech independently confirms the restaurant topic.
-        if ("防御キング" in text
-                and any("バーガーキング" in previous for previous in recent_japanese)):
-            text = text.replace("防御キング", "バーガーキング")
-            log.debug("Burger King contextual homophone correction at %.2fs", utt.start_s)
 
         # Proper names must be repaired before translation and glossary lookup.
         # The VOD title is a stronger signal than kanji auto-caption spelling.
@@ -454,7 +448,8 @@ def run(
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     speaker_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
-    text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=16)
+    text_q: queue.Queue[Transcript | Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
+    context_q: queue.Queue[Transcript | Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
 
     stage_failures: queue.Queue[tuple[str, BaseException]] = queue.Queue()
@@ -463,6 +458,7 @@ def run(
         "utt": utt_q,
         "speaker": speaker_q,
         "text": text_q,
+        "context": context_q,
         "subtitle": sub_q,
     }
 
@@ -505,10 +501,25 @@ def run(
         threading.Thread(
             target=_guard_stage,
             args=(
+                "context", run_contextualize, stage_failures,
+                text_q,
+                context_q,
+                lambda: ingest.generation,
+                vod_title,
+                cfg.translate.lookahead_s,
+                cfg.translate.fragment_join_gap_s,
+                cfg.translate.fragment_join_enabled,
+            ),
+            name="context",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_guard_stage,
+            args=(
                 "translate", run_translate, stage_failures,
                 translator,
                 cfg.translate.context_lines,
-                text_q,
+                context_q,
                 sub_q,
                 lambda: ingest.generation,
             ),

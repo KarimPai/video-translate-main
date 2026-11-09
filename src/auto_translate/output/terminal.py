@@ -1,11 +1,12 @@
+"""Terminal output for direct Granite Speech audio-to-English translation."""
+
 from ..types import Subtitle
 
 
 def fmt_ts(seconds: float) -> str:
-    """12.4 → '00:12.4', 3725.0 → '1:02:05.0'."""
-    m, s = divmod(seconds, 60)
-    h, m = divmod(int(m), 60)
-    return f"{h}:{m:02d}:{s:04.1f}" if h else f"{m:02d}:{s:04.1f}"
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(int(minutes), 60)
+    return f"{hours}:{minutes:02d}:{seconds:04.1f}" if hours else f"{minutes:02d}:{seconds:04.1f}"
 
 
 class TerminalOutput:
@@ -13,30 +14,17 @@ class TerminalOutput:
         self.simple = simple
 
     def show(self, sub: Subtitle) -> None:
+        if not sub.en:
+            return
         if self.simple:
-            # Flush JP and EN once per cue, without voice identity labels.
-            lines = []
-            if sub.ja:
-                lines.append(f"JP: {sub.ja}")
-            if sub.en:
-                lines.append(f"EN: {sub.en}")
-            if lines:
-                print("\n".join(lines), flush=True)
+            print(f"EN: {sub.en}", flush=True)
         else:
-            print_subtitle(sub)
+            decode_s = max(0.0, sub.timings.asr_end - sub.timings.asr_start)
+            print(f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}] "
+                  f"{sub.en}  (Granite {decode_s:.2f}s)", flush=True)
 
     def drain(self) -> None:
         pass
 
     def close(self) -> None:
         pass
-
-
-def print_subtitle(sub: Subtitle) -> None:
-    tm = sub.timings
-    lat = (f"vad {tm.segmented - tm.audio_read:.2f}s · wait {tm.asr_start - tm.segmented:.2f}s · "
-           f"asr {tm.asr_end - tm.asr_start:.2f}s · mt {tm.mt_end - tm.mt_start:.2f}s")
-    stamp = f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}]"
-    print(f"{stamp} {sub.ja}    ({lat})", flush=True)
-    if sub.en:
-        print(f"{' ' * len(stamp)} → {sub.en}", flush=True)

@@ -73,7 +73,7 @@ def should_join_fragments(
     if previous.generation != following.generation or following.speaker_handoff:
         return False
     gap = following.start_s - previous.end_s
-    if not (0 <= gap <= max_gap_s):
+    if not (-0.12 <= gap <= max_gap_s):
         return False
     if previous.end_s - previous.start_s > 3.0:
         return False
@@ -83,6 +83,8 @@ def should_join_fragments(
     if _SENTENCE_END.search(ja):
         return False
     if not _INCOMPLETE.search(ja):
+        return False
+    if re.match(r"^(?:おはよう|こんにちは|ありがとう|もしもし|うん[。！!]?|はい[。！!]?)", following.ja.strip()):
         return False
     if following.end_s - previous.start_s > 8.0:
         return False
@@ -119,7 +121,7 @@ def run_contextualize(
     pending work instead of leaking subtitles from the previous generation.
     """
     pending: deque[tuple[Transcript | Subtitle, float]] = deque()
-    recent: deque[str] = deque(maxlen=12)
+    recent: deque[tuple[float, str]] = deque(maxlen=12)
     generation: int | None = None
     watermark = float("-inf")
     horizon = max(0.0, min(float(lookahead_s), 2.0))
@@ -142,7 +144,7 @@ def run_contextualize(
             if isinstance(head, Subtitle):
                 out_q.put(head)
                 if head.ja:
-                    recent.append(head.ja)
+                    recent.append((head.end_s, head.ja))
                 continue
             if join_enabled and pending and isinstance(pending[0][0], Transcript):
                 nxt, _ = pending[0]
@@ -154,12 +156,13 @@ def run_contextualize(
                 item.ja for item, _ in pending
                 if head.end_s <= item.start_s <= head.end_s + horizon
             ]
-            revised = repair_nearby_terms(head.ja, list(recent), future, title=title)
+            nearby = [ja for end_s, ja in recent if 0 <= head.start_s - end_s <= 12.0]
+            revised = repair_nearby_terms(head.ja, nearby, future, title=title)
             if revised != head.ja:
                 log.debug("Nearby-context correction: %r -> %r", head.ja, revised)
                 head = replace(head, ja=revised)
             out_q.put(head)
-            recent.append(head.ja)
+            recent.append((head.end_s, head.ja))
 
     while True:
         try:

@@ -1246,6 +1246,7 @@ class Ingest:
                     out_q,
                     first,
                     generation=generation,
+                    is_current=lambda: generation == self.generation and not self._stopped,
                 )
 
                 log.info(
@@ -1329,9 +1330,15 @@ class Ingest:
                         / 32768.0
                     )
 
+                    # Do not enqueue more old PCM if an MPV seek replaced
+                    # this generation while DeepFilterNet was backpressured.
+                    if generation != self.generation:
+                        break
+                    if not deepfilter_worker.put(pcm):
+                        break
                     input_frames += len(pcm)
-                    deepfilter_worker.put(pcm)
-                    deepfilter_worker.put_progress()
+                    if not deepfilter_worker.put_progress():
+                        break
 
                 else:
                     pcm = (
@@ -1366,7 +1373,12 @@ class Ingest:
                     worker.close()
 
                 if deepfilter_worker:
-                    deepfilter_worker.close()
+                    # The previous VOD generation may have queued enhanced
+                    # audio far ahead of playback. Cancel it on seeks rather
+                    # than draining a stale backlog before restarting.
+                    deepfilter_worker.close(
+                        cancel=(generation != self.generation or self._stopped)
+                    )
 
             finally:
                 for p in procs:

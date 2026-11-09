@@ -37,6 +37,23 @@ if defined PYTHONPATH (
 ) else (
     set "PYTHONPATH=%~dp0src"
 )
+rem Preserve fast --no-sync launches. Install the optional speech enhancer once
+rem if it is enabled by the effective config but missing from this venv.
+set "DEEPFILTER_ENABLED="
+for /f "delims=" %%E in ('uv run --no-sync python -c "from pathlib import Path; from auto_translate.config import load_config; print(int(load_config(Path('config.toml')).deepfilter.enabled))" 2^>nul') do set "DEEPFILTER_ENABLED=%%E"
+if "%DEEPFILTER_ENABLED%"=="1" (
+    uv run --no-sync python -c "import importlib.util; assert importlib.util.find_spec('deepfilternet_rs') and importlib.util.find_spec('scipy')" >nul 2>nul
+    if errorlevel 1 (
+        echo Installing DeepFilterNet3 dependencies (first launch only)...
+        uv sync --extra diarization --extra deepfilter
+        if errorlevel 1 (
+            echo ERROR: Could not install DeepFilterNet3 dependencies.
+            pause
+            exit /b 1
+        )
+    )
+)
+
 uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 

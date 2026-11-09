@@ -107,6 +107,9 @@ def rejection_reason(text: str) -> str | None:
 
     # Japanese ASR may spell the same laugh in hiragana or katakana.
     laugh_kana = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in compact)
+    # Excited laughter is often rendered as ギャーハハ / ぎゃはは.
+    if re.fullmatch(r"(?:ぎゃ+[ーぁあ]*|きゃ+[ーぁあ]*)?(?:は|あは|わは){2,}[ーぁあ]*", laugh_kana):
+        return "laughter_only"
     without_laughter = _LAUGHTER.sub("", laugh_kana)
     if compact and not without_laughter:
         return "laughter_only"

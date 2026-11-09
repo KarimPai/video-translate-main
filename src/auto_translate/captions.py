@@ -107,7 +107,20 @@ class CaptionIndex:
                 )
             ]
             valid_inline = [value for value in inline_times if value is not None]
-            if valid_inline and start <= min(valid_inline) < end:
+            inline_payload = " ".join(payload)
+            first_marker = re.search(
+                r"<(?:(?:\d+):)?\d{2}:\d{2}[.,]\d{3}>",
+                inline_payload,
+            )
+            # A cue such as "一緒に<00:00:03.000>遊びましょう" contains
+            # speech before the marker. Never shift that earlier speech
+            # to the timestamp of the later word.
+            has_text_before_marker = bool(
+                first_marker
+                and _clean_caption([inline_payload[:first_marker.start()]])
+            )
+            if (valid_inline and not has_text_before_marker
+                    and start <= min(valid_inline) < end):
                 start = max(start, min(valid_inline))
             text = _clean_caption(payload)
             if not text or end <= start:

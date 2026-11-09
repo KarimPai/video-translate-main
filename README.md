@@ -102,7 +102,7 @@ The contextual corrections are restricted to observed confusions (Burger King, h
 ### Validation on the same VOD or live recording
 
 ```bat
-uv run --no-sync python -m unittest tests.test_contextualize tests.test_captions tests.test_plamo_translate -v
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 nvidia-smi --query-gpu=timestamp,memory.used,memory.total --format=csv -l 1
 ```
 

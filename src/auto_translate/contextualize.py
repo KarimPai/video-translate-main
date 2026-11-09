@@ -1,7 +1,7 @@
 """Bounded future-context repair between Haas ASR and PLaMo translation.
 
-All timestamps remain on the source-media timeline. The source-only PFML3
-prompt is unchanged; only high-confidence Japanese transcript repairs occur.
+All timestamps remain on the source-media timeline. Conservative repairs
+and joins happen before the bounded PLaMo PFML3 context prompt.
 """
 from __future__ import annotations
 
@@ -23,10 +23,24 @@ _AMMO = re.compile(r"玉(?=を?(?:買|持|補充|切ら|切れ|拾|回収))")
 _HIDEOUT = re.compile(r"(?<=時に)アジと(?=集合)")
 _INCOMPLETE = re.compile(
     r"(?:で|から|ので|けど|けれど|ながら|とか|ちょっと|ついでに|"
-    r"あの|えっと|それで|って|という|に|を|が)[、,\s]*$"
+    r"あの|えっと|それで|って|という|なと|かと|に|を|が)[、,\s]*$"
 )
 _SENTENCE_END = re.compile(r"[。.!?！？]$")
-_WEAPON_WORDS = ("アサルト", "銃", "武器", "弾薬", "アーマー", "マガジン", "ライフル")
+_WEAPON_WORDS = ("アサルト", "銃", "武器", "弾薬", "アーマー", "マガジン", "ライフル", "ロケラン")
+_ROCKET_BALL = re.compile(r"ロケランの玉(?=\s*(?:[0-9０-９一二三十百千万億]|を|が|は|で|$))")
+# Only standalone decoder fragments or sound labels; keep real short replies.
+_ARTIFACT_ONLY = {
+    "に", "を", "が", "す", "む", "く", "っ",
+    "コクッ", "こくっ", "ゴクッ", "ごくっ", "ぐすっ", "くすっ",
+    "ぺろ", "ペロ", "ちゅ", "ぴっ", "ぺし",
+}
+
+
+def is_likely_orphan_artifact(japanese: str) -> bool:
+    """Avoid sending isolated clipped particles and nonlexical sounds to MT."""
+    value = japanese.strip().strip(" 、。，．!?！？…～~")
+    return value in _ARTIFACT_ONLY
+
 
 
 def repair_nearby_terms(
@@ -38,6 +52,9 @@ def repair_nearby_terms(
     """Repair narrowly observed homophones only with independent evidence."""
     neighbors = list(recent)[-8:] + list(future)[:4]
     context = " ".join(neighbors)
+    # ロケラン is an explicit rocket launcher, so 玉 here means ammunition,
+    # not a sports ball. Do not globally rewrite 玉 or other homophones.
+    japanese = _ROCKET_BALL.sub("ロケランの弾", japanese)
     if _BURGER_MISHEARD.search(japanese) and (
         "バーガーキング" in context or "ハンバーガー" in context
     ):
@@ -174,6 +191,9 @@ def run_contextualize(
                     pending.popleft()
                     head = merge_fragments(head, nxt)
                     log.debug("Joined adjacent Japanese fragment at %.2fs", head.start_s)
+            if is_likely_orphan_artifact(head.ja):
+                log.debug("Skipping orphan Japanese ASR artifact at %.2fs: %r", head.start_s, head.ja)
+                continue
             future = [
                 item.ja for item, _ in pending
                 if head.end_s <= item.start_s <= head.end_s + horizon

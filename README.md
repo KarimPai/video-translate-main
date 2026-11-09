@@ -72,6 +72,8 @@ DeepFilterNet3 now processes the **audio used by FireRedVAD and Haas ASR** befor
 
 On first enabled launch, `Start translate.bat` checks for the `deepfilternet-rs` and `scipy` extras and, if missing, installs them with `uv sync --extra diarization --extra deepfilter`. Normal launches continue using `uv run --no-sync`.
 
+**Seek recovery:** The enhancement input queue is now bounded to 16 messages (roughly 0.7 seconds of PCM plus progress markers). An MPV seek cancels queued audio from the previous generation rather than waiting for all of it to finish, and the new 16 kHz stream restarts at the absolute target timestamp. The context stage also releases held playback-progress markers after its wall-time lookahead expires, so a quiet section cannot indefinitely block the next 5-second translation lead.
+
 The effective configuration comes from `config.toml` if one is present, otherwise defaults. Existing **git-ignored** local config values can override the new default; to enable DeepFilterNet in such a file, use:
 
 ```toml

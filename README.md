@@ -72,7 +72,7 @@ translation diagnostics go to `logs/run.log`; MPV errors go to
 ## Tests
 
 ```powershell
-uv run --with pytest python -m pytest -q tests/test_caption_only.py tests/test_captions.py tests/test_plamo_translate.py
+uv run --with pytest python -m pytest -q tests/test_caption_only.py tests/test_captions.py tests/test_plamo_translate.py tests/test_translation_config.py
 ```
 
 ---

@@ -1,7 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
 chcp 65001 >nul
-title Japanese Video Translator
+title Japanese Captions Translator
 cd /d "%~dp0"
 
 if errorlevel 1 (
@@ -28,7 +28,7 @@ if not defined VIDEO_URL (
 if not exist "logs" mkdir "logs"
 
 echo.
-echo Starting translation with MPV (paused)...
+echo Starting YouTube captions-only translation with PLaMo 8B...
 echo.
 
 rem Load this checkout even when the project's generated console launcher is stale.
@@ -37,20 +37,8 @@ if defined PYTHONPATH (
 ) else (
     set "PYTHONPATH=%~dp0src"
 )
-rem Keep normal --no-sync startup; install the DeepFilterNet3 extra only once
-rem if the effective local configuration enables it and packages are missing.
-uv run --no-sync python -c "import importlib.util; from pathlib import Path; from auto_translate.config import load_config; cfg=load_config(Path('config.toml')); assert not cfg.deepfilter.enabled or (importlib.util.find_spec('deepfilternet_rs') and importlib.util.find_spec('scipy'))" >nul 2>nul
-if errorlevel 1 (
-    echo Installing missing DeepFilterNet3 dependencies...
-    uv sync --extra diarization --extra deepfilter
-    if errorlevel 1 (
-        echo ERROR: Could not install DeepFilterNet3 dependencies.
-        pause
-        exit /b 1
-    )
-)
-
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
+rem No VAD, ASR, diarization or DeepFilterNet dependencies are loaded.
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

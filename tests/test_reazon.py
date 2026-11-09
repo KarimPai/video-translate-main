@@ -13,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 
 from auto_translate.asr import create_asr
+from auto_translate.asr.reazon_ipc import ReazonWorkerASR
 from auto_translate.asr.reazon import (
     ReazonK2ASR, _FILES, _ensure_models,
 )
@@ -141,12 +142,22 @@ class ReazonTests(unittest.TestCase):
             self.assertEqual(cfg.asr.provider, "cpu")
             self.assertEqual(cfg.vad.fallback_s, 0.0)
 
+    def test_worker_preload_is_noop_on_non_windows(self):
+        from auto_translate.asr.reazon_worker import prepare_sherpa_windows_dlls
+        with patch("auto_translate.asr.reazon_worker.sys.platform", "linux"):
+            self.assertEqual(prepare_sherpa_windows_dlls(), "non-Windows runtime")
+
+    def test_parent_asr_is_worker_not_native(self):
+        import inspect
+        from auto_translate.asr.reazon_ipc import ReazonWorkerASR
+        source = inspect.getsource(ReazonWorkerASR)
+        self.assertIn("subprocess.Popen", source)
+        self.assertNotIn("import sherpa_onnx", source)
+
     def test_factory_uses_only_reazon_backend(self):
-        fake = FakeRecognizer()
-        with patch("auto_translate.asr.ReazonK2ASR",
-                   return_value=ReazonK2ASR(AsrConfig(), recognizer=fake)) as cls:
+        with patch("auto_translate.asr.ReazonWorkerASR") as cls:
             instance = create_asr(AsrConfig())
-            self.assertIsInstance(instance, ReazonK2ASR)
+            self.assertEqual(instance, cls.return_value)
             cls.assert_called_once()
 
 

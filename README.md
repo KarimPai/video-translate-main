@@ -114,3 +114,29 @@ To run the offline model adapter tests (no model downloads):
 
 The full runtime must be validated on Windows. Reazon's published Japanese
 CER scores should not be interpreted as Hololive GTA accuracy.
+
+
+## Windows ONNX Runtime native-crash mitigation
+
+On Windows, an older onnxruntime.dll such as 1.17.1 in System32 can
+override sherpa-onnx's newer bundled runtime, resulting in
+"The requested API version [28] is not available ... ORT 1.17.1".
+See https://github.com/k2-fsa/sherpa-onnx/issues/3059.
+
+To mitigate, the ASR now runs in a **separate Python subprocess** and
+preloads the matching onnxruntime.dll from the sherpa_onnx/lib wheel
+directory before importing sherpa's native extension. This isolates its
+DLLs from FireRedVAD and other ONNX users in the parent process.
+
+A worker failure is reported to logs/run.log with the process exit code
+and diagnostic instructions. First-run model downloads also log to the
+same file. The local PLaMo llama.cpp GGUF/cache is unchanged and will
+be reused if already downloaded.
+
+If an older DLL is loaded despite preloading, do not delete or replace
+Windows system DLLs; inspect the full startup log instead. Run:
+
+    cd /d C:\Games\video-translate-reazon
+    git pull --ff-only origin test-reazon-k2-plamo2b
+    uv sync
+    "Start translate.bat"

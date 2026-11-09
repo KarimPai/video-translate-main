@@ -31,7 +31,7 @@ echo.
 echo Initializing ReazonSpeech k2 v2 and PLaMo 3 Translate 2B...
 echo.
 rem The branch adds sherpa-onnx; uv.lock may need regeneration on first run.
-uv run --no-sync python -c "import sherpa_onnx, huggingface_hub, fireredvad, auto_translate" >nul 2>nul
+uv run --no-sync python -c "from importlib.metadata import version; version('sherpa-onnx'); version('sherpa-onnx-core'); import huggingface_hub, fireredvad, auto_translate" >nul 2>nul
 if errorlevel 1 (
     echo Installing missing dependencies and updating the local uv lock...
     uv sync --no-progress
@@ -53,8 +53,9 @@ set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%EXIT_CODE%"=="0" (
     echo ERROR: Translator exited with code %EXIT_CODE%.
-    echo Relevant errors from logs\run.log:
-    findstr /i /c:"ERROR" /c:"Traceback" /c:"Exception" /c:"BrokenPipeError" "logs\run.log"
+    echo Last 35 lines from logs\run.log:
+    powershell -NoProfile -Command "Get-Content 'logs\run.log' -Tail 35"
+    if "%EXIT_CODE%"=="-1073741819" echo Native access violation 0xC0000005: check sherpa worker and ONNX Runtime DLL conflicts.
 ) else (
     echo Translator stopped.
 )

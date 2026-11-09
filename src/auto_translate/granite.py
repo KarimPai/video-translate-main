@@ -213,11 +213,18 @@ class GraniteSpeech5:
             _close_job(self._job)
             self._job = None
         if self.process is not None and self.process.poll() is None:
-            self.process.terminate()
+            # Closing a Windows Job Object may already have terminated it.
+            try:
+                self.process.terminate()
+            except (OSError, ProcessLookupError):
+                pass
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                try:
+                    self.process.kill()
+                except (OSError, ProcessLookupError):
+                    pass
                 self.process.wait(timeout=3)
         self.process = None
         if self._server_log is not None:

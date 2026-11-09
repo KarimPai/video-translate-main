@@ -140,8 +140,7 @@ def is_usable_transcript(text: str) -> bool:
     return rejection_reason(text) is None
 
 
-# Aggressive suppression is applied in run_asr *after* caption reconciliation.
-# Restrict it to whole utterances so speech such as "うわー、これすごい" survives.
+# Suppress only non-lexical vocalizations; keep meaningful short reactions.
 _REACTION_SEPARATORS = re.compile(
     r"[\s、。，．・!?！？…〜～,.;:：~「」『』（）()\[\]【】]+"
 )
@@ -152,10 +151,9 @@ _REACTION_RUN = re.compile(
     r"わ[あぁー]+|ふ[うぅー]+|へ[えぇー]+|ほ[おぉー]+|"
     r"う[うぅー]*ん+|ん+[ー]?|"
     r"よいしょ|よっこいしょ|え[ー]*っと|ええっと|あの[ー]*|はー+い|"
-    r"すっ?ご[いぃっー]+|すっ?げ[えぇー]+|すすげ[えぇー]+|"
-    r"やば[いぁっー]+|はい+|わお+|くっ|ぐっ|うぐ|"
+    r"くっ|ぐっ|うぐ|"
     r"ah+|oh+|ooh+|uh+|um+|hm+|hmm+|huh+|"
-    r"whoa+|woah+|wow+|hey+|yeah+|yep+|yup+|ugh+|sigh+"
+    r"ugh+|sigh+"
     r")+"
 )
 
@@ -163,9 +161,8 @@ _REACTION_RUN = re.compile(
 def is_isolated_reaction(text: str) -> bool:
     """Return True only when the entire utterance is filler/interjections.
 
-    Aggressive mode intentionally drops isolated acknowledgements ("うん",
-    "はい") and praise ("すごい"). Speech containing any other words is
-    preserved in full, including when an interjection begins the sentence.
+    Preserve praise, agreement, refusal, surprise and other meaningful short
+    reactions. Only discard purely non-lexical filler/vocalizations.
     """
     normalized = unicodedata.normalize("NFKC", text).casefold()
     normalized = "".join(
@@ -173,6 +170,9 @@ def is_isolated_reaction(text: str) -> bool:
         for char in normalized
     )
     tokens = [part for part in _REACTION_SEPARATORS.split(normalized) if part]
+    meaningful = {"はい", "うん", "すご", "すごい", "すげえ", "やばい", "わお", "wow", "hey", "yeah", "yep", "yup", "no", "いい", "だめ"}
+    if any(part in meaningful for part in tokens):
+        return False
     return bool(tokens) and all(_REACTION_RUN.fullmatch(part) for part in tokens)
 
 

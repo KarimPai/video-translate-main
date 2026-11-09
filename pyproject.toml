@@ -1,33 +1,16 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Add your description here"
+description = "Japanese YouTube captions to English MPV subtitles using local PLaMo 3 Translate 8B"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }
 ]
 requires-python = ">=3.12"
+# Caption-only runtime: MPV, yt-dlp and CUDA-enabled llama-server are external
+# commands. Python does not need ASR, VAD, ONNX, CUDA torch or enhancement libs.
 dependencies = [
-    "audioread>=3.1.0",
-    "fireredvad[gpu]>=0.0.2",
-    "huggingface-hub>=0.34.0",
-    "nvidia-cublas-cu12>=12.9.2.10",
-    "nvidia-cudnn-cu12>=9.27.0.42",
-    "onnxruntime-gpu[cuda,cudnn]>=1.31.1",
-]
-
-[project.optional-dependencies]
-diarization = ["sherpa-onnx>=1.10.28"]
-# Install only the heavy runtime packages for features you actually enable.
-separation = [
-    "audio-separator>=0.48.0",
-    "scipy",
-    "soundfile",
-    "torch==2.15.0",
-]
-deepfilter = [
-    "deepfilternet-rs>=0.1.1",
-    "scipy",
+    "numpy>=1.26",
 ]
 
 [project.scripts]
@@ -36,13 +19,3 @@ auto-translate = "auto_translate.__main__:main"
 [build-system]
 requires = ["uv_build>=0.12.22,<0.13.0"]
 build-backend = "uv_build"
-
-[[tool.uv.index]]
-name = "pytorch-cu132"
-url = "https://download.pytorch.org/whl/test/cu132"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu132" }
-torchvision = { index = "pytorch-cu132" }
-torchaudio = { index = "pytorch-cu132" }

@@ -83,7 +83,7 @@ def run_granite(
             out_q.put(item)
             continue
         utt = item
-        cached = session_cache.match(utt.start_s, utt.end_s) if session_cache else None
+        cached = session_cache.match(utt.start_s, utt.end_s) if session_cache is not None else None
         if cached is not None:
             out_q.put(replace(
                 cached, generation=utt.generation, timings=utt.timings,

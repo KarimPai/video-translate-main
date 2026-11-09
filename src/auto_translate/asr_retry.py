@@ -187,6 +187,13 @@ def choose_hypothesis(
             candidate = bounded(
                 variant_audio, timeout_s=remaining, use_keywords=keywords,
             )
+            # Even a custom/mock worker which ignores the supplied timeout
+            # cannot inject a late hypothesis into the translation pipeline.
+            if time.monotonic() > retry_deadline:
+                log.warning("Haas retry completed after its deadline; ignoring late transcript")
+                break
+            if cancelled is not None and cancelled():
+                break
             candidates.append(candidate)
             log.debug("Haas retry %s returned %r", description, candidate[:90])
         except TimeoutError:

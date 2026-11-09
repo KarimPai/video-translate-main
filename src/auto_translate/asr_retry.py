@@ -167,6 +167,8 @@ def choose_hypothesis(
     )
     if budget <= 0:
         return original
+    if time.monotonic() < float(getattr(asr, "_retry_backoff_until", 0.0)):
+        return original
 
     # Prefer modifications that retain speech: VAD's 200ms preroll can
     # safely lose 60ms; otherwise trim at most 60ms at the utterance end,
@@ -207,7 +209,13 @@ def choose_hypothesis(
             candidates.append(candidate)
             log.debug("Haas retry %s returned %r", description, candidate[:90])
         except TimeoutError:
-            log.info("Haas multi-pass deadline reached; keeping best completed transcript")
+            # The speech.cpp worker may still be decoding the timed-out
+            # request. Avoid compounding the backlog on subsequent cues.
+            cooldown = max(0.0, float(
+                getattr(cfg, "retry_timeout_cooldown_s", 15.0)
+            ))
+            asr._retry_backoff_until = time.monotonic() + cooldown
+            log.info("Haas retry timed out; optional retries paused for %.1fs", cooldown)
             break
         except Exception as exc:
             # A retry is optional; never discard an otherwise usable first pass.

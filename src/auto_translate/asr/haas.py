@@ -147,7 +147,23 @@ class HaasASR:
         finally:
             self._messages.put(None)
 
-    def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        probe: bool = False,
+        *,
+        timeout_s: float | None = None,
+        use_keywords: bool | None = None,
+    ) -> str:
+        # An absolute deadline also covers PCM encoding and pipe writes.
+        # Only retry calls pass a shorter timeout. The primary decoding
+        # request retains its normal response_timeout_s.
+        limit = float(self.cfg.response_timeout_s)
+        if timeout_s is not None:
+            limit = min(limit, float(timeout_s))
+        if limit <= 0:
+            raise TimeoutError("Haas ASR response timeout: no time remaining")
+        deadline = time.monotonic() + limit
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError("Haas ASR worker is no longer running")
         samples = np.ascontiguousarray(audio, dtype=np.float32)
@@ -157,8 +173,11 @@ class HaasASR:
         request_id = str(self._counter)
         chunk = {"type": "chunk", "id": request_id, "seq": 0, "pcm": pcm}
         request = {"type": "transcribe", "id": request_id, "sample_rate": 16000}
-        use_keywords = bool(self.keywords and not probe)
-        if use_keywords:
+        send_keywords = bool(
+            self.keywords and not probe
+            and (use_keywords is None or use_keywords)
+        )
+        if send_keywords:
             request.update({
                 "keywords": self.keywords,
                 "keywords_alpha": self.cfg.haas_keywords_alpha,
@@ -174,7 +193,6 @@ class HaasASR:
 
         # Progress messages may arrive before the terminal 'end' response.
         # Keep an absolute deadline, not a fresh timeout per progress line.
-        deadline = time.monotonic() + max(1.0, float(self.cfg.response_timeout_s))
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -208,7 +226,7 @@ class HaasASR:
                 option = error.get("option", "") if isinstance(error, dict) else ""
                 detail = error.get("message", "") if isinstance(error, dict) else str(error)
                 code = error.get("code", "") if isinstance(error, dict) else ""
-                if use_keywords and (
+                if send_keywords and (
                     option in {"keywords", "keywords_alpha", "keywords_guard"}
                     or ("keyword" in detail.lower()
                         and code in {"unsupported", "invalid_argument",
@@ -220,7 +238,14 @@ class HaasASR:
                     log.warning("Haas keyword options unavailable (%s); "
                                 "reverting to unboosted recognition", detail)
                     self.keywords = ""
-                    return self.transcribe(audio, probe=True)
+                    # A keyword-compatibility fallback must share the
+                    # original deadline; it is not a fresh 30s request.
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Haas ASR response timeout during keyword fallback")
+                    return self.transcribe(
+                        audio, probe=True, timeout_s=remaining, use_keywords=False,
+                    )
                 raise RuntimeError(f"Haas ASR recognition failed: {answer}")
             if answer.get("type") != "end":
                 continue
@@ -237,6 +262,18 @@ class HaasASR:
                 log.debug("Haas ASR discarded nonverbal speech (%s): %s", reason, text)
                 return ""
             return text
+
+    def transcribe_bounded(
+        self, audio: np.ndarray, *, timeout_s: float, use_keywords: bool = True,
+    ) -> str:
+        """An optional retry with an absolute response deadline.
+
+        If speech.cpp keeps decoding after a timeout, its stale response is
+        discarded by request ID when the next request is processed.
+        """
+        return self.transcribe(
+            audio, timeout_s=timeout_s, use_keywords=use_keywords,
+        )
 
     def close(self) -> None:
         if self._closed:

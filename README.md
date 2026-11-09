@@ -140,3 +140,12 @@ Windows system DLLs; inspect the full startup log instead. Run:
     git pull --ff-only origin test-reazon-k2-plamo2b
     uv sync
     "Start translate.bat"
+
+
+## Japanese Unicode output on Windows
+
+The Reazon ASR subprocess sends line-delimited JSON. Windows can default to
+cp1252 for redirected Python stdout even after the launcher calls chcp 65001.
+The worker now reconfigures its streams to UTF-8, the parent sets
+PYTHONIOENCODING=utf-8, and worker JSON is ASCII-escaped as a further fallback.
+This fixes the earlier UnicodeEncodeError for Japanese transcripts (e.g. え).

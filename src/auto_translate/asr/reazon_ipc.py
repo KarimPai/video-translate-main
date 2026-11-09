@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -38,6 +39,7 @@ class ReazonWorkerASR:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=None,    # user launcher redirects this to logs/run.log
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             text=True,
             encoding="utf-8",
             bufsize=1,

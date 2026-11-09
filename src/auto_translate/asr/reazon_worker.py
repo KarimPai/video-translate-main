@@ -50,11 +50,23 @@ def prepare_sherpa_windows_dlls() -> str:
 
 
 def send(message: dict) -> None:
-    sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
+    """Always emit ASCII-safe JSON, even when Windows defaults to cp1252.
+
+    The parent uses json.loads(), which restores Japanese characters from
+    escaped Unicode code points without any character loss.
+    """
+    sys.stdout.write(json.dumps(message, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
 def main() -> None:
+    # Windows pipes are sometimes opened using cp1252 despite chcp 65001;
+    # explicitly use UTF-8 on the isolated worker's input/output streams.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
     from .reazon import ReazonK2ASR
     from ..config import AsrConfig
     import numpy as np

@@ -5,6 +5,8 @@ weights or invoke FireRedVAD, PLaMo or MPV.
 """
 from __future__ import annotations
 
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -141,6 +143,26 @@ class ReazonTests(unittest.TestCase):
             self.assertEqual(cfg.asr.num_threads, 2)
             self.assertEqual(cfg.asr.provider, "cpu")
             self.assertEqual(cfg.vad.fallback_s, 0.0)
+
+    def test_worker_japanese_json_survives_windows_cp1252_stdout(self):
+        """Japanese text must cross IPC even on legacy Windows encodings."""
+        from auto_translate.asr.reazon_worker import send
+
+        raw = io.BytesIO()
+        win_stdout = io.TextIOWrapper(raw, encoding="cp1252", write_through=True)
+        expected = "えっ、角巻わためだよ！"
+        with patch("auto_translate.asr.reazon_worker.sys.stdout", win_stdout):
+            send({"type": "result", "id": 1, "text": expected})
+        payload = raw.getvalue().decode("ascii")
+        self.assertEqual(json.loads(payload)["text"], expected)
+        self.assertIn("\\u3048", payload)
+
+    def test_worker_utf8_preconfigured_for_inherited_pipe(self):
+        import inspect
+        from auto_translate.asr.reazon_ipc import ReazonWorkerASR
+        from auto_translate.asr.reazon_worker import main
+        self.assertIn('"PYTHONIOENCODING": "utf-8"', inspect.getsource(ReazonWorkerASR))
+        self.assertIn('reconfigure(encoding="utf-8")', inspect.getsource(main))
 
     def test_worker_preload_is_noop_on_non_windows(self):
         from auto_translate.asr.reazon_worker import prepare_sherpa_windows_dlls

@@ -30,13 +30,22 @@ class IsolatedReactionTests(unittest.TestCase):
         for text in (
             "あっ！", "はっ。", "はあ", "うわっ。", "うわー！うわー！",
             "うう！", "よいしょ", "よいしょよいしょ", "えーっと",
-            "うん。", "はい。", "えっ？", "ん?", "すすげえ",
-            "すごい！", "スゴイ！", "すげえ", "あのー", "うーん",
-            "へぇ～", "はーい", "Wow!", "Hey!", "Whoa!", "おお!",
+            "えっ？", "ん?", "すすげえ", "あのー", "うーん",
+            "へぇ～", "Hey!", "Whoa!", "おお!",
             "うわぁぁぁ！", "あっ!あっ!", "ッ!", "っ。", "ッッ!",
         ):
             with self.subTest(text=text):
                 self.assertTrue(is_isolated_reaction(text))
+
+    def test_meaningful_isolated_acknowledgements_and_praise_are_preserved(self):
+        # They can be the complete reply to another speaker. Preserve them
+        # rather than treating all short Japanese responses as noise.
+        for text in (
+            "うん。", "はい。", "すごい！", "スゴイ！", "すげえ",
+            "はーい", "Wow!", "やばい！",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(is_isolated_reaction(text))
 
     def test_embedded_reactions_and_dialogue_are_preserved(self):
         for text in (

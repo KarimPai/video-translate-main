@@ -95,7 +95,8 @@ class TranslateConfig:
     max_tokens: int = 128
     timeout_s: float = 25.0
     load_timeout_s: float = 600.0
-    context_lines: int = 0  # PFML3 source-only; history retained separately for repairs
+    context_lines: int = 2  # bounded native PFML3 prior JP/EN pairs
+    context_title_enabled: bool = True  # video title/channel only; no invented scene
     memory_lines: int = 12  # previous local repeat consistency (no prompt history)
     lookahead_s: float = 2.0  # bounded future Japanese context, not LLM prompt history
     fragment_join_enabled: bool = True

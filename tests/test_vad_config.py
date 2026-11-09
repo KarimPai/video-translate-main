@@ -15,7 +15,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.speech_pad_ms, 200)
         self.assertEqual(cfg.min_silence_ms, 400)
         self.assertEqual(cfg.min_speech_ms, 100)
-        self.assertEqual(cfg.max_utterance_s, 6.0)
+        self.assertEqual(cfg.max_utterance_s, 7.0)
         self.assertEqual(cfg.max_split_extension_s, 1.0)
         self.assertEqual(cfg.split_pause_min_ms, 80)
         self.assertEqual(cfg.split_context_ms, 120)
@@ -28,7 +28,7 @@ class VadConfigurationTests(unittest.TestCase):
             cfg = load_config(path).vad
         self.assertEqual(cfg.threshold, 0.40)
         self.assertEqual(cfg.speech_pad_ms, 200)
-        self.assertEqual(cfg.max_utterance_s, 6.0)
+        self.assertEqual(cfg.max_utterance_s, 7.0)
 
     def test_local_overrides_take_precedence(self):
         with tempfile.TemporaryDirectory() as directory:

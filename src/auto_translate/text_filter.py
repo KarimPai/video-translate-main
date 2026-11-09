@@ -26,8 +26,9 @@ def _compact(text: str) -> str:
 _SOUND_WORDS = (
     r"applause|clapping|claps?|cheering|crowd cheering|crowd noise|footsteps|gunfire|"
     r"music|background music|bgm|instrumental|singing|"
+    r"engine(?: noises?)?|engine revving|revving|motor noise|"
     r"sound effects?|sfx|laughter|laughing|laughs|"
-    r"足音|銃声|手拍子|拍手|拍手喝采|歓声|声援|音楽|背景音楽|効果音|笑い声|笑い|爆笑"
+    r"エンジン音|車のエンジン音|足音|銃声|手拍子|拍手|拍手喝采|歓声|声援|音楽|背景音楽|効果音|笑い声|笑い|爆笑"
 )
 _SOUND_BRACKET = re.compile(
     rf"[\[\(（【［]\s*(?:{_SOUND_WORDS})\s*[\]\)）】］]",

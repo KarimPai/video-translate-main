@@ -1,80 +1,64 @@
-# Granite Speech 5 — direct Japanese audio-to-English subtitles
+# Whisper Large-v3 — Direct Japanese Audio-to-English Subtitles
 
-Experimental branch: experiment/granite-speech-5-direct
+Git branch: **whisper-v3**
 
-A standalone, local Japanese speech translator built on IBM Granite Speech
-5.0 2B Q8_0. There is no intermediate Japanese ASR or second translation
-LLM. The model reads Japanese audio and writes English directly.
+One local speech model (faster-whisper / CTranslate2) replaces Granite Speech
+and its llama.cpp server. No Japanese ASR + translation-LLM cascade.
 
-## Pipeline
+## Audio / subtitle pipeline
 
-    YouTube VOD/live or local file
-        -> FFmpeg: 16 kHz mono audio
-        -> FireRedVAD (CUDA): bounded utterances, no noise probes by default
-        -> Granite Speech 5.0 2B Q8_0 (llama-server, audio->English)
-           with unbiased Japanese-audio to English translation by default
-        -> MPV English subtitles / terminal EN-only / optional browser
+YouTube live/VOD or local file -> FFmpeg 16 kHz mono PCM -> FireRedVAD CUDA
+-> Whisper Large-v3 direct Japanese-to-English -> MPV English-only subtitles.
 
-GTCRN denoising and Sherpa speaker segmentation are OFF by default, but can
-be enabled individually. There is no Haas, PLaMo, Kotoba, Whisper, Japanese
-caption matching, second translation model, or separate glossary processor.
+The seek cache, native MPV playback, 3-line subtitle stacking and 10-second
+live delay are retained. GTCRN and Sherpa speaker diarization remain optional
+and OFF by default. No separate translation model or default keyword bias.
 
-## Requirements (Windows 11 + NVIDIA)
+## Recommended defaults (RTX 3070 8 GB)
 
-- NVIDIA GPU; RTX 3070 8 GB is the target.
-- Python 3.12+, uv: https://docs.astral.sh/uv/
-- FFmpeg, yt-dlp and MPV on PATH (unchanged from the old project).
-- A recent llama.cpp multimodal build providing llama-server.exe on PATH.
-  Older llama.cpp releases without Granite Speech 5 audio support will fail.
-- Internet on first launch to fetch the official IBM GGUF and multimodal
-  projector; cached weights then run offline (YouTube ingestion still needs internet).
+    [whisper]
+    model = "large-v3"
+    device = "cuda"
+    compute_type = "int8_float16"
+    language = "ja"
+    task = "translate"
+    beam_size = 5
+    temperature = 0.0
+    no_speech_threshold = 0.6
+    log_prob_threshold = -1.0
+    compression_ratio_threshold = 2.4
+    condition_on_previous_text = false
 
-The original FireRedVAD, GTCRN and Sherpa models may require their own first-use
-downloads. The 8-bit Granite GGUF is chosen for accuracy rather than minimum
-VRAM. Model card: https://huggingface.co/ibm-granite/granite-speech-5.0-2b
+Large-v3 (not Turbo) is explicitly trained for native speech translation.
+The implementation enforces Japanese input and English translation, disables
+the second Silero VAD pass, and supplies no name-biasing prompt. The model
+stays loaded for the entire playback session. The RTX 3070 may require
+closing other GPU-intensive applications to free sufficient VRAM.
 
-## Run
+## Update an existing Granite experiment checkout
 
     cd /d C:\Games\video-translate-granite5
     git fetch origin
-    git switch experiment/granite-speech-5-direct
-    git pull --ff-only origin experiment/granite-speech-5-direct
+    git switch --track origin/whisper-v3
     uv sync
+    uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 
-Launch Start translate.bat and paste a YouTube live or VOD URL.
+If the local whisper-v3 branch already exists: git switch whisper-v3,
+then git pull --ff-only origin whisper-v3, then uv sync.
+The directory name does not control the model: the directory can stay named
+video-translate-granite5, or you can rename it after closing running programs.
 
-The launcher runs:
+Launch "Start translate.bat", paste a YouTube URL.
+The batch file invokes:
 
     uv run --no-sync python -m auto_translate "<URL>" --mode auto --mpv --delay 10 --no-web --simple-terminal
 
-The console shows only EN: lines. Logs:
-- logs/run.log: application, VAD, MPV and inference diagnostics
-- logs/granite5-server.log: model download, llama.cpp startup and runtime errors
+The launcher checks that faster-whisper is installed and runs uv sync if not.
+First use downloads the large-v3 weights; cached model inference is offline.
+YouTube playback still requires internet. Windows inference requires the
+NVIDIA driver, CUDA 12 cuBLAS, and cuDNN 9 for CTranslate2.
 
-Granite server binds to 127.0.0.1:9797, owned and terminated by this app.
-Do not run another server on that port.
-
-## Optional config.toml
-
-    [granite]
-    model_id = "ibm-granite/granite-speech-5.0-2b-GGUF:Q8_0"
-    base_url = "http://127.0.0.1:9797"
-    gpu_layers = 99
-    context_tokens = 4096
-    request_timeout_s = 45.0
-    startup_timeout_s = 1200.0
-    prompt = "translate the speech to English with proper punctuation and capitalization."
-    keywords = [] # unbiased default; optionally add names genuinely relevant to a stream
-    # llama_server_path = "C:\\tools\\llama.cpp\\llama-server.exe"
-
-When keywords is nonempty (opt-in only), the model uses IBM's documented AST keyword
-template: "translate the speech to English. Keywords: Watame, Towa, ...".
-This replaces the punctuation prompt, rather than concatenating unsupported
-instructions. Set `keywords = []` to use the `prompt` setting instead.
-Keep the keyword list limited to names relevant to the stream; irrelevant
-names can bias model output. Keyword biasing is not a guarantee of accuracy.
-
-Default optional settings (also usable in an existing local config.toml):
+## Optional audio processing (disabled by default)
 
     [gtcrn]
     enabled = false
@@ -83,42 +67,23 @@ Default optional settings (also usable in an existing local config.toml):
     enabled = false
 
     [vad]
+    threshold = 0.50
+    neg_threshold = 0.30
+    min_silence_ms = 500
+    min_speech_ms = 250
+    onset_ms = 80
+    speech_pad_ms = 150
+    prob_smooth_frames = 5
     fallback_s = 0.0
 
-Set `[gtcrn].enabled = true` or `[speaker].enabled = true` to opt back
-in. Either feature requires `uv sync --extra diarization` for sherpa-onnx.
-If an existing git-ignored config.toml sets enabled=true, that local
-override still takes precedence over the new defaults.
-Existing [asr] and [translate] sections are ignored.
+The previous [granite], [asr], [translate], and [captions] blocks in any
+existing git-ignored config.toml are ignored, not executed. Explicit [vad],
+[gtcrn], and [speaker] overrides still take precedence over defaults.
 
-VAD defaults are 0.50 speech, 0.30 negative threshold, 500 ms silence,
-150 ms pad, 250 ms minimum confirmed speech, 80 ms continuous onset,
-and 5-frame probability smoothing; 7 s utterance (max 8 s). Audio is
-segmented locally before Granite inference. VAD-negative probes are off by
-default because non-speech music/game sounds can lead to fabricated words.
-For quiet voices missed by VAD, start by reducing [vad].threshold, or,
-as a separate experiment, optionally set [vad] fallback_s = 5.0.
-Stricter speech detection can miss quiet Japanese voices. The VAD only
-rejects short/noisy segments; it does not prove the retained audio is speech,
-does not lock Japanese source language, and cannot repair incorrect translations.
-Use the same timestamps and original Japanese audio when comparing runs.
+## Logs / tests
 
-Check for existing local config.toml overrides before testing: explicit
-[granite].keywords and [vad] values take precedence over these new defaults.
-
-## Experiment boundaries
-
-- English-only direct output; Japanese transcription is not generated.
-- VOD rewind/seek cache and MPV speaker handoff behavior remain.
-- No YouTube captions or separate text translation / glossary corrections.
-- First run downloads weights and starts the server.
-- RTX 3070 throughput and quality require Windows runtime benchmarking;
-  these changes are not proof of higher translation accuracy.
-- API: POST /v1/audio/transcriptions with multipart fields model, prompt, file.
-
-## Tests
-
-    uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
-
-Model-independent audio/MPV tests and Granite regression tests are retained.
-Mocked tests cannot prove a particular llama.cpp binary supports this model.
+- logs/run.log — application / MPV / model failures and performance statistics
+- The terminal prints only EN: subtitles by default.
+- No llama-server.exe, GGUF, or outgoing speech inference HTTP requests.
+- Unit tests mock model calls and do not download Whisper weights.
+- Real translation accuracy, latency and GPU memory need a local playback test.

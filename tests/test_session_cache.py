@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from auto_translate.output.mpv import MpvOutput
-from auto_translate.pipeline import run_granite
+from auto_translate.pipeline import run_whisper
 from auto_translate.session_cache import SessionSubtitleCache
 from auto_translate.types import Subtitle, Utterance
 
@@ -46,12 +46,12 @@ class SessionCacheTests(unittest.TestCase):
         self.assertEqual(len(other_video), 0)
         self.assertEqual(other_video.active_at(11.0), [])
 
-    def test_revisited_utterance_skips_granite_speech_decode(self):
+    def test_revisited_utterance_skips_whisper_speech_decode(self):
         self.cache.add(self.line)
 
         class MustNotDecode:
             def translate_audio(self, audio):
-                raise AssertionError("Granite should not decode a cached VOD cue")
+                raise AssertionError("Whisper should not decode a cached VOD cue")
 
         utterances, subtitles = queue.Queue(), queue.Queue()
         utterances.put(Utterance(
@@ -60,7 +60,7 @@ class SessionCacheTests(unittest.TestCase):
             generation=3, speech_start_s=10.1,
         ))
         utterances.put(None)
-        run_granite(
+        run_whisper(
             MustNotDecode(), utterances, subtitles,
             get_generation=lambda: 3, session_cache=self.cache,
         )
@@ -90,8 +90,8 @@ class SessionCacheTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertEqual(calls[-1][1]["format"], "ass-events")
 
-    def test_interrupted_speakers_remain_two_independent_granite_cues(self):
-        class FakeGranite:
+    def test_interrupted_speakers_remain_two_independent_whisper_cues(self):
+        class FakeWhisper:
             def __init__(self):
                 self.calls = 0
             def translate_audio(self, audio):
@@ -108,13 +108,13 @@ class SessionCacheTests(unittest.TestCase):
             speech_start_s=1.5, speaker_handoff=True,
         ))
         utterances.put(None)
-        granite = FakeGranite()
-        run_granite(granite, utterances, subtitles)
+        whisper = FakeWhisper()
+        run_whisper(whisper, utterances, subtitles)
         first, second, sentinel = (
             subtitles.get_nowait(), subtitles.get_nowait(), subtitles.get_nowait()
         )
         self.assertIsNone(sentinel)
-        self.assertEqual(granite.calls, 2)
+        self.assertEqual(whisper.calls, 2)
         self.assertEqual([first.en, second.en],
                          ["I'm heading out—", "Wait a second!"])
         self.assertEqual([(first.start_s, first.end_s), (second.start_s, second.end_s)],
@@ -161,7 +161,7 @@ class SessionCacheTests(unittest.TestCase):
             def translate_audio(self, audio):
                 raise AssertionError("should reuse matching cached subtitle")
 
-        run_granite(MustNotDecode(), source, translated,
+        run_whisper(MustNotDecode(), source, translated,
                     get_generation=lambda: 2, session_cache=self.cache)
         reuse = translated.get_nowait()
         self.assertIsInstance(reuse, Subtitle)

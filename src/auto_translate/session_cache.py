@@ -48,7 +48,7 @@ class SessionSubtitleCache:
         """Find a previously processed utterance with matching timestamps.
 
         A seek can move the first VAD boundary, so unmatched utterances still
-        go through regular Granite audio-to-English inference; only close matches are reused.
+        go through regular Whisper audio-to-English inference; only close matches are reused.
         """
         tolerance = self.MATCH_TOLERANCE_S
         with self._lock:

@@ -1,4 +1,4 @@
-"""English-only terminal regression tests for Granite direct translation."""
+"""English-only terminal regression tests for Whisper Large-v3 direct translation."""
 
 from contextlib import redirect_stdout
 from io import StringIO
@@ -27,7 +27,7 @@ class TerminalOutputTests(unittest.TestCase):
         buf = StringIO()
         with redirect_stdout(buf):
             TerminalOutput(simple=False).show(Subtitle(1.0, 2.0, "", "Watch out!"))
-        self.assertIn("Granite", buf.getvalue())
+        self.assertIn("Whisper Large-v3", buf.getvalue())
         self.assertIn("Watch out!", buf.getvalue())
         self.assertNotIn("JP:", buf.getvalue())
 

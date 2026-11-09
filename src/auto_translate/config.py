@@ -34,7 +34,7 @@ class VadConfig:
     min_silence_ms: int = 400
     speech_pad_ms: int = 200
     min_speech_ms: int = 100
-    max_utterance_s: float = 6.0
+    max_utterance_s: float = 8.0
     fallback_s: float = 5.0
     fallback_min_s: float = 1.5
     fallback_min_db: float = -45.0
@@ -51,6 +51,9 @@ class AsrConfig:
     haas_keywords_alpha: float = 1.5
     haas_keywords_guard: bool = True
     blocklist: list[str] = field(default_factory=list)
+    retry_uncertain_enabled: bool = True
+    retry_max_audio_s: float = 8.0
+    retry_budget_s: float = 3.0
 
 
 @dataclass
@@ -71,8 +74,8 @@ class TranslateConfig:
     glossary: str = "glossary.toml"
     # Only dubious outputs receive a bounded second pass through the SAME PLaMo.
     quality_recheck_enabled: bool = True
-    quality_recheck_timeout_s: float = 3.0
-    quality_recheck_min_interval_s: float = 10.0
+    quality_recheck_timeout_s: float = 4.0
+    quality_recheck_min_interval_s: float = 3.0
 
 
 @dataclass

@@ -82,6 +82,7 @@ class CaptionOnlyPlayer:
         self._stop = threading.Event()
         self._error: Exception | None = None
         self._shown = ""
+        self._first_overlay_logged = False
         self._proc: subprocess.Popen | None = None
         self._ipc: MpvIpc | None = None
         self._job = None
@@ -266,6 +267,16 @@ class CaptionOnlyPlayer:
                 hidden=False,
             )
             self._shown = text
+            if text and not self._first_overlay_logged:
+                self._first_overlay_logged = True
+                log.info(
+                    "First English MPV overlay: clock=%.3fs cues=%d "
+                    "earliest=%.3f latest=%.3f",
+                    position_s,
+                    len(active),
+                    min(sub.start_s for sub in active),
+                    max(sub.start_s for sub in active),
+                )
 
     def _handle_keys(self) -> None:
         assert self._ipc is not None

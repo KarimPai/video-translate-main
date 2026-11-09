@@ -49,6 +49,11 @@ class GraniteWireTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _clean_result({"error": "unsupported model"})
 
+    def test_unbiased_default_translation_prompt(self):
+        cfg = GraniteConfig()
+        self.assertEqual(cfg.keywords, [])
+        self.assertEqual(build_translation_prompt(cfg), cfg.prompt)
+
     def test_documented_keyword_ast_prompt(self):
         cfg = GraniteConfig(keywords=[" Watame ", "Towa", "watame", "Suisei"])
         self.assertEqual(
@@ -87,7 +92,7 @@ class GraniteWireTests(unittest.TestCase):
         self.assertEqual(submitted.get_method(), "POST")
         self.assertTrue(submitted.full_url.endswith("/v1/audio/transcriptions"))
         self.assertIn(b"speech.wav", submitted.data)
-        self.assertIn(b"translate the speech to English. Keywords: Watame", submitted.data)
+        self.assertIn(b"translate the speech to English with proper punctuation", submitted.data)
 
     def test_model_is_direct_ast_not_japanese_asr(self):
         cfg = GraniteConfig()

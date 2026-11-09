@@ -52,6 +52,12 @@ def main() -> None:
         cfg.mpv.delay_s = args.delay
 
     log = logging.getLogger("auto_translate")
+    log.info(
+        "Audio processing: GTCRN=%s (CPU), Sherpa speaker segmentation=%s (CPU); "
+        "FireRedVAD (CUDA), Whisper Large-v3 direct JP-to-EN",
+        "on" if cfg.gtcrn.enabled else "off",
+        "on" if cfg.speaker.enabled else "off",
+    )
     source = resolve_source(
         args.source, args.mode, args.start, args.fast, cfg.ingest,
     )

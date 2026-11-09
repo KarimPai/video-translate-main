@@ -11,19 +11,19 @@ from auto_translate.ingest import Ingest
 
 
 class GtcrnConfigurationTests(unittest.TestCase):
-    def test_gtcrn_is_disabled_by_default_and_uvr_is_off(self):
+    def test_gtcrn_is_enabled_by_default_and_uvr_is_off(self):
         cfg = Config()
-        self.assertFalse(cfg.gtcrn.enabled)
+        self.assertTrue(cfg.gtcrn.enabled)
         self.assertEqual(cfg.gtcrn.num_threads, 1)
         self.assertFalse(cfg.separation.enabled)
         with tempfile.TemporaryDirectory() as temp:
             resolved = load_config(Path(temp) / "missing.toml")
-            self.assertFalse(resolved.gtcrn.enabled)
+            self.assertTrue(resolved.gtcrn.enabled)
 
-    def test_local_override_can_enable_gtcrn(self):
+    def test_local_override_can_disable_gtcrn(self):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "config.toml"
-            p.write_text("[gtcrn]\nenabled = true\n", encoding="utf-8")
+            p.write_text("[gtcrn]\nenabled = false\n", encoding="utf-8")
             self.assertTrue(load_config(p).gtcrn.enabled)
 
     def test_retired_deepfilter_option_is_ignored(self):

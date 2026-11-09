@@ -22,7 +22,7 @@ class SeparationConfig:
 class GtcrnConfig:
     """Real-time 16 kHz GTCRN speech enhancement on CPU via sherpa-onnx."""
 
-    enabled: bool = False
+    enabled: bool = True
     num_threads: int = 1
     model_path: str = ""  # empty means cached official gtcrn_simple.onnx
 
@@ -49,7 +49,7 @@ class VadConfig:
 @dataclass
 class SpeakerConfig:
     """CPU Sherpa speaker diarization of each bounded VAD utterance."""
-    enabled: bool = False
+    enabled: bool = True
     model_dir: str = ""
     num_threads: int = 2
     min_turn_s: float = 0.55

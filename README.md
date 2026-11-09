@@ -11,8 +11,9 @@ YouTube live/VOD or local file -> FFmpeg 16 kHz mono PCM -> FireRedVAD CUDA
 -> Whisper Large-v3 direct Japanese-to-English -> MPV English-only subtitles.
 
 The seek cache, native MPV playback, 3-line subtitle stacking and 10-second
-live delay are retained. GTCRN and Sherpa speaker diarization remain optional
-and OFF by default. No separate translation model or default keyword bias.
+live delay are retained. GTCRN denoising (CPU) and Sherpa speaker-turn
+segmentation (CPU) are ENABLED by default for this experiment; both can
+be disabled independently. No separate translation model or default keyword bias.
 
 ## Recommended defaults (RTX 3070 8 GB)
 
@@ -40,11 +41,11 @@ closing other GPU-intensive applications to free sufficient VRAM.
     cd /d C:\Games\video-translate-granite5
     git fetch origin
     git switch --track origin/whisper-v3
-    uv sync
+    uv sync --extra diarization
     uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 
 If the local whisper-v3 branch already exists: git switch whisper-v3,
-then git pull --ff-only origin whisper-v3, then uv sync.
+then git pull --ff-only origin whisper-v3, then uv sync --extra diarization.
 The directory name does not control the model: the directory can stay named
 video-translate-granite5, or you can rename it after closing running programs.
 
@@ -53,18 +54,21 @@ The batch file invokes:
 
     uv run --no-sync python -m auto_translate "<URL>" --mode auto --mpv --delay 10 --no-web --simple-terminal
 
-The launcher checks that faster-whisper is installed and runs uv sync if not.
+The launcher checks faster-whisper and sherpa-onnx, and installs the
+diarization extra if either is absent.
 First use downloads the large-v3 weights; cached model inference is offline.
 YouTube playback still requires internet. Windows inference requires the
 NVIDIA driver, CUDA 12 cuBLAS, and cuDNN 9 for CTranslate2.
 
-## Optional audio processing (disabled by default)
+## Audio enhancement experiment (enabled by default)
 
     [gtcrn]
-    enabled = false
+    enabled = true
+    num_threads = 1
 
     [speaker]
-    enabled = false
+    enabled = true
+    num_threads = 2
 
     [vad]
     threshold = 0.50
@@ -79,6 +83,17 @@ NVIDIA driver, CUDA 12 cuBLAS, and cuDNN 9 for CTranslate2.
 The previous [granite], [asr], [translate], and [captions] blocks in any
 existing git-ignored config.toml are ignored, not executed. Explicit [vad],
 [gtcrn], and [speaker] overrides still take precedence over defaults.
+To compare with the previous untreated-audio baseline, create config.toml
+containing [gtcrn] enabled = false and [speaker] enabled = false (using
+normal multiline TOML tables).
+
+GTCRN enhances the audio fed to VAD and Whisper; MPV playback retains
+the original source audio. Sherpa detects likely speaker changes and may
+split longer utterances, but does not label or identify Hololive members.
+Neither component is guaranteed to improve accuracy: denoising may degrade
+clean voices, and excessive diarization cuts may harm translation context.
+Watch logs/run.log for "GTCRN ready" and terminal output for
+"Speaker diarization: Sherpa CPU ready." First use downloads their models.
 
 ## Logs / tests
 

@@ -1,4 +1,4 @@
-"""Streaming CPU GTCRN enhancement before FireRedVAD and Granite Speech 5.
+"""Streaming CPU GTCRN enhancement before FireRedVAD and Whisper Large-v3.
 
 Input and output use 16 kHz mono PCM. MPV continues playing original audio.
 Each ingest/seek generation owns a fresh denoiser and bounded, cancellable queue.

@@ -105,6 +105,7 @@ class PlamoTranslator:
         self.cfg = cfg
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
+        self._last_recheck_at = float("-inf")
         self.vod_title = " ".join(vod_title.split())[:200]
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.url = self.base_url + "/completions"
@@ -243,6 +244,20 @@ class PlamoTranslator:
             if reused is not None:
                 return reused
         english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
+        # PFML3 does not support a free-form system instruction. Keep its
+        # official completion format and retry only an invalid completion.
+        if (_invalid_output(ja, english)
+                and self.cfg.quality_recheck_enabled
+                and time.monotonic() - self._last_recheck_at >= self.cfg.quality_recheck_min_interval_s):
+            self._last_recheck_at = time.monotonic()
+            try:
+                retry = _clean(self._complete(
+                    ja, timeout=min(self.cfg.timeout_s, self.cfg.quality_recheck_timeout_s)
+                ))
+                if not _invalid_output(ja, retry):
+                    english = retry
+            except Exception as exc:
+                log.debug("PLaMo 8B invalid-completion retry failed: %s", exc)
         if _invalid_output(ja, english):
             log.warning("PLaMo invalid completion skipped for source=%r", ja[:100])
             return SKIP_TOKEN

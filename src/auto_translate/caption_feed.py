@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
+from typing import Sequence
 
 from .captions import CaptionCue, CaptionIndex
 from .contextualize import merge_fragments, should_join_fragments
@@ -83,9 +84,13 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
     return output
 
 
-def near_cues(cues: list[CaptionCue], position_s: float, horizon_s: float = 30.0) -> range:
+def near_cues(
+    cues: list[CaptionCue], position_s: float, horizon_s: float = 30.0,
+    *, starts: Sequence[float] | None = None,
+) -> range:
     """Indices needed at a source timeline position (including 3s linger)."""
-    starts = [cue.start_s for cue in cues]
+    if starts is None:
+        starts = [cue.start_s for cue in cues]
     first = bisect_left(starts, max(0.0, position_s - 3.5))
     # Preserve a cue starting earlier and still overlapping the current time.
     while first and cues[first - 1].end_s >= position_s - 3.5:

@@ -81,6 +81,7 @@ def run_asr(
     recent_japanese: deque[str] = deque(maxlen=12)
     last_generation: int | None = None
     empty_voiced_streak = 0
+    caption_primary_logged = False
     while True:
         item = in_q.get()
 
@@ -190,6 +191,12 @@ def run_asr(
             text = preferred
             if evidence.startswith("youtube_primary"):
                 source = evidence
+                if not caption_primary_logged:
+                    log.info(
+                        "YouTube-first Japanese subtitles active: "
+                        "closely aligned captions selected; Haas verifies and fills gaps"
+                    )
+                    caption_primary_logged = True
 
         # Weaker but still reliable captions remain a conservative fallback
         # only when Haas genuinely found no words. Live streams without a

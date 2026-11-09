@@ -75,6 +75,7 @@ class AsrConfig:
     retry_live_max_passes: int = 2
     retry_budget_s: float = 3.0  # VOD: total extra-pass wall-clock budget
     retry_live_budget_s: float = 1.5  # live: stricter extra-pass deadline
+    retry_timeout_cooldown_s: float = 15.0  # skip optional retries after a timeout
     blocklist: list[str] = field(default_factory=list)
 
 

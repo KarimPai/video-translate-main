@@ -22,7 +22,7 @@ class SeparationConfig:
 class DeepFilterConfig:
     """Real-time speech enhancement using DeepFilterNet3."""
 
-    enabled: bool = False
+    enabled: bool = True
 
 
 @dataclass

@@ -146,6 +146,7 @@ def test_hololive_and_burger_king_caption_variants_use_full_names():
     assert ("ナキリあめ", "Nakiri Ayame") in glossary.find("ナキリあめかな")
     assert ("バーグキング", "Burger King") in glossary.find("バーグキング食べた")
     assert ("バーガーキング", "Burger King") in glossary.find("バーガーキング")
+    assert ("ペコーラ", "Pekora") in glossary.find("ペコーラをつけた")
 
 
 
@@ -233,3 +234,37 @@ def test_no_join_across_very_long_json3_display_or_speech_gap():
     merged = prepare_caption_cues(cues)
     # Long silence or a 18-second span is not a reliable single utterance.
     assert [cue.text for cue in merged] == ["わかん", "ない", "思い", "ます"]
+
+
+
+def test_gta_pekkora_stream_grammatical_joins_only():
+    # Use the exact clipped patterns from the long GTA/Hololive transcript.
+    # Bound the inputs to a plausible media window rather than joining all
+    # adjacent conversational cues across different speakers.
+    index = CaptionIndex([
+        CaptionCue(10.0, 13.0, "俺少女のペコーラが貸し"),
+        CaptionCue(13.1, 17.0, "てあげるからやなくなれるあんたやめ"),
+        CaptionCue(17.1, 20.0, "なさいお姉ちゃんが許しませんよそんなの"),
+        CaptionCue(30.0, 33.0, "何の話してんだ"),
+        CaptionCue(33.1, 36.0, "俺にも貸してくれよ"),
+    ], source_format="json3")
+    translated = prepare_caption_cues(index)
+    assert [c.text for c in translated] == [
+        "俺少女のペコーラが貸してあげるからやなくなれるあんたやめなさいお姉ちゃんが許しませんよそんなの",
+        "何の話してんだ",
+        "俺にも貸してくれよ",
+    ]
+    assert translated[0].start_s == 10.0
+    assert translated[0].end_s == 20.0
+
+
+def test_distant_clipped_words_are_not_joined():
+    index = CaptionIndex([
+        CaptionCue(2.0, 4.0, "やめ"),
+        CaptionCue(10.0, 12.0, "なさい"),
+        CaptionCue(20.0, 22.0, "貸し"),
+        CaptionCue(30.0, 32.0, "てあげる"),
+    ])
+    assert [cue.text for cue in prepare_caption_cues(index)] == [
+        "やめ", "なさい", "貸し", "てあげる",
+    ]

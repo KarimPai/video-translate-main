@@ -158,6 +158,29 @@ class CaptionOnlyPlayer:
             "no audio ingest/VAD/ASR", len(self.cues),
         )
 
+    def _previous_history(self, index: int) -> list[tuple[str, str]]:
+        """Use only contiguous, nearby captions before the current cue.
+
+        After a seek, earlier cues from an unrelated scene (or old cached
+        playback position) must not influence PLaMo's PFML3 prompt. Called
+        under _condition by the single translation worker.
+        """
+        limit = max(1, self.cfg.translate.memory_lines, self.cfg.translate.context_lines)
+        history: list[tuple[str, str]] = []
+        nearest_start = self.cues[index].start_s
+        for previous_index in range(index - 1, max(-1, index - limit - 1), -1):
+            cue = self.cues[previous_index]
+            if nearest_start - cue.end_s > 20.0:
+                break
+            subtitle = self._translated.get(previous_index)
+            if subtitle is None:
+                # Missing translation interrupts the context chain.
+                break
+            history.append((subtitle.ja, subtitle.en))
+            nearest_start = cue.start_s
+        history.reverse()
+        return history
+
     def _translate_worker(self) -> None:
         failures = 0
         try:
@@ -171,11 +194,7 @@ class CaptionOnlyPlayer:
                         self._condition.wait(timeout=0.3)
                         continue
                     cue = self.cues[index]
-                    history = [
-                        (self._translated[i].ja, self._translated[i].en)
-                        for i in range(max(0, index - 12), index)
-                        if i in self._translated
-                    ]
+                    history = self._previous_history(index)
                 try:
                     nearby = [item[0] for item in history[-8:]]
                     future = [

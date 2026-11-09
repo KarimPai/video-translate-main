@@ -12,7 +12,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -126,6 +126,7 @@ def choose_hypothesis(
     probe: bool = False,
     caption: Any = None,
     live: bool = False,
+    cancelled: Callable[[], bool] | None = None,
 ) -> str:
     """Return the strongest available decode before the retry deadline.
 
@@ -177,6 +178,8 @@ def choose_hypothesis(
     candidates = [original]
     retry_deadline = time.monotonic() + budget
     for variant_audio, keywords, description in variants[:limit - 1]:
+        if cancelled is not None and cancelled():
+            break  # seek or new stream generation: no extra ASR work
         remaining = retry_deadline - time.monotonic()
         if remaining < 0.08:
             break

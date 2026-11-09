@@ -18,6 +18,7 @@ import numpy as np
 
 from .config import Config
 from .context import RecentSpeechContext, strip_context_echo
+from .subtitle_style import concise_english
 from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
@@ -135,12 +136,19 @@ def run_whisper(
             continue
 
         utt.timings.asr_start = time.monotonic()
+        style_prompt = ""
+        if getattr(cfg, "concise_english", False):
+            style_prompt = str(getattr(cfg, "style_prompt", ""))[:120].strip()
+        previous_prompt = context.prompt(utt)
+        combined_prompt = " ".join(
+            item for item in (style_prompt, previous_prompt) if item
+        ) or None
         retried = False
         retry_reason = ""
         selected = None
         if hasattr(whisper, "decode_audio"):
             original = whisper.decode_audio(
-                utt.audio, prompt=context.prompt(utt),
+                utt.audio, prompt=combined_prompt,
                 hotwords=context.hotwords(),
             )
             selected = original
@@ -165,7 +173,8 @@ def run_whisper(
                 )
                 retried = True
                 second = whisper.decode_audio(
-                    samples, hotwords=context.hotwords(),
+                    samples, prompt=style_prompt or None,
+                    hotwords=context.hotwords(),
                     temperature=float(getattr(cfg, "retry_temperature", 0.2)),
                 )
                 # Translation is not word-aligned. Do not publish previous
@@ -213,6 +222,19 @@ def run_whisper(
             english = whisper.translate_audio(utt.audio)
 
         utt.timings.asr_end = time.monotonic()
+        raw_english = english
+        english = concise_english(
+            english,
+            remove_fillers=bool(getattr(cfg, "remove_fillers", True)),
+            collapse_repetitions=bool(
+                getattr(cfg, "collapse_repetitions", True)
+            ),
+        ) if getattr(cfg, "concise_english", True) else english
+        if raw_english != english:
+            log.debug(
+                "Concise subtitle cleanup: before=%r after=%r",
+                raw_english[:160], english[:160],
+            )
         utt.timings.mt_start = utt.timings.asr_end
         utt.timings.mt_end = utt.timings.asr_end
         if get_generation is not None and utt.generation != get_generation():

@@ -160,7 +160,7 @@ def select_hololive_hints(
     No title/channel -> no auto hints. Manual config hotwords are separate.
     Full channel matches outrank any title/nickname matches.
     """
-    if not enabled or not isinstance(metadata, dict):
+    if not enabled or not isinstance(metadata, dict) or limit <= 0:
         return []
     channel = str(metadata.get("channel") or "")[:300]
     title = str(metadata.get("title") or "")[:500]

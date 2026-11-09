@@ -33,6 +33,19 @@ class GtaTranslationGuardTests(unittest.TestCase):
             ),
             "They are the best three.",
         )
+        self.assertIn(
+            ("ベスト", "protective vest / body armor (equipment)"),
+            gta_prompt_terms("ベスト買うにお金足りない", "Hololive GTA"),
+        )
+        self.assertEqual(
+            repair_gta_translation(
+                "ベスト買うにお金足りない",
+                "I don't have enough money to buy the best one.",
+                "Hololive GTA",
+            ),
+            "I don't have enough money to buy a vest.",
+        )
+
 
     def test_rocket_ammo_repair_does_not_replace_unrelated_ball(self):
         self.assertEqual(

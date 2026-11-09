@@ -267,7 +267,7 @@ only if there is evidence the name is relevant to the video.
 
 Test without GPU:
 
-    uv run --no-sync python -m unittest tests.test_hololive_style -v
+    uv run --no-sync python -m unittest discover -s tests -p "test_hololive_style.py" -v
 
 Or run the complete test suite:
 

@@ -316,6 +316,26 @@ def run(
         "subtitle": sub_q,
     }
 
+    # A failed native ASR worker must not leave all bounded queues full while
+    # the player continues indefinitely without subtitles.
+    asr_errors: queue.Queue[Exception] = queue.Queue(maxsize=1)
+
+    def guarded_asr() -> None:
+        try:
+            run_asr(
+                asr,
+                utt_q,
+                text_q,
+                lambda: ingest.generation,
+                captions,
+                vod_title,
+                session_cache,
+            )
+        except Exception as exc:
+            log.exception("ASR processing failed; stopping translator")
+            asr_errors.put(exc)
+            stop.set()
+
     threads = [
         threading.Thread(
             target=ingest.run,
@@ -330,16 +350,7 @@ def run(
             daemon=True,
         ),
         threading.Thread(
-            target=run_asr,
-            args=(
-                asr,
-                utt_q,
-                text_q,
-                lambda: ingest.generation,
-                captions,
-                vod_title,
-                session_cache,
-            ),
+            target=guarded_asr,
             name="asr",
             daemon=True,
         ),
@@ -464,6 +475,12 @@ def run(
                             q.maxsize,
                         )
 
+
+        if not asr_errors.empty():
+            error = asr_errors.get_nowait()
+            raise RuntimeError(
+                f"ASR stage stopped: {error}. See logs/run.log for the cause."
+            ) from error
 
     except KeyboardInterrupt:
         log.info("stopping (Ctrl+C)")

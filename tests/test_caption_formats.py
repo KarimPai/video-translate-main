@@ -163,3 +163,43 @@ def test_vtt_inline_timestamp_inside_word_sequence_preserves_early_speech():
     assert len(index.cues) == 2
     assert index.cues[1].text == "一緒に遊びましょう"
     assert abs(index.cues[1].start_s - 1.9) < 0.001
+
+
+
+def test_strong_clipped_endings_join_despite_overlapping_json3_display_times():
+    # Real rolling captions overlap: the previous caption's display end
+    # is several seconds AFTER the next spoken piece begins.
+    index = CaptionIndex([
+        CaptionCue(1.0, 5.5, "わかん"),
+        CaptionCue(2.0, 6.0, "ない30秒待つと言ったな嘘"),
+        CaptionCue(10.0, 14.5, "これで行こうと思い"),
+        CaptionCue(11.0, 15.5, "ます話すけど"),
+        CaptionCue(21.0, 25.0, "おはようござい"),
+        CaptionCue(22.0, 26.0, "ますおはようございます"),
+    ], source_format="json3")
+    cues = prepare_caption_cues(index)
+    assert len(cues) == 3
+    assert cues[0].text == "わかんない30秒待つと言ったな嘘"
+    assert cues[1].text == "これで行こうと思います話すけど"
+    assert cues[2].text == "おはようございますおはようございます"
+    assert [cue.start_s for cue in cues] == [1.0, 10.0, 21.0]
+
+
+def test_strong_word_completions_do_not_cross_long_silences_or_scene_changes():
+    index = CaptionIndex([
+        CaptionCue(1.0, 2.0, "わかん"),
+        CaptionCue(8.0, 8.5, "ない"),
+        CaptionCue(11.0, 12.0, "思い"),
+        CaptionCue(17.0, 17.3, "ます"),
+    ])
+    cues = prepare_caption_cues(index)
+    assert len(cues) == 4
+
+
+def test_format_provenance_on_parsed_tracks():
+    assert CaptionIndex.from_vtt(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nおはよう\n"
+    ).source_format == "vtt"
+    assert CaptionIndex.from_json3(json.dumps({
+        "events": [{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "こんにちは"}]}]
+    })).source_format == "json3"

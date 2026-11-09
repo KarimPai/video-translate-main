@@ -41,6 +41,11 @@ _CLIPPED_ENDINGS = (
     ("てい", ("ます", "ました")),
     ("しちゃ", ("った",)),
     ("ごめん", ("なさい",)),
+    # Speaker transitions remain uncertain without audio. These are joined
+    # only when the next cue begins with an explicit grammatical completion
+    # and the existing bounded timing constraints are met.
+    ("やめ", ("なさい",)),
+    ("貸し", ("て",)),
 )
 
 

@@ -90,6 +90,9 @@ class TranslateConfig:
     load_timeout_s: float = 600.0
     context_lines: int = 0  # PFML3 source-only; history retained separately for repairs
     memory_lines: int = 12  # previous local repeat consistency (no prompt history)
+    lookahead_s: float = 2.0  # bounded future Japanese context, not LLM prompt history
+    fragment_join_enabled: bool = True
+    fragment_join_gap_s: float = 0.25
     glossary: str = "glossary.toml"
     quality_recheck_enabled: bool = True
     quality_recheck_timeout_s: float = 4.0

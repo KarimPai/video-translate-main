@@ -114,6 +114,33 @@ class RetryScoringTests(unittest.TestCase):
         self.assertEqual(result, "え")
         self.assertEqual(len(asr.calls), 1)
 
+    def test_new_seek_prevents_followup_work(self):
+        asr = FakeHaas(["まだ変"], config=AsrConfig(retry_max_passes=3))
+        audio = np.zeros(32000, dtype=np.float32)
+        result = choose_hypothesis(
+            asr, audio, "え", start_s=0, end_s=2,
+            speech_start_s=.2,
+            cancelled=lambda: len(asr.calls) >= 1,
+        )
+        self.assertEqual(result, "え")
+        self.assertEqual(len(asr.calls), 1)
+
+    def test_over_budget_completion_is_ignored(self):
+        from unittest.mock import patch
+
+        asr = FakeHaas(["おかゆさんです"], config=AsrConfig(retry_budget_s=.1))
+        audio = np.zeros(32000, dtype=np.float32)
+        # The bounded worker claims to succeed but violates the time
+        # contract. No late transcript should be handed to PLaMo.
+        with patch("auto_translate.asr_retry.time.monotonic",
+                   side_effect=[0.0, 0.0, .2]):
+            result = choose_hypothesis(
+                asr, audio, "え", start_s=0, end_s=2,
+                speech_start_s=.2,
+            )
+        self.assertEqual(result, "え")
+        self.assertEqual(len(asr.calls), 1)
+
     def test_disabled_or_probe_never_retries(self):
         asr = FakeHaas(["better"], config=AsrConfig(retry_uncertain_enabled=False))
         audio = np.zeros(40000, dtype=np.float32)

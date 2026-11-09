@@ -129,6 +129,9 @@ class MpvConfig:
     en_size: int = 28
     ja_size: int = 0
     max_subtitle_rows: int = 3
+    # Positive value shows translated captions earlier than YouTube's times.
+    # Keep at zero by default; only calibrate against the original JP track.
+    caption_advance_s: float = 0.0
 
 
 @dataclass

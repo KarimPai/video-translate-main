@@ -24,13 +24,13 @@ class GtcrnConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "config.toml"
             p.write_text("[gtcrn]\nenabled = false\n", encoding="utf-8")
-            self.assertTrue(load_config(p).gtcrn.enabled)
+            self.assertFalse(load_config(p).gtcrn.enabled)
 
     def test_retired_deepfilter_option_is_ignored(self):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "config.toml"
             p.write_text("[deepfilter]\nenabled = false\n", encoding="utf-8")
-            self.assertFalse(load_config(p).gtcrn.enabled)
+            self.assertTrue(load_config(p).gtcrn.enabled)
 
     def test_ffmpeg_outputs_16khz_mono_to_gtcrn(self):
         source = SimpleNamespace(

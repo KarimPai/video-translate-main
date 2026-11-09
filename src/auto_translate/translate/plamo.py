@@ -52,19 +52,60 @@ _BAD_META = re.compile(
 _PUNCT_LOOP = re.compile(r"(?:[.!?…]\s*){12,}")
 
 
-def build_plamo_prompt(japanese: str, matched_terms: list[tuple[str, str]] | None = None) -> str:
-    """Build Japanese-source/English-target PFML3 with only matched glossary hits."""
+_PFML3_CONTEXT = "<|plamo:tag|>context<|plamo:msg|>"
+
+
+def _safe_pfml3_value(value: str) -> str:
+    """Do not let video metadata or ASR text inject PLaMo control tokens."""
+    return " ".join(str(value).replace("<|plamo:", "＜|plamo:").split())
+
+
+def build_plamo_prompt(
+    japanese: str,
+    matched_terms: list[tuple[str, str]] | None = None,
+    *,
+    history: list[tuple[str, str]] | None = None,
+    context: str = "",
+) -> str:
+    """Official PFML3: optional video context, prior pairs, glossary, current JA.
+
+    The only unfinished output tag is the CURRENT line's EN completion.
+    No general-purpose system prompt or invented scene summary is sent.
+    """
     prompt = _PFML3_START
+    title = _safe_pfml3_value(context)[:180]
+    if title:
+        prompt += _PFML3_CONTEXT + title
+    for previous_ja, previous_en in history or ():
+        src, dst = _safe_pfml3_value(previous_ja), _safe_pfml3_value(previous_en)
+        if (not src or not dst or len(src) > 240 or len(dst) > 320
+                or dst == "[translation failed]" or is_skip_token(dst)):
+            continue
+        prompt += _PFML3_INPUT + src + _PFML3_OUTPUT_EN + dst
+    glossary_started = False
     for ja_term, english_term in (matched_terms or [])[:8]:
         if not ja_term or not english_term:
             continue
         if any(marker in ja_term or marker in english_term
                for marker in ("<|plamo:", "\n", "\r")):
             continue
-        if "<|plamo:tag|>glossary" not in prompt:
+        if not glossary_started:
             prompt += "<|plamo:tag|>glossary"
+            glossary_started = True
         prompt += "<|plamo:index|>" + ja_term + "<|plamo:item|>" + english_term
-    return prompt + _PFML3_INPUT + japanese.strip() + _PFML3_OUTPUT_EN
+    return prompt + _PFML3_INPUT + _safe_pfml3_value(japanese) + _PFML3_OUTPUT_EN
+
+
+def _estimate_prompt_tokens(prompt: str) -> int:
+    """Conservative estimate; discard old context rather than truncate JA.
+
+    No extra tokenizer HTTP request is made for every subtitle.
+    """
+    text_only = re.sub(r"<\\|plamo:[^|>]+\\|>", "", prompt)
+    return int(
+        sum(2 if ord(ch) > 127 else 0.5 for ch in text_only)
+        + 4 * prompt.count("<|plamo:") + 24
+    )
 
 
 def _clean(text: str) -> str:
@@ -107,6 +148,8 @@ class PlamoTranslator:
         self.memory_lines = max(0, cfg.memory_lines)
         self._last_recheck_at = float("-inf")
         self.vod_title = " ".join(vod_title.split())[:200]
+        log.info("PLaMo PFML3 context: %d previous pairs; title=%s; slot=%d tokens",
+                 cfg.context_lines, cfg.context_title_enabled, cfg.plamo_context)
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.url = self.base_url + "/completions"
         self.process: subprocess.Popen | None = None
@@ -216,10 +259,39 @@ class PlamoTranslator:
             time.sleep(0.5)
         raise TimeoutError("PLaMo translator warm-up timed out; see logs/plamo8b-server.log")
 
-    def _complete(self, japanese: str, *, timeout: float) -> str:
+    def _complete(
+        self,
+        japanese: str,
+        *,
+        timeout: float,
+        history: list[tuple[str, str]] | None = None,
+    ) -> str:
+        # Hold the llama.cpp 1024-token slot and existing GPU offload constant.
+        # Prefer dropping oldest dialogue before ever trimming source Japanese.
+        limit = max(0, min(int(self.cfg.context_lines), 4))
+        previous = list(history or [])[-limit:] if limit else []
+        matched = self.glossary.find(japanese)
+        title = self.vod_title if self.cfg.context_title_enabled else ""
+        budget = max(256, self.cfg.plamo_context - self.cfg.max_tokens - 96)
+        prompt = ""
+        for keep in range(len(previous), -1, -1):
+            pairs = previous[-keep:] if keep else []
+            candidate = build_plamo_prompt(
+                japanese, matched, history=pairs, context=title,
+            )
+            if _estimate_prompt_tokens(candidate) <= budget:
+                prompt = candidate
+                if keep < len(previous):
+                    log.debug("PLaMo context trimmed to %d/%d pairs", keep, len(previous))
+                break
+        if not prompt:
+            # If title plus current JA still does not fit, drop the title.
+            # Extremely long source lines are left intact for llama.cpp
+            # to reject rather than silently truncating spoken meaning.
+            prompt = build_plamo_prompt(japanese, matched)
         payload = {
             "model": self.cfg.plamo_model,
-            "prompt": build_plamo_prompt(japanese, self.glossary.find(japanese)),
+            "prompt": prompt,
             "temperature": 0,
             "max_tokens": self.cfg.max_tokens,
             "stop": _STOP,
@@ -243,7 +315,10 @@ class PlamoTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 return reused
-        english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
+        previous = list(history)[-max(0, min(int(self.cfg.context_lines), 4)):] if self.cfg.context_lines else []
+        english = _clean(self._complete(
+            ja, timeout=self.cfg.timeout_s, history=previous,
+        ))
         # PFML3 does not support a free-form system instruction. Keep its
         # official completion format and retry only an invalid completion.
         if (_invalid_output(ja, english)
@@ -252,7 +327,8 @@ class PlamoTranslator:
             self._last_recheck_at = time.monotonic()
             try:
                 retry = _clean(self._complete(
-                    ja, timeout=min(self.cfg.timeout_s, self.cfg.quality_recheck_timeout_s)
+                    ja, timeout=min(self.cfg.timeout_s, self.cfg.quality_recheck_timeout_s),
+                    history=previous,
                 ))
                 if not _invalid_output(ja, retry):
                     english = retry

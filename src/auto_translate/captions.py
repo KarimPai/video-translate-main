@@ -1,6 +1,7 @@
 """Japanese YouTube caption download, parsing and timestamp matching."""
 
 import html
+import json
 import logging
 import os
 import re
@@ -95,15 +96,89 @@ class CaptionIndex:
                     and re.search(r"<(?:\d+:)?\d{2}:\d{2}[.,]\d{3}>", " ".join(payload[1:]))
                     and _clean_caption(payload[:1]) == cues[-1].text):
                 payload = payload[1:]
+            # YouTube's rolling VTT may use an earlier parent cue start for
+            # text that first appears at an inline timestamp. Prefer that
+            # explicit timestamp when the carried-over line was removed.
+            inline_times = [
+                _seconds(value)
+                for line in payload
+                for value in re.findall(
+                    r"<((?:(?:\\d+):)?\\d{2}:\\d{2}[.,]\\d{3})>", line
+                )
+            ]
+            valid_inline = [value for value in inline_times if value is not None]
+            if valid_inline and start <= min(valid_inline) < end:
+                start = max(start, min(valid_inline))
             text = _clean_caption(payload)
-            if not text:
+            if not text or end <= start:
                 continue
             cues.append(CaptionCue(start, end, text))
         return cls(cues)
 
     @classmethod
+    def from_json3(cls, content: str) -> "CaptionIndex":
+        """Read YouTube JSON3 events on the original media timeline.
+
+        JSON3 preserves original event millisecond timestamps and segmented
+        text. Join each event's pieces without inserting Japanese spaces;
+        sentence reconstruction then occurs over the full downloaded track.
+        Blank rolling/clear events are not speech.
+        """
+        document = json.loads(content)
+        events = document.get("events", [])
+        if not isinstance(events, list):
+            raise ValueError("JSON3 subtitle events must be a list")
+        cues: list[CaptionCue] = []
+        for event_index, event in enumerate(events):
+            if not isinstance(event, dict) or not isinstance(event.get("segs"), list):
+                continue
+            try:
+                start_ms = float(event["tStartMs"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if start_ms < 0:
+                continue
+            segments = [part for part in event["segs"] if isinstance(part, dict)]
+            text = _clean_caption([
+                "".join(str(part.get("utf8") or "") for part in segments)
+            ])
+            if not text:
+                continue
+            offsets = [
+                max(0.0, float(part.get("tOffsetMs", 0)))
+                for part in segments
+                if str(part.get("utf8") or "").strip()
+                and isinstance(part.get("tOffsetMs", 0), (int, float))
+            ]
+            # A caption can begin with an empty placeholder event segment.
+            # Use the first audible text onset, not the placeholder timestamp.
+            onset_ms = start_ms + (min(offsets) if offsets else 0.0)
+            duration_ms = event.get("dDurationMs")
+            try:
+                duration_ms = float(duration_ms)
+            except (ValueError, TypeError):
+                duration_ms = 0.0
+            end_ms = start_ms + max(0.0, duration_ms)
+            if end_ms <= onset_ms:
+                next_start = next(
+                    (
+                        float(item["tStartMs"])
+                        for item in events[event_index + 1:]
+                        if isinstance(item, dict)
+                        and isinstance(item.get("tStartMs"), (int, float))
+                        and item["tStartMs"] > onset_ms
+                    ),
+                    onset_ms + 2000.0,
+                )
+                end_ms = min(next_start, onset_ms + 4000.0)
+            if end_ms > onset_ms:
+                cues.append(CaptionCue(onset_ms / 1000.0, end_ms / 1000.0, text))
+        return cls(cues)
+
+    @classmethod
     def from_file(cls, path: Path) -> "CaptionIndex":
-        return cls.from_vtt(path.read_text(encoding="utf-8-sig"))
+        content = path.read_text(encoding="utf-8-sig")
+        return cls.from_json3(content) if path.suffix.lower() == ".json3" else cls.from_vtt(content)
 
     def match(
         self,
@@ -182,22 +257,27 @@ def download_vod_captions(
     url: str,
     cfg: IngestConfig,
 ) -> CaptionIndex | None:
-    """Download/cache Japanese auto-captions; never raises for unavailable captions."""
+    """Download the whole Japanese track; prefer JSON3, fall back to VTT.
+
+    Original VTT cached by older branches remains usable, but an available
+    JSON3 track is preferred to retain structured caption event timings.
+    """
     cache_dir = _caption_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = cache_dir / f"{video_id}.ja.vtt"
+    json3_cache = cache_dir / f"{video_id}.ja.json3"
+    vtt_cache = cache_dir / f"{video_id}.ja.vtt"
 
-    if cached.is_file():
+    if json3_cache.is_file():
         try:
-            index = CaptionIndex.from_file(cached)
+            index = CaptionIndex.from_file(json3_cache)
             if index.cues:
                 log.info(
-                    "Japanese YouTube captions loaded from cache (%d cues)",
+                    "Japanese JSON3 captions loaded from cache (%d cues)",
                     len(index.cues),
                 )
                 return index
-        except (OSError, UnicodeError):
-            log.warning("could not read cached captions: %s", cached)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            log.warning("corrupt cached JSON3: %s; re-downloading", json3_cache)
 
     command = [
         "yt-dlp",
@@ -207,13 +287,14 @@ def download_vod_captions(
         "--write-auto-subs",
         "--write-subs",
         "--sub-langs", "ja.*,ja",
-        "--sub-format", "vtt/best",
-        "--output", str(cache_dir / f"{video_id}.%(ext)s"),
+        "--sub-format", "json3/vtt/best",
+        "--output", "",  # replaced by temp output path
     ]
     if cfg.cookies_from_browser:
         command += ["--cookies-from-browser", cfg.cookies_from_browser]
     command.append(url)
 
+    selected: Path | None = None
     try:
         with tempfile.TemporaryDirectory(
             prefix=f"captions-{video_id}-",
@@ -231,40 +312,52 @@ def download_vod_captions(
                 timeout=90,
                 check=False,
             )
-            candidates = sorted(Path(temp_dir).glob("*.vtt"))
-            if result.returncode != 0 and not candidates:
+            candidates = list(Path(temp_dir).glob("*.json3"))
+            candidates += list(Path(temp_dir).glob("*.vtt"))
+            if candidates:
+                # Prefer structured JSON3 and an exact ja track over regional
+                # variants. Only files belonging to the requested video ID.
+                candidates = [
+                    p for p in candidates if p.name.startswith(video_id + ".")
+                ]
+                candidates.sort(key=lambda p: (
+                    0 if p.suffix.lower() == ".json3" else 1,
+                    0 if ".ja." in p.name else 1,
+                    p.name,
+                ))
+            for candidate in candidates:
+                try:
+                    potential = CaptionIndex.from_file(candidate)
+                    if potential.cues:
+                        selected = json3_cache if candidate.suffix == ".json3" else vtt_cache
+                        shutil.copy2(candidate, selected)
+                        index = potential
+                        break
+                except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+                    log.warning("Invalid downloaded subtitle candidate: %s", candidate.name)
+            if selected is None:
                 detail = (result.stderr or result.stdout).strip().splitlines()
                 log.info(
-                    "Japanese YouTube captions unavailable: %s",
+                    "No usable Japanese captions downloaded: %s",
                     detail[-1] if detail else f"yt-dlp exit code {result.returncode}",
                 )
-                return None
-            if not candidates:
-                log.info("this VOD has no downloadable Japanese auto-captions")
-                return None
-
-            # Prefer the Japanese track, but accept a Japanese regional variant.
-            candidates.sort(
-                key=lambda path: (
-                    0 if ".ja." in path.name else 1,
-                    path.name,
-                )
-            )
-            shutil.copy2(candidates[0], cached)
-
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("Japanese caption download failed; no caption-only fallback available: %s", exc)
-        return None
+        log.warning("Japanese captions download failed: %s", exc)
 
-    try:
-        index = CaptionIndex.from_file(cached)
-    except (OSError, UnicodeError) as exc:
-        log.warning("could not parse downloaded captions; no caption-only fallback available: %s", exc)
+    if selected is None:
+        # JSON3 unavailable or yt-dlp temporary failure: older cached VTT
+        # is still better than losing all captions for an archived VOD.
+        if vtt_cache.is_file():
+            try:
+                index = CaptionIndex.from_file(vtt_cache)
+                if index.cues:
+                    log.info("Falling back to cached Japanese VTT (%d cues)", len(index.cues))
+                    return index
+            except (OSError, UnicodeError, ValueError):
+                log.warning("Cached VTT is unreadable: %s", vtt_cache)
         return None
-
-    if not index.cues:
-        log.info("downloaded Japanese caption file contained no usable cues")
-        return None
-
-    log.info("Japanese YouTube captions ready (%d cues)", len(index.cues))
+    log.info(
+        "Japanese YouTube %s captions ready (%d cues, entire track)",
+        selected.suffix.lstrip(".").upper(), len(index.cues),
+    )
     return index

@@ -13,7 +13,9 @@ YouTube live/VOD or local file -> FFmpeg 16 kHz mono PCM -> FireRedVAD CUDA
 The seek cache, native MPV playback, 3-line subtitle stacking and 10-second
 live delay are retained. GTCRN denoising (CPU) and Sherpa speaker-turn
 segmentation (CPU) are ENABLED by default for this experiment; both can
-be disabled independently. No separate translation model or default keyword bias.
+be disabled independently. No separate translation model. A short, metadata-selected Hololive name hint
+and conservative concise-English formatting are enabled by default. Global
+member-list prompting is deliberately not used.
 
 ## Recommended defaults (RTX 3070 8 GB)
 
@@ -156,6 +158,12 @@ Additional optional [whisper] settings:
     text_context_chars = 120
     text_context_max_gap_s = 5.0
     hotwords = []
+    hololive_names_enabled = true
+    hololive_name_limit = 6
+    concise_english = true
+    style_prompt = "Short, plain English subtitles. No added commentary."
+    remove_fillers = true
+    collapse_repetitions = true
     diagnostics = false
 
 Audio overlap is used only on suspicious or generic-outro retries, not every
@@ -205,3 +213,62 @@ and do not measure the RTX 3070's true throughput. A second inference and
 beam size 6 can increase latency; use logs/run.log to compare before/after.
 Model confidence and exact string overlap are heuristics, not proofs that
 an English translation is correct.
+
+
+## Hololive names and concise-English subtitles
+
+The built-in official Hololive roster includes 81 talents, with Japanese
+spellings, English names, alumni, and newer generations. Reference:
+https://hololive.hololivepro.com/en/talents
+
+On YouTube VOD and live links, the launcher already retrieves a title and
+channel through yt-dlp. The project selects up to six relevant Hololive names
+using that metadata and sends only those names as optional Whisper hotwords.
+It does NOT force the entire roster into every model call; on an unrelated
+video, the automatic list is empty. No YouTube captions are downloaded.
+
+For a collaboration where names are absent from the video's title, use a
+local config.toml file to supply only the names you expect to hear:
+
+    [whisper]
+    hotwords = ["Watame", "Okayu", "Botan", "Towa"]
+    hololive_names_enabled = true
+    hololive_name_limit = 6
+
+User-supplied hotwords have priority over auto-selected names. Check selected
+automatic hints in logs/run.log:
+
+    findstr /i /c:"Hololive name hints:" logs\run.log
+
+Whisper is not an instruction-following LLM. The concise style prompt is only
+a weak text-decoder hint and may be ignored or occasionally echoed. The
+separate deterministic text filter removes leading "um", "uh", "well",
+annotation-only laughter, and 3+ repeated small interjections. It preserves
+negations, profanity, names, and normal meaningful words. It never
+summarizes, embellishes, or uses a second model. It cannot reliably shorten
+a long but genuinely spoken sentence.
+
+Switch both features off for comparison, without changing your audio model:
+
+    [whisper]
+    hololive_names_enabled = false
+    concise_english = false
+
+To disable only text cleanup but still provide the style hint:
+
+    [whisper]
+    concise_english = true
+    remove_fillers = false
+    collapse_repetitions = false
+
+A common misrecognition such as "Watanabe" for "Watame" is not blindly
+rewritten; Watanabe can be a real surname. The glossary biases the decoder
+only if there is evidence the name is relevant to the video.
+
+Test without GPU:
+
+    uv run --no-sync python -m unittest tests.test_hololive_style -v
+
+Or run the complete test suite:
+
+    uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -q

@@ -78,6 +78,13 @@ class RetryScoringTests(unittest.TestCase):
         self.assertEqual(result, "バーガーキング食べた")
         self.assertEqual(len(asr.calls), 1)
 
+    def test_known_homophone_does_not_justify_unrelated_candidate(self):
+        winner = select_best(
+            ["防号キングを食べた", "今日は晴れ"],
+            duration_s=2.0,
+        )
+        self.assertEqual(winner.attempt, 1)
+
     def test_reliable_caption_fallback_avoids_empty_asr_retry(self):
         asr = FakeHaas([], keywords="Burger King")
         audio = np.zeros(40000, dtype=np.float32)

@@ -7,8 +7,13 @@
 ## What is enabled
 
 - Archived YouTube **VOD** with Japanese manual subtitles or auto-captions.
-- Text-only caption preparation (deduplicate YouTube rolling text, remove
-  sound-effect labels, conservatively join incomplete phrase fragments).
+  **The complete Japanese subtitle file is downloaded before MPV starts.**
+  The downloader now prefers structured **JSON3**, caching the original
+  event timestamps, with VTT fallback when JSON3 is not provided.
+- Full-track Japanese caption reconstruction: collapse verified rolling
+  duplicates, retain real repeated speech, remove sound-effect labels,
+  join strongly evidenced split endings (e.g. 美味しかっ + た and わかん + ない),
+  and preserve the earliest reliable cue onset while merging.
 - Local PLaMo 3 Translate **8B Q3_K_M** with the model's official PFML3
   `context`, previous Japanese/English `input`/`output` pairs, and
   matching Hololive glossary terms. The current caption is always last.
@@ -53,7 +58,13 @@ translation diagnostics go to `logs/run.log`; MPV errors go to
   This mode does **not** silently switch to ASR.
 - Videos without accessible Japanese caption tracks fail with a message.
   Captioned speech omitted by YouTube cannot be recovered.
-- Timestamps and manual/auto caption accuracy depend on YouTube.
+- Timing and transcription quality still depend on YouTube; reconstruction
+  cannot recover speech missing from captions or guarantee word-level alignment.
+- Caption display timing remains unmodified by default. For consistently
+  late original Japanese captions, compare against the video's audio and
+  optionally set `[mpv] caption_advance_s = 0.5` in local `config.toml`
+  (seconds; range 0–3). This changes **display lookup only**, not original
+  cue times, seeking, or translation text. Do not use it to hide model backlog.
 - PLaMo is a specialized translation model, not an instruction-chat model.
   Its documented PFML3 syntax supports previous translation pairs and a
   structured context element without arbitrary system prompts.
@@ -72,7 +83,7 @@ translation diagnostics go to `logs/run.log`; MPV errors go to
 ## Tests
 
 ```powershell
-uv run --with pytest python -m pytest -q tests/test_caption_only.py tests/test_captions.py tests/test_plamo_translate.py tests/test_translation_config.py
+uv run --with pytest python -m pytest -q tests/test_caption_formats.py tests/test_caption_only.py tests/test_plamo_translate.py tests/test_translation_config.py
 ```
 
 ---

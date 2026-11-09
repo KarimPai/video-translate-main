@@ -1,4 +1,4 @@
-"""Japanese YouTube auto-caption download, parsing and timestamp matching."""
+"""Japanese YouTube captions (manual or auto), parsing and alignment."""
 
 import html
 import logging
@@ -255,7 +255,7 @@ def download_vod_captions(
     url: str,
     cfg: IngestConfig,
 ) -> CaptionIndex | None:
-    """Download/cache Japanese auto-captions; never raises for unavailable captions."""
+    """Download/cache Japanese captions; never raises for unavailable captions."""
     cache_dir = _caption_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{video_id}.ja.vtt"
@@ -277,7 +277,8 @@ def download_vod_captions(
         "--no-warnings",
         "--no-call-home",
         "--skip-download",
-        "--write-auto-subs",
+        "--write-subs",  # use creator-provided Japanese captions when available
+        "--write-auto-subs",  # otherwise use Japanese auto-captions
         "--sub-langs", "ja.*,ja",
         "--sub-format", "vtt/best",
         "--output", str(cache_dir / f"{video_id}.%(ext)s"),
@@ -312,7 +313,7 @@ def download_vod_captions(
                 )
                 return None
             if not candidates:
-                log.info("this VOD has no downloadable Japanese auto-captions")
+                log.info("this VOD has no downloadable Japanese captions")
                 return None
 
             # Prefer the Japanese track, but accept a Japanese regional variant.
@@ -325,13 +326,13 @@ def download_vod_captions(
             shutil.copy2(candidates[0], cached)
 
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("Japanese caption download failed; continuing with Qwen ASR: %s", exc)
+        log.warning("Japanese caption download failed; continuing with Haas ASR: %s", exc)
         return None
 
     try:
         index = CaptionIndex.from_file(cached)
     except (OSError, UnicodeError) as exc:
-        log.warning("could not parse downloaded captions; continuing with Qwen ASR: %s", exc)
+        log.warning("could not parse downloaded captions; continuing with Haas ASR: %s", exc)
         return None
 
     if not index.cues:

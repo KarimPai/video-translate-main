@@ -1,4 +1,4 @@
-"""Streaming CPU GTCRN enhancement before FireRedVAD and Haas ASR.
+"""Streaming CPU GTCRN enhancement before FireRedVAD and Granite Speech 5.
 
 Input and output use 16 kHz mono PCM. MPV continues playing original audio.
 Each ingest/seek generation owns a fresh denoiser and bounded, cancellable queue.

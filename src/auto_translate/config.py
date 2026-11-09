@@ -71,6 +71,7 @@ class AsrConfig:
     haas_keywords_alpha: float = 1.5
     haas_keywords_guard: bool = True
     response_timeout_s: float = 30.0
+    youtube_captions_first: bool = True  # VOD only; Haas verifies/fills missing captions
     retry_uncertain_enabled: bool = True
     retry_max_audio_s: float = 8.0
     retry_max_passes: int = 3  # includes the initial Haas decode

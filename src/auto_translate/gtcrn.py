@@ -207,6 +207,17 @@ class GtcrnWorker:
                 if pcm is None:
                     break
                 if isinstance(pcm, str) and pcm == "progress":
+                    # Publish completed PCM before its progress marker. GTCRN
+                    # may still hold a partial input frame; never claim audio
+                    # timestamps that its streaming decoder has not produced.
+                    if len(enhanced):
+                        if not self._deliver(AudioChunk(
+                            self.first_sample, enhanced.copy(), time.monotonic(),
+                            generation=self.generation,
+                        )):
+                            break
+                        self.first_sample += len(enhanced)
+                        enhanced = np.empty(0, dtype=np.float32)
                     if not self._deliver(AudioProgress(
                         self.first_sample, generation=self.generation,
                     )):

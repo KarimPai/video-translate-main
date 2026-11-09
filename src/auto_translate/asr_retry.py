@@ -199,7 +199,9 @@ def choose_hypothesis(
     for variant_audio, keywords, description in variants[:limit - 1]:
         if cancelled is not None and cancelled():
             break  # seek or new stream generation: no extra ASR work
-        remaining = retry_deadline - time.monotonic()
+        # Clamp floating-point deadline arithmetic: when monotonic() is
+        # large, subtraction can round a tiny amount above the budget.
+        remaining = min(budget, retry_deadline - time.monotonic())
         if remaining < 0.08:
             break
         try:

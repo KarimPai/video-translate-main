@@ -24,8 +24,11 @@ _JP_NUM = re.compile(
     r"(?:[0-9０-９][0-9０-９,，]*|[〇零一二三四五六七八九十百千万億]{2,})"
     r"(?![0-9０-９〇零一二三四五六七八九十百千万億])"
 )
+# A period/colon followed by a digit belongs to a decimal or time.
+# A terminal period/colon is punctuation and must NOT hide the number.
+# Guard both sides so 8:28 and 3.14 are never mistaken for standalone IDs.
 _EN_NUM = re.compile(
-    r"(?<![\w.:])(?:\d{1,3}(?:,\d{3})+|\d+)(?![\w.:])"
+    r"(?<![\w.:])(?:\d{1,3}(?:,\d{3})+|\d+)(?!\w|[.:]\d)"
 )
 _NAME_ALIASES = (
     ("マリン", "Marine", re.compile(r"\bMarin\b", re.IGNORECASE)),

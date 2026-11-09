@@ -70,6 +70,34 @@ class TranslationIntegrityTests(unittest.TestCase):
             "Try eight hundred.",
         )
 
+    def test_sentence_ending_punctuation_keeps_number_visible(self):
+        self.assertEqual(
+            enforce_numeric_fidelity("八千二十八", "Marine goes to 828."),
+            "Marine goes to 8028.",
+        )
+        self.assertEqual(
+            enforce_numeric_fidelity("八千二十八", "Go to 828!"),
+            "Go to 8028!",
+        )
+        self.assertEqual(
+            enforce_numeric_fidelity("八千二十八", "Try (828)."),
+            "Try (8028).",
+        )
+
+    def test_time_and_decimal_not_treated_as_standalone_numbers(self):
+        self.assertEqual(
+            enforce_numeric_fidelity("八千二十八", "Try 8:28."),
+            "Try 8:28.",
+        )
+        self.assertEqual(
+            enforce_numeric_fidelity("八千二十八", "Try 3.14."),
+            "Try 3.14.",
+        )
+        self.assertEqual(
+            enforce_numeric_fidelity("八千二十八", "The time is 8:28, not 828."),
+            "The time is 8:28, not 8028.",
+        )
+
     def test_two_japanese_number_occurrences(self):
         self.assertEqual(
             enforce_numeric_fidelity(

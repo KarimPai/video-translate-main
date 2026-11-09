@@ -146,3 +146,20 @@ def test_hololive_and_burger_king_caption_variants_use_full_names():
     assert ("ナキリあめ", "Nakiri Ayame") in glossary.find("ナキリあめかな")
     assert ("バーグキング", "Burger King") in glossary.find("バーグキング食べた")
     assert ("バーガーキング", "Burger King") in glossary.find("バーガーキング")
+
+
+
+def test_vtt_inline_timestamp_inside_word_sequence_preserves_early_speech():
+    vtt = """WEBVTT
+
+00:00:01.000 --> 00:00:02.000
+おはよう
+
+00:00:01.900 --> 00:00:04.000
+おはよう
+一緒に<00:00:03.000>遊びましょう
+"""
+    index = CaptionIndex.from_vtt(vtt)
+    assert len(index.cues) == 2
+    assert index.cues[1].text == "一緒に遊びましょう"
+    assert abs(index.cues[1].start_s - 1.9) < 0.001

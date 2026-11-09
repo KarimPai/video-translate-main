@@ -49,6 +49,22 @@ class GraniteWireTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _clean_result({"error": "unsupported model"})
 
+    def test_http_uses_ibm_audio_transcription_endpoint(self):
+        from auto_translate.granite import GraniteSpeech5
+
+        model = object.__new__(GraniteSpeech5)
+        model.cfg = GraniteConfig()
+        model.base_url = "http://127.0.0.1:9797"
+        answer = io.BytesIO(b'{"text":"The police are coming!"}')
+        with patch("auto_translate.granite.urllib.request.urlopen", return_value=answer) as request:
+            english = model.translate_audio(np.ones(16000, dtype=np.float32) * 0.1)
+        self.assertEqual(english, "The police are coming!")
+        submitted = request.call_args.args[0]
+        self.assertEqual(submitted.get_method(), "POST")
+        self.assertTrue(submitted.full_url.endswith("/v1/audio/transcriptions"))
+        self.assertIn(b"speech.wav", submitted.data)
+        self.assertIn(b"translate the speech to English", submitted.data)
+
     def test_model_is_direct_ast_not_japanese_asr(self):
         cfg = GraniteConfig()
         self.assertEqual(cfg.model_id, "ibm-granite/granite-speech-5.0-2b-GGUF:Q8_0")

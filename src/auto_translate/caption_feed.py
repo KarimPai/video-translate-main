@@ -84,10 +84,14 @@ def _can_join(first: CaptionCue, following: CaptionCue, gap_s: float) -> bool:
     if _END_PUNCT.search(first.text):
         return False
     if _clipped_ending(first.text, following.text):
+        # A JSON3 event commonly covers several seconds of rolling text.
+        # The full-file transcript lets us join a strongly evidenced ending
+        # even when adjacent event starts are >4s apart. Never join across
+        # a long pause, unrelated cue, or finished sentence.
         return (
-            onset_gap <= 4.0
-            and display_gap <= 1.25
-            and following.end_s - first.start_s <= 12.0
+            onset_gap <= 5.5
+            and display_gap <= 2.5
+            and following.end_s - first.start_s <= 17.0
         )
     if following.end_s - first.start_s > 8.0:
         return False

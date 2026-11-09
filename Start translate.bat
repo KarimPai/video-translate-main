@@ -39,8 +39,11 @@ if defined PYTHONPATH (
 )
 rem GTCRN and CPU speaker segmentation share sherpa-onnx. Streaming GTCRN
 rem requires newer sherpa-onnx (OnlineSpeechDenoiser); upgrade old installs once.
+set "NEED_SYNC=0"
+if not exist "uv.lock" set "NEED_SYNC=1"
 uv run --no-sync python -c "import sherpa_onnx; assert hasattr(sherpa_onnx, 'OnlineSpeechDenoiser') and hasattr(sherpa_onnx, 'OnlineSpeechDenoiserConfig')" >nul 2>nul
-if errorlevel 1 (
+if errorlevel 1 set "NEED_SYNC=1"
+if "%NEED_SYNC%"=="1" (
     echo Installing GTCRN and CPU speaker runtime...
     uv sync --extra diarization
     if errorlevel 1 (

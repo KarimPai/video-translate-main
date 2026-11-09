@@ -7,6 +7,18 @@
 [terms]
 # Hololive / general
 "ホロライブ" = "Hololive"
+# Conservative names and gaming terms observed in Hololive streams.
+"ぼたんちゃん" = "Botan-chan"
+"ボタンちゃん" = "Botan-chan"
+"おかゆちゃん" = "Okayu-chan"
+"おかゆ先輩" = "Okayu-senpai"
+"おかゆ" = "Okayu"
+"バーガーキング" = "Burger King"
+"アジト" = "hideout"
+"弾買ったり" = "buying ammo"
+"うーす" = "Hey!"
+"オイース" = "Hey!"
+
 "ホロメン" = "Hololive member"
 # "期生" is a VTuber generation/cohort, not a school year.
 "二期生" = "second-generation members"

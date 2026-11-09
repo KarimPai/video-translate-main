@@ -33,7 +33,12 @@ from .types import Subtitle, Timings
 log = logging.getLogger(__name__)
 
 PREFETCH_SECONDS = 35.0
-START_LEAD_SECONDS = 5.0
+# The first seconds of a VOD need a larger head start, as model warm-up
+# and short early cues can outpace translation even after the first 5s.
+START_LEAD_SECONDS = 12.0
+SEEK_LEAD_SECONDS = 5.0
+EARLY_GUARD_SECONDS = 25.0
+EARLY_GUARD_LOOKAHEAD_SECONDS = 3.0
 TICK_SECONDS = 0.12
 
 
@@ -221,15 +226,25 @@ class CaptionOnlyPlayer:
             self._target = position_s
             self._condition.notify_all()
 
-    def _lead_ready(self, position_s: float) -> bool:
+    def _lead_ready(
+        self, position_s: float, lead_s: float = START_LEAD_SECONDS
+    ) -> bool:
+        """All captions that can appear in the requested interval must finish.
+
+        A cue already in progress at the seek point counts, even when its
+        start time precedes the window. Empty/sound cues are already removed.
+        """
         with self._condition:
             horizon = min(
-                position_s + START_LEAD_SECONDS,
-                self.source.duration or float("inf"),
+                position_s + lead_s,
+                self.source.duration if self.source.duration is not None
+                else float("inf"),
             )
             return all(
                 i in self._completed
-                for i in near_cues(self.cues, position_s, START_LEAD_SECONDS, starts=self._starts)
+                for i in near_cues(
+                    self.cues, position_s, lead_s, starts=self._starts
+                )
                 if self.cues[i].start_s < horizon
             )
 
@@ -273,8 +288,11 @@ class CaptionOnlyPlayer:
         """Block until MPV closes. Translation is driven by its real time-pos."""
         buffering = True
         resume_after_buffer = True
+        lead_s = START_LEAD_SECONDS
+        guard_until = self.source.start_s + EARLY_GUARD_SECONDS
         last_pos: float | None = None
         last_at = time.monotonic()
+        had_clock = False
         try:
             self._load_player()
             assert self._ipc is not None and self._proc is not None
@@ -284,14 +302,26 @@ class CaptionOnlyPlayer:
                 daemon=True,
             )
             self._worker.start()
-            log.info("Preparing %.0fs caption translation lead", START_LEAD_SECONDS)
+            log.info(
+                "Preparing %.0fs initial caption lead before first playback",
+                lead_s,
+            )
 
             while self._proc.poll() is None and not self._stop.is_set():
                 self._handle_keys()
                 reported = self._ipc.get("time-pos")
-                position = float(reported) if reported is not None else self.source.start_s
-                position = max(0.0, position)
                 paused = self._ipc.get("pause")
+                if reported is None:
+                    # MPV can report file-loaded before it exposes a real media
+                    # position. Never treat the fallback source start as proof
+                    # that the first subtitle has a valid playback clock.
+                    time.sleep(TICK_SECONDS)
+                    continue
+                position = max(0.0, float(reported))
+                if not had_clock:
+                    had_clock = True
+                    log.info("First MPV VOD clock: %.3fs", position)
+                    self._shown = ""  # force an overlay update after load
                 now = time.monotonic()
                 if last_pos is not None and not buffering:
                     expected = last_pos + (0.0 if paused else now - last_at)
@@ -300,19 +330,51 @@ class CaptionOnlyPlayer:
                         # Prior caption translations remain reusable by timestamp.
                         resume_after_buffer = paused is False
                         buffering = True
-                        log.info("MPV seek detected at %.2fs; prioritizing local captions", position)
+                        lead_s = SEEK_LEAD_SECONDS
+                        guard_until = position + EARLY_GUARD_SECONDS
+                        log.info(
+                            "MPV seek detected at %.2fs; buffering %.0fs of captions",
+                            position, lead_s,
+                        )
                         self._ipc.command("set_property", "pause", True)
                 last_pos, last_at = position, now
                 self._set_target(position)
-                if buffering and self._lead_ready(position):
+
+                # Avoid the opening subtitles being printed in CMD after the
+                # MPV clock has already gone past their display interval.
+                # This short guard is only active immediately after starting
+                # or seeking; normal playback remains uninterrupted afterward.
+                if (not buffering and paused is False
+                        and position < guard_until
+                        and not self._lead_ready(
+                            position, EARLY_GUARD_LOOKAHEAD_SECONDS
+                        )):
+                    buffering = True
+                    lead_s = SEEK_LEAD_SECONDS
+                    resume_after_buffer = True
+                    self._ipc.command("set_property", "pause", True)
+                    log.info(
+                        "Caption early-playback catch-up at %.2fs; "
+                        "waiting for next subtitle", position,
+                    )
+
+                # Render first, then release MPV. This ensures any caption
+                # active at time zero is sent before its first video frame.
+                self._render(position)
+                if buffering and self._lead_ready(position, lead_s):
                     buffering = False
                     if resume_after_buffer:
                         self._ipc.command("set_property", "pause", False)
-                    log.info("Captions ready near %.2fs; playback enabled", position)
+                        # A frame may be reconfigured immediately on unpause;
+                        # push the overlay again on the next scheduler tick.
+                        self._shown = ""
+                    log.info(
+                        "Caption lead ready at %.2fs (+%.0fs); playback enabled",
+                        position, lead_s,
+                    )
                 elif buffering and paused is False:
                     # Do not start ahead of untranslated nearby captions.
                     self._ipc.command("set_property", "pause", True)
-                self._render(position)
                 time.sleep(TICK_SECONDS)
 
             if self._error is not None:

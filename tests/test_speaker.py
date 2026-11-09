@@ -172,6 +172,9 @@ class SpeakerTurnTests(unittest.TestCase):
             [Turn(0.0, 4.0, None)],
         )
 
+    def test_speaker_model_is_disabled_by_default(self):
+        self.assertFalse(SpeakerConfig().enabled)
+
     def test_speaker_boundary_settings_have_conservative_defaults(self):
         cfg = SpeakerConfig()
         self.assertEqual(cfg.boundary_search_ms, 180)

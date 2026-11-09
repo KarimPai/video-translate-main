@@ -19,16 +19,18 @@ class SeparationConfig:
 
 
 @dataclass
-class DeepFilterConfig:
-    """Real-time speech enhancement using DeepFilterNet3."""
+class GtcrnConfig:
+    """Real-time 16 kHz GTCRN speech enhancement on CPU via sherpa-onnx."""
 
     enabled: bool = True
+    num_threads: int = 1
+    model_path: str = ""  # empty means cached official gtcrn_simple.onnx
 
 
 @dataclass
 class VadConfig:
-    threshold: float = 0.35
-    neg_threshold: float = 0.25
+    threshold: float = 0.30
+    neg_threshold: float = 0.20
     min_silence_ms: int = 400
     speech_pad_ms: int = 200
     min_speech_ms: int = 100
@@ -39,7 +41,7 @@ class VadConfig:
     split_context_ms: int = 120  # retain boundary audio, without duplication
     fallback_s: float = 5.0
     fallback_min_s: float = 1.5
-    fallback_min_db: float = -45.0
+    fallback_min_db: float = -50.0
 
 
 @dataclass
@@ -134,7 +136,7 @@ class MpvConfig:
 class Config:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
-    deepfilter: DeepFilterConfig = field(default_factory=DeepFilterConfig)
+    gtcrn: GtcrnConfig = field(default_factory=GtcrnConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
@@ -192,7 +194,7 @@ def load_config(path: Path) -> Config:
     return Config(
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
-        deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
+        gtcrn=GtcrnConfig(**data.get("gtcrn", {})),
         vad=VadConfig(**data.get("vad", {})),
         speaker=SpeakerConfig(**speaker_data),
         asr=AsrConfig(**asr_data),

@@ -111,6 +111,30 @@ class ContextualizerTests(unittest.TestCase):
         self.assertIsInstance(rows[0], Transcript)
         self.assertIsInstance(rows[1], AudioProgress)
 
+    def test_pending_cue_limits_mpv_translation_progress(self):
+        rows = self.process(
+            Transcript(1, 1.5, "待って"),
+            AudioProgress(2 * SAMPLE_RATE),
+        )
+        self.assertIsInstance(rows[0], AudioProgress)
+        self.assertEqual(rows[0].sample, SAMPLE_RATE)
+        self.assertIsInstance(rows[1], Transcript)
+
+    def test_old_food_topic_does_not_rewrite_unrelated_scene(self):
+        rows = self.process(
+            Transcript(0, 0.5, "ハンバーガー食べた"),
+            Transcript(21, 21.6, "あの防号キング倒れた"),
+        )
+        self.assertEqual(rows[1].ja, "あの防号キング倒れた")
+
+    def test_small_vad_overlap_can_still_join_explicit_continuation(self):
+        first = Transcript(1, 1.6, "でちょっと", speech_start_s=1.1)
+        second = Transcript(1.5, 2.3, "車を修理して")
+        self.assertTrue(should_join_fragments(first, second))
+        rows = self.process(first, second)
+        self.assertEqual(rows[0].speech_start_s, 1.1)
+        self.assertEqual(rows[0].end_s, 2.3)
+
     def test_cached_subtitle_is_not_translated_or_merged(self):
         cached = Subtitle(1, 1.5, "こんにちは", "Hello.")
         rows = self.process(cached)

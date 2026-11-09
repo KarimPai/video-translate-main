@@ -66,6 +66,11 @@ class CaptionOnlyPlayer:
             captions, join_gap_s=cfg.translate.fragment_join_gap_s
         )
         self._starts = [cue.start_s for cue in self.cues]
+        print(
+            f"Caption reconstruction: {len(captions.cues)} raw -> "
+            f"{len(self.cues)} translated units",
+            flush=True,
+        )
         if not self.cues:
             raise RuntimeError(
                 "No usable Japanese captions were found. Captions-only mode "

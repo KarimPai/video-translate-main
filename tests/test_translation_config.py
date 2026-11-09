@@ -18,7 +18,8 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.plamo_context, 1024)
         self.assertEqual(cfg.plamo_gpu_layers, 99)
         self.assertEqual(cfg.max_tokens, 128)
-        self.assertEqual(cfg.context_lines, 0)
+        self.assertEqual(cfg.context_lines, 2)
+        self.assertTrue(cfg.context_title_enabled)
         self.assertEqual(cfg.memory_lines, 12)
         self.assertEqual(cfg.glossary, "glossary.toml")
         for obsolete in (

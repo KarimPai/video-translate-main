@@ -13,7 +13,7 @@ from auto_translate.vad import FRAME, run_segmenter
 
 
 class SeekProcessingTests(unittest.TestCase):
-    def test_only_current_pcm_is_processed_and_probes_precede_progress(self):
+    def test_only_current_pcm_is_processed_and_opt_in_probes_precede_progress(self):
         in_q, out_q = queue.Queue(), queue.Queue()
         start = 30 * SAMPLE_RATE
         # Several old chunks and their reset are still waiting when a new seek lands.
@@ -26,7 +26,7 @@ class SeekProcessingTests(unittest.TestCase):
         in_q.put(None)
         detector = Mock(side_effect=lambda audio: np.zeros(len(audio) // FRAME))
         with patch("auto_translate.vad.StreamingFireRedVAD", return_value=detector):
-            run_segmenter(VadConfig(), in_q, out_q, lambda: 2)
+            run_segmenter(VadConfig(fallback_s=5.0), in_q, out_q, lambda: 2)
         self.assertEqual(detector.call_count, 12)
         covered = start
         probes = 0
@@ -45,6 +45,27 @@ class SeekProcessingTests(unittest.TestCase):
         self.assertTrue(reached_lead_during_processing)
         self.assertGreater(probes, 1)
         self.assertEqual(covered, start + 12 * SAMPLE_RATE)
+
+    def test_default_vad_skips_noise_probes_but_advances_progress(self):
+        in_q, out_q = queue.Queue(), queue.Queue()
+        start = 30 * SAMPLE_RATE
+        pcm = np.ones(SAMPLE_RATE, dtype=np.float32)
+        in_q.put(AudioChunk(start, pcm[:0], 0, reset=True, generation=3))
+        for second in range(12):
+            in_q.put(AudioChunk(start + second * SAMPLE_RATE, pcm, 0, generation=3))
+        in_q.put(None)
+        detector = Mock(side_effect=lambda audio: np.zeros(len(audio) // FRAME))
+        with patch("auto_translate.vad.StreamingFireRedVAD", return_value=detector):
+            run_segmenter(VadConfig(), in_q, out_q, lambda: 3)
+        outputs = []
+        while (item := out_q.get_nowait()) is not None:
+            outputs.append(item)
+            self.assertEqual(item.generation, 3)
+        self.assertEqual(detector.call_count, 12)
+        self.assertFalse(any(isinstance(item, Utterance) for item in outputs))
+        progress = [item.sample for item in outputs if isinstance(item, AudioProgress)]
+        self.assertTrue(progress)
+        self.assertEqual(progress[-1], start + 12 * SAMPLE_RATE)
 
     def test_vod_seeks_refresh_url_then_try_aac_on_zero_pcm(self):
         ingest = Ingest(Source("https://example.org/video", live=False), IngestConfig())

@@ -1,15 +1,15 @@
 # Japanese Video Translator
 
-Japanese-to-English subtitles for YouTube streams/VODs and local media. The current Windows MPV workflow uses FireRedVAD, Haas Japanese ASR (speech.cpp / Vulkan), and PLaMo 3 Translate 2B running locally through llama.cpp. MPV plays the original source; the translator processes audio independently.
+Experimental branch `test-reazon-k2-plamo2b` for local Japanese-to-English subtitles. Uses FireRedVAD (CUDA), **ReazonSpeech k2 v2 Japanese ASR** (CPU via sherpa-onnx Zipformer INT8), and **PLaMo 3 Translate 2B GGUF Q4_K_M** (local llama.cpp). MPV plays the original source; the translator processes audio independently. This branch was derived from `main`; `main`, `test`, and `whisper-v3` are unchanged.
 
 ## Windows requirements
 
 - Python 3.12+, `uv`, `yt-dlp`, `ffmpeg`, and `mpv`.
-- `speech` from speech.cpp on PATH, with the `haas-ja-v1.0` model and a working Vulkan device.
+- `sherpa-onnx` (installed by `uv sync`) for the ReazonSpeech Zipformer model. No `speech.cpp` / Haas executable or Vulkan ASR is needed.
 - A CUDA-capable GPU for FireRedVAD.
 - `llama-server` from a GPU-enabled llama.cpp build on PATH for PLaMo 3 Translate 2B. The translator can start its own server.
 
-Install Python dependencies with `uv sync`. Optional packages for separation and DeepFilterNet are declared under `[project.optional-dependencies]` in `pyproject.toml`.
+Install Python dependencies with `uv sync` (this branch's first sync refreshes the local `uv.lock` for the new `sherpa-onnx` dependency). Optional packages for separation and DeepFilterNet are declared under `[project.optional-dependencies]` in `pyproject.toml`.
 
 ## Start a YouTube VOD
 
@@ -24,7 +24,7 @@ Paste a YouTube URL. The launcher runs a **single translator process** with `--s
 Equivalent direct command:
 
 ```cmd
-uv run --no-sync auto-translate "YOUTUBE_URL" --mode vod --mpv --no-web
+uv run --no-sync auto-translate "YOUTUBE_URL" --mode auto --mpv --no-web
 ```
 
 For extra diagnostic logging, append `-v`. Use `uv run auto-translate --help` for the active CLI switches. PLaMo 3 Translate 2B is the only translation engine; no backend selection is necessary.
@@ -53,8 +53,8 @@ Translation failures and missing subtitles should be investigated using `logs\ru
 ## Detection and subtitles
 
 1. FFmpeg decodes Japanese audio, with accelerated VOD ingestion in MPV mode.
-2. FireRedVAD detects utterance boundaries. By default, the silence interval is 400 ms, maximum utterance length is 5 seconds, and fallback probing checks speech that VAD may miss.
-3. Haas transcribes utterances, with optional Japanese YouTube caption assistance. A conservative filter suppresses obvious non-speech ASR outputs.
+2. FireRedVAD detects utterance boundaries. By default, the silence interval is 400 ms, maximum utterance length is 5 seconds, and VAD-negative fallback probing is disabled to avoid treating game audio as speech.
+3. ReazonSpeech k2 v2 transcribes Japanese; YouTube JP captions are disabled by default for independent ASR comparison (`--youtube-captions` opts in). A conservative filter suppresses obvious non-speech ASR outputs.
 4. PLaMo 3 Translate 2B renders English-only subtitles; `glossary.toml` handles proper names and streaming terms.
 5. MPV initially waits until translation covers **5 seconds ahead of playback**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.
 
@@ -65,3 +65,52 @@ A separate **RAM-only session subtitle cache** stores translated cues and proces
 ## Optional processing
 
 Vocal separation and DeepFilterNet are **disabled by default** and require their respective optional dependencies.
+
+
+## ReazonSpeech k2 v2 setup and testing
+
+- Japanese Zipformer RNN-T, 159.34M parameters; official Apache-2.0 checkpoint:
+  https://huggingface.co/reazon-research/reazonspeech-k2-v2
+- Uses encoder and joiner **INT8**, decoder **FP32** and tokens from the pinned
+  official revision. Around 170 MB total download (rounded).
+- Downloads on the first run only into models/reazonspeech-k2-v2/ (gitignored).
+  Thereafter recognition works offline.
+- Uses CPU by default (4 threads); Reazon needs no Vulkan device, keeping
+  RTX 3070 GPU memory available for FireRedVAD and PLaMo.
+- PLaMo's existing glossary, MPV seek buffer, player and RAM-only subtitle
+  cache are inherited from main.
+- No extra ASR->translator model: Reazon produces Japanese transcription;
+  the already configured local PLaMo translates it to English.
+- VOD YouTube caption assistance is **disabled by default** to measure real
+  ASR recognition. Use --youtube-captions to re-enable it. Live captions
+  remain unavailable in this mode.
+- VAD-negative ASR probing is disabled for this experiment to reduce
+  fabricated text in non-speech background audio; change [vad] fallback_s
+  only if you understand that risk.
+
+Windows CMD (new clone):
+
+    cd /d C:\Games
+    git clone --branch test-reazon-k2-plamo2b --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-reazon
+    cd /d C:\Games\video-translate-reazon
+    uv sync
+    "Start translate.bat"
+
+Subsequent updates:
+
+    cd /d C:\Games\video-translate-reazon
+    git pull --ff-only origin test-reazon-k2-plamo2b
+
+Optional config.toml:
+
+    [asr]
+    model_dir = "models/reazonspeech-k2-v2"
+    num_threads = 4
+    provider = "cpu"
+
+To run the offline model adapter tests (no model downloads):
+
+    uv run --no-sync python -m unittest discover -s tests -p "test_reazon*.py" -v
+
+The full runtime must be validated on Windows. Reazon's published Japanese
+CER scores should not be interpreted as Hololive GTA accuracy.

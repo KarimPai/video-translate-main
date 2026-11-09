@@ -99,7 +99,7 @@ def run_asr(
         ):
             text = caption_match.text
             log.debug(
-                "using aligned YouTube caption because Haas returned no text "
+                "using aligned YouTube caption because ReazonSpeech returned no text "
                 "(%.2f-%.2fs, coverage=%.0f%%): %s",
                 utt.start_s, utt.end_s, caption_match.coverage * 100, text,
             )

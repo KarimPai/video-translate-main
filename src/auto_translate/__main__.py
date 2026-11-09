@@ -20,6 +20,8 @@ def main() -> None:
                         help="auto (default) asks yt-dlp whether the URL is live right now")
     parser.add_argument("--start", metavar="TIME",
                         help="vod: start here (962, 16:02, 1:02:03, 16m2s); default: the URL's t= value")
+    parser.add_argument("--youtube-captions", action="store_true",
+                        help="opt-in YouTube JP captions for VOD; off by default for a fair ASR test")
     parser.add_argument("--fast", action="store_true",
                         help="vod: process as fast as possible instead of at 1x speed")
     parser.add_argument("--no-web", action="store_true", help="don't start the browser viewer")
@@ -73,15 +75,15 @@ def main() -> None:
         cfg.ingest,
     )
 
-    # Fetch VOD captions in parallel with model loading. Captions are optional:
-    # any download/parse failure leaves the Haas-only pipeline unchanged.
+    # Keep captions opt-in to measure ReazonSpeech on the audio itself.
+    # Download failure must not interrupt live transcription.
     captions = None
     video_id = (
         source.timeline.get("video_id")
         if not source.live and source.timeline
         else None
     )
-    if video_id:
+    if video_id and args.youtube_captions:
         captions = PendingCaptions()
 
         def load_captions() -> None:
@@ -90,7 +92,7 @@ def main() -> None:
                     str(video_id), source.location, cfg.ingest
                 )
             except Exception:
-                log.exception("caption preparation failed; continuing with Haas")
+                log.exception("caption preparation failed; continuing with ReazonSpeech")
 
         caption_thread = threading.Thread(
             target=load_captions,
@@ -112,10 +114,9 @@ def main() -> None:
     t0 = time.perf_counter()
     asr = create_asr(cfg.asr)
 
-    asr_model = cfg.asr.haas_model
     log.info(
-        "ASR ready (%s, Haas) in %.1fs",
-        asr_model,
+        "ASR ready (ReazonSpeech k2 v2, %s) in %.1fs",
+        cfg.asr.provider,
         time.perf_counter() - t0,
     )
 

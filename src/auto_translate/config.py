@@ -35,16 +35,20 @@ class VadConfig:
     speech_pad_ms: int = 80
     min_speech_ms: int = 100
     max_utterance_s: float = 5.0
-    fallback_s: float = 5.0
+    fallback_s: float = 0.0  # disable VAD-negative probes for clean model comparison
     fallback_min_s: float = 1.5
     fallback_min_db: float = -45.0
 
 
 @dataclass
 class AsrConfig:
-    haas_model: str = "haas-ja-v1.0"
-    haas_device: str = "Vulkan0"
-    haas_decode_on_cpu: bool = False
+    """ReazonSpeech k2 v2 Japanese Zipformer, via CPU sherpa-onnx."""
+    model_id: str = "reazon-research/reazonspeech-k2-v2"
+    model_revision: str = "291488c8151be24d7da4bf7af26e533fad96e407"
+    model_dir: str = "models/reazonspeech-k2-v2"
+    provider: str = "cpu"  # leaves the 8 GB GPU available for VAD and PLaMo
+    num_threads: int = 4
+    max_audio_s: float = 30.0
     blocklist: list[str] = field(default_factory=list)
 
 
@@ -115,8 +119,7 @@ def load_config(path: Path) -> Config:
 
     # Ignore legacy fields so existing config.toml files remain compatible.
     ingest_data = dict(data.get("ingest", {}))
-    # Older configs may contain a -3 semitone ASR pitch workaround. Natural pitch
-    # is the default for Haas Japanese recognition; ignore that legacy override.
+    # Previous local pitch workarounds are not used for ReazonSpeech.
     ingest_data.pop("pitch_semitones", None)
 
     asr_data = dict(data.get("asr", {}))
@@ -125,6 +128,7 @@ def load_config(path: Path) -> Config:
         "initial_prompt", "no_speech_threshold", "log_prob_threshold",
         "probe_no_speech_max", "probe_log_prob_min",
         "qwen_model", "qwen_python", "parakeet_model", "parakeet_threads",
+        "haas_model", "haas_device", "haas_decode_on_cpu",
     ):
         asr_data.pop(key, None)
 

@@ -22,7 +22,7 @@ class SeparationConfig:
 class GtcrnConfig:
     """Real-time 16 kHz GTCRN speech enhancement on CPU via sherpa-onnx."""
 
-    enabled: bool = True
+    enabled: bool = False
     num_threads: int = 1
     model_path: str = ""  # empty means cached official gtcrn_simple.onnx
 
@@ -39,7 +39,7 @@ class VadConfig:
     max_split_extension_s: float = 1.0  # hard deadline remains 8s
     split_pause_min_ms: int = 80
     split_context_ms: int = 120  # retain boundary audio, without duplication
-    fallback_s: float = 5.0
+    fallback_s: float = 0.0  # opt-in probes risk invented words on non-speech/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
 
@@ -47,7 +47,7 @@ class VadConfig:
 @dataclass
 class SpeakerConfig:
     """CPU Sherpa speaker diarization of each bounded VAD utterance."""
-    enabled: bool = True
+    enabled: bool = False
     model_dir: str = ""
     num_threads: int = 2
     min_turn_s: float = 0.55
@@ -68,6 +68,12 @@ class GraniteConfig:
     context_tokens: int = 4096
     gpu_layers: int = 99
     prompt: str = "translate the speech to English with proper punctuation and capitalization."
+    # IBM's supported AST keyword-biasing format is used when keywords are set.
+    # Keep the list small: overly broad lists can bias unrelated speech.
+    # Set keywords=[] to use the punctuated AST prompt above instead.
+    keywords: list[str] = field(default_factory=lambda: [
+        "Watame", "Towa", "Suisei", "Pekora", "Miko", "Subaru",
+    ])
     request_timeout_s: float = 45.0
     startup_timeout_s: float = 1200.0
 

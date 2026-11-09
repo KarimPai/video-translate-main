@@ -20,8 +20,9 @@ def test_caption_roll_forward_only_new_text():
         CaptionCue(3.0, 4.0, "おはよう"),
     ])
     cues = prepare_caption_cues(index)
-    assert [cue.text for cue in cues] == ["こんにちは", "世界", "おはよう"]
-    assert cues[1].start_s >= 1.0
+    assert [cue.text for cue in cues] == ["こんにちは世界", "おはよう"]
+    assert cues[0].start_s == 0.0  # never shift expanded text later
+    assert cues[0].end_s == 2.0
 
 
 def test_repeated_speech_after_a_gap_is_not_removed():
@@ -144,3 +145,32 @@ def test_previous_history_uses_only_contiguous_nearby_translations():
     # An unprocessed immediately preceding caption must not cause a jump
     # back to an older but completed cue after seeking.
     assert player._previous_history(3) == []
+
+
+
+def test_optional_caption_advance_changes_display_only_not_source_times():
+    from auto_translate.types import Subtitle
+
+    class RecordingIpc:
+        def __init__(self):
+            self.commands = []
+
+        def command(self, *args, **kwargs):
+            self.commands.append((args, kwargs))
+
+    config = Config()
+    config.mpv.caption_advance_s = 0.5
+    player = CaptionOnlyPlayer(
+        Source("https://example.test/watch?v=x", False, duration=10),
+        config, CaptionIndex([CaptionCue(1.0, 2.0, "こんにちは")]),
+        StubTranslator(),
+    )
+    player._ipc = RecordingIpc()
+    player.cache.add(Subtitle(1.0, 2.0, "こんにちは", "Hello"))
+    player._completed.add(0)
+    # Audio is at 0.7s: an optional 0.5s adjustment uses cue clock 1.2.
+    player._render(0.7)
+    assert player._ipc.commands
+    assert "Hello" in player._ipc.commands[-1][1]["data"]
+    assert player.cache.active_at(0.7) == []
+    assert player._lead_ready(0.7, 1.0) is True

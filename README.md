@@ -23,7 +23,7 @@ be disabled independently. No separate translation model or default keyword bias
     compute_type = "int8_float16"
     language = "ja"
     task = "translate"
-    beam_size = 5
+    beam_size = 6
     temperature = 0.0
     no_speech_threshold = 0.6
     log_prob_threshold = -1.0
@@ -121,3 +121,17 @@ Watch logs/run.log for "GTCRN ready" and terminal output for
 - No llama-server.exe, GGUF, or outgoing speech inference HTTP requests.
 - Unit tests mock model calls and do not download Whisper weights.
 - Real translation accuracy, latency and GPU memory need a local playback test.
+
+## Context, recovery, and ablation controls
+
+Use `--audio-profile baseline|gtcrn|speaker|both` to compare preprocessing
+on identical video sections; `--diagnostics` logs every decoded utterance.
+Default: both GTCRN and Sherpa enabled.
+
+The next-stage context implementation uses an optional 1.2 s rolling
+speech tail for *uncertain decode retries*, with text overlap removal.
+`use_text_context = false` deliberately stays off by default because
+unverified prior English text can propagate hallucinations. Enable only for
+an A/B test. Optional [whisper] hotwords = ["Okayu", "Botan"] require the
+actual stream to contain those names; do not enable names globally.
+

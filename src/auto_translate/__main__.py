@@ -24,6 +24,12 @@ def main() -> None:
                         help="print only final English subtitles")
     parser.add_argument("--mpv", action="store_true")
     parser.add_argument("--delay", type=float, metavar="SECONDS")
+    parser.add_argument(
+        "--audio-profile", choices=("baseline", "gtcrn", "speaker", "both"),
+        default=None, help="ablate GTCRN and Sherpa without changing config.toml",
+    )
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="log each utterance's decoding and audio quality stats")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -48,6 +54,11 @@ def main() -> None:
     from .session_cache import SessionSubtitleCache
 
     cfg = load_config(args.config)
+    if args.audio_profile is not None:
+        cfg.gtcrn.enabled = args.audio_profile in ("gtcrn", "both")
+        cfg.speaker.enabled = args.audio_profile in ("speaker", "both")
+    if args.diagnostics:
+        cfg.whisper.diagnostics = True
     if args.delay is not None:
         cfg.mpv.delay_s = args.delay
 

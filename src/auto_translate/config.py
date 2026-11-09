@@ -71,7 +71,7 @@ class WhisperConfig:
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
     task: str = "translate"  # Whisper native English speech translation
-    beam_size: int = 5
+    beam_size: int = 6
     temperature: float = 0.0
     no_speech_threshold: float = 0.6
     log_prob_threshold: float = -1.0
@@ -90,6 +90,23 @@ class WhisperConfig:
     # outro-like phrases within this playback-time window.
     suppress_repeated_signoffs: bool = True
     signoff_cooldown_s: float = 1200.0
+    # Opt-in bounded English context; no cross-window Whisper feedback loop.
+    use_text_context: bool = False
+    text_context_lines: int = 2
+    text_context_chars: int = 120
+    text_context_max_gap_s: float = 5.0
+    # Only exact, stream-relevant English names; no global Hololive glossary.
+    hotwords: list[str] = field(default_factory=list)
+    # Keep the recent speech waveform for *uncertain-only* contextual retries.
+    audio_context_enabled: bool = True
+    audio_context_s: float = 1.2
+    audio_context_max_gap_s: float = 2.0
+    retry_uncertain: bool = True
+    retry_on_outro: bool = True
+    retry_temperature: float = 0.2
+    retry_max_audio_s: float = 12.0
+    # Additional per-cue VAD/decoder timing and quality log entries.
+    diagnostics: bool = False
 
 
 @dataclass

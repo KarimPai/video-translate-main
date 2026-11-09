@@ -1,5 +1,7 @@
 """Regression cases for live context repair, timestamps, seeks and greetings."""
 import queue
+import threading
+import time
 import unittest
 
 from auto_translate.contextualize import (
@@ -110,6 +112,54 @@ class ContextualizerTests(unittest.TestCase):
         )
         self.assertIsInstance(rows[0], Transcript)
         self.assertIsInstance(rows[1], AudioProgress)
+
+    def test_wall_time_flush_releases_held_seek_progress_without_new_pcm(self):
+        # An enhanced-audio stream can go quiet after its last watermark.
+        # The subtitle must be translated before its held 5-second lead
+        # watermark is released, even without another AudioProgress event.
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        worker = threading.Thread(
+            target=run_contextualize,
+            args=(incoming, outgoing),
+            kwargs={"lookahead_s": 0.15},
+            daemon=True,
+        )
+        worker.start()
+        try:
+            incoming.put(Transcript(500.0, 500.2, "車を見て"))
+            incoming.put(AudioProgress(round(500.3 * SAMPLE_RATE)))
+            first = outgoing.get(timeout=1)
+            self.assertIsInstance(first, AudioProgress)
+            self.assertEqual(first.sample, 500 * SAMPLE_RATE)
+            second = outgoing.get(timeout=1.5)
+            third = outgoing.get(timeout=1.5)
+            self.assertIsInstance(second, Transcript)
+            self.assertEqual(second.ja, "車を見て")
+            self.assertIsInstance(third, AudioProgress)
+            self.assertEqual(third.sample, round(500.3 * SAMPLE_RATE))
+        finally:
+            incoming.put(None)
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+
+    def test_pending_seek_progress_does_not_cross_generation_reset(self):
+        rows = self.process(
+            Transcript(4, 4.5, "古い字幕", generation=0),
+            AudioProgress(5 * SAMPLE_RATE, generation=0),
+            AudioProgress(900 * SAMPLE_RATE, reset=True, generation=1),
+            Transcript(900, 900.5, "新しい字幕", generation=1),
+            AudioProgress(901 * SAMPLE_RATE, generation=1),
+        )
+        texts = [r.ja for r in rows if isinstance(r, Transcript)]
+        self.assertEqual(texts, ["新しい字幕"])
+        resets = [r for r in rows if isinstance(r, AudioProgress) and r.reset]
+        self.assertEqual(len(resets), 1)
+        self.assertEqual(resets[0].sample, 900 * SAMPLE_RATE)
+        self.assertTrue(all(
+            r.sample >= 900 * SAMPLE_RATE
+            for r in rows[rows.index(resets[0]):]
+            if isinstance(r, AudioProgress)
+        ))
 
     def test_pending_cue_limits_mpv_translation_progress(self):
         rows = self.process(

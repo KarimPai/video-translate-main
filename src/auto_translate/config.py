@@ -88,7 +88,7 @@ class TranslateConfig:
     max_tokens: int = 128
     timeout_s: float = 25.0
     load_timeout_s: float = 600.0
-    context_lines: int = 2  # short glossary context; PFML3 remains source-only
+    context_lines: int = 0  # PFML3 source-only; history retained separately for repairs
     memory_lines: int = 12  # previous local repeat consistency (no prompt history)
     glossary: str = "glossary.toml"
     quality_recheck_enabled: bool = True

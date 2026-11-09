@@ -154,7 +154,9 @@ The local llama-server uses Flash Attention, quantized KV state, and
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 
 # Focused regression tests for the new changes:
-uv run --no-sync python -m unittest tests.test_plamo_translate tests.test_contextualize tests.test_gta_guard tests.test_translation_config -v
+uv run --no-sync python -m unittest discover -s tests -p "test_plamo_translate.py" -v
+uv run --no-sync python -m unittest discover -s tests -p "test_contextualize.py" -v
+uv run --no-sync python -m unittest discover -s tests -p "test_gta_guard.py" -v
 ```
 
 Tests use fake GTCRN and Sherpa objects and verify configuration, audio

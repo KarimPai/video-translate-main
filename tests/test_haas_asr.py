@@ -72,6 +72,34 @@ class HaasWorkerTests(unittest.TestCase):
                 asr.transcribe(np.ones(8000, dtype=np.float32))
         asr.close()
 
+    def test_bounded_retry_excludes_keywords_without_touching_original_setting(self):
+        proc = stream({"type": "end", "id": "1", "text": "大丈夫です"})
+        asr, _ = self.make(proc)
+        self.assertEqual(
+            asr.transcribe_bounded(
+                np.ones(8000, dtype=np.float32),
+                timeout_s=0.3,
+                use_keywords=False,
+            ),
+            "大丈夫です",
+        )
+        payload = [json.loads(x) for x in proc.stdin.getvalue().splitlines()]
+        self.assertNotIn("keywords", payload[1])
+        self.assertTrue(asr.keywords)
+        asr.close()
+
+    def test_bounded_retry_passes_real_remaining_timeout_to_reader(self):
+        asr, _ = self.make(stream(), AsrConfig(response_timeout_s=30.0))
+        with patch.object(asr._messages, "get", side_effect=queue.Empty) as get:
+            with self.assertRaisesRegex(TimeoutError, "Haas ASR response timeout"):
+                asr.transcribe_bounded(
+                    np.ones(8000, dtype=np.float32),
+                    timeout_s=0.25, use_keywords=False,
+                )
+        self.assertGreater(get.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(get.call_args.kwargs["timeout"], 0.25)
+        asr.close()
+
     def test_stdout_closed_is_reported(self):
         asr, _ = self.make(stream())
         with self.assertRaisesRegex(RuntimeError, "closed the stdout pipe"):

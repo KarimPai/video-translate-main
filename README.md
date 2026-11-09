@@ -14,6 +14,11 @@
   duplicates, retain real repeated speech, remove sound-effect labels,
   join strongly evidenced split endings (e.g. 美味しかっ + た and わかん + ない),
   and preserve the earliest reliable cue onset while merging.
+- For three-part continuations, joining decisions use the **last original
+  fragment's** timestamp rather than the first timestamp of the entire
+  merged phrase. Maximum combined duration still applies. Coverage includes
+  `貸し / て…やめ / なさい` from GTA streams. The local glossary also
+  recognizes the caption variant `ペコーラ` as **Pekora**.
 - Local PLaMo 3 Translate **8B Q3_K_M** with the model's official PFML3
   `context`, previous Japanese/English `input`/`output` pairs, and
   matching Hololive glossary terms. The current caption is always last.

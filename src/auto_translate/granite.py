@@ -69,6 +69,35 @@ def build_multipart(model: str, prompt: str, wav_bytes: bytes) -> tuple[bytes, s
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
+def build_translation_prompt(cfg: GraniteConfig) -> str:
+    """Use IBM's documented AST prompt, optionally with keyword biasing.
+
+    The keyword and punctuated prompt templates are separate supported modes.
+    Keyword biasing takes precedence when a list is provided; an empty list
+    restores cfg.prompt (including custom prompts).
+    """
+    if not isinstance(cfg.keywords, (list, tuple)):
+        raise ValueError("Granite keywords must be a list of names")
+    if len(cfg.keywords) > 2000:
+        raise ValueError("Granite supports at most 2000 keywords")
+    terms: list[str] = []
+    seen: set[str] = set()
+    for keyword in cfg.keywords:
+        if not isinstance(keyword, str):
+            raise ValueError("Granite keywords must be strings")
+        item = " ".join(keyword.split())
+        if not item:
+            continue
+        if len(item) > 80 or "," in item:
+            raise ValueError("Granite keywords must be <=80 characters without commas")
+        if item.casefold() not in seen:
+            terms.append(item)
+            seen.add(item.casefold())
+    if terms:
+        return "translate the speech to English. Keywords: " + ", ".join(terms)
+    return cfg.prompt
+
+
 def _clean_result(data: object) -> str:
     if not isinstance(data, dict):
         raise ValueError("Granite returned a non-JSON-object reply")
@@ -178,7 +207,7 @@ class GraniteSpeech5:
         """Run exactly one direct audio->English decode for a VAD utterance."""
         wav_bytes = encode_wav(audio)
         body, content_type = build_multipart(
-            self.cfg.model_id, self.cfg.prompt, wav_bytes,
+            self.cfg.model_id, build_translation_prompt(self.cfg), wav_bytes,
         )
         request = urllib.request.Request(
             self.base_url + "/v1/audio/transcriptions",

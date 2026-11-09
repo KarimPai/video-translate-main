@@ -93,7 +93,7 @@ The launcher still requests the YouTube URL, loads models, opens MPV, and prints
 
 ## Selective multi-pass Haas ASR (experimental)
 
-The default is **one Haas Q8_0 decode**. Only incomplete, suspicious or strongly caption-disagreeing Japanese triggers additional attempts. A retry uses a small (60ms) boundary adjustment where safe. A third candidate, when available, uses the **same Haas model without keyword boosting**. There is no second ASR model and no unsupported speech.cpp sampling option.
+The default is **one Haas Q8_0 decode**. Only incomplete, suspicious or strongly caption-disagreeing Japanese triggers additional attempts. A retry uses a small (60ms) boundary adjustment where safe. A third candidate, when available, uses the **same Haas model without keyword boosting**. There is no second ASR model and no unsupported speech.cpp sampling option. When a bounded retry times out, optional retries are suspended for 15 seconds by default to avoid overloading a still-busy worker.
 
 Candidates are selected with a conservative score: independent, strongly aligned YouTube JP captions (when available), Japanese text plausibility and decoder-artifact checks. **Raw character count and majority voting are not used.** If there is no meaningful evidence of improvement, the original result wins. Caption alignment is optional; reliable local audio is still the primary source.
 
@@ -111,6 +111,7 @@ retry_max_passes = 3
 retry_live_max_passes = 2
 retry_live_budget_s = 1.5
 retry_budget_s = 3.0
+retry_timeout_cooldown_s = 15.0
 ```
 
 Use `retry_uncertain_enabled = false` for a pure single-pass comparison. Benchmark transcription correctness, `asr avg/max`, dropped subtitles and MPV sync on the **same VOD/live section** before concluding that multi-pass helps. A second deterministic decode does not establish independent confidence, and optional retries may still increase latency or background worker load.

@@ -126,6 +126,65 @@ class CaptionFallbackTests(unittest.TestCase):
         run_asr(EmptyASR(), in_q, out_q, captions=index)
         self.assertIsNone(out_q.get_nowait())
 
+    def test_youtube_caption_first_fixes_close_homophone(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "これここ貼る?")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("これここ春?"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "これここ貼る?")
+        self.assertIsNone(outgoing.get_nowait())
+
+    def test_youtube_caption_first_fixes_name_spelling_when_aligned(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "わためが来た")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("ワタメが来た"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "わためが来た")
+
+    def test_caption_is_not_replaced_when_asr_contains_more_speech(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "ここで待って")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("ここで待っててください"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "ここで待っててください")
+
+    def test_caption_does_not_silently_flip_negation(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "警察は来てる")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("警察は来てない"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "警察は来てない")
+
+    def test_caption_first_setting_can_disable_whole_caption_priority(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "これここ貼る?")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        asr = TextASR("これここ春?")
+        asr.cfg = type("Config", (), {"youtube_captions_first": False})()
+        run_asr(asr, incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "これここ春?")
+
+    def test_weak_timing_does_not_override_recognized_speech(self):
+        index = CaptionIndex([CaptionCue(0.0, 4.0, "これここ貼る?")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.0, np.zeros(16000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("これここ春?"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "これここ春?")
+
+    def test_strong_one_cue_recovers_empty_haas_without_captions_only_mode(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "ここにステッカーを貼る")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(EmptyASR(), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "ここにステッカーを貼る")
+
     def test_haas_asr_remains_primary_when_both_sources_disagree(self):
         index = CaptionIndex.from_vtt(VTT)
         in_q = queue.Queue()

@@ -17,7 +17,7 @@ def test_json3_preserves_event_and_first_segment_timestamps():
             {"tStartMs": 1000, "dDurationMs": 1400,
              "segs": [{"utf8": ""}, {"utf8": "おはよう", "tOffsetMs": 150},
                       {"utf8": "ございます", "tOffsetMs": 450}]},
-            {"tStartMs": 2600, "dDurationMs": 300, "segs": [{"utf8": "\\n"}]},
+            {"tStartMs": 2600, "dDurationMs": 300, "segs": [{"utf8": "\n"}]},
             {"tStartMs": 3000, "dDurationMs": 1200,
              "segs": [{"utf8": "美味しかっ"}, {"utf8": "た", "tOffsetMs": 500}]},
         ],
@@ -86,7 +86,7 @@ def test_cached_vtt_fallback_when_json3_download_unavailable():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         (root / "abc123.ja.vtt").write_text(
-            "WEBVTT\\n\\n00:00:00.000 --> 00:00:01.500\\nおはよう\\n",
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nおはよう\n",
             encoding="utf-8",
         )
         with patch("auto_translate.captions._caption_cache_dir", return_value=root):

@@ -167,6 +167,14 @@ class CaptionFallbackTests(unittest.TestCase):
         run_asr(TextASR("ワタメが来た"), incoming, outgoing, captions=index)
         self.assertEqual(outgoing.get_nowait().ja, "わためが来た")
 
+    def test_single_caption_completes_clear_haas_prefix(self):
+        index = CaptionIndex([CaptionCue(1.0, 2.5, "ここで待っててください")])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("ここで待って"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "ここで待っててください")
+
     def test_caption_is_not_replaced_when_asr_contains_more_speech(self):
         index = CaptionIndex([CaptionCue(1.0, 2.5, "ここで待って")])
         incoming, outgoing = queue.Queue(), queue.Queue()

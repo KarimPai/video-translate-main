@@ -329,8 +329,11 @@ def download_vod_captions(
                 try:
                     potential = CaptionIndex.from_file(candidate)
                     if potential.cues:
-                        selected = json3_cache if candidate.suffix == ".json3" else vtt_cache
-                        shutil.copy2(candidate, selected)
+                        destination = (
+                            json3_cache if candidate.suffix == ".json3" else vtt_cache
+                        )
+                        shutil.copy2(candidate, destination)
+                        selected = destination
                         index = potential
                         break
                 except (OSError, UnicodeError, ValueError, json.JSONDecodeError):

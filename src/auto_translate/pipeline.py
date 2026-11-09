@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
+from .asr_retry import choose_hypothesis
 from .watame import correct_asr_name, reconcile_caption
 from .stream_context import (
     repair_peko_nickname, repair_verified_caption, repair_ark_spelling,
@@ -72,6 +73,7 @@ def run_asr(
     captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
+    live: bool = False,
 ) -> None:
     """Transcribe utterances, optionally using aligned captions as a fallback."""
     recent_japanese: deque[str] = deque(maxlen=12)
@@ -128,34 +130,29 @@ def run_asr(
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         utt.timings.asr_end = time.monotonic()
-        # A single bounded retry for empty or implausibly short voiced output.
-        # Never retry fallback probes or exceed the configured audio length.
-        retry_cfg = getattr(asr, "cfg", None)
-        if (retry_cfg is not None
-                and getattr(retry_cfg, "retry_uncertain_enabled", False)
-                and not utt.probe
-                and 16000 <= len(utt.audio) <= getattr(retry_cfg, "retry_max_audio_s", 8.0) * 16000):
-            first = strip_nonverbal_labels(text)
-            ambiguous = not first or (len(first.strip("。、!?！？ ")) <= 2 and len(utt.audio) >= 32000)
-            if ambiguous and time.monotonic() - utt.timings.asr_start < getattr(retry_cfg, "retry_budget_s", 3.0):
-                try:
-                    alternate = strip_nonverbal_labels(asr.transcribe(utt.audio[:-1600], False))
-                    if alternate and len(alternate) > len(first):
-                        text = alternate
-                        log.debug("Selective Haas retry improved transcript at %.2fs", utt.start_s)
-                except Exception as exc:
-                    log.debug("Selective Haas retry failed: %s", exc)
-                utt.timings.asr_end = time.monotonic()
-        original_asr = text
-        text = strip_nonverbal_labels(text)
-        if original_asr != text:
-            log.debug("filtered ASR nonverbal labels at %.2fs: %r -> %r", utt.start_s, original_asr, text)
-
+        # Read captions before retry selection. Only strongly aligned cues
+        # are allowed to influence candidate scoring; normal reconciliation
+        # and caption fallback still run afterward.
         caption_match = (
             captions.match(utt.start_s, utt.end_s)
             if captions is not None
             else None
         )
+        text = choose_hypothesis(
+            asr, utt.audio, text,
+            start_s=utt.start_s,
+            end_s=utt.end_s,
+            speech_start_s=utt.speech_start_s,
+            probe=utt.probe,
+            caption=caption_match,
+            live=live,
+        )
+        utt.timings.asr_end = time.monotonic()
+        original_asr = text
+        text = strip_nonverbal_labels(text)
+        if original_asr != text:
+            log.debug("filtered ASR nonverbal labels at %.2fs: %r -> %r", utt.start_s, original_asr, text)
+
         if caption_match is not None and not caption_match.reliable:
             caption_match = None
         if caption_match is not None and not caption_match.text and is_sound_caption_artifact(text):
@@ -494,6 +491,7 @@ def run(
                 captions,
                 vod_title,
                 session_cache,
+                ingest.source.live,
             ),
             name="asr",
             daemon=True,

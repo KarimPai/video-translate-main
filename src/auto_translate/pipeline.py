@@ -17,7 +17,7 @@ from .stream_context import (
     repair_peko_nickname, repair_verified_caption, repair_ark_spelling,
     repair_gta_carjacking, repair_horse_racing_spelling,
 )
-from .captions import CaptionIndex, PendingCaptions
+from .captions import CaptionIndex, PendingCaptions, prefer_youtube_japanese
 from .context_memory import repair_near_repeated_word
 from .text_filter import (
     is_isolated_reaction, is_nonspeech_probe, is_sound_caption_artifact,
@@ -77,7 +77,7 @@ def run_asr(
     session_cache: SessionSubtitleCache | None = None,
     live: bool = False,
 ) -> None:
-    """Transcribe utterances, optionally using aligned captions as a fallback."""
+    """Decode with Haas; prefer strongly aligned YouTube Japanese captions for VODs."""
     recent_japanese: deque[str] = deque(maxlen=12)
     last_generation: int | None = None
     empty_voiced_streak = 0
@@ -167,6 +167,8 @@ def run_asr(
 
         source = "haas_asr"
         if text and caption_match is not None:
+            # Keep legacy evidence-based name / one-character spelling repairs
+            # even when whole-caption priority is not supported by alignment.
             reconciled = reconcile_caption(text, caption_match.text)
             if caption_match.coverage >= 0.80 and caption_match.overlap_s >= 0.45:
                 reconciled = repair_verified_caption(reconciled, caption_match.text)
@@ -174,6 +176,24 @@ def run_asr(
                 source = "haas_asr+youtube_correction"
                 text = reconciled
 
+        caption_first = getattr(
+            getattr(asr, "cfg", None), "youtube_captions_first", True,
+        )
+        if caption_first and caption_match is not None:
+            preferred, evidence = prefer_youtube_japanese(text, caption_match)
+            if preferred != text:
+                log.debug(
+                    "YouTube-first Japanese at %.2f-%.2fs (%s, coverage=%.0f%%): %r -> %r",
+                    utt.start_s, utt.end_s, evidence,
+                    caption_match.coverage * 100, text[:100], preferred[:100],
+                )
+            text = preferred
+            if evidence.startswith("youtube_primary"):
+                source = evidence
+
+        # Weaker but still reliable captions remain a conservative fallback
+        # only when Haas genuinely found no words. Live streams without a
+        # downloaded caption track remain solely Haas-powered.
         if (
             not text and not original_asr and caption_match is not None and caption_match.text
             and is_usable_transcript(caption_match.text)

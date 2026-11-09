@@ -77,6 +77,13 @@ class TranslationConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.haas_device, "Vulkan0")
         self.assertTrue(cfg.haas_decode_on_cpu)
         self.assertTrue(cfg.haas_keywords_enabled)
+        self.assertTrue(cfg.youtube_captions_first)
+
+    def test_youtube_caption_priority_is_local_configurable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            file = Path(temp) / "config.toml"
+            file.write_text("[asr]\\nyoutube_captions_first = false\\n".replace("\\\\n", "\\n"), encoding="utf-8")
+            self.assertFalse(load_config(file).asr.youtube_captions_first)
 
     def test_speaker_interruptions_remain_enabled(self):
         with tempfile.TemporaryDirectory() as temp:

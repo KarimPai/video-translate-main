@@ -73,6 +73,11 @@ class CaptionOnlyPlayer:
             )
         self.translator = translator
         self.vod_title = vod_title
+        # Never invent a correction by default. Advance only when measured
+        # against YouTube's own Japanese captions for this VOD.
+        self._caption_advance_s = max(
+            0.0, min(float(cfg.mpv.caption_advance_s), 3.0)
+        )
         self.cache = SessionSubtitleCache()
         self.terminal = TerminalOutput(simple=True)
         self._completed: set[int] = set()
@@ -155,7 +160,8 @@ class CaptionOnlyPlayer:
             self._ipc.command("seek", self.source.start_s, "absolute+exact")
         log.info(
             "Caption-only MPV ready: %d Japanese cues, on-demand translation, "
-            "no audio ingest/VAD/ASR", len(self.cues),
+            "caption advance=%.2fs, no audio ingest/VAD/ASR",
+            len(self.cues), self._caption_advance_s,
         )
 
     def _previous_history(self, index: int) -> list[tuple[str, str]]:
@@ -256,21 +262,25 @@ class CaptionOnlyPlayer:
         """
         with self._condition:
             horizon = min(
-                position_s + lead_s,
+                position_s + lead_s + self._caption_advance_s,
                 self.source.duration if self.source.duration is not None
                 else float("inf"),
             )
             return all(
                 i in self._completed
                 for i in near_cues(
-                    self.cues, position_s, lead_s, starts=self._starts
+                    self.cues, position_s,
+                    lead_s + self._caption_advance_s, starts=self._starts
                 )
                 if self.cues[i].start_s < horizon
             )
 
     def _render(self, position_s: float) -> None:
         assert self._ipc is not None
-        active = self.cache.active_at(position_s, include_linger=True)
+        # Lookup is advanced, not the source timestamps stored in cache.
+        # This leaves seek/history coordinates on the original media clock.
+        cue_clock = position_s + self._caption_advance_s
+        active = self.cache.active_at(cue_clock, include_linger=True)
         active.sort(key=lambda sub: sub.start_s, reverse=True)
         active = active[:max(1, self.cfg.mpv.max_subtitle_rows)]
         text = _ass_many(active, self.cfg.mpv) if active else ""
@@ -388,7 +398,7 @@ class CaptionOnlyPlayer:
                 # A guessed clock must not be used as a native-seek
                 # baseline when MPV finally reports its actual position.
                 last_pos, last_at = (position if reported is not None else None), now
-                self._set_target(position)
+                self._set_target(position + self._caption_advance_s)
 
                 # Avoid the opening subtitles being printed in CMD after the
                 # MPV clock has already gone past their display interval.

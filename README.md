@@ -41,14 +41,18 @@ member-list prompting is deliberately not used.
     noisy_segment_min_avg_logprob = -0.50
     suppress_repeated_signoffs = true
     signoff_cooldown_s = 1200.0
+    suppress_generic_outros = true
+    outro_allow_near_vod_end_s = 90.0
 
 The additional filters reject decoding segments with poor model confidence,
 high repetition/compression or a high no-speech score combined with weak
 decoding confidence. N-gram/repetition limits and a 160-token ceiling reduce
 runaway "well well" or "yes yes" loops. Generic "thank you for watching"
-outros are allowed the first time but suppressed if repeated within 20 minutes
-of video time. This last rule is heuristic and can hide a real repeated
-outro: disable with [whisper] suppress_repeated_signoffs = false.
+standalone outros are suppressed during gameplay and live streams (including
+the first occurrence), and allowed only during the final 90 seconds of a
+completed VOD with known duration. This is a heuristic and can suppress real
+mid-stream dialogue; disable with [whisper] suppress_generic_outros = false.
+A separate repeated-signoff cooldown remains for allowed VOD-end output.
 All drops are logged in logs/run.log; no separate ASR or LLM is loaded.
 
 Large-v3 (not Turbo) is explicitly trained for native speech translation.
@@ -161,7 +165,7 @@ Additional optional [whisper] settings:
     hololive_names_enabled = true
     hololive_name_limit = 6
     concise_english = true
-    style_prompt = "Short, plain English subtitles. No added commentary."
+    style_prompt = ""
     remove_fillers = true
     collapse_repetitions = true
     diagnostics = false
@@ -272,3 +276,30 @@ Test without GPU:
 Or run the complete test suite:
 
     uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -q
+
+
+## Generic outro hallucination guard (Nov 2026)
+
+Whisper can repeatedly invent standalone "Thank you for watching." on
+low-speech gaming audio even when its segment confidence is high. The older
+filter let the first phrase through, then cleared state on some seek/stream
+resets; cache hits could also bypass it. Both fresh and cached subtitles
+now apply a stream-position-aware policy before appearing in MPV/terminal.
+
+- Live stream or unknown duration: suppress standalone generic outros.
+- Completed VOD: suppress except during its final 90 seconds.
+- Genuine "Thank you!" or contextual thanks remain unchanged.
+- Config override: [whisper] suppress_generic_outros = false.
+- Explicitly disabling generic filtering retains the legacy repeated-outro
+  cooldown, which permits one occurrence per playback generation.
+
+The old default "Short, plain English subtitles. No added commentary." is
+no longer sent to Whisper as an initial prompt. It is not an instruction-
+following LLM; plain output remains enforced by the deterministic conservative
+filler/repetition cleanup stage. Custom style_prompt remains opt-in.
+GTCRN and Sherpa stay enabled (previous explicit user preference).
+
+To see why the filter rejected something, enable diagnostics with
+--diagnostics and inspect logs/run.log for "Suppressed generic Whisper outro".
+The policy limits one familiar hallucination; it does not establish why
+Whisper generated it. Use --audio-profile baseline for an A/B comparison.

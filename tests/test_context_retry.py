@@ -131,7 +131,8 @@ class RetryTests(unittest.TestCase):
             WhisperDecode("Invented unrelated sentence.", avg_logprob=-.1),
         ])
         cues = run_once(decoder, [utt(0,2), utt(2.2,4.2)])
-        self.assertEqual(cues[1].en, "Thank you for watching.")
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0].en, "We're going to the casino.")
 
     def test_context_cannot_cross_seek_reset(self):
         decoder = FakeDecoder([

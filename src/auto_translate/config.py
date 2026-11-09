@@ -90,6 +90,10 @@ class WhisperConfig:
     # outro-like phrases within this playback-time window.
     suppress_repeated_signoffs: bool = True
     signoff_cooldown_s: float = 1200.0
+    # Standalone video outros are frequently hallucinated on weak game audio.
+    # Allow at the actual end of a completed VOD, not during live/gameplay.
+    suppress_generic_outros: bool = True
+    outro_allow_near_vod_end_s: float = 90.0
     # Opt-in bounded English context; no cross-window Whisper feedback loop.
     use_text_context: bool = False
     text_context_lines: int = 2
@@ -103,7 +107,7 @@ class WhisperConfig:
     hololive_detected_names: list[str] = field(default_factory=list)
     # Whisper is not instruction-tuned; this is a *hint*, not a command.
     concise_english: bool = True
-    style_prompt: str = "Short, plain English subtitles. No added commentary."
+    style_prompt: str = ""  # no instruction-style priming; concise output filter handles fillers
     remove_fillers: bool = True
     collapse_repetitions: bool = True
     # Keep the recent speech waveform for *uncertain-only* contextual retries.

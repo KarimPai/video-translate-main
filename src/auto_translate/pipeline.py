@@ -7,6 +7,7 @@ seek caching. No intermediate Japanese ASR, YouTube transcripts, or MT model.
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import re
 import threading
@@ -37,6 +38,47 @@ _OUTRO = re.compile(
     r"(?: (?:until )?the end)?$",
     re.IGNORECASE,
 )
+
+
+
+def _is_outro_phrase(text: str) -> bool:
+    """Detect *standalone* stock closing phrases, not conversational thanks."""
+    normalized = " ".join(re.sub(r"[^\w\s]", "", text).split())
+    return bool(_OUTRO.fullmatch(normalized))
+
+
+def _suppress_generic_outro(
+    text: str,
+    end_s: float,
+    *,
+    cfg: object | None,
+    source_info: dict | None,
+) -> bool:
+    """Guard against stock-outro hallucinations in normal stream content.
+
+    Only allow standalone closing phrases within the last 90s of a completed
+    VOD when a trusted duration is available. Unknown-duration/live streams
+    cannot prove an ending; the safeguard can be disabled via config.toml.
+    """
+    if not getattr(cfg, "suppress_generic_outros", True):
+        return False
+    if not _is_outro_phrase(text):
+        return False
+    info = source_info or {}
+    if not info.get("live", False):
+        duration = info.get("duration_s")
+        if duration is not None:
+            try:
+                duration = float(duration)
+                allow_s = max(0.0, min(
+                    300.0, float(getattr(cfg, "outro_allow_near_vod_end_s", 90.0))
+                ))
+                if math.isfinite(duration) and duration > 0:
+                    if duration - allow_s <= end_s <= duration + 1.0:
+                        return False
+            except (TypeError, ValueError):
+                pass
+    return True
 
 
 def _is_repeated_outro(
@@ -97,6 +139,7 @@ def run_whisper(
     get_generation: Callable[[], int] | None = None,
     session_cache: SessionSubtitleCache | None = None,
     audio_processing: dict[str, bool] | None = None,
+    source_info: dict | None = None,
 ) -> None:
     """Emit each accepted utterance once; never shift its source timestamps."""
     empty_count = 0
@@ -126,6 +169,14 @@ def run_whisper(
         context.prepare(utt)
         cached = session_cache.match(utt.start_s, utt.end_s) if session_cache is not None else None
         if cached is not None:
+            if _suppress_generic_outro(
+                cached.en, utt.end_s, cfg=cfg, source_info=source_info,
+            ):
+                log.info(
+                    "Suppressed cached generic Whisper outro (gen=%d %.2f-%.2fs): %r",
+                    utt.generation, utt.start_s, utt.end_s, cached.en,
+                )
+                continue
             context.accept(utt, cached.en)
             out_q.put(replace(
                 cached, generation=utt.generation, timings=utt.timings,
@@ -153,8 +204,7 @@ def run_whisper(
             )
             selected = original
             english = original.text
-            normalized = " ".join(re.sub(r"[^\w\s]", "", english).split())
-            generic_outro = bool(_OUTRO.fullmatch(normalized))
+            generic_outro = _is_outro_phrase(english)
 
             retry_reason = (
                 "outro" if generic_outro and getattr(cfg, "retry_on_outro", True)
@@ -277,6 +327,17 @@ def run_whisper(
                 )
             continue
         empty_count = 0
+        if _suppress_generic_outro(
+            english, utt.end_s, cfg=cfg, source_info=source_info,
+        ):
+            log.info(
+                "Suppressed generic Whisper outro during gameplay "
+                "(gen=%d %.2f-%.2fs live=%s duration=%s): %r",
+                utt.generation, utt.start_s, utt.end_s,
+                (source_info or {}).get("live", "unknown"),
+                (source_info or {}).get("duration_s", "unknown"), english,
+            )
+            continue
         if (
             getattr(cfg, "suppress_repeated_signoffs", True) and
             _is_repeated_outro(
@@ -370,7 +431,8 @@ def run(
             target=_guard_stage,
             args=("whisper", run_whisper, failures, whisper, speaker_q, sub_q,
                   generation, session_cache,
-                  {"gtcrn": cfg.gtcrn.enabled, "speaker": cfg.speaker.enabled}),
+                  {"gtcrn": cfg.gtcrn.enabled, "speaker": cfg.speaker.enabled},
+                  {"live": ingest.source.live, "duration_s": ingest.source.duration}),
             name="whisper", daemon=True,
         ),
     ]

@@ -118,8 +118,25 @@ class ConciseStyleTests(unittest.TestCase):
         run_whisper(engine, incoming, outgoing)
         self.assertEqual(outgoing.get_nowait().en, "I need armor.")
         self.assertIsNone(outgoing.get_nowait())
-        self.assertIn("Short, plain English", engine.calls[0][0])
+        self.assertIsNone(engine.calls[0][0])  # no instruction-style Whisper priming
         self.assertEqual(engine.calls[0][1], "Watame")
+
+    def test_explicit_style_prompt_can_still_be_opted_in(self):
+        class Fake:
+            def __init__(self):
+                self.cfg = WhisperConfig(style_prompt="GTA gaming subtitles.")
+                self.last_prompt = None
+            def decode_audio(self, audio, *, prompt=None, hotwords=None,
+                             temperature=None):
+                self.last_prompt = prompt
+                return WhisperDecode("Get in the car.", avg_logprob=-.2)
+        engine = Fake()
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(0, 1, np.ones(16000, dtype=np.float32)))
+        incoming.put(None)
+        run_whisper(engine, incoming, outgoing)
+        self.assertEqual(outgoing.get_nowait().en, "Get in the car.")
+        self.assertEqual(engine.last_prompt, "GTA gaming subtitles.")
 
     def test_style_prompt_can_be_disabled_without_changing_raw_translation(self):
         class Fake:

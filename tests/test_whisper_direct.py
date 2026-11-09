@@ -91,9 +91,7 @@ class WhisperDirectTests(unittest.TestCase):
         outputs = []
         while (item := result.get_nowait()) is not None:
             outputs.append(item.en)
-        self.assertEqual(outputs, [
-            "Thank you for watching.", "Thank you!", "Let's go.",
-        ])
+        self.assertEqual(outputs, ["Thank you!", "Let's go."])
 
     def test_outro_suppression_resets_on_new_seek_generation(self):
         class AlwaysOutro:
@@ -108,9 +106,7 @@ class WhisperDirectTests(unittest.TestCase):
                              generation=1))
         source.put(None)
         run_whisper(AlwaysOutro(), source, result)
-        self.assertEqual(result.get_nowait().en, "Thank you for watching.")
         self.assertTrue(result.get_nowait().reset)
-        self.assertEqual(result.get_nowait().en, "Thank you for watching.")
         self.assertIsNone(result.get_nowait())
 
     def test_defaults_are_large_v3_cuda_translate(self):

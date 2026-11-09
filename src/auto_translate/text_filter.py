@@ -166,9 +166,10 @@ _REACTION_RUN = re.compile(
 def is_isolated_reaction(text: str) -> bool:
     """Return True only when the entire utterance is filler/interjections.
 
-    Aggressive mode intentionally drops isolated acknowledgements ("うん",
-    "はい") and praise ("すごい"). Speech containing any other words is
-    preserved in full, including when an interjection begins the sentence.
+    Keep meaningful acknowledgements ("うん", "はい") and praise
+    ("すごい") as complete dialogue. Drop only obvious isolated fillers,
+    gasps, and other nonlinguistic reactions. Speech containing other words
+    is preserved in full, including when an interjection starts a sentence.
     """
     normalized = unicodedata.normalize("NFKC", text).casefold()
     normalized = "".join(

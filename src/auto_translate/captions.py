@@ -174,7 +174,12 @@ _NEGATION = re.compile(r"ない|無い|ません|じゃない|ではない|で�
 
 
 def _caption_compact(value: str) -> str:
-    return _COMPACT.sub("", unicodedata.normalize("NFKC", value).casefold())
+    value = unicodedata.normalize("NFKC", value).casefold()
+    value = "".join(
+        chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch
+        for ch in value
+    )
+    return _COMPACT.sub("", value)
 
 
 def prefer_youtube_japanese(

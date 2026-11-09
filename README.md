@@ -35,8 +35,10 @@ VRAM. Model card: https://huggingface.co/ibm-granite/granite-speech-5.0-2b
 
 ## Run
 
+    cd /d C:\Games\video-translate-granite5
     git fetch origin
-    git switch -c experiment/granite-speech-5-direct --track origin/experiment/granite-speech-5-direct
+    git switch experiment/granite-speech-5-direct
+    git pull --ff-only origin experiment/granite-speech-5-direct
     uv sync
 
 Launch Start translate.bat and paste a YouTube live or VOD URL.

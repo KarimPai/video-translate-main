@@ -60,52 +60,17 @@ class SpeakerConfig:
 
 
 @dataclass
-class AsrConfig:
-    """Haas-ja-v1.0 Q8_0 on speech.cpp Vulkan; sole ASR backend."""
-    haas_model: str = "haas-ja-v1.0:q8_0"
-    haas_device: str = "Vulkan0"
-    # Q8_0's CPU decoder leaves more VRAM for PLaMo 8B.
-    haas_decode_on_cpu: bool = True
-    haas_keywords_enabled: bool = True
-    haas_keywords_file: str = "haas_vocabulary.toml"
-    haas_keywords_alpha: float = 1.5
-    haas_keywords_guard: bool = True
-    response_timeout_s: float = 30.0
-    youtube_captions_first: bool = True  # VOD only; Haas verifies/fills missing captions
-    retry_uncertain_enabled: bool = True
-    retry_max_audio_s: float = 8.0
-    retry_max_passes: int = 3  # includes the initial Haas decode
-    retry_live_max_passes: int = 2
-    retry_budget_s: float = 3.0  # VOD: total extra-pass wall-clock budget
-    retry_live_budget_s: float = 1.5  # live: stricter extra-pass deadline
-    retry_timeout_cooldown_s: float = 15.0  # skip optional retries after a timeout
-    engine_noise_ack_guard: bool = True  # conservative "うん" audio evidence filter
-    blocklist: list[str] = field(default_factory=list)
+class GraniteConfig:
+    """One local Granite Speech 5.0 Q8 model for direct Japanese audio->English."""
+    model_id: str = "ibm-granite/granite-speech-5.0-2b-GGUF:Q8_0"
+    base_url: str = "http://127.0.0.1:9797"
+    llama_server_path: str = ""  # use llama-server.exe on PATH
+    context_tokens: int = 4096
+    gpu_layers: int = 99
+    prompt: str = "translate the speech to English with proper punctuation and capitalization."
+    request_timeout_s: float = 45.0
+    startup_timeout_s: float = 1200.0
 
-
-@dataclass
-class TranslateConfig:
-    """PLaMo 3 Translate 8B Q3_K_M: sole offline Japanese→English LLM."""
-
-    plamo_base_url: str = "http://127.0.0.1:8005/v1"
-    plamo_model: str = "plamo-3-translate-8b"
-    plamo_hf_repo: str = "pfnet/plamo-3-translate-8b-GGUF"
-    plamo_hf_file: str = "plamo-3-translate-8b-Q3_K_M.gguf"
-    plamo_context: int = 1024
-    plamo_gpu_layers: int = 99
-    max_tokens: int = 128
-    timeout_s: float = 25.0
-    load_timeout_s: float = 600.0
-    context_lines: int = 2  # bounded native PFML3 prior JP/EN pairs
-    context_title_enabled: bool = True  # video title/channel only; no invented scene
-    memory_lines: int = 12  # previous local repeat consistency (no prompt history)
-    lookahead_s: float = 2.0  # bounded future Japanese context, not LLM prompt history
-    fragment_join_enabled: bool = True
-    fragment_join_gap_s: float = 0.25
-    glossary: str = "glossary.toml"
-    quality_recheck_enabled: bool = True
-    quality_recheck_timeout_s: float = 4.0
-    quality_recheck_min_interval_s: float = 3.0
 
 @dataclass
 class OutputConfig:
@@ -141,8 +106,7 @@ class Config:
     gtcrn: GtcrnConfig = field(default_factory=GtcrnConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
-    asr: AsrConfig = field(default_factory=AsrConfig)
-    translate: TranslateConfig = field(default_factory=TranslateConfig)
+    granite: GraniteConfig = field(default_factory=GraniteConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
     stats_interval_s: float = 30.0
@@ -162,14 +126,6 @@ def load_config(path: Path) -> Config:
     ingest_data.pop("pitch_semitones", None)
     ingest_data.pop("pitch_shift_semitones", None)
 
-    # Ignore retired ASR fields in existing git-ignored config.toml.
-    asr_data = dict(data.get("asr", {}))
-    valid_asr_keys = {entry.name for entry in fields(AsrConfig)}
-    asr_data = {
-        key: value for key, value in asr_data.items()
-        if key in valid_asr_keys
-    }
-
     mpv_data = dict(data.get("mpv", {}))
     # Ignore removed playback and speaker settings in older configs.
     for obsolete in (
@@ -185,12 +141,11 @@ def load_config(path: Path) -> Config:
         if key in valid_speaker_keys
     }
 
-    # Keep the existing git-ignored config.toml compatible when switching
-    # branches: ignore all outdated engine fields, not just known names.
-    valid_translate_keys = {entry.name for entry in fields(TranslateConfig)}
-    translate_data = {
-        key: value for key, value in data.get("translate", {}).items()
-        if key in valid_translate_keys
+    # Legacy [asr], [translate] and [captions] blocks are intentionally
+    # ignored. The Granite-only branch never initializes those models.
+    granite_data = {
+        name: value for name, value in data.get("granite", {}).items()
+        if name in {entry.name for entry in fields(GraniteConfig)}
     }
 
     return Config(
@@ -199,8 +154,7 @@ def load_config(path: Path) -> Config:
         gtcrn=GtcrnConfig(**data.get("gtcrn", {})),
         vad=VadConfig(**data.get("vad", {})),
         speaker=SpeakerConfig(**speaker_data),
-        asr=AsrConfig(**asr_data),
-        translate=TranslateConfig(**translate_data),
+        granite=GraniteConfig(**granite_data),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),

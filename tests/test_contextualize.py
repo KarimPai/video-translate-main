@@ -81,6 +81,51 @@ class ContextualizerTests(unittest.TestCase):
         self.assertEqual(rows[0].ja, "でちょっと 車をカスタムして")
         self.assertEqual((rows[0].start_s, rows[0].end_s), (1.0, 2.6))
 
+    def test_joins_clipped_clause_to_its_explicit_continuation(self):
+        rows = self.process(
+            Transcript(1.0, 2.0, "降りていただければなと"),
+            Transcript(2.08, 3.4, "思うんですけれどもえ"),
+        )
+        cues = [row for row in rows if isinstance(row, Transcript)]
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0].start_s, 1.0)
+        self.assertEqual(cues[0].end_s, 3.4)
+        self.assertIn("思うんです", cues[0].ja)
+
+    def test_does_not_join_clipped_clause_after_handoff_or_long_gap(self):
+        a = Transcript(1, 2, "降りていただければなと")
+        b = Transcript(2.1, 3.2, "思うんです", speaker_handoff=True)
+        c = Transcript(3.0, 3.5, "思うんです")
+        self.assertFalse(should_join_fragments(a, b))
+        self.assertFalse(should_join_fragments(a, c))
+
+    def test_only_isolated_decoder_particles_and_sfx_are_dropped(self):
+        rows = self.process(
+            Transcript(1.0, 1.2, "に"),
+            Transcript(2.0, 2.2, "す"),
+            Transcript(3.0, 3.3, "コクッ"),
+            Transcript(4.0, 4.3, "ぺろ"),
+            Transcript(5.0, 5.3, "うん。"),
+            Transcript(6.0, 6.3, "はい。"),
+            Transcript(7.0, 7.3, "すごい。"),
+            Transcript(8.0, 8.3, "ぺこちゃん"),
+            Transcript(9.0, 9.3, "警察が来た"),
+        )
+        cues = [row.ja for row in rows if isinstance(row, Transcript)]
+        self.assertEqual(
+            cues, ["うん。", "はい。", "すごい。", "ぺこちゃん", "警察が来た"],
+        )
+
+    def test_rocket_ammo_repair_requires_explicit_rocket_launcher(self):
+        self.assertEqual(
+            repair_nearby_terms("ロケランの玉一千万"),
+            "ロケランの弾一千万",
+        )
+        self.assertEqual(
+            repair_nearby_terms("野球の玉一千万"),
+            "野球の玉一千万",
+        )
+
     def test_handoff_never_joins_different_voices(self):
         first = Transcript(1, 1.5, "でちょっと")
         second = Transcript(1.56, 2, "車をカスタムして", speaker_handoff=True)

@@ -106,6 +106,10 @@ class PlamoTranslator:
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
         self._last_recheck_at = float("-inf")
+        # PFML3 translation is deterministic (temperature=0, source-only).
+        # Cache raw completions, then apply context-dependent repairs anew.
+        self._raw_cache: dict[str, str] = {}
+        self._raw_cache_limit = 512
         self.vod_title = " ".join(vod_title.split())[:200]
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.url = self.base_url + "/completions"
@@ -243,7 +247,9 @@ class PlamoTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 return reused
-        english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
+        english = self._raw_cache.get(ja)
+        if english is None:
+            english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
         # PFML3 does not support a free-form system instruction. Keep its
         # official completion format and retry only an invalid completion.
         if (_invalid_output(ja, english)
@@ -261,6 +267,10 @@ class PlamoTranslator:
         if _invalid_output(ja, english):
             log.warning("PLaMo invalid completion skipped for source=%r", ja[:100])
             return SKIP_TOKEN
+        if ja not in self._raw_cache:
+            if len(self._raw_cache) >= self._raw_cache_limit:
+                self._raw_cache.pop(next(iter(self._raw_cache)))
+            self._raw_cache[ja] = english
         english = repair_high_confidence_meaning(ja, english)
         recent_ja = [j for j, _ in history[-8:]]
         english = repair_valorant_translation(ja, english, recent_ja, False)

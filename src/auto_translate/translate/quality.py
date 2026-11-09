@@ -65,6 +65,20 @@ def is_obvious_nonverbal_japanese(text: str) -> bool:
 def repair_high_confidence_meaning(japanese: str, english: str) -> str:
     """Apply only unambiguous meaning fixes already tested on real streams."""
     source = unicodedata.normalize("NFKC", japanese)
+    # Meaning is explicit in these Japanese sources; never rewrite a
+    # conversational sentence on speculation about the unseen audio.
+    if re.fullmatch(r"(?:うーす|うっす|おいーす|オイース)[。!！\s]*", source):
+        return "Hey!"
+    if "オイース" in source or "おいーす" in source:
+        english = re.sub(r"(?i)\b(?:oyis|oisu|oiesu)\b", "hey", english)
+    if "ぼたんちゃん" in source:
+        english = re.sub(r"(?i)\bbutton[ -]?chan\b", "Botan-chan", english)
+    if "おかゆ" in source and re.search(r"もしもし|おはよう|おかゆ(?:ちゃん|さん|先輩)", source):
+        english = re.sub(r"(?i)\b(?:yuka|okae)\b", "Okayu", english)
+    if "アジト" in source and "集合" in source:
+        english = re.sub(r"(?i)\baji\b", "the hideout", english)
+    if re.search(r"弾(?:を)?(?:買|持|拾|補充)", source):
+        english = re.sub(r"(?i)\b(?:jewels|gems)\b", "ammo", english)
 
     if _THIRTY_MAN_LINE.fullmatch(source):
         english = _THIRTY_THOUSAND_EN.sub("300,000", english)

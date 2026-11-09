@@ -63,7 +63,7 @@ class RetryScoringTests(unittest.TestCase):
     def test_weak_caption_never_controls_selection(self):
         cap = match("バーガーキング食べた", reliable=False)
         choice = select_best(
-            ["防号キング", "バーガーキング食べた"],
+            ["車を修理して", "バーガーキング食べた"],
             duration_s=1.4, caption=cap,
         )
         self.assertEqual(choice.attempt, 1)

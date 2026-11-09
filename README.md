@@ -66,6 +66,24 @@ glossary = "glossary.toml"
 
 Retired CAT settings (`cat_*`), old Index/Qwen translation keys and obsolete quality-retry fields are ignored in legacy local configuration files. Runtime speech segmentation and subtitle timings are otherwise unchanged.
 
+## DeepFilterNet3 speech enhancement (enabled by default)
+
+DeepFilterNet3 now processes the **audio used by FireRedVAD and Haas ASR** before speech segmentation; MPV continues playing the original audio. FFmpeg provides 48 kHz mono PCM to the existing enhancement worker, which converts it back to 16 kHz for the ASR pipeline. UVR vocal separation remains disabled and cannot be enabled simultaneously.
+
+On first enabled launch, `Start translate.bat` checks for the `deepfilternet-rs` and `scipy` extras and, if missing, installs them with `uv sync --extra diarization --extra deepfilter`. Normal launches continue using `uv run --no-sync`.
+
+The effective configuration comes from `config.toml` if one is present, otherwise defaults. Existing **git-ignored** local config values can override the new default; to enable DeepFilterNet in such a file, use:
+
+```toml
+[deepfilter]
+enabled = true
+
+[separation]
+enabled = false
+```
+
+For an A/B comparison, set `[deepfilter] enabled = false`. Speech enhancement can add CPU latency and alter consonants or quiet speech; verify whether it actually reduces game-noise ASR hallucinations before promoting it to `main`. Missing dependencies or enhancement failures are errors rather than silently falling back to unfiltered audio.
+
 ## Install / run (Windows)
 
 New isolated checkout:
@@ -74,7 +92,7 @@ New isolated checkout:
 cd /d C:\Games
 git clone --branch test-plamo8b-q3 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-plamo8b
 cd /d C:\Games\video-translate-plamo8b
-uv sync --extra diarization
+uv sync --extra diarization --extra deepfilter
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 "Start translate.bat"
 ```
@@ -85,6 +103,7 @@ Alternatively, to reuse the existing `C:\Games\video-translate-cat` checkout **w
 cd /d C:\Games\video-translate-cat
 git fetch origin test-plamo8b-q3:refs/remotes/origin/test-plamo8b-q3
 git switch -c test-plamo8b-q3 --track origin/test-plamo8b-q3
+uv sync --extra diarization --extra deepfilter
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 "Start translate.bat"
 ```

@@ -126,6 +126,30 @@ class CaptionFallbackTests(unittest.TestCase):
         run_asr(EmptyASR(), in_q, out_q, captions=index)
         self.assertIsNone(out_q.get_nowait())
 
+    def test_multi_speaker_captions_do_not_replace_unrelated_haas_line(self):
+        # Two adjacent VTT cues inside one VAD utterance may be different
+        # speakers. Never substitute their combined text for a single voice.
+        index = CaptionIndex([
+            CaptionCue(1.0, 1.8, "ここで待って"),
+            CaptionCue(1.8, 2.5, "そっちにいる"),
+        ])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(TextASR("もう行きます"), incoming, outgoing, captions=index)
+        self.assertEqual(outgoing.get_nowait().ja, "もう行きます")
+
+    def test_empty_haas_does_not_merge_unrelated_caption_speakers(self):
+        index = CaptionIndex([
+            CaptionCue(1.0, 1.8, "ここで待って"),
+            CaptionCue(1.8, 2.5, "そっちにいる"),
+        ])
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(1.0, 2.5, np.zeros(24000, dtype=np.float32)))
+        incoming.put(None)
+        run_asr(EmptyASR(), incoming, outgoing, captions=index)
+        self.assertIsNone(outgoing.get_nowait())
+
     def test_youtube_caption_first_fixes_close_homophone(self):
         index = CaptionIndex([CaptionCue(1.0, 2.5, "これここ貼る?")])
         incoming, outgoing = queue.Queue(), queue.Queue()

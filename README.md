@@ -12,7 +12,7 @@ LLM. The model reads Japanese audio and writes English directly.
         -> FFmpeg: 16 kHz mono audio
         -> FireRedVAD (CUDA): bounded utterances, no noise probes by default
         -> Granite Speech 5.0 2B Q8_0 (llama-server, audio->English)
-           with IBM-format keyword biasing for common Hololive names
+           with unbiased Japanese-audio to English translation by default
         -> MPV English subtitles / terminal EN-only / optional browser
 
 GTCRN denoising and Sherpa speaker segmentation are OFF by default, but can
@@ -64,10 +64,10 @@ Do not run another server on that port.
     request_timeout_s = 45.0
     startup_timeout_s = 1200.0
     prompt = "translate the speech to English with proper punctuation and capitalization."
-    keywords = ["Watame", "Towa", "Suisei", "Pekora", "Miko", "Subaru"]
+    keywords = [] # unbiased default; optionally add names genuinely relevant to a stream
     # llama_server_path = "C:\\tools\\llama.cpp\\llama-server.exe"
 
-When keywords is nonempty, the model uses IBM's documented AST keyword
+When keywords is nonempty (opt-in only), the model uses IBM's documented AST keyword
 template: "translate the speech to English. Keywords: Watame, Towa, ...".
 This replaces the punctuation prompt, rather than concatenating unsupported
 instructions. Set `keywords = []` to use the `prompt` setting instead.
@@ -91,11 +91,20 @@ If an existing git-ignored config.toml sets enabled=true, that local
 override still takes precedence over the new defaults.
 Existing [asr] and [translate] sections are ignored.
 
-VAD defaults are 0.30 speech, 0.20 negative threshold, 400 ms silence,
-200 ms pad, 100 ms minimum speech, 7 s utterance (max 8 s). Audio is
+VAD defaults are 0.50 speech, 0.30 negative threshold, 500 ms silence,
+150 ms pad, 250 ms minimum confirmed speech, 80 ms continuous onset,
+and 5-frame probability smoothing; 7 s utterance (max 8 s). Audio is
 segmented locally before Granite inference. VAD-negative probes are off by
 default because non-speech music/game sounds can lead to fabricated words.
-For quiet voices missed by VAD, optionally set [vad] fallback_s = 5.0.
+For quiet voices missed by VAD, start by reducing [vad].threshold, or,
+as a separate experiment, optionally set [vad] fallback_s = 5.0.
+Stricter speech detection can miss quiet Japanese voices. The VAD only
+rejects short/noisy segments; it does not prove the retained audio is speech,
+does not lock Japanese source language, and cannot repair incorrect translations.
+Use the same timestamps and original Japanese audio when comparing runs.
+
+Check for existing local config.toml overrides before testing: explicit
+[granite].keywords and [vad] values take precedence over these new defaults.
 
 ## Experiment boundaries
 

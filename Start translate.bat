@@ -31,14 +31,14 @@ if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src"
 )
 
-rem Runtime still needs FireRedVAD CUDA, GTCRN and Sherpa on CPU.
+rem FireRedVAD remains required. GTCRN and Sherpa are disabled by default.
 set "NEED_SYNC=0"
 if not exist "uv.lock" set "NEED_SYNC=1"
-uv run --no-sync python -c "import sherpa_onnx; assert hasattr(sherpa_onnx, 'OnlineSpeechDenoiser') and hasattr(sherpa_onnx, 'OnlineSpeechDenoiserConfig')" >nul 2>nul
+uv run --no-sync python -c "import numpy, fireredvad, auto_translate" >nul 2>nul
 if errorlevel 1 set "NEED_SYNC=1"
 if "%NEED_SYNC%"=="1" (
-    echo Installing FireRedVAD / GTCRN / Sherpa runtime...
-    uv sync --extra diarization
+    echo Installing Granite Speech and FireRedVAD runtime...
+    uv sync
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.
         pause

@@ -216,6 +216,14 @@ def prefer_youtube_japanese(
     if a == c:
         return caption, "youtube_primary_haas_agreed"
 
+    # A single aligned caption may complete a Haas transcript cut short
+    # at the end. Require a meaningful shared four-character prefix rather
+    # than guessing based on timestamps alone.
+    if (match.speech_cues == 1 and len(a) >= 4
+            and c.startswith(a) and len(c) >= len(a) + 3
+            and bool(_NEGATION.search(haas)) == bool(_NEGATION.search(caption))):
+        return caption, "youtube_primary_haas_completed"
+
     # A two-cue match could include another speaker. Never switch the
     # entire transcript unless both recognize essentially the same words.
     agreement = SequenceMatcher(None, a, c, autojunk=False).ratio()

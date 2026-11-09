@@ -40,6 +40,7 @@ _CLIPPED_ENDINGS = (
     ("なりまし", ("た",)),
     ("てい", ("ます", "ました")),
     ("しちゃ", ("った",)),
+    ("ごめん", ("なさい",)),
 )
 
 
@@ -67,21 +68,30 @@ def _clipped_ending(previous: str, following: str) -> bool:
 
 
 def _can_join(first: CaptionCue, following: CaptionCue, gap_s: float) -> bool:
-    """Restrict reconstruction to adjacent cues with explicit continuation."""
-    gap = following.start_s - first.end_s
-    if gap > max(0.25, gap_s) or gap < -2.5:
+    """Join true clipped grammar across rolling subtitle display intervals.
+
+    For explicit word endings, use consecutive caption onsets, not the
+    YouTube subtitle *display duration*: rolling JSON3 cues often overlap
+    by several seconds. For ordinary connective words, retain the stricter
+    existing end-to-start and lexical checks.
+    """
+    onset_gap = following.start_s - first.start_s
+    display_gap = following.start_s - first.end_s
+    if onset_gap < -0.05:
         return False
-    if following.end_s - first.start_s > 8.0:
-        return False
-    if len(first.text) + len(following.text) > 130:
+    if len(first.text) + len(following.text) > 160:
         return False
     if _END_PUNCT.search(first.text):
         return False
-    # Automatic JSON3 display intervals overlap by up to a couple seconds,
-    # even when the next syllable belongs directly to a clipped word.
     if _clipped_ending(first.text, following.text):
-        return True
-    if gap < -0.12:
+        return (
+            onset_gap <= 4.0
+            and display_gap <= 1.25
+            and following.end_s - first.start_s <= 12.0
+        )
+    if following.end_s - first.start_s > 8.0:
+        return False
+    if not (-0.12 <= display_gap <= max(0.25, gap_s)):
         return False
     return should_join_fragments(
         Transcript(first.start_s, first.end_s, first.text),
@@ -103,6 +113,7 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
     previous_end = -1.0
     rolling_repeats = 0
     fragment_joins = 0
+    skipped_clipped = 0
 
     for cue in index.cues:
         text = _clean(cue.text)
@@ -167,12 +178,28 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
             )
             fragment_joins += 1
         else:
+            if (
+                output
+                and _clipped_ending(output[-1].text, next_cue.text)
+                and skipped_clipped < 12
+            ):
+                skipped_clipped += 1
+                prev = output[-1]
+                log.info(
+                    "Caption split not joined: %.2f-%.2f %r => %.2f-%.2f %r"
+                    " (onset_gap=%.2fs display_gap=%.2fs)",
+                    prev.start_s, prev.end_s, prev.text[-32:],
+                    next_cue.start_s, next_cue.end_s, next_cue.text[:32],
+                    next_cue.start_s - prev.start_s,
+                    next_cue.start_s - prev.end_s,
+                )
             output.append(next_cue)
 
     log.info(
         "Japanese captions reconstructed: source=%d output=%d "
-        "rolling=%d joined=%d",
+        "rolling=%d joined=%d unresolved_clipped_logged=%d",
         len(index.cues), len(output), rolling_repeats, fragment_joins,
+        skipped_clipped,
     )
     return output
 

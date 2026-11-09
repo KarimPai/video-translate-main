@@ -12,7 +12,7 @@ from unittest.mock import patch
 import numpy as np
 
 from auto_translate.config import GraniteConfig, load_config
-from auto_translate.granite import _clean_result, build_multipart, encode_wav
+from auto_translate.granite import _clean_result, build_multipart, build_translation_prompt, encode_wav
 from auto_translate.pipeline import _discard_probe, run_granite
 from auto_translate.session_cache import SessionSubtitleCache
 from auto_translate.types import AudioProgress, Subtitle, Utterance
@@ -49,6 +49,30 @@ class GraniteWireTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _clean_result({"error": "unsupported model"})
 
+    def test_documented_keyword_ast_prompt(self):
+        cfg = GraniteConfig(keywords=[" Watame ", "Towa", "watame", "Suisei"])
+        self.assertEqual(
+            build_translation_prompt(cfg),
+            "translate the speech to English. Keywords: Watame, Towa, Suisei",
+        )
+        self.assertEqual(
+            build_translation_prompt(GraniteConfig(keywords=[])),
+            "translate the speech to English with proper punctuation and capitalization.",
+        )
+
+    def test_custom_prompt_is_used_when_keywords_are_disabled(self):
+        self.assertEqual(
+            build_translation_prompt(GraniteConfig(prompt="translate the speech to English.",
+                                                   keywords=[])),
+            "translate the speech to English.",
+        )
+
+    def test_invalid_keywords_fail_fast(self):
+        with self.assertRaisesRegex(ValueError, "must be strings"):
+            build_translation_prompt(GraniteConfig(keywords=["Watame", 5]))
+        with self.assertRaisesRegex(ValueError, "without commas"):
+            build_translation_prompt(GraniteConfig(keywords=["Watame, Towa"]))
+
     def test_http_uses_ibm_audio_transcription_endpoint(self):
         from auto_translate.granite import GraniteSpeech5
 
@@ -63,7 +87,7 @@ class GraniteWireTests(unittest.TestCase):
         self.assertEqual(submitted.get_method(), "POST")
         self.assertTrue(submitted.full_url.endswith("/v1/audio/transcriptions"))
         self.assertIn(b"speech.wav", submitted.data)
-        self.assertIn(b"translate the speech to English", submitted.data)
+        self.assertIn(b"translate the speech to English. Keywords: Watame", submitted.data)
 
     def test_model_is_direct_ast_not_japanese_asr(self):
         cfg = GraniteConfig()

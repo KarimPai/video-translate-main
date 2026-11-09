@@ -21,6 +21,7 @@ class PlamoTranslationTests(unittest.TestCase):
         obj.base_url = obj.cfg.plamo_base_url
         obj.url = obj.base_url + "/completions"
         obj.memory_lines = 0
+        obj._last_recheck_at = float("-inf")
         return obj
 
     def test_official_pfml3_source_only_no_chat_wrapper(self):
@@ -86,11 +87,31 @@ class PlamoTranslationTests(unittest.TestCase):
             self.assertEqual(obj.translate("ああああああ", []), "[SKIP]")
         run.assert_not_called()
 
-    def test_invalid_completion_is_suppressed_without_extra_inference(self):
+    def test_invalid_completion_is_suppressed_after_bounded_retry(self):
         obj = self._unit()
         with patch.object(obj, "_complete", return_value="I don't see the Japanese text.") as run:
             self.assertEqual(obj.translate("なるほど", []), "[SKIP]")
-        run.assert_called_once()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[1].kwargs["timeout"],
+            obj.cfg.quality_recheck_timeout_s,
+        )
+
+    def test_invalid_completion_can_recover_once(self):
+        obj = self._unit()
+        with patch.object(
+            obj, "_complete", side_effect=["I don't see the Japanese text.", "I see."]
+        ) as run:
+            self.assertEqual(obj.translate("なるほど", []), "I see.")
+        self.assertEqual(run.call_count, 2)
+
+    def test_invalid_completion_retry_is_rate_limited(self):
+        obj = self._unit()
+        with patch.object(obj, "_complete", return_value="I don't see the Japanese text.") as run:
+            self.assertEqual(obj.translate("なるほど", []), "[SKIP]")
+            self.assertEqual(obj.translate("ちょっと", []), "[SKIP]")
+        # First translation retries once; second is within retry cooldown.
+        self.assertEqual(run.call_count, 3)
 
     def test_valid_complete_sentence_is_returned(self):
         obj = self._unit()

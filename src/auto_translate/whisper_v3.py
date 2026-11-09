@@ -1,13 +1,14 @@
-"""Whisper Large-v3 direct Japanese speech-to-English translation via faster-whisper.
+"""Direct Japanese speech-to-English Whisper Large-v3 inference.
 
-This is one speech model, not a Japanese ASR + translation LLM cascade.
-FireRedVAD decides where each utterance begins/ends; Whisper handles JP->EN.
+The model is loaded once. The public decode_audio() method exposes Whisper's
+own evidence about reliability for optional one-pass retry and diagnostics.
 """
-
 from __future__ import annotations
 
 import logging
 import math
+import time
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -17,8 +18,32 @@ from .types import SAMPLE_RATE
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class WhisperDecode:
+    text: str
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
+    compression_ratio: float | None = None
+    decoded_segments: int = 0
+    discarded_segments: int = 0
+    duration_s: float = 0.0
+    temperature: float = 0.0
+
+    @property
+    def suspicious(self) -> bool:
+        # No speech at all is not automatically a failed translation.
+        if self.discarded_segments:
+            return True
+        if not self.text or self.avg_logprob is None:
+            return False
+        return self.avg_logprob < -0.75 or (
+            self.compression_ratio is not None and
+            self.compression_ratio > 2.0
+        )
+
+
 class WhisperLargeV3:
-    """Load one CTranslate2 Whisper Large-v3 model and reuse it for all utterances."""
+    """One reusable GPU CTranslate2 model, no remote services."""
 
     def __init__(self, cfg: WhisperConfig, *, model: object | None = None) -> None:
         self.cfg = cfg
@@ -30,8 +55,7 @@ class WhisperLargeV3:
             self._model = model
             return
 
-        # Import only after Windows CUDA DLL directories have been initialized
-        # by the application entry point.
+        # __main__ initializes Windows CUDA DLL directories before importing.
         from faster_whisper import WhisperModel
 
         log.info("Loading Whisper %s on %s (%s)", cfg.model, cfg.device, cfg.compute_type)
@@ -52,10 +76,21 @@ class WhisperLargeV3:
         log.info("Whisper Large-v3 ready: Japanese audio -> English, no second model")
 
     def translate_audio(self, audio: np.ndarray) -> str:
-        """Decode one 16-kHz mono utterance directly to English.
+        """Compatibility API for existing callers and tests."""
+        return self.decode_audio(audio).text
 
-        Every call is stateless across utterances; VAD already stripped
-        non-speech so faster-whisper's additional Silero VAD is disabled.
+    def decode_audio(
+        self,
+        audio: np.ndarray,
+        *,
+        prompt: str | None = None,
+        hotwords: str | None = None,
+        temperature: float | None = None,
+    ) -> WhisperDecode:
+        """Decode one bounded utterance, optionally with short English hints.
+
+        The caller owns the utterance's source timestamps; adding context audio
+        must never shift those timestamps or bypass duplicate-text validation.
         """
         pcm = np.asarray(audio, dtype=np.float32).reshape(-1)
         if pcm.size == 0:
@@ -63,9 +98,9 @@ class WhisperLargeV3:
         if not np.all(np.isfinite(pcm)):
             raise ValueError("audio contains non-finite samples")
 
-        # PCM arrives from FFmpeg/FireRedVAD at exactly SAMPLE_RATE.
-        # For numpy input, faster-whisper expects this 16-kHz waveform.
         assert SAMPLE_RATE == 16000
+        used_temperature = self.cfg.temperature if temperature is None else temperature
+        started = time.monotonic()
         segments, _ = self._model.transcribe(
             np.ascontiguousarray(pcm),
             language="ja",
@@ -75,25 +110,30 @@ class WhisperLargeV3:
             repetition_penalty=self.cfg.repetition_penalty,
             no_repeat_ngram_size=self.cfg.no_repeat_ngram_size,
             max_new_tokens=self.cfg.max_new_tokens,
-            temperature=self.cfg.temperature,
-            condition_on_previous_text=False,
+            temperature=used_temperature,
+            condition_on_previous_text=self.cfg.condition_on_previous_text,
             vad_filter=False,
             no_speech_threshold=self.cfg.no_speech_threshold,
             log_prob_threshold=self.cfg.log_prob_threshold,
             compression_ratio_threshold=self.cfg.compression_ratio_threshold,
-            initial_prompt=None,
-            hotwords=None,
+            initial_prompt=prompt or None,
+            hotwords=hotwords or None,
             word_timestamps=False,
         )
-        # IMPORTANT: faster-whisper segments are lazy; inference occurs only
-        # during iteration. Internal no_speech detection checks confidence as
-        # well, so we also reject *final* poor-confidence/noisy segments.
-        text_parts: list[str] = []
+
+        # The faster-whisper segments generator runs inference on iteration.
+        texts: list[str] = []
+        scores: list[tuple[int, float]] = []
+        ratios: list[float] = []
+        nospeech: list[float] = []
+        total = discarded = 0
         for segment in segments:
             text = segment.text.strip()
             if not text:
                 continue
+            total += 1
             if self.cfg.reject_low_confidence and self._unreliable(segment):
+                discarded += 1
                 log.info(
                     "Discarded uncertain Whisper segment: no_speech=%s "
                     "avg_logprob=%s compression=%s text=%r",
@@ -103,16 +143,38 @@ class WhisperLargeV3:
                     text[:100],
                 )
                 continue
-            text_parts.append(text)
-        return " ".join(text_parts).strip()
+            texts.append(text)
+            lp = getattr(segment, "avg_logprob", None)
+            ratio = getattr(segment, "compression_ratio", None)
+            ns = getattr(segment, "no_speech_prob", None)
+            if lp is not None and math.isfinite(float(lp)):
+                scores.append((max(1, len(text)), float(lp)))
+            if ratio is not None and math.isfinite(float(ratio)):
+                ratios.append(float(ratio))
+            if ns is not None and math.isfinite(float(ns)):
+                nospeech.append(float(ns))
+        avg = (
+            sum(weight * score for weight, score in scores) /
+            sum(weight for weight, _ in scores)
+        ) if scores else None
+
+        return WhisperDecode(
+            text=" ".join(texts).strip(),
+            avg_logprob=avg,
+            no_speech_prob=max(nospeech) if nospeech else None,
+            compression_ratio=max(ratios) if ratios else None,
+            decoded_segments=total,
+            discarded_segments=discarded,
+            duration_s=time.monotonic() - started,
+            temperature=float(used_temperature),
+        )
 
     def _unreliable(self, segment: object) -> bool:
-        """Use decoder evidence, not a blanket ban on particular words."""
+        """Use model confidence rather than a hard-coded profanity/phrase list."""
         cfg = self.cfg
         avg = getattr(segment, "avg_logprob", None)
         ratio = getattr(segment, "compression_ratio", None)
         silent = getattr(segment, "no_speech_prob", None)
-        # Tests and third-party backends can omit scores. Do not invent them.
         for value in (avg, ratio, silent):
             if value is not None and not math.isfinite(float(value)):
                 return True
@@ -127,5 +189,4 @@ class WhisperLargeV3:
         return False
 
     def close(self) -> None:
-        """Drop our model reference; no llama-server or subprocess is used."""
         self._model = None

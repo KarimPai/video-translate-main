@@ -46,6 +46,41 @@ fixed VOD segment.
 | Fallback minimum length | 1.5 s |
 | Fallback minimum RMS | −50 dBFS |
 
+## Japanese caption-first recognition (VOD)
+
+For a YouTube **VOD**, the pipeline downloads Japanese subtitles in parallel
+with model initialization. Creator-provided Japanese captions are accepted when
+available; otherwise YouTube's Japanese auto-captions are used. The download is
+optional; it never replaces local Haas ASR or requires YouTube English
+translation.
+
+- **YouTube caption is preferred** for a strongly timestamp-aligned utterance
+  that Haas independently agrees with, allowing caption spelling to fix close
+  homophones and names such as 貼る vs 春.
+- **Haas still decodes the audio** and remains the fallback when captions are
+  missing, incomplete, delayed, inconsistent with Haas, or disagree on polarity.
+  It also assists with partial corrections when whole-caption replacement
+  would be unsafe.
+- An optional **2-second maximum** startup wait favors having VOD captions
+  ready for the first utterance. Downloads can finish later; Haas handles the
+  audio until they are ready.
+- YouTube captions are **not automatically available for an ongoing live
+  stream** with the current downloader, so live processing remains Haas-first.
+- Clear nonverbal caption labels are not used as spoken Japanese.
+
+To return to the older Haas-primary behavior, add to your local
+`config.toml`:
+
+```toml
+[asr]
+youtube_captions_first = false
+```
+
+The first successfully selected YouTube caption is logged as
+`YouTube-first Japanese subtitles active` in `logs/run.log`. Caption
+agreement is a heuristic, not an ASR accuracy guarantee: when both recognizers
+agree on a mistake, or a caption is for a different speaker, errors may remain.
+
 ## Context-aware PLaMo translation (Ayame GTA follow-up)
 
 PLaMo receives up to **two recent Japanese/English pairs** plus the actual

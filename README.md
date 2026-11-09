@@ -46,8 +46,23 @@ are not used by the caption-only entry point.
 - Run `Start translate.bat` and enter an archived YouTube VOD URL,
   or run `uv run --no-sync python -m auto_translate "VIDEO_URL" --mode auto --mpv`.
 
-The Windows launcher prints Japanese and English lines. Startup and
-translation diagnostics go to `logs/run.log`; MPV errors go to
+The Windows launcher prints Japanese and English lines, plus two concise
+diagnostic lines:
+
+```text
+Caption source: JSON3 (download/cache), 1000 raw cues
+Caption reconstruction: 1000 raw -> 850 translated units
+```
+
+Counts above are illustrative only. If it prints **VTT**, JSON3 was not
+available or the download failed and a cached VTT was used. When diagnosing
+unreconstructed `わかん / ない` or `思い / ます` splits, see
+`Caption split not joined` and `Japanese captions reconstructed` in
+`logs/run.log` for the exact original timestamps. The strong-ending joiner
+uses onset-to-onset timing, not rolling caption display expiry, and does not
+join across long silent gaps.
+
+Startup and translation diagnostics go to `logs/run.log`; MPV errors go to
 `logs/mpv.log`.
 
 ## Known constraints

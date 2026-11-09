@@ -7,7 +7,6 @@ require a second audio pipeline or a subtitle timestamp rebase.
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import subprocess
 import sys
@@ -61,6 +60,7 @@ class CaptionOnlyPlayer:
         self.cues = prepare_caption_cues(
             captions, join_gap_s=cfg.translate.fragment_join_gap_s
         )
+        self._starts = [cue.start_s for cue in self.cues]
         if not self.cues:
             raise RuntimeError(
                 "No usable Japanese captions were found. Captions-only mode "
@@ -157,7 +157,7 @@ class CaptionOnlyPlayer:
         try:
             while not self._stop.is_set():
                 with self._condition:
-                    candidates = near_cues(self.cues, self._target, PREFETCH_SECONDS)
+                    candidates = near_cues(self.cues, self._target, PREFETCH_SECONDS, starts=self._starts)
                     index = next(
                         (i for i in candidates if i not in self._completed), None
                     )
@@ -229,7 +229,7 @@ class CaptionOnlyPlayer:
             )
             return all(
                 i in self._completed
-                for i in near_cues(self.cues, position_s, START_LEAD_SECONDS)
+                for i in near_cues(self.cues, position_s, START_LEAD_SECONDS, starts=self._starts)
                 if self.cues[i].start_s < horizon
             )
 

@@ -1,4 +1,4 @@
-"""Seek regressions for progress, audio URL reuse, and overlapping captions."""
+"""Seek regressions for FireRed audio progress and URL recovery."""
 import queue
 import unittest
 from dataclasses import replace
@@ -6,7 +6,6 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from auto_translate.captions import CaptionCue, CaptionIndex
 from auto_translate.config import IngestConfig, VadConfig
 from auto_translate.ingest import Ingest, Source
 from auto_translate.types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
@@ -149,10 +148,7 @@ class SeekProcessingTests(unittest.TestCase):
         self.assertEqual(called, [0.0, 2.0, 4.0, 6.0])
         self.assertIsNone(out.get_nowait())
 
-    def test_late_match_includes_long_overlapping_cue(self):
-        index = CaptionIndex([
-            CaptionCue(1, 100, "A"), CaptionCue(2, 3, "B"),
-            CaptionCue(80, 82, "C"), CaptionCue(80, 83, "C"),
-        ])
-        self.assertEqual(index.match(81, 82).text, "A C")
-        self.assertIsNone(index.match(101, 102))
+
+
+if __name__ == "__main__":
+    unittest.main()

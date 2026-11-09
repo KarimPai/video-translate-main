@@ -32,9 +32,9 @@ class VadConfig:
     min_silence_ms: int = 400
     speech_pad_ms: int = 200
     min_speech_ms: int = 100
-    max_utterance_s: float = 6.0
+    max_utterance_s: float = 7.0
     # At the soft limit, prefer a sustained natural pause.
-    max_split_extension_s: float = 1.0  # hard deadline remains 7s
+    max_split_extension_s: float = 1.0  # hard deadline remains 8s
     split_pause_min_ms: int = 80
     split_context_ms: int = 120  # retain boundary audio, without duplication
     fallback_s: float = 5.0
@@ -69,6 +69,9 @@ class AsrConfig:
     haas_keywords_alpha: float = 1.5
     haas_keywords_guard: bool = True
     response_timeout_s: float = 30.0
+    retry_uncertain_enabled: bool = True
+    retry_max_audio_s: float = 8.0
+    retry_budget_s: float = 3.0
     blocklist: list[str] = field(default_factory=list)
 
 
@@ -85,9 +88,12 @@ class TranslateConfig:
     max_tokens: int = 128
     timeout_s: float = 25.0
     load_timeout_s: float = 600.0
-    context_lines: int = 0  # short source-only PFML3 prompt, no dialogue history
+    context_lines: int = 2  # short glossary context; PFML3 remains source-only
     memory_lines: int = 12  # previous local repeat consistency (no prompt history)
     glossary: str = "glossary.toml"
+    quality_recheck_enabled: bool = True
+    quality_recheck_timeout_s: float = 4.0
+    quality_recheck_min_interval_s: float = 3.0
 
 @dataclass
 class OutputConfig:

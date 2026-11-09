@@ -37,14 +37,14 @@ if defined PYTHONPATH (
 ) else (
     set "PYTHONPATH=%~dp0src"
 )
-rem Keep normal --no-sync startup; install the DeepFilterNet3 extra only once
-rem if the effective local configuration enables it and packages are missing.
-uv run --no-sync python -c "import importlib.util; from pathlib import Path; from auto_translate.config import load_config; cfg=load_config(Path('config.toml')); assert not cfg.deepfilter.enabled or (importlib.util.find_spec('deepfilternet_rs') and importlib.util.find_spec('scipy'))" >nul 2>nul
+rem GTCRN and CPU speaker segmentation share sherpa-onnx. Streaming GTCRN
+rem requires newer sherpa-onnx (OnlineSpeechDenoiser); upgrade old installs once.
+uv run --no-sync python -c "import sherpa_onnx; assert hasattr(sherpa_onnx, 'OnlineSpeechDenoiser') and hasattr(sherpa_onnx, 'OnlineSpeechDenoiserConfig')" >nul 2>nul
 if errorlevel 1 (
-    echo Installing missing DeepFilterNet3 dependencies...
-    uv sync --extra diarization --extra deepfilter
+    echo Installing GTCRN and CPU speaker runtime...
+    uv sync --extra diarization
     if errorlevel 1 (
-        echo ERROR: Could not install DeepFilterNet3 dependencies.
+        echo ERROR: Could not install GTCRN and speaker dependencies.
         pause
         exit /b 1
     )

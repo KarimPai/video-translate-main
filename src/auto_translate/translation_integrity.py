@@ -30,6 +30,8 @@ _EN_NUM = re.compile(
 _NAME_ALIASES = (
     ("マリン", "Marine", re.compile(r"\bMarin\b", re.IGNORECASE)),
     ("ベイ", "Bae", re.compile(r"\bBay\b", re.IGNORECASE)),
+    ("ベイちゃん", "Bae", re.compile(r"\bBay\b", re.IGNORECASE)),
+    ("ベーちゃん", "Bae", re.compile(r"\bBay\b", re.IGNORECASE)),
 )
 
 
@@ -48,7 +50,10 @@ def nearby_japanese_fragments(
     backchannel that may mark a different speaker. Do not fuse timestamps.
     """
     current = current_ja.strip()
-    if not current or current in _SMALL_REACTIONS or len(current) > 34:
+    if (
+        max_fragments <= 0 or max_gap_s <= 0 or not current
+        or current in _SMALL_REACTIONS or len(current) > 34
+    ):
         return ()
     selected: list[str] = []
     cursor = current_start_s
@@ -63,7 +68,7 @@ def nearby_japanese_fragments(
             break
         selected.append(phrase[:34])
         cursor = start_s
-        if len(selected) >= max(1, max_fragments):
+        if len(selected) >= max_fragments:
             break
     return tuple(reversed(selected))
 

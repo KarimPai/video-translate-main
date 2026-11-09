@@ -149,3 +149,45 @@ cp1252 for redirected Python stdout even after the launcher calls chcp 65001.
 The worker now reconfigures its streams to UTF-8, the parent sets
 PYTHONIOENCODING=utf-8, and worker JSON is ASCII-escaped as a further fallback.
 This fixes the earlier UnicodeEncodeError for Japanese transcripts (e.g. え).
+
+
+## Translation-context and fidelity improvements (Reazon test branch)
+
+The current Japanese text is always the only utterance sent for translation.
+Up to two nearby *previous* Japanese transcript fragments (default maximum
+gap 1.8s) may accompany it as optional local grammar context. No future
+audio is awaited, no subtitles are fused or retimed, and short backchannels
+break the fragment chain. Context resets on seeks and generation changes.
+
+Numbers recognized by ASR are converted to explicit Arabic-number hints for
+PLaMo; if PLaMo outputs the same number of Arabic numerals, obviously
+different values (such as 828 for 八千二十八) are corrected deterministically.
+When the counts differ, or the model expresses the number in words, the
+translation is left unchanged rather than guessing. This never verifies
+whether ASR heard the original Japanese number correctly.
+
+Existing glossary entries remain authoritative hints to PLaMo. The test
+glossary additionally covers マリン -> Marine and ベイ -> Bae. Two common
+English romanization variants (Marin, Bay) are corrected only if the current
+Japanese contains a matching glossary name, not inferred from context.
+Uncertain ASR names such as アイヌ are not automatically substituted.
+
+The prompt now discourages unsupported emotions, figurative reinterpretations
+of literal game movement, and invented subjects or destinations. These hints
+do not guarantee accuracy.
+
+New optional config.toml settings:
+
+    [translate]
+    fragment_context_lines = 2
+    fragment_max_gap_s = 1.8
+    protect_numbers = true
+    protect_names = true
+
+Set fragment_context_lines = 0 to disable near-fragment look-behind.
+Tests (offline; no PLaMo or Reazon model needed):
+
+    uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+
+The Reazon ASR weights, VAD thresholds, and MPV subtitle timestamps
+have not been modified by this update.

@@ -75,3 +75,48 @@ def test_five_second_lead_only_needs_nearby_cues():
     assert player._lead_ready(10.0) is False
     player._completed.add(1)
     assert player._lead_ready(10.0) is True
+
+
+
+def test_initial_buffer_waits_for_all_cues_in_first_twelve_seconds():
+    cues = CaptionIndex([
+        CaptionCue(0.0, 1.0, "one"),
+        CaptionCue(4.0, 5.0, "two"),
+        CaptionCue(9.0, 10.0, "three"),
+        CaptionCue(14.0, 15.0, "later"),
+    ])
+    player = CaptionOnlyPlayer(
+        Source("https://example.test/watch?v=x", False, duration=30),
+        Config(), cues, StubTranslator(),
+    )
+    player._completed.update({0, 1})
+    assert player._lead_ready(0.0) is False
+    player._completed.add(2)
+    assert player._lead_ready(0.0) is True
+    assert player._lead_ready(0.0, 3.0) is True
+
+
+def test_first_caption_renders_at_original_vod_timestamp():
+    from auto_translate.types import Subtitle
+
+    class RecordingIpc:
+        def __init__(self):
+            self.commands = []
+
+        def command(self, *args, **kwargs):
+            self.commands.append((args, kwargs))
+
+    player = CaptionOnlyPlayer(
+        Source("https://example.test/watch?v=x", False, duration=30),
+        Config(), CaptionIndex([CaptionCue(0.0, 1.5, "こんにちは")]),
+        StubTranslator(),
+    )
+    player._ipc = RecordingIpc()
+    player.cache.add(Subtitle(0.0, 1.5, "こんにちは", "Hello!"))
+    player._render(0.0)
+    assert player._ipc.commands
+    assert player._ipc.commands[-1][1]["format"] == "ass-events"
+    assert "Hello!" in player._ipc.commands[-1][1]["data"]
+    # Existing subtitle remains visible during the configured linger.
+    player._render(2.0)
+    assert player.cache.active_at(2.0, include_linger=True)

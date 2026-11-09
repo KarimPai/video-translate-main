@@ -171,6 +171,8 @@ def is_isolated_reaction(text: str) -> bool:
     )
     tokens = [part for part in _REACTION_SEPARATORS.split(normalized) if part]
     meaningful = {"はい", "うん", "すご", "すごい", "すげえ", "やばい", "わお", "wow", "hey", "yeah", "yep", "yup", "no", "いい", "だめ"}
+    if any(re.fullmatch(r"(?:うん+|はー?い+|すっ?ご[いぃっー]+|すっ?げ[えぇー]+|やば[いぁっー]+)", part) for part in tokens):
+        return False
     if any(part in meaningful for part in tokens):
         return False
     return bool(tokens) and all(_REACTION_RUN.fullmatch(part) for part in tokens)

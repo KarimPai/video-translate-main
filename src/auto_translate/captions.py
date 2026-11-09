@@ -1,4 +1,4 @@
-"""Japanese YouTube auto-caption download, parsing and timestamp matching."""
+"""Japanese YouTube caption download, parsing and timestamp matching."""
 
 import html
 import logging
@@ -205,6 +205,7 @@ def download_vod_captions(
         "--no-call-home",
         "--skip-download",
         "--write-auto-subs",
+        "--write-subs",
         "--sub-langs", "ja.*,ja",
         "--sub-format", "vtt/best",
         "--output", str(cache_dir / f"{video_id}.%(ext)s"),
@@ -252,13 +253,13 @@ def download_vod_captions(
             shutil.copy2(candidates[0], cached)
 
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("Japanese caption download failed; continuing with Qwen ASR: %s", exc)
+        log.warning("Japanese caption download failed; no caption-only fallback available: %s", exc)
         return None
 
     try:
         index = CaptionIndex.from_file(cached)
     except (OSError, UnicodeError) as exc:
-        log.warning("could not parse downloaded captions; continuing with Qwen ASR: %s", exc)
+        log.warning("could not parse downloaded captions; no caption-only fallback available: %s", exc)
         return None
 
     if not index.cues:

@@ -76,6 +76,7 @@ class AsrConfig:
     retry_budget_s: float = 3.0  # VOD: total extra-pass wall-clock budget
     retry_live_budget_s: float = 1.5  # live: stricter extra-pass deadline
     retry_timeout_cooldown_s: float = 15.0  # skip optional retries after a timeout
+    engine_noise_ack_guard: bool = True  # conservative "うん" audio evidence filter
     blocklist: list[str] = field(default_factory=list)
 
 

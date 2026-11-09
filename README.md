@@ -14,9 +14,11 @@
 - Selective built-in terminology/meaning repairs, recent prior-phrase
   context, and an LRU cache of exact Japanese model completions.
 - MPV original-source playback (no FFmpeg ingest) with native full seekbar,
-  three most recent English lines, timestamp-based rendering and 5-second
-  local caption translation prebuffer. A single worker prioritizes a
-  35-second window near the current playback position after seeking.
+  three most recent English lines, timestamp-based rendering, 12-second
+  initial caption prebuffer and five-second rebuffer after seeking. A single worker prioritizes a
+  35-second window near the current playback position after seeking. The
+  first 25 seconds after starting or seeking also have an early-subtitle
+  catch-up guard, preventing MPV from outrunning nearby translations.
 
 No FireRedVAD, Haas ASR, DeepFilterNet, pyannote/Sherpa diarization,
 UVR separation, FFmpeg audio process or CUDA ASR runtime starts. Old

@@ -9,10 +9,15 @@
 - Archived YouTube **VOD** with Japanese manual subtitles or auto-captions.
 - Text-only caption preparation (deduplicate YouTube rolling text, remove
   sound-effect labels, conservatively join incomplete phrase fragments).
-- Local PLaMo 3 Translate **8B Q3_K_M** using the official PFML3 completion
-  template and matching Hololive glossary entries.
-- Selective built-in terminology/meaning repairs, recent prior-phrase
-  context, and an LRU cache of exact Japanese model completions.
+- Local PLaMo 3 Translate **8B Q3_K_M** with the model's official PFML3
+  `context`, previous Japanese/English `input`/`output` pairs, and
+  matching Hololive glossary terms. The current caption is always last.
+- Default model slot **2048 tokens**, generated output **192 tokens**,
+  temperature **0**, **four recent translated pairs** and a sanitized
+  video title/channel context. A conservative per-prompt budget drops
+  oldest history before source text and reserves room for generation.
+- Selective terminology/meaning repairs, scene-local history across seeks,
+  and a bounded exact completion cache keyed by caption **and** context.
 - MPV original-source playback (no FFmpeg ingest) with native full seekbar,
   three most recent English lines, timestamp-based rendering, 12-second
   initial caption prebuffer and five-second rebuffer after seeking. A single worker prioritizes a
@@ -49,10 +54,17 @@ translation diagnostics go to `logs/run.log`; MPV errors go to
 - Videos without accessible Japanese caption tracks fail with a message.
   Captioned speech omitted by YouTube cannot be recovered.
 - Timestamps and manual/auto caption accuracy depend on YouTube.
-- Source-only PLaMo PFML3 does not support arbitrary chat-style system
-  instructions. Nearby textual context is used in conservative Japanese
-  normalization and existing translation repairs rather than adding
-  unsupported history to the model prompt.
+- PLaMo is a specialized translation model, not an instruction-chat model.
+  Its documented PFML3 syntax supports previous translation pairs and a
+  structured context element without arbitrary system prompts.
+- Extra context can improve consistency but increases prefill work and may
+  carry over incorrect earlier word choices. The four-pair default is a
+  starting point, **not a measured accuracy or latency improvement**.
+- To disable conversation history if it hurts quality or speed, set
+  `[translate] context_lines = 0` in local `config.toml`.
+  Set `context_title_enabled = false` to omit the video-title context.
+  A local `config.toml` overrides branch defaults, so check its existing
+  `plamo_context`, `max_tokens`, and `context_lines` values.
 - Model loading, MPV playback and live caption availability must be
   verified on the actual Windows/RTX 3070 system. Unit tests alone do not
   establish end-to-end correctness or measured translation accuracy.

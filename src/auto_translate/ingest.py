@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from .config import IngestConfig, SeparationConfig, DeepFilterConfig
+from .config import IngestConfig, SeparationConfig, GtcrnConfig
 from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
 
@@ -44,7 +44,7 @@ class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
 CHUNK_SAMPLES = 4096
 SEPARATION_READ_FRAMES = 8192
 SEPARATION_INPUT_RATE = 44100
-DEEPFILTER_INPUT_RATE = 48000
+GTCRN_INPUT_RATE = SAMPLE_RATE
 
 @dataclass
 class Source:
@@ -208,7 +208,7 @@ class Ingest:
         video_format: str = "",
         burst_s: float = 0.0,
         separation_cfg: SeparationConfig | None = None,
-        deepfilter_cfg: DeepFilterConfig | None = None,
+        gtcrn_cfg: GtcrnConfig | None = None,
     ):
         self.source = source
         self._vod_audio_url: str | None = None
@@ -245,14 +245,14 @@ class Ingest:
             separation_cfg and separation_cfg.enabled
         )
 
-        self.deepfilter_cfg = deepfilter_cfg
-        self.deepfilter_enabled = bool(
-            deepfilter_cfg and deepfilter_cfg.enabled
+        self.gtcrn_cfg = gtcrn_cfg
+        self.gtcrn_enabled = bool(
+            gtcrn_cfg and gtcrn_cfg.enabled
         )
 
-        if self.separation_enabled and self.deepfilter_enabled:
+        if self.separation_enabled and self.gtcrn_enabled:
             raise ValueError(
-                "UVR separation and DeepFilterNet cannot both be enabled."
+                "UVR separation and GTCRN cannot both be enabled."
             )
 
         self._procs: list[subprocess.Popen] = []
@@ -636,8 +636,8 @@ class Ingest:
 
         if self.separation_enabled:
             output_rate = SEPARATION_INPUT_RATE
-        elif self.deepfilter_enabled:
-            output_rate = DEEPFILTER_INPUT_RATE
+        elif self.gtcrn_enabled:
+            output_rate = GTCRN_INPUT_RATE
         else:
             output_rate = SAMPLE_RATE
 
@@ -664,10 +664,10 @@ class Ingest:
                 "-f", "s16le",
                 "pipe:1",
             ]
-        elif self.deepfilter_enabled:
+        elif self.gtcrn_enabled:
             ffmpeg += [
                 "-ac", "1",
-                "-ar", str(DEEPFILTER_INPUT_RATE),
+                "-ar", str(GTCRN_INPUT_RATE),
                 "-f", "s16le",
                 "pipe:1",
             ]
@@ -853,8 +853,8 @@ class Ingest:
                 "-ar", str(output_rate),
                 "-f", "s16le", "pipe:1",
             ]
-        elif self.deepfilter_enabled:
-            output_rate = DEEPFILTER_INPUT_RATE
+        elif self.gtcrn_enabled:
+            output_rate = GTCRN_INPUT_RATE
             out = [
                 "-vn", "-ac", "1",
                 "-ar", str(output_rate),
@@ -1218,7 +1218,7 @@ class Ingest:
         input_frames = 0
 
         worker = None
-        deepfilter_worker = None
+        gtcrn_worker = None
         pending = b""
 
         try:
@@ -1239,10 +1239,10 @@ class Ingest:
                     SEPARATION_INPUT_RATE,
                 )
 
-            elif self.deepfilter_enabled:
-                from .deepfilter import DeepFilterWorker
+            elif self.gtcrn_enabled:
+                from .gtcrn import GtcrnWorker
 
-                deepfilter_worker = DeepFilterWorker(
+                gtcrn_worker = GtcrnWorker(
                     out_q,
                     first,
                     generation=generation,
@@ -1250,8 +1250,8 @@ class Ingest:
                 )
 
                 log.info(
-                    "DeepFilterNet enabled: mono %d Hz input",
-                    DEEPFILTER_INPUT_RATE,
+                    "GTCRN enabled: mono %d Hz input",
+                    GTCRN_INPUT_RATE,
                 )
 
             while True:
@@ -1314,7 +1314,7 @@ class Ingest:
                     input_frames += len(pcm)
                     worker.put(pcm)
 
-                elif deepfilter_worker:
+                elif gtcrn_worker:
                     data = pending + data
 
                     usable = len(data) - (len(data) % 2)
@@ -1331,13 +1331,13 @@ class Ingest:
                     )
 
                     # Do not enqueue more old PCM if an MPV seek replaced
-                    # this generation while DeepFilterNet was backpressured.
+                    # this generation while GTCRN was backpressured.
                     if generation != self.generation:
                         break
-                    if not deepfilter_worker.put(pcm):
+                    if not gtcrn_worker.put(pcm):
                         break
                     input_frames += len(pcm)
-                    if not deepfilter_worker.put_progress():
+                    if not gtcrn_worker.put_progress():
                         break
 
                 else:
@@ -1372,11 +1372,11 @@ class Ingest:
                 if worker:
                     worker.close()
 
-                if deepfilter_worker:
+                if gtcrn_worker:
                     # The previous VOD generation may have queued enhanced
                     # audio far ahead of playback. Cancel it on seeks rather
                     # than draining a stale backlog before restarting.
-                    deepfilter_worker.close(
+                    gtcrn_worker.close(
                         cancel=(generation != self.generation or self._stopped)
                     )
 
@@ -1397,8 +1397,8 @@ class Ingest:
 
         if worker:
             processed_seconds = input_frames / SEPARATION_INPUT_RATE
-        elif deepfilter_worker:
-            processed_seconds = input_frames / DEEPFILTER_INPUT_RATE
+        elif gtcrn_worker:
+            processed_seconds = input_frames / GTCRN_INPUT_RATE
         else:
             processed_seconds = (sample - first) / SAMPLE_RATE
 
@@ -1412,12 +1412,12 @@ class Ingest:
             # Only consecutive short failures count against live recovery.
             self._live_retry_count = 0
 
-        if input_frames == 0 and (worker or deepfilter_worker):
+        if input_frames == 0 and (worker or gtcrn_worker):
             log.error(
                 "no audio received from FFmpeg; check the source and audio stream"
             )
 
-        elif sample == first and not (worker or deepfilter_worker):
+        elif sample == first and not (worker or gtcrn_worker):
             if self.source.start_s and self._restart_at is None:
                 log.error(
                     "no audio after %s: is the start time past the end of the video?",

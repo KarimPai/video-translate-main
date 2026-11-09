@@ -11,26 +11,26 @@ from auto_translate.ingest import Ingest
 
 
 class GtcrnConfigurationTests(unittest.TestCase):
-    def test_gtcrn_is_default_and_uvr_is_off(self):
+    def test_gtcrn_is_disabled_by_default_and_uvr_is_off(self):
         cfg = Config()
-        self.assertTrue(cfg.gtcrn.enabled)
+        self.assertFalse(cfg.gtcrn.enabled)
         self.assertEqual(cfg.gtcrn.num_threads, 1)
         self.assertFalse(cfg.separation.enabled)
         with tempfile.TemporaryDirectory() as temp:
             resolved = load_config(Path(temp) / "missing.toml")
-            self.assertTrue(resolved.gtcrn.enabled)
+            self.assertFalse(resolved.gtcrn.enabled)
 
-    def test_local_override_can_disable_gtcrn(self):
+    def test_local_override_can_enable_gtcrn(self):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "config.toml"
-            p.write_text("[gtcrn]\nenabled = false\n", encoding="utf-8")
-            self.assertFalse(load_config(p).gtcrn.enabled)
+            p.write_text("[gtcrn]\nenabled = true\n", encoding="utf-8")
+            self.assertTrue(load_config(p).gtcrn.enabled)
 
     def test_retired_deepfilter_option_is_ignored(self):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "config.toml"
             p.write_text("[deepfilter]\nenabled = false\n", encoding="utf-8")
-            self.assertTrue(load_config(p).gtcrn.enabled)
+            self.assertFalse(load_config(p).gtcrn.enabled)
 
     def test_ffmpeg_outputs_16khz_mono_to_gtcrn(self):
         source = SimpleNamespace(
@@ -39,7 +39,7 @@ class GtcrnConfigurationTests(unittest.TestCase):
         ingest = Ingest(
             source, IngestConfig(),
             separation_cfg=SeparationConfig(),
-            gtcrn_cfg=GtcrnConfig(),
+            gtcrn_cfg=GtcrnConfig(enabled=True),
         )
         self.assertTrue(ingest.gtcrn_enabled)
         self.assertFalse(ingest.separation_enabled)

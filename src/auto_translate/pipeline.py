@@ -204,6 +204,9 @@ def run_asr(
         if (
             not text and not original_asr and caption_match is not None and caption_match.text
             and is_usable_transcript(caption_match.text)
+            and caption_match.coverage >= 0.80
+            and caption_match.overlap_s >= 0.45
+            and caption_match.speech_cues == 1
         ):
             text = caption_match.text
             source = "youtube_fallback"

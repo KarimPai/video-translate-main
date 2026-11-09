@@ -105,7 +105,7 @@ def repair_gta_translation(
     if _VEST_COUNT.search(japanese):
         english = _BAD_VEST.sub("vests", english)
     elif _VEST_PURCHASE.search(japanese):
-        english = re.sub(r"\\bthe\\s+best(?:\\s+one)?\\b", "a vest", english, flags=re.I)
+        english = re.sub(r"\bthe\s+best(?:\s+one)?\b", "a vest", english, flags=re.I)
     if _ROCKET_AMMO.search(japanese):
         if _ROCKET_COST.fullmatch(_compact(japanese)):
             if re.search(r"\bballs?\b|\bmarbles?\b", english, re.I):

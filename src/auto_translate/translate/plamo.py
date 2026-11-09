@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 
 # Official examples:
 # https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF
-# PFML3 should be sent to /v1/completions WITHOUT any chat wrapper.
+# PFML3 includes native context/history and uses /v1/completions (no chat wrapper).
 _PFML3_START = "<|plamo:tag|>dataset<|plamo:msg|>translation"
 _PFML3_INPUT = "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
 _PFML3_OUTPUT_EN = "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
@@ -52,19 +52,68 @@ _BAD_META = re.compile(
 _PUNCT_LOOP = re.compile(r"(?:[.!?…]\s*){12,}")
 
 
-def build_plamo_prompt(japanese: str, matched_terms: list[tuple[str, str]] | None = None) -> str:
-    """Build Japanese-source/English-target PFML3 with only matched glossary hits."""
+_PFML3_CONTEXT = "<|plamo:tag|>context<|plamo:msg|>"
+
+
+def _safe_pfml3_value(value: str) -> str:
+    """Prevent untrusted caption/title text from introducing structural tokens."""
+    return " ".join(str(value).replace("<|plamo:", "＜|plamo:").split())
+
+
+def build_plamo_prompt(
+    japanese: str,
+    matched_terms: list[tuple[str, str]] | None = None,
+    *,
+    history: list[tuple[str, str]] | None = None,
+    context: str = "",
+) -> str:
+    """Official PFML3 order: context, past input/output pairs, glossary, input.
+
+    Only the last output tag is unfinished, so PLaMo translates exactly the
+    current caption instead of regenerating any historical subtitles.
+    https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF
+    """
     prompt = _PFML3_START
+    safe_context = _safe_pfml3_value(context)[:180]
+    if safe_context:
+        prompt += _PFML3_CONTEXT + safe_context
+
+    for previous_ja, previous_en in history or ():
+        src = _safe_pfml3_value(previous_ja)
+        dst = _safe_pfml3_value(previous_en)
+        if (
+            not src or not dst or len(src) > 240 or len(dst) > 320
+            or is_skip_token(dst) or dst == "[translation failed]"
+        ):
+            continue
+        prompt += _PFML3_INPUT + src + _PFML3_OUTPUT_EN + dst
+
+    glossary_started = False
     for ja_term, english_term in (matched_terms or [])[:8]:
         if not ja_term or not english_term:
             continue
         if any(marker in ja_term or marker in english_term
                for marker in ("<|plamo:", "\n", "\r")):
             continue
-        if "<|plamo:tag|>glossary" not in prompt:
+        if not glossary_started:
             prompt += "<|plamo:tag|>glossary"
+            glossary_started = True
         prompt += "<|plamo:index|>" + ja_term + "<|plamo:item|>" + english_term
-    return prompt + _PFML3_INPUT + japanese.strip() + _PFML3_OUTPUT_EN
+    return prompt + _PFML3_INPUT + _safe_pfml3_value(japanese) + _PFML3_OUTPUT_EN
+
+
+def _estimate_prompt_tokens(prompt: str) -> int:
+    """Conservative no-extra-request estimate for 2048-token llama.cpp slot.
+
+    Estimates are intentionally overbudgeted for Japanese and non-ASCII
+    characters. The tokenizer itself is authoritative; this avoids an extra
+    HTTP tokenization round-trip before every subtitle.
+    """
+    text_only = re.sub(r"<\\|plamo:[^|>]+\\|>", "", prompt)
+    return int(
+        sum(2 if ord(ch) > 127 else 0.5 for ch in text_only)
+        + 4 * prompt.count("<|plamo:") + 24
+    )
 
 
 def _clean(text: str) -> str:
@@ -106,9 +155,9 @@ class PlamoTranslator:
         self.glossary = glossary
         self.memory_lines = max(0, cfg.memory_lines)
         self._last_recheck_at = float("-inf")
-        # PFML3 translation is deterministic (temperature=0, source-only).
-        # Cache raw completions, then apply context-dependent repairs anew.
-        self._raw_cache: dict[str, str] = {}
+        # Temperature is zero but previous dialogue changes the correct output.
+        # Cache by the full effective source/history/title combination.
+        self._raw_cache: dict[tuple, str] = {}
         self._raw_cache_limit = 512
         self.vod_title = " ".join(vod_title.split())[:200]
         self.base_url = cfg.plamo_base_url.rstrip("/")
@@ -220,10 +269,43 @@ class PlamoTranslator:
             time.sleep(0.5)
         raise TimeoutError("PLaMo translator warm-up timed out; see logs/plamo8b-server.log")
 
-    def _complete(self, japanese: str, *, timeout: float) -> str:
+    def _complete(
+        self,
+        japanese: str,
+        *,
+        timeout: float,
+        history: list[tuple[str, str]] | None = None,
+    ) -> str:
+        # Build only official PFML3 elements. Drop the oldest history pairs
+        # when the approximate input budget would exceed the configured slot.
+        history_pairs = list(history or ())[-max(0, min(int(self.cfg.context_lines), 8)):]
+        if not self.cfg.context_lines:
+            history_pairs = []
+        title_context = self.vod_title if self.cfg.context_title_enabled else ""
+        glossary_hits = self.glossary.find(japanese)
+        prompt_budget = max(256, self.cfg.plamo_context - self.cfg.max_tokens - 96)
+        prompt = ""
+        for keep in range(len(history_pairs), -1, -1):
+            chosen = history_pairs[-keep:] if keep else []
+            candidate = build_plamo_prompt(
+                japanese, glossary_hits,
+                history=chosen, context=title_context,
+            )
+            if _estimate_prompt_tokens(candidate) <= prompt_budget:
+                prompt = candidate
+                if keep != len(history_pairs):
+                    log.debug(
+                        "PLaMo prompt budget: retained %d/%d recent pairs",
+                        keep, len(history_pairs),
+                    )
+                break
+        if not prompt:
+            # Never truncate the current Japanese caption. If even the
+            # source-only prompt cannot fit, the server reports an error.
+            prompt = build_plamo_prompt(japanese, glossary_hits)
         payload = {
             "model": self.cfg.plamo_model,
-            "prompt": build_plamo_prompt(japanese, self.glossary.find(japanese)),
+            "prompt": prompt,
             "temperature": 0,
             "max_tokens": self.cfg.max_tokens,
             "stop": _STOP,
@@ -247,9 +329,21 @@ class PlamoTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 return reused
-        english = self._raw_cache.get(ja)
+        previous = (
+            list(history[-max(0, min(int(self.cfg.context_lines), 8)):])
+            if self.cfg.context_lines else []
+        )
+        # A raw completion for an identical caption can differ between
+        # conversations. The original JA-only cache was context-unsafe.
+        cache_key = (
+            ja, self.vod_title if self.cfg.context_title_enabled else "",
+            tuple(previous),
+        )
+        english = self._raw_cache.get(cache_key)
         if english is None:
-            english = _clean(self._complete(ja, timeout=self.cfg.timeout_s))
+            english = _clean(self._complete(
+                ja, timeout=self.cfg.timeout_s, history=previous,
+            ))
         # PFML3 does not support a free-form system instruction. Keep its
         # official completion format and retry only an invalid completion.
         if (_invalid_output(ja, english)
@@ -258,7 +352,9 @@ class PlamoTranslator:
             self._last_recheck_at = time.monotonic()
             try:
                 retry = _clean(self._complete(
-                    ja, timeout=min(self.cfg.timeout_s, self.cfg.quality_recheck_timeout_s)
+                    ja,
+                    timeout=min(self.cfg.timeout_s, self.cfg.quality_recheck_timeout_s),
+                    history=previous,
                 ))
                 if not _invalid_output(ja, retry):
                     english = retry
@@ -267,10 +363,10 @@ class PlamoTranslator:
         if _invalid_output(ja, english):
             log.warning("PLaMo invalid completion skipped for source=%r", ja[:100])
             return SKIP_TOKEN
-        if ja not in self._raw_cache:
+        if cache_key not in self._raw_cache:
             if len(self._raw_cache) >= self._raw_cache_limit:
                 self._raw_cache.pop(next(iter(self._raw_cache)))
-            self._raw_cache[ja] = english
+            self._raw_cache[cache_key] = english
         english = repair_high_confidence_meaning(ja, english)
         recent_ja = [j for j, _ in history[-8:]]
         english = repair_valorant_translation(ja, english, recent_ja, False)

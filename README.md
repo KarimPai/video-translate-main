@@ -178,10 +178,10 @@ stream. A list of names can bias Whisper toward utterances nobody said.
 
 From C:\Games\video-translate-whisper-v3:
 
-    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile baseline --diagnostics
-    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile gtcrn --diagnostics
-    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile speaker --diagnostics
-    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile both --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode auto --mpv --delay 10 --no-web --simple-terminal --audio-profile baseline --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode auto --mpv --delay 10 --no-web --simple-terminal --audio-profile gtcrn --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode auto --mpv --delay 10 --no-web --simple-terminal --audio-profile speaker --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode auto --mpv --delay 10 --no-web --simple-terminal --audio-profile both --diagnostics
 
 - baseline: GTCRN OFF, Sherpa OFF
 - gtcrn: GTCRN ON, Sherpa OFF

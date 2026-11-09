@@ -104,7 +104,8 @@ class RecentSpeechContext:
                 continue
             text = " ".join(item.split())
             # English words/names only; no long instruction-like prompts.
-            if 2 <= len(text) <= 36 and re.fullmatch(r"[A-Za-z][A-Za-z0-9 '\-]*", text):
+            if (2 <= len(text) <= 36 and len(text.split()) <= 2 and
+                    re.fullmatch(r"[A-Za-z][A-Za-z0-9 '\-]*", text)):
                 valid.append(text)
             if len(valid) == 6:
                 break

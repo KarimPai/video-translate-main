@@ -71,6 +71,7 @@ class ContextTests(unittest.TestCase):
         self.assertIn("Okayu", prompt)
         self.assertIn("Botan", prompt)
         self.assertNotIn("\n", prompt)
+        self.assertNotIn("invalid instruction", prompt)
 
     def test_exact_overlap_returns_only_new_text(self):
         self.assertEqual(

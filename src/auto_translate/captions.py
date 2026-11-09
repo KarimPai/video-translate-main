@@ -65,7 +65,9 @@ class CaptionMatch:
 class CaptionIndex:
     """Small immutable VTT index matched against source-timeline timestamps."""
 
-    def __init__(self, cues: list[CaptionCue]) -> None:
+    def __init__(self, cues: list[CaptionCue], *, source_format: str = "unknown") -> None:
+        self.source_format = source_format
+        self.source_origin = "provided"
         self.cues = sorted(cues, key=lambda cue: (cue.start_s, cue.end_s))
         self._starts = [cue.start_s for cue in self.cues]
         # Ends can be out of order when a long cue overlaps shorter ones.
@@ -126,7 +128,7 @@ class CaptionIndex:
             if not text or end <= start:
                 continue
             cues.append(CaptionCue(start, end, text))
-        return cls(cues)
+        return cls(cues, source_format="vtt")
 
     @classmethod
     def from_json3(cls, content: str) -> "CaptionIndex":
@@ -186,7 +188,7 @@ class CaptionIndex:
                 end_ms = min(next_start, onset_ms + 4000.0)
             if end_ms > onset_ms:
                 cues.append(CaptionCue(onset_ms / 1000.0, end_ms / 1000.0, text))
-        return cls(cues)
+        return cls(cues, source_format="json3")
 
     @classmethod
     def from_file(cls, path: Path) -> "CaptionIndex":
@@ -284,6 +286,7 @@ def download_vod_captions(
         try:
             index = CaptionIndex.from_file(json3_cache)
             if index.cues:
+                index.source_origin = "cache"
                 log.info(
                     "Japanese JSON3 captions loaded from cache (%d cues)",
                     len(index.cues),
@@ -348,6 +351,7 @@ def download_vod_captions(
                         shutil.copy2(candidate, destination)
                         selected = destination
                         index = potential
+                        index.source_origin = "download"
                         break
                 except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
                     log.warning("Invalid downloaded subtitle candidate: %s", candidate.name)
@@ -367,6 +371,7 @@ def download_vod_captions(
             try:
                 index = CaptionIndex.from_file(vtt_cache)
                 if index.cues:
+                    index.source_origin = "cached fallback"
                     log.info("Falling back to cached Japanese VTT (%d cues)", len(index.cues))
                     return index
             except (OSError, UnicodeError, ValueError):

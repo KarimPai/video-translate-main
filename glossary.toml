@@ -15,6 +15,10 @@
 "もしもしおかゆ" = "Hello, Okayu"
 "おかゆおはよう" = "Good morning, Okayu"
 "バーガーキング" = "Burger King"
+# Attested caption variants from GTA/Hololive VODs; use the full name.
+"バーグキング" = "Burger King"
+"バーガキング" = "Burger King"
+"バーグ・キング" = "Burger King"
 "アジト" = "hideout"
 "弾買ったり" = "buying ammo"
 "うーす" = "Hey!"
@@ -131,6 +135,11 @@
 "白上フブキ" = "Shirakami Fubuki"
 "夏色まつり" = "Natsuiro Matsuri"
 "百鬼あやめ" = "Nakiri Ayame"
+# Japanese phonetic spellings and a narrowly scoped subtitle mishearing.
+"ナキリあやめ" = "Nakiri Ayame"
+"なきりあやめ" = "Nakiri Ayame"
+"ナキリあめ" = "Nakiri Ayame"
+"ナキリ" = "Nakiri"
 "大空スバル" = "Oozora Subaru"
 "大神ミオ" = "Ookami Mio"
 "猫又おかゆ" = "Nekomata Okayu"

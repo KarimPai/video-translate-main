@@ -12,12 +12,12 @@ if errorlevel 1 (
 
 echo.
 echo ========================================
-echo       Japanese Video Translator
+echo       YouTube Caption Translator
 echo ========================================
 echo.
 
 set "VIDEO_URL="
-set /p "VIDEO_URL=Paste YouTube live or VOD URL: "
+set /p "VIDEO_URL=Paste YouTube VOD URL: "
 
 if not defined VIDEO_URL (
     echo No URL entered.

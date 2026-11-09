@@ -152,7 +152,7 @@ def main() -> None:
             cfg.mpv.ytdlp_format,
             burst_s,
             separation_cfg=cfg.separation,
-            deepfilter_cfg=cfg.deepfilter,
+            gtcrn_cfg=cfg.gtcrn,
         )
     
         stop = threading.Event()

@@ -1,8 +1,8 @@
-"""RAM-only translation cache for one loaded VOD.
+"""RAM-only English subtitle cache for one loaded VOD.
 
-Keeps prior Japanese/English subtitle cues and completed audio timeline ranges.
+Keeps prior English subtitle cues and completed audio timeline ranges.
 Nothing is written to disk. A new video gets a new instance; closing the
-translator drops the cache. MPV remains responsible for its separate video cache.
+session drops the cache. MPV remains responsible for its separate video cache.
 """
 from bisect import bisect_left
 from collections import defaultdict
@@ -48,7 +48,7 @@ class SessionSubtitleCache:
         """Find a previously processed utterance with matching timestamps.
 
         A seek can move the first VAD boundary, so unmatched utterances still
-        go through regular ASR and translation; only close matches are reused.
+        go through regular Granite audio-to-English inference; only close matches are reused.
         """
         tolerance = self.MATCH_TOLERANCE_S
         with self._lock:

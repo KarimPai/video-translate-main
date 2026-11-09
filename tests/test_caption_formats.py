@@ -203,3 +203,33 @@ def test_format_provenance_on_parsed_tracks():
     assert CaptionIndex.from_json3(json.dumps({
         "events": [{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "こんにちは"}]}]
     })).source_format == "json3"
+
+
+
+def test_realistic_json3_long_event_boundaries_join_clipped_japanese():
+    # The reported VOD had 588 raw cues over ~36 minutes: an adjacent event
+    # can begin >4 seconds later without being a different spoken sentence.
+    cues = CaptionIndex([
+        CaptionCue(10.0, 15.0, "わかん"),
+        CaptionCue(14.8, 19.4, "ない30秒待つと言ったな嘘"),
+        CaptionCue(25.0, 30.0, "これで行こうと思い"),
+        CaptionCue(30.2, 35.0, "ます話すけど"),
+    ], source_format="json3")
+    merged = prepare_caption_cues(cues)
+    assert [cue.text for cue in merged] == [
+        "わかんない30秒待つと言ったな嘘",
+        "これで行こうと思います話すけど",
+    ]
+    assert [cue.start_s for cue in merged] == [10.0, 25.0]
+
+
+def test_no_join_across_very_long_json3_display_or_speech_gap():
+    cues = CaptionIndex([
+        CaptionCue(1.0, 4.0, "わかん"),
+        CaptionCue(7.0, 12.0, "ない"),
+        CaptionCue(20.0, 26.0, "思い"),
+        CaptionCue(22.0, 38.0, "ます"),
+    ], source_format="json3")
+    merged = prepare_caption_cues(cues)
+    # Long silence or a 18-second span is not a reliable single utterance.
+    assert [cue.text for cue in merged] == ["わかん", "ない", "思い", "ます"]

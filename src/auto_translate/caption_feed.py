@@ -69,7 +69,7 @@ def _clipped_ending(previous: str, following: str) -> bool:
 def _can_join(first: CaptionCue, following: CaptionCue, gap_s: float) -> bool:
     """Restrict reconstruction to adjacent cues with explicit continuation."""
     gap = following.start_s - first.end_s
-    if not (-0.12 <= gap <= max(0.25, gap_s)):
+    if gap > max(0.25, gap_s) or gap < -2.5:
         return False
     if following.end_s - first.start_s > 8.0:
         return False
@@ -77,8 +77,12 @@ def _can_join(first: CaptionCue, following: CaptionCue, gap_s: float) -> bool:
         return False
     if _END_PUNCT.search(first.text):
         return False
+    # Automatic JSON3 display intervals overlap by up to a couple seconds,
+    # even when the next syllable belongs directly to a clipped word.
     if _clipped_ending(first.text, following.text):
         return True
+    if gap < -0.12:
+        return False
     return should_join_fragments(
         Transcript(first.start_s, first.end_s, first.text),
         Transcript(following.start_s, following.end_s, following.text),

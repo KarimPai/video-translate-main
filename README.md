@@ -46,6 +46,43 @@ fixed VOD segment.
 | Fallback minimum length | 1.5 s |
 | Fallback minimum RMS | −50 dBFS |
 
+## Context-aware PLaMo translation (Ayame GTA follow-up)
+
+PLaMo receives up to **two recent Japanese/English pairs** plus the actual
+YouTube VOD title/channel in native PFML3 context syntax. The same PLaMo
+3 Translate 8B Q3_K_M model and **1024-token llama.cpp slot** are retained
+for the RTX 3070. A conservative token budget drops older pairs first rather
+than truncating current Japanese. There is no system prompt or second LLM.
+
+- GTA-specific glossary entries are included **only when the current Japanese
+  and GTA topic support them** (e.g. ベスト3枚 = armor vests, ロケラン = rocket
+  launcher, ロケランの弾 = rocket ammunition, vehicle stickers).
+- Very short *unambiguous* positive/negative utterances such as すごい and だめ
+  are protected from inverted English polarity. A questionable completion can
+  be retried once without previous dialogue; ambiguous longer sentences are
+  never forcibly rewritten.
+- Conservative transcript joining retains timing and rejects speaker handoffs.
+  A few isolated single-character ASR artifacts and nonverbal sound effects
+  are skipped before they reach translation. Real short acknowledgements,
+  names, questions, and ordinary speech survive.
+- The existing GTCRN, FireRedVAD thresholds, Haas Q8 ASR, speaker segmentation,
+  native MPV seek support, and PLaMo model/offload settings are unchanged.
+
+Default translation settings (add to your **local** `config.toml` if an old
+override still sets `context_lines = 0`):
+
+```toml
+[translate]
+plamo_context = 1024
+context_lines = 2
+context_title_enabled = true
+```
+
+These are semantic safeguards, not proven GTA transcription or translation
+improvements. Compare with the original Japanese audio; corrected text cannot
+reconstruct words Haas never recognized, and short prompt history can propagate
+incorrect preceding dialogue.
+
 ## Local settings
 
 The optional `config.toml` overrides branch defaults:
@@ -115,6 +152,9 @@ The local llama-server uses Flash Attention, quantized KV state, and
 
 ```bat
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+
+# Focused regression tests for the new changes:
+uv run --no-sync python -m unittest tests.test_plamo_translate tests.test_contextualize tests.test_gta_guard tests.test_translation_config -v
 ```
 
 Tests use fake GTCRN and Sherpa objects and verify configuration, audio

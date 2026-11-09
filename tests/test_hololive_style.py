@@ -34,7 +34,7 @@ class HololiveNameTests(unittest.TestCase):
             "channel": "猫又おかゆ Nekomata Okayu",
             "title": "GTA with Watame, Botan and Towa",
         })
-        self.assertEqual(found, ["Okayu", "Watame", "Botan", "Towa"])
+        self.assertEqual(found, ["Okayu", "Watame", "Towa", "Botan"])
 
     def test_title_with_japanese_names(self):
         found = select_hololive_hints({

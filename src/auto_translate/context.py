@@ -101,6 +101,8 @@ class RecentSpeechContext:
             return None
         terms = [*manual, *detected]
         limit = max(0, min(6, int(getattr(self.cfg, "hololive_name_limit", 6))))
+        if limit == 0:
+            return None
         valid: list[str] = []
         seen: set[str] = set()
         for item in terms:

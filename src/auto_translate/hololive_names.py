@@ -66,7 +66,7 @@ TALENTS: tuple[Talent, ...] = (
     Talent("Kobo Kanaeru", "こぼ・かなえる", "Kobo"),
     Talent("Mori Calliope", "森カリオペ", "Calliope"),
     Talent("Takanashi Kiara", "小鳥遊キアラ", "Kiara"),
-    Talent("Ninomae Ina'nis", "一伊那尓栖", "Inanis"),
+    Talent("Ninomae Ina'nis", "一伊那尓栖", "Ina'nis"),
     Talent("Watson Amelia", "ワトソン・アメリア", "Amelia"),
     Talent("IRyS", "IRyS", "IRyS"),
     Talent("Ouro Kronii", "オーロ・クロニー", "Kronii"),

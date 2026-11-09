@@ -15,7 +15,7 @@ class AudioCommandTests(unittest.TestCase):
             start_s=0.0, live=False, paced=False, location=str(Path(__file__).resolve())
         )
         self.ingest.separation_enabled = False
-        self.ingest.deepfilter_enabled = False
+        self.ingest.gtcrn_enabled = False
 
     def test_direct_audio_uses_original_pitch_only(self):
         cmd = self.ingest._audio_commands()[0]

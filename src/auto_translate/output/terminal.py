@@ -1,4 +1,4 @@
-"""Terminal output for direct Granite Speech audio-to-English translation."""
+"""Terminal output for direct Whisper Large-v3 Speech audio-to-English translation."""
 
 from ..types import Subtitle
 
@@ -21,7 +21,7 @@ class TerminalOutput:
         else:
             decode_s = max(0.0, sub.timings.asr_end - sub.timings.asr_start)
             print(f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}] "
-                  f"{sub.en}  (Granite {decode_s:.2f}s)", flush=True)
+                  f"{sub.en}  (Whisper Large-v3 {decode_s:.2f}s)", flush=True)
 
     def drain(self) -> None:
         pass

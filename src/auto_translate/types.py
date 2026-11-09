@@ -12,7 +12,7 @@ class Timings:
     audio_read: float = 0.0
     segmented: float = 0.0
     # Retained field names for compatibility with existing MPV/seek consumers;
-    # the interval now measures Granite direct audio-to-English inference.
+    # the interval now measures Whisper direct audio-to-English inference.
     asr_start: float = 0.0
     asr_end: float = 0.0
     mt_start: float = 0.0
@@ -51,7 +51,7 @@ class Utterance:
 class Subtitle:
     start_s: float
     end_s: float
-    ja: str  # blank in direct Granite audio-to-English mode
+    ja: str  # blank in direct Whisper audio-to-English mode
     en: str
     timings: Timings = field(default_factory=Timings)
     generation: int = 0

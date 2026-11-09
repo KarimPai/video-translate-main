@@ -1,4 +1,4 @@
-"""Direct streaming speech translation: audio -> Granite 5 -> English subtitles.
+"""Direct streaming speech translation: audio -> Whisper Large-v3 -> English subtitles.
 
 Retains GTCRN, FireRedVAD, Sherpa speaker boundaries, MPV timing and VOD
 seek caching. No intermediate Japanese ASR, YouTube transcripts, or MT model.
@@ -16,7 +16,7 @@ from typing import Callable
 import numpy as np
 
 from .config import Config
-from .granite import GraniteSpeech5
+from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -56,15 +56,15 @@ def _discard_probe(audio: np.ndarray) -> bool:
     peak = float(np.max(np.abs(audio)))
     if peak < (1 / 32768):
         return True
-    # Avoid sending isolated gunshot/click impulses to the speech generator.
+    # Avoid sending isolated gunshot/click impulses to the speech translator.
     frames = audio[:audio.size // 320 * 320].reshape(-1, 320)
     if frames.size and np.max((np.abs(frames) > peak * 0.05).sum(axis=1)) <= 16:
         return True
     return False
 
 
-def run_granite(
-    granite: GraniteSpeech5,
+def run_whisper(
+    whisper: WhisperLargeV3,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
@@ -94,8 +94,8 @@ def run_granite(
         if utt.probe and _discard_probe(utt.audio):
             continue
 
-        utt.timings.asr_start = time.monotonic()  # direct Granite decode clock
-        english = granite.translate_audio(utt.audio)
+        utt.timings.asr_start = time.monotonic()  # direct Whisper decode clock
+        english = whisper.translate_audio(utt.audio)
         utt.timings.asr_end = time.monotonic()
         utt.timings.mt_start = utt.timings.asr_end
         utt.timings.mt_end = utt.timings.asr_end
@@ -106,7 +106,7 @@ def run_granite(
             empty_count += 1
             if empty_count % 8 == 0:
                 log.warning(
-                    "Granite returned empty English for %d utterances (latest %.2f-%.2fs)",
+                    "Whisper returned empty English for %d utterances (latest %.2f-%.2fs)",
                     empty_count, utt.start_s, utt.end_s,
                 )
             continue
@@ -147,7 +147,7 @@ class Stats:
             return "no English subtitles yet"
         q = " ".join(f"{k}={v}" for k, v in self.max_q.items())
         return (
-            f"{self.lines} lines | Granite avg {self.sum_s / self.lines:.2f}s "
+            f"{self.lines} lines | Whisper avg {self.sum_s / self.lines:.2f}s "
             f"max {self.max_s:.2f}s | audio-to-English "
             f"avg {self.total_sum_s / self.lines:.2f}s "
             f"max {self.total_max_s:.2f}s | max queue {q}"
@@ -157,7 +157,7 @@ class Stats:
 def run(
     ingest: Ingest,
     cfg: Config,
-    granite: GraniteSpeech5,
+    whisper: WhisperLargeV3,
     outputs: list[Output],
     stop: threading.Event,
     session_cache: SessionSubtitleCache | None = None,
@@ -188,8 +188,8 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("granite", run_granite, failures, granite, speaker_q, sub_q, generation, session_cache),
-            name="granite", daemon=True,
+            args=("whisper", run_whisper, failures, whisper, speaker_q, sub_q, generation, session_cache),
+            name="whisper", daemon=True,
         ),
     ]
 
@@ -241,7 +241,7 @@ def run(
                     continue
                 if item.generation not in first_logged:
                     first_logged.add(item.generation)
-                    log.info("first Granite English subtitle for generation=%d at %.2fs",
+                    log.info("first Whisper English subtitle for generation=%d at %.2fs",
                              item.generation, item.start_s)
                 stats.add(item)
                 if session_cache is not None:
@@ -258,18 +258,18 @@ def run(
             backlog = {k: q.qsize() for k, q in queues.items() if q.qsize()}
             if backlog and now - last_event >= 60:
                 raise RuntimeError(
-                    "Granite pipeline stalled with queued work: " + str(backlog)
-                    + "; inspect logs/run.log and logs/granite5-server.log"
+                    "Whisper pipeline stalled with queued work: " + str(backlog)
+                    + "; inspect logs/run.log and logs/run.log"
                 )
             if backlog and now - last_event >= 20 and now >= last_warn:
                 last_warn = now + 20
-                log.warning("Granite pipeline backlog: %s", backlog)
+                log.warning("Whisper pipeline backlog: %s", backlog)
             if now >= next_stats:
                 next_stats = now + cfg.stats_interval_s
                 log.info("[%.0fs] %s", now - start, stats.summary())
                 for name, q in queues.items():
                     if q.qsize() >= max(1, int(q.maxsize * 0.75)):
-                        log.warning("Granite backpressure: %s queue %d/%d",
+                        log.warning("Whisper backpressure: %s queue %d/%d",
                                     name, q.qsize(), q.maxsize)
     except KeyboardInterrupt:
         log.info("stopping (Ctrl+C)")

@@ -10,6 +10,9 @@ import os
 import sys
 from pathlib import Path
 
+# os.add_dll_directory returns a handle that must be kept alive on Windows.
+_DLL_HANDLES: list[object] = []
+
 
 @functools.cache  # run once; later calls return the cached result
 def setup() -> list[Path]:
@@ -26,7 +29,7 @@ def setup() -> list[Path]:
     # A namespace package can span several folders, hence the loop over __path__.
     for root in nvidia.__path__:
         for bin_dir in Path(root).glob("*/bin"):
-            os.add_dll_directory(str(bin_dir))
+            _DLL_HANDLES.append(os.add_dll_directory(str(bin_dir)))
             # Also prepend to PATH: some DLLs load their own dependencies via the
             # classic search order, which ignores add_dll_directory.
             os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")

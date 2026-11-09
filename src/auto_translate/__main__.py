@@ -1,4 +1,4 @@
-"""Granite Speech 5: Japanese audio -> English MPV subtitles, one local model."""
+"""Whisper Large-v3: Japanese audio -> English MPV subtitles, one local model."""
 
 import argparse
 import logging
@@ -40,7 +40,7 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .config import load_config
-    from .granite import GraniteSpeech5
+    from .whisper_v3 import WhisperLargeV3
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
@@ -57,9 +57,9 @@ def main() -> None:
     )
 
     started = time.perf_counter()
-    granite = GraniteSpeech5(cfg.granite)
+    whisper = WhisperLargeV3(cfg.whisper)
     log.info(
-        "Direct Granite Speech 5.0 audio-to-English ready in %.1fs",
+        "Whisper Large-v3 Japanese-to-English ready in %.1fs",
         time.perf_counter() - started,
     )
     try:
@@ -89,9 +89,9 @@ def main() -> None:
             from .output.mpv import MpvOutput
             outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=cache))
 
-        run(ingest, cfg, granite, outputs, stop, session_cache=cache)
+        run(ingest, cfg, whisper, outputs, stop, session_cache=cache)
     finally:
-        granite.close()
+        whisper.close()
 
 
 if __name__ == "__main__":

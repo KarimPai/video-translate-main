@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Offline Granite Speech 5 direct Japanese audio-to-English MPV subtitles"
+description = "Offline Whisper Large-v3 direct Japanese audio-to-English MPV subtitles"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }
@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26.4",
+    "faster-whisper>=1.2.1",
     "fireredvad[gpu]>=0.0.2",
     "huggingface-hub>=0.34.0",
     "nvidia-cublas-cu12==12.9.2.10",

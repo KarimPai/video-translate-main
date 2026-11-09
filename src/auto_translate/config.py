@@ -62,19 +62,21 @@ class SpeakerConfig:
 
 
 @dataclass
-class GraniteConfig:
-    """One local Granite Speech 5.0 Q8 model for direct Japanese audio->English."""
-    model_id: str = "ibm-granite/granite-speech-5.0-2b-GGUF:Q8_0"
-    base_url: str = "http://127.0.0.1:9797"
-    llama_server_path: str = ""  # use llama-server.exe on PATH
-    context_tokens: int = 4096
-    gpu_layers: int = 99
-    prompt: str = "translate the speech to English with proper punctuation and capitalization."
-    # Do not bias unknown Japanese speech to familiar Hololive names.
-    # Opt in per stream with [granite] keywords = ["Watame", ...].
-    keywords: list[str] = field(default_factory=list)
-    request_timeout_s: float = 45.0
-    startup_timeout_s: float = 1200.0
+class WhisperConfig:
+    """One Whisper Large-v3 model for direct Japanese audio -> English text."""
+
+    model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
+    device: str = "cuda"
+    compute_type: str = "int8_float16"  # RTX 3070 8 GB
+    download_root: str = ""  # empty uses the normal Hugging Face cache
+    language: str = "ja"  # fixed Japanese source language
+    task: str = "translate"  # Whisper native English speech translation
+    beam_size: int = 5
+    temperature: float = 0.0
+    no_speech_threshold: float = 0.6
+    log_prob_threshold: float = -1.0
+    compression_ratio_threshold: float = 2.4
+    condition_on_previous_text: bool = False
 
 
 @dataclass
@@ -111,7 +113,7 @@ class Config:
     gtcrn: GtcrnConfig = field(default_factory=GtcrnConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
-    granite: GraniteConfig = field(default_factory=GraniteConfig)
+    whisper: WhisperConfig = field(default_factory=WhisperConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
     stats_interval_s: float = 30.0
@@ -146,11 +148,12 @@ def load_config(path: Path) -> Config:
         if key in valid_speaker_keys
     }
 
-    # Legacy [asr], [translate] and [captions] blocks are intentionally
-    # ignored. The Granite-only branch never initializes those models.
-    granite_data = {
-        name: value for name, value in data.get("granite", {}).items()
-        if name in {entry.name for entry in fields(GraniteConfig)}
+    # Ignore retired Granite, ASR, text-translator and caption blocks.
+    # Old git-ignored config.toml files remain safe to reuse.
+    whisper_fields = {entry.name for entry in fields(WhisperConfig)}
+    whisper_data = {
+        name: value for name, value in data.get("whisper", {}).items()
+        if name in whisper_fields
     }
 
     return Config(
@@ -159,7 +162,7 @@ def load_config(path: Path) -> Config:
         gtcrn=GtcrnConfig(**data.get("gtcrn", {})),
         vad=VadConfig(**data.get("vad", {})),
         speaker=SpeakerConfig(**speaker_data),
-        granite=GraniteConfig(**granite_data),
+        whisper=WhisperConfig(**whisper_data),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),

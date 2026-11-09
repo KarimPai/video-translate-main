@@ -4,7 +4,7 @@ Loads the FireRed streaming model from Hugging Face on first use and keeps its
 recurrent model state across calls so it works on a live stream.
 
 Audio rejected by VAD isn't necessarily discarded: every `fallback_s` it can send a
-"probe" utterance to Granite Speech 5, helping retain speech mixed with loud music or singing.
+"probe" utterance to Whisper Large-v3, helping retain speech mixed with loud music or singing.
 """
 
 import logging
@@ -356,7 +356,7 @@ class Segmenter:
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
-        """Send the first `n` idle frames to Granite Speech 5 as a probe (if long and loud enough)."""
+        """Send the first `n` idle frames to Whisper Large-v3 as a probe (if long and loud enough)."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME

@@ -1,3 +1,70 @@
+# PLaMo 3 Translate 8B — YouTube captions-only experiment
+
+> **Experimental branch:** \`feature/plamo8b-youtube-captions-only\`, forked from the
+> November 9 \`test-plamo8b-q3\` commit. This branch does not use audio
+> recognition. The original pipeline remains unchanged on its other branches.
+
+## What is enabled
+
+- Archived YouTube **VOD** with Japanese manual subtitles or auto-captions.
+- Text-only caption preparation (deduplicate YouTube rolling text, remove
+  sound-effect labels, conservatively join incomplete phrase fragments).
+- Local PLaMo 3 Translate **8B Q3_K_M** using the official PFML3 completion
+  template and matching Hololive glossary entries.
+- Selective built-in terminology/meaning repairs, recent prior-phrase
+  context, and an LRU cache of exact Japanese model completions.
+- MPV original-source playback (no FFmpeg ingest) with native full seekbar,
+  three most recent English lines, timestamp-based rendering and 5-second
+  local caption translation prebuffer. A single worker prioritizes a
+  35-second window near the current playback position after seeking.
+
+No FireRedVAD, Haas ASR, DeepFilterNet, pyannote/Sherpa diarization,
+UVR separation, FFmpeg audio process or CUDA ASR runtime starts. Old
+audio-pipeline source files are retained for cross-branch reference but
+are not used by the caption-only entry point.
+
+## Requirements and first run
+
+- Windows with MPV and yt-dlp available in PATH (or MPV configured as before).
+- Recent CUDA-enabled \`llama-server\` in PATH with Hugging Face \`-hf\`
+  loading, Flash Attention and Q8 KV-cache support.
+- Python >=3.12 and \`uv\`.
+- First-time setup: \`uv sync\`. The old ASR lockfile was removed;
+  this creates a new, **minimal** \`uv.lock\` locally.
+- Run \`Start translate.bat\` and enter an archived YouTube VOD URL,
+  or run \`uv run --no-sync python -m auto_translate "VIDEO_URL" --mode auto --mpv\`.
+
+The Windows launcher prints Japanese and English lines. Startup and
+translation diagnostics go to \`logs/run.log\`; MPV errors go to
+\`logs/mpv.log\`.
+
+## Known constraints
+
+- **Live streams are deliberately rejected:** freely available YouTube
+  caption tracks are not a guaranteed continuous live subtitle API, and
+  the current MPV live-edge clock has not been reconciled with VTT times.
+  This mode does **not** silently switch to ASR.
+- Videos without accessible Japanese caption tracks fail with a message.
+  Captioned speech omitted by YouTube cannot be recovered.
+- Timestamps and manual/auto caption accuracy depend on YouTube.
+- Source-only PLaMo PFML3 does not support arbitrary chat-style system
+  instructions. Nearby textual context is used in conservative Japanese
+  normalization and existing translation repairs rather than adding
+  unsupported history to the model prompt.
+- Model loading, MPV playback and live caption availability must be
+  verified on the actual Windows/RTX 3070 system. Unit tests alone do not
+  establish end-to-end correctness or measured translation accuracy.
+
+## Tests
+
+\`\`\`powershell
+uv run --with pytest python -m pytest -q tests/test_caption_only.py tests/test_captions.py tests/test_plamo_translate.py
+\`\`\`
+
+---
+
+## Legacy pipeline documentation (other branches)
+
 # Japanese Video Translator — PLaMo 3 Translate 8B Q3_K_M experiment
 
 This **separate test branch** replaces CAT with **PLaMo 3 Translate 8B Q3_K_M**. It keeps the existing Haas-ja-v1.0 Q8_0 Vulkan ASR (CPU decode), FireRedVAD CUDA, Sherpa-ONNX CPU speaker diarization, YouTube JP caption reconciliation, Hololive glossary, direct MPV video playback, English-only subtitle stacking, and VOD seeking/cache. **Only one translation LLM is configured.**

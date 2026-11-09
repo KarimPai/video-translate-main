@@ -1247,6 +1247,8 @@ class Ingest:
                     first,
                     generation=generation,
                     is_current=lambda: generation == self.generation and not self._stopped,
+                    num_threads=self.gtcrn_cfg.num_threads,
+                    model_path=self.gtcrn_cfg.model_path,
                 )
 
                 log.info(

@@ -136,3 +136,13 @@ def test_japanese_clipped_polarity_and_greeting_are_reconstructed():
     assert cues[0].start_s == 1.0
     assert cues[1].text == "わかんない"
     assert cues[2].text == "おはようございます"
+
+
+
+def test_hololive_and_burger_king_caption_variants_use_full_names():
+    from auto_translate.glossary import Glossary
+
+    glossary = Glossary.load(Path(__file__).resolve().parents[1] / "glossary.toml")
+    assert ("ナキリあめ", "Nakiri Ayame") in glossary.find("ナキリあめかな")
+    assert ("バーグキング", "Burger King") in glossary.find("バーグキング食べた")
+    assert ("バーガーキング", "Burger King") in glossary.find("バーガーキング")

@@ -24,28 +24,32 @@ class LongformBoundaryTests(unittest.TestCase):
             emitted += segmenter.flush()
         return [x for x in emitted if not x.probe]
 
-    def test_real_short_pause_selected_near_six_second_soft_limit(self):
-        frames = 600
+    def test_real_short_pause_selected_near_seven_second_soft_limit(self):
+        # The current soft cap is 7s and the hard cap is 8s; a sustained
+        # 200ms quiet gap just before 7s is preferred over a forced split.
+        frames = 760
         pcm = np.full(frames * FRAME, .3, dtype=np.float32)
         probs = np.full(frames, .9, dtype=np.float32)
-        pcm[545 * FRAME:558 * FRAME] = 0.0
-        probs[545:558] = 0.05
+        pcm[690 * FRAME:710 * FRAME] = 0.0
+        probs[690:710] = 0.05
         result = self._process(pcm, probs)
         self.assertEqual(len(result), 2)
-        self.assertGreater(result[0].end_s, 5.45)
-        self.assertLess(result[0].end_s, 5.65)
+        self.assertGreater(result[0].end_s, 6.85)
+        self.assertLess(result[0].end_s, 7.15)
         self.assertAlmostEqual(result[0].end_s, result[1].start_s, places=6)
         self.assertEqual(sum(len(u.audio) for u in result), len(pcm))
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in result]), pcm))
 
     def test_continuous_speech_waits_for_hard_cap_without_losing_audio(self):
-        frames = 720
+        # 9s of continuous speech passes the 7s soft cap and reaches the
+        # 8s hard cap before fallback cutting a low-energy neighborhood.
+        frames = 900
         pcm = np.full(frames * FRAME, .3, dtype=np.float32)
         probs = np.full(frames, .9, dtype=np.float32)
         result = self._process(pcm, probs)
         self.assertEqual(len(result), 2)
-        self.assertGreater(result[0].end_s, 4.0)
-        self.assertLess(result[0].end_s, 7.0)
+        self.assertGreater(result[0].end_s, 5.5)
+        self.assertLess(result[0].end_s, 8.0)
         self.assertAlmostEqual(result[0].end_s, result[1].start_s, places=6)
         self.assertEqual(sum(len(u.audio) for u in result), len(pcm))
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in result]), pcm))

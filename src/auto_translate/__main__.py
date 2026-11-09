@@ -72,6 +72,12 @@ def main() -> None:
             "The captions-only branch cannot translate without them."
         )
 
+    print(
+        f"Caption source: {index.source_format.upper()} "
+        f"({index.source_origin}), {len(index.cues)} raw cues",
+        flush=True,
+    )
+
     title = " - ".join(
         part for part in (
             source.timeline.get("title", ""),

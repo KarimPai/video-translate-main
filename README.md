@@ -1,7 +1,7 @@
 # PLaMo 3 Translate 8B — YouTube captions-only experiment
 
-> **Experimental branch:** \`feature/plamo8b-youtube-captions-only\`, forked from the
-> November 9 \`test-plamo8b-q3\` commit. This branch does not use audio
+> **Experimental branch:** `feature/plamo8b-youtube-captions-only`, forked from the
+> November 9 `test-plamo8b-q3` commit. This branch does not use audio
 > recognition. The original pipeline remains unchanged on its other branches.
 
 ## What is enabled
@@ -26,17 +26,17 @@ are not used by the caption-only entry point.
 ## Requirements and first run
 
 - Windows with MPV and yt-dlp available in PATH (or MPV configured as before).
-- Recent CUDA-enabled \`llama-server\` in PATH with Hugging Face \`-hf\`
+- Recent CUDA-enabled `llama-server` in PATH with Hugging Face `-hf`
   loading, Flash Attention and Q8 KV-cache support.
-- Python >=3.12 and \`uv\`.
-- First-time setup: \`uv sync\`. The old ASR lockfile was removed;
-  this creates a new, **minimal** \`uv.lock\` locally.
-- Run \`Start translate.bat\` and enter an archived YouTube VOD URL,
-  or run \`uv run --no-sync python -m auto_translate "VIDEO_URL" --mode auto --mpv\`.
+- Python >=3.12 and `uv`.
+- First-time setup: `uv sync`. The old ASR lockfile was removed;
+  this creates a new, **minimal** `uv.lock` locally.
+- Run `Start translate.bat` and enter an archived YouTube VOD URL,
+  or run `uv run --no-sync python -m auto_translate "VIDEO_URL" --mode auto --mpv`.
 
 The Windows launcher prints Japanese and English lines. Startup and
-translation diagnostics go to \`logs/run.log\`; MPV errors go to
-\`logs/mpv.log\`.
+translation diagnostics go to `logs/run.log`; MPV errors go to
+`logs/mpv.log`.
 
 ## Known constraints
 
@@ -57,9 +57,9 @@ translation diagnostics go to \`logs/run.log\`; MPV errors go to
 
 ## Tests
 
-\`\`\`powershell
+```powershell
 uv run --with pytest python -m pytest -q tests/test_caption_only.py tests/test_captions.py tests/test_plamo_translate.py
-\`\`\`
+```
 
 ---
 

@@ -10,6 +10,7 @@ import re
 from ..stream_context import is_gta_context
 
 _VEST_COUNT = re.compile(r"ベスト[0-9０-９一二三四五六七八九十]+枚")
+_VEST_PURCHASE = re.compile(r"ベスト(?:を)?(?:買|持|着|装備)")
 _ROCKET_AMMO = re.compile(r"ロケラン(?:の)?弾")
 _ROCKET_COST = re.compile(
     r"ロケランの弾(?:は|が|で)?(?:一千万|1000万|１千万|10,?000,?000)"
@@ -78,7 +79,7 @@ def gta_prompt_terms(
     if not gta:
         return []
     hits: list[tuple[str, str]] = []
-    if _VEST_COUNT.search(japanese):
+    if _VEST_COUNT.search(japanese) or _VEST_PURCHASE.search(japanese):
         hits.append(("ベスト", "protective vest / body armor (equipment)"))
     if "ロケラン" in japanese:
         hits.append(("ロケラン", "rocket launcher (weapon)"))
@@ -103,6 +104,8 @@ def repair_gta_translation(
 
     if _VEST_COUNT.search(japanese):
         english = _BAD_VEST.sub("vests", english)
+    elif _VEST_PURCHASE.search(japanese):
+        english = re.sub(r"\\bthe\\s+best(?:\\s+one)?\\b", "a vest", english, flags=re.I)
     if _ROCKET_AMMO.search(japanese):
         if _ROCKET_COST.fullmatch(_compact(japanese)):
             if re.search(r"\bballs?\b|\bmarbles?\b", english, re.I):

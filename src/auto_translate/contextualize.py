@@ -108,7 +108,6 @@ def run_contextualize(
     in_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
-    *,
     title: str = "",
     lookahead_s: float = 2.0,
     join_gap_s: float = 0.25,
@@ -186,7 +185,16 @@ def run_contextualize(
                 continue
             watermark = max(watermark, item.sample / SAMPLE_RATE)
             drain()
-            out_q.put(item)
+            # Do not advertise audio past an untranslated cue. MPV uses
+            # progress to begin playing after its translation lead, and a
+            # forwarded full watermark could start playback before our 2s
+            # context wait completes.
+            safe_sample = item.sample
+            if pending:
+                safe_sample = min(
+                    safe_sample, max(0, int(pending[0][0].start_s * SAMPLE_RATE))
+                )
+            out_q.put(replace(item, sample=safe_sample))
             continue
         if get_generation is not None and item.generation != get_generation():
             continue

@@ -124,11 +124,32 @@ def run_contextualize(
     recent: deque[tuple[float, str]] = deque(maxlen=12)
     generation: int | None = None
     watermark = float("-inf")
+    observed_progress: int | None = None
+    reported_progress: int | None = None
     horizon = max(0.0, min(float(lookahead_s), 2.0))
     join_gap = max(0.0, min(float(join_gap_s), 0.35))
 
+    def emit_safe_progress() -> None:
+        """Advance MPV only after all earlier queued Japanese is forwarded.
+
+        Use actual ASR-stage AudioProgress, not subtitle end timestamps; the
+        downstream translator sees cues before the corresponding progress.
+        """
+        nonlocal reported_progress
+        if observed_progress is None or generation is None:
+            return
+        if get_generation is not None and generation != get_generation():
+            return
+        safe = observed_progress
+        if pending:
+            safe = min(safe, max(0, int(pending[0][0].start_s * SAMPLE_RATE)))
+        if reported_progress is None or safe > reported_progress:
+            out_q.put(AudioProgress(safe, generation=generation))
+            reported_progress = safe
+
     def drain(force: bool = False) -> None:
         now = time.monotonic()
+        released = False
         while pending:
             head, arrived_at = pending[0]
             ready = (
@@ -141,6 +162,7 @@ def run_contextualize(
             pending.popleft()
             if get_generation is not None and head.generation != get_generation():
                 continue
+            released = True
             if isinstance(head, Subtitle):
                 out_q.put(head)
                 if head.ja:
@@ -163,6 +185,10 @@ def run_contextualize(
                 head = replace(head, ja=revised)
             out_q.put(head)
             recent.append((head.end_s, head.ja))
+        # When a cue expires by wall time in otherwise quiet audio, there may
+        # be no subsequent AudioProgress item to uncap the 5s seek buffer.
+        if released:
+            emit_safe_progress()
 
     while True:
         try:
@@ -178,26 +204,29 @@ def run_contextualize(
             pending.clear()
             recent.clear()
             watermark = float("-inf")
+            observed_progress = None
+            reported_progress = None
         generation = item.generation
         if isinstance(item, AudioProgress):
+            if get_generation is not None and item.generation != get_generation():
+                continue
             if item.reset:
                 pending.clear()
                 recent.clear()
                 watermark = float("-inf")
-            if get_generation is not None and item.generation != get_generation():
+                observed_progress = item.sample
+                reported_progress = item.sample
+                out_q.put(item)
                 continue
+            observed_progress = max(
+                observed_progress if observed_progress is not None else item.sample,
+                item.sample,
+            )
             watermark = max(watermark, item.sample / SAMPLE_RATE)
             drain()
-            # Do not advertise audio past an untranslated cue. MPV uses
-            # progress to begin playing after its translation lead, and a
-            # forwarded full watermark could start playback before our 2s
-            # context wait completes.
-            safe_sample = item.sample
-            if pending:
-                safe_sample = min(
-                    safe_sample, max(0, int(pending[0][0].start_s * SAMPLE_RATE))
-                )
-            out_q.put(replace(item, sample=safe_sample))
+            # Progress remains capped behind an untranslated pending cue.
+            # Once that cue is emitted, drain() releases the held watermark.
+            emit_safe_progress()
             continue
         if get_generation is not None and item.generation != get_generation():
             continue

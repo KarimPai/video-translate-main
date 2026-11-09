@@ -24,6 +24,29 @@ class LongformBoundaryTests(unittest.TestCase):
             emitted += segmenter.flush()
         return [x for x in emitted if not x.probe]
 
+    def test_short_engine_like_confidence_spike_is_not_speech(self):
+        frames = 300
+        pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
+        probs = np.full(frames, 0.01, dtype=np.float32)
+        probs[120:126] = 0.98  # 60ms spike, too short for a speech onset
+        self.assertEqual(self._process(pcm, probs), [])
+
+    def test_very_short_confident_sound_is_rejected_on_emit(self):
+        frames = 300
+        pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
+        probs = np.full(frames, 0.01, dtype=np.float32)
+        probs[120:134] = 0.98  # 140ms, should not meet 250ms voiced minimum
+        self.assertEqual(self._process(pcm, probs), [])
+
+    def test_sustained_speech_survives_onset_filter(self):
+        frames = 300
+        pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
+        probs = np.full(frames, 0.01, dtype=np.float32)
+        probs[120:190] = 0.98  # sustained 700ms voiced speech
+        result = self._process(pcm, probs)
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].speech_start_s, 1.2, delta=0.05)
+
     def test_real_short_pause_selected_near_seven_second_soft_limit(self):
         # The current soft cap is 7s and the hard cap is 8s; a sustained
         # 200ms quiet gap just before 7s is preferred over a forced split.

@@ -71,7 +71,10 @@ class AsrConfig:
     response_timeout_s: float = 30.0
     retry_uncertain_enabled: bool = True
     retry_max_audio_s: float = 8.0
-    retry_budget_s: float = 3.0
+    retry_max_passes: int = 3  # includes the initial Haas decode
+    retry_live_max_passes: int = 2
+    retry_budget_s: float = 3.0  # VOD: total extra-pass wall-clock budget
+    retry_live_budget_s: float = 1.5  # live: stricter extra-pass deadline
     blocklist: list[str] = field(default_factory=list)
 
 

@@ -20,7 +20,7 @@ from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import (
     is_isolated_reaction, is_nonspeech_probe, is_sound_caption_artifact,
-    is_usable_transcript, strip_nonverbal_labels,
+    is_usable_transcript, strip_nonverbal_labels, rejection_reason,
 )
 from .config import Config
 from .ingest import Ingest
@@ -181,6 +181,10 @@ def run_asr(
                 "(%.2f-%.2fs, coverage=%.0f%%): %s",
                 utt.start_s, utt.end_s, caption_match.coverage * 100, text,
             )
+
+        if text and rejection_reason(text) == "laughter_only":
+            log.debug("Skipping nonverbal laughter at %.2fs", utt.start_s)
+            continue
 
         if not text:
             if not utt.probe:

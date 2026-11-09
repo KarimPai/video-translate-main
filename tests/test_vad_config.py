@@ -19,7 +19,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.max_split_extension_s, 1.0)
         self.assertEqual(cfg.split_pause_min_ms, 80)
         self.assertEqual(cfg.split_context_ms, 120)
-        self.assertEqual(cfg.fallback_s, 5.0)
+        self.assertEqual(cfg.fallback_s, 0.0)
         self.assertEqual(cfg.fallback_min_db, -50.0)
 
     def test_partial_override_preserves_other_defaults(self):
@@ -30,6 +30,12 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.threshold, 0.40)
         self.assertEqual(cfg.speech_pad_ms, 200)
         self.assertEqual(cfg.max_utterance_s, 7.0)
+
+    def test_noise_probe_can_be_opted_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text("[vad]\nfallback_s = 5.0\n", encoding="utf-8")
+            self.assertEqual(load_config(path).vad.fallback_s, 5.0)
 
     def test_local_overrides_take_precedence(self):
         with tempfile.TemporaryDirectory() as directory:

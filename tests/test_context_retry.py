@@ -119,7 +119,7 @@ class RetryTests(unittest.TestCase):
         ])
         cues = run_once(decoder, [utt(0,2), utt(2.2,4.2)])
         self.assertEqual([c.en for c in cues],
-                         ["We're going to the casino.", "now let's buy armor!"])
+                         ["We're going to the casino.", "Now let's buy armor!"])
         self.assertGreater(decoder.calls[-1][0], decoder.calls[1][0])
         self.assertEqual([(c.start_s,c.end_s) for c in cues],
                          [(0,2),(2.2,4.2)])

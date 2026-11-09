@@ -262,7 +262,7 @@ def split_turns(
     # A later speaker who starts while the current one is still talking
     # and clearly continues beyond that speaker's endpoint has taken the
     # floor. Cut the first at the *new onset*, rather than sending both
-    # voices to Haas in one utterance. This is not source separation: the
+    # voices to Granite in one utterance. This is not source separation: the
     # handoff's later audio may still contain background speech.
     #
     # Nearly simultaneous voices and interventions that end before the

@@ -82,7 +82,7 @@ class TranslationConfigurationTests(unittest.TestCase):
     def test_youtube_caption_priority_is_local_configurable(self):
         with tempfile.TemporaryDirectory() as temp:
             file = Path(temp) / "config.toml"
-            file.write_text("[asr]\\nyoutube_captions_first = false\\n".replace("\\\\n", "\\n"), encoding="utf-8")
+            file.write_text("[asr]\nyoutube_captions_first = false\n", encoding="utf-8")
             self.assertFalse(load_config(file).asr.youtube_captions_first)
 
     def test_speaker_interruptions_remain_enabled(self):

@@ -91,6 +91,30 @@ uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 
 The launcher still requests the YouTube URL, loads models, opens MPV, and prints JP/EN to the terminal.
 
+## Selective multi-pass Haas ASR (experimental)
+
+The default is **one Haas Q8_0 decode**. Only incomplete, suspicious or strongly caption-disagreeing Japanese triggers additional attempts. A retry uses a small (60ms) boundary adjustment where safe. A third candidate, when available, uses the **same Haas model without keyword boosting**. There is no second ASR model and no unsupported speech.cpp sampling option.
+
+Candidates are selected with a conservative score: independent, strongly aligned YouTube JP captions (when available), Japanese text plausibility and decoder-artifact checks. **Raw character count and majority voting are not used.** If there is no meaningful evidence of improvement, the original result wins. Caption alignment is optional; reliable local audio is still the primary source.
+
+**Live:** at most 2 passes total and up to 1.5s for optional retry work.
+**VOD:** at most 3 passes total and up to 3.0s for optional retry work.
+All passes are serial; seek changes cancel further optional retries. The deadline is checked before each retry and passed into speech.cpp's per-request response wait; it does not forcibly interrupt an OS pipe write or an already-running speech.cpp decode. The **first pass** retains its existing response timeout (30s by default). Therefore these limits are not a hard upper bound on total ASR latency.
+
+Optional `config.toml` overrides:
+
+```toml
+[asr]
+retry_uncertain_enabled = true
+retry_max_audio_s = 8.0
+retry_max_passes = 3
+retry_live_max_passes = 2
+retry_live_budget_s = 1.5
+retry_budget_s = 3.0
+```
+
+Use `retry_uncertain_enabled = false` for a pure single-pass comparison. Benchmark transcription correctness, `asr avg/max`, dropped subtitles and MPV sync on the **same VOD/live section** before concluding that multi-pass helps. A second deterministic decode does not establish independent confidence, and optional retries may still increase latency or background worker load.
+
 ## Context-aware live subtitles (experimental)
 
 The ASR-to-translation stage holds a Japanese cue for **at most 2.0s of media progress or 2.0s of wall time** to inspect upcoming Japanese transcripts, not to add model prompt history. The stage uses a maximum 12s recent-speech evidence window and merges very short unfinished utterances only across tiny time gaps without a detected speaker handoff. It does **not** identify the same speaker across different VAD windows, and it cannot reconstruct words absent from the ASR output.

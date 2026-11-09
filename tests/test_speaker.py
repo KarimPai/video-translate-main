@@ -218,6 +218,7 @@ class SpeakerPipelineTests(unittest.TestCase):
         self.assertIsNot(result[0].timings, result[1].timings)
         self.assertFalse(hasattr(result[0], "speaker_id"))
         self.assertEqual([part.speaker_handoff for part in result], [False, True])
+        self.assertTrue(all(part.speaker_split for part in result))
 
     def test_short_windows_do_not_run_diarization(self):
         backend = object.__new__(SherpaSplitter)

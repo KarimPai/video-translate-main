@@ -46,6 +46,8 @@ class LongformBoundaryTests(unittest.TestCase):
         result = self._process(pcm, probs)
         self.assertEqual(len(result), 1)
         self.assertAlmostEqual(result[0].speech_start_s, 1.2, delta=0.05)
+        self.assertIsNotNone(result[0].vad_confidence)
+        self.assertGreater(result[0].vad_confidence, .9)
 
     def test_real_short_pause_selected_near_seven_second_soft_limit(self):
         # The current soft cap is 7s and the hard cap is 8s; a sustained

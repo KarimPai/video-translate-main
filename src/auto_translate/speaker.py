@@ -436,6 +436,7 @@ class SherpaSplitter:
                     # speaker takes over, including after cached VOD seeks.
                     speaker_handoff=(index > 0 and
                                      window.speaker != windows[index - 1].speaker),
+                    speaker_split=True,
                     timings=replace(original.timings),
                 ))
             # Enforce exact conservation of PCM before emitting any split cue.

@@ -310,14 +310,15 @@ class Segmenter:
         start = self._start_sample
         end = start + n * FRAME
 
-        speech_frames = sum(p >= self.cfg.threshold for p in probs)
-        if speech_frames >= self.min_speech:
+        speech_probs = [p for p in probs if p >= self.cfg.threshold]
+        if len(speech_probs) >= self.min_speech:
             utt = Utterance(
                 start / SAMPLE_RATE,
                 end / SAMPLE_RATE,
                 np.concatenate(frames),
                 generation=self._generation,
                 speech_start_s=self._speech_start_sample / SAMPLE_RATE,
+                vad_confidence=sum(speech_probs) / len(speech_probs),
             )
             # Estimate when the utterance's last sample arrived: the current chunk's read time,
             # minus the audio processed after it (the trailing silence we waited for).

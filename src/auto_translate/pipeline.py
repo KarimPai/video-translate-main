@@ -95,6 +95,7 @@ def run_whisper(
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
     session_cache: SessionSubtitleCache | None = None,
+    audio_processing: dict[str, bool] | None = None,
 ) -> None:
     """Emit each accepted utterance once; never shift its source timestamps."""
     empty_count = 0
@@ -224,14 +225,17 @@ def run_whisper(
             peak = float(np.max(np.abs(utt.audio))) if utt.audio.size else 0.0
             log.info(
                 "Whisper diagnostic: gen=%d speech=%.2f-%.2fs %.2fs "
-                "rms=%.4f peak=%.3f gtcrn=%s speaker_handoff=%s "
+                "rms=%.4f peak=%.3f vad_confidence=%s gtcrn=%s "
+                "sherpa=%s speaker_split=%s speaker_handoff=%s "
                 "model=%.3fs retry=%s reason=%s "
                 "avg_logprob=%s no_speech=%s compression=%s "
                 "discarded=%s output=%r",
                 utt.generation, utt.start_s, utt.end_s,
                 utt.end_s - utt.start_s, rms, peak,
-                getattr(cfg, "_gtcrn_enabled", "unknown"),
-                utt.speaker_handoff,
+                utt.vad_confidence,
+                (audio_processing or {}).get("gtcrn", "unknown"),
+                (audio_processing or {}).get("speaker", "unknown"),
+                utt.speaker_split, utt.speaker_handoff,
                 utt.timings.asr_end - utt.timings.asr_start,
                 retried, retry_reason,
                 getattr(selected, "avg_logprob", None),
@@ -342,7 +346,9 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("whisper", run_whisper, failures, whisper, speaker_q, sub_q, generation, session_cache),
+            args=("whisper", run_whisper, failures, whisper, speaker_q, sub_q,
+                  generation, session_cache,
+                  {"gtcrn": cfg.gtcrn.enabled, "speaker": cfg.speaker.enabled}),
             name="whisper", daemon=True,
         ),
     ]

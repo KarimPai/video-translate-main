@@ -45,6 +45,8 @@ class Utterance:
     generation: int = 0
     speech_start_s: float | None = None
     speaker_handoff: bool = False
+    speaker_split: bool = False
+    vad_confidence: float | None = None
 
 
 @dataclass

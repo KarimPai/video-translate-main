@@ -28,6 +28,10 @@ from ..stream_context import (
 )
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
+from .gta_guard import (
+    gta_prompt_terms, polarity_conflict, repair_gta_translation,
+    short_polarity_fallback,
+)
 from .quality import (
     SKIP_TOKEN,
     is_obvious_nonverbal_japanese,
@@ -270,7 +274,12 @@ class PlamoTranslator:
         # Prefer dropping oldest dialogue before ever trimming source Japanese.
         limit = max(0, min(int(self.cfg.context_lines), 4))
         previous = list(history or [])[-limit:] if limit else []
-        matched = self.glossary.find(japanese)
+        recent_ja = [jp for jp, _ in (history or [])[-8:]]
+        gta_terms = gta_prompt_terms(japanese, self.vod_title, recent_ja)
+        matched = gta_terms + [
+            pair for pair in self.glossary.find(japanese)
+            if pair[0] not in {ja for ja, _ in gta_terms}
+        ]
         title = self.vod_title if self.cfg.context_title_enabled else ""
         budget = max(256, self.cfg.plamo_context - self.cfg.max_tokens - 96)
         prompt = ""
@@ -337,12 +346,29 @@ class PlamoTranslator:
         if _invalid_output(ja, english):
             log.warning("PLaMo invalid completion skipped for source=%r", ja[:100])
             return SKIP_TOKEN
+        # Explicit standalone polarity (e.g. すごい vs "bad") must not be
+        # inverted by unrelated preceding dialogue. Retry source-only once;
+        # deterministic fallback is limited to unambiguous full utterances.
+        if polarity_conflict(ja, english):
+            if previous:
+                try:
+                    candidate = _clean(self._complete(
+                        ja, timeout=min(self.cfg.timeout_s, self.cfg.quality_recheck_timeout_s),
+                        history=[],
+                    ))
+                    if not _invalid_output(ja, candidate) and not polarity_conflict(ja, candidate):
+                        english = candidate
+                except Exception as exc:
+                    log.debug("Source-only polarity retry failed: %s", exc)
+            if polarity_conflict(ja, english):
+                english = short_polarity_fallback(ja) or english
         english = repair_high_confidence_meaning(ja, english)
         recent_ja = [j for j, _ in history[-8:]]
         english = repair_valorant_translation(ja, english, recent_ja, False)
         english = repair_barotrauma_translation(ja, english)
         english = repair_ark_tier_translation(ja, english, self.vod_title, recent_ja)
         english = correct_translation(ja, english)
+        english = repair_gta_translation(ja, english, self.vod_title, recent_ja)
         english = neutralize_unsupported_subjects(ja, english)
         return english or SKIP_TOKEN
 

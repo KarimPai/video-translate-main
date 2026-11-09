@@ -103,7 +103,7 @@ class CaptionIndex:
                 _seconds(value)
                 for line in payload
                 for value in re.findall(
-                    r"<((?:(?:\\d+):)?\\d{2}:\\d{2}[.,]\\d{3})>", line
+                    r"<((?:(?:\d+):)?\d{2}:\d{2}[.,]\d{3})>", line
                 )
             ]
             valid_inline = [value for value in inline_times if value is not None]

@@ -99,6 +99,26 @@ def run_asr(
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         utt.timings.asr_end = time.monotonic()
+        # Retry only ambiguous short output from substantial speech. Use a slightly
+        # different audio boundary rather than asking Haas to decode identical PCM.
+        # The monotonic budget prevents one difficult cue from blocking the queue.
+        retry_cfg = getattr(getattr(asr, "cfg", None), "retry_uncertain_enabled", False)
+        if retry_cfg and not utt.probe and len(utt.audio) >= 16000:
+            stripped = strip_nonverbal_labels(text)
+            suspicious = not stripped or (len(stripped.strip("。、!?！？ ")) <= 2 and len(utt.audio) >= 32000)
+            max_audio = getattr(asr.cfg, "retry_max_audio_s", 8.0)
+            budget = getattr(asr.cfg, "retry_budget_s", 3.0)
+            if suspicious and len(utt.audio) <= max_audio * 16000 and time.monotonic() - utt.timings.asr_start < budget:
+                try:
+                    # Trim only trailing silence; never shift media timestamps.
+                    alternative_audio = utt.audio[:-1600] if len(utt.audio) > 4800 else utt.audio
+                    alternative = strip_nonverbal_labels(asr.transcribe(alternative_audio, False))
+                    if alternative and len(alternative) > len(stripped):
+                        log.debug("Haas selective retry improved transcript at %.2fs", utt.start_s)
+                        text = alternative
+                except Exception as exc:
+                    log.debug("Haas selective retry failed at %.2fs: %s", utt.start_s, exc)
+                utt.timings.asr_end = time.monotonic()
         original_asr = text
         text = strip_nonverbal_labels(text)
         if original_asr != text:

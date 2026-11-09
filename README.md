@@ -58,6 +58,9 @@ timeout_s = 25.0
 load_timeout_s = 600.0
 context_lines = 0
 memory_lines = 12
+lookahead_s = 2.0
+fragment_join_enabled = true
+fragment_join_gap_s = 0.25
 glossary = "glossary.toml"
 ```
 
@@ -87,6 +90,23 @@ uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 The launcher still requests the YouTube URL, loads models, opens MPV, and prints JP/EN to the terminal.
+
+## Context-aware live subtitles (experimental)
+
+The ASR-to-translation stage holds a Japanese cue for **at most 2.0s of media progress or 2.0s of wall time** to inspect upcoming Japanese transcripts, not to add model prompt history. The stage uses a maximum 12s recent-speech evidence window and merges very short unfinished utterances only across tiny time gaps without a detected speaker handoff. It does **not** identify the same speaker across different VAD windows, and it cannot reconstruct words absent from the ASR output.
+
+A progress watermark is capped at the oldest still-untranslated cue so MPV does not mistake a held cue for fully translated audio. Buffer and speaker state reset on VOD seeks. Prior completed VOD translations remain cached and are passed through unchanged. The added buffering can increase first-subtitle latency by up to 2 seconds before the model's existing processing time.
+
+The contextual corrections are restricted to observed confusions (Burger King, hideout, ammo, Botan) with contextual evidence where applicable. Uncertain vehicle words such as 前頭部 are intentionally left untouched until audio verification.
+
+### Validation on the same VOD or live recording
+
+```bat
+uv run --no-sync python -m unittest tests.test_contextualize tests.test_captions tests.test_plamo_translate -v
+nvidia-smi --query-gpu=timestamp,memory.used,memory.total --format=csv -l 1
+```
+
+While replaying `q8Kbl-HjkQ8`, compare Japanese and English lines around Burger King, ammo, hideout and names. Inspect `logs/run.log` for `done: ... latency avg ... max ...`, `dropping expired subtitle`, `first subtitle received`, `pipeline backpressure`, and `Joined adjacent Japanese fragment` (the last is debug logging). Test at least one backward seek and one speaker handoff. The unit tests are deterministic code checks, **not** a real GPU, model-quality or live-MPV benchmark; record actual peak VRAM and cue-delay measurements on the target PC.
 
 ## Diagnostics
 

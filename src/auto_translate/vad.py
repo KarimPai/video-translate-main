@@ -52,10 +52,10 @@ class StreamingFireRedVAD:
 
         config = FireRedStreamVadConfig(
             use_gpu=True,
-            smooth_window_size=1,
+            smooth_window_size=5,
             speech_threshold=speech_threshold,
-            pad_start_frame=1,
-            min_speech_frame=1,
+            pad_start_frame=5,
+            min_speech_frame=8,
             max_speech_frame=2000,
             min_silence_frame=1,
             chunk_max_frame=30000,
@@ -156,6 +156,8 @@ class Segmenter:
         self.min_silence = _ms_to_frames(cfg.min_silence_ms)
         self.pad = _ms_to_frames(cfg.speech_pad_ms)
         self.min_speech = _ms_to_frames(cfg.min_speech_ms)
+        self.onset_frames = _ms_to_frames(cfg.onset_ms)
+        self.prob_smooth_frames = max(1, cfg.prob_smooth_frames)
         self.max_frames = _ms_to_frames(cfg.max_utterance_s * 1000)
         self.hard_max_frames = self.max_frames + max(
             0, round(cfg.max_split_extension_s * SAMPLE_RATE / FRAME)
@@ -177,7 +179,10 @@ class Segmenter:
         self.vad.reset()
         self._leftover = np.zeros(0, dtype=np.float32)  # samples not yet a whole frame
         self._next_frame_sample = next_sample  # sample index of the next frame to process
-        self._preroll: deque[np.ndarray] = deque(maxlen=self.pad)  # recent non-speech frames
+        self._preroll: deque[np.ndarray] = deque(maxlen=self.pad)  # recent audio, including onset
+        self._preroll_probs: deque[float] = deque(maxlen=self.pad)
+        self._prob_history: deque[float] = deque(maxlen=self.prob_smooth_frames)
+        self._onset_count = 0
         self._idle: list[np.ndarray] = []  # non-speech frames since the last utterance (fallback)
         self._idle_start = next_sample
         self._frames: list[np.ndarray] = []  # current utterance
@@ -249,21 +254,30 @@ class Segmenter:
 
     def _step(self, frame: np.ndarray, prob: float) -> None:
         cfg = self.cfg
+        # The upstream postprocessor's smoothed flags are not used by this
+        # project: smooth raw probabilities here before deciding on utterances.
+        self._prob_history.append(prob)
+        prob = sum(self._prob_history) / len(self._prob_history)
         if not self._in_speech:
-            if prob >= cfg.threshold:
-                # Idle audio before the preroll goes to Granite Speech 5; the preroll joins the utterance.
-                self._emit_probe(len(self._idle) - len(self._preroll))
-                self._in_speech = True
-                self._frames = [*self._preroll, frame]
-                self._probs = [0.0] * len(self._preroll) + [prob]
-                self._start_sample = self._next_frame_sample - len(self._preroll) * FRAME
-                # Keep pre-roll in the ASR audio, but timestamp subtitles from
-                # the first frame that actually crossed the speech threshold.
-                self._speech_start_sample = self._next_frame_sample
-                self._silence = 0
-            else:
-                self._preroll.append(frame)
+            previous_preroll = len(self._preroll)
+            self._preroll.append(frame)
+            self._preroll_probs.append(prob)
+            self._onset_count = self._onset_count + 1 if prob >= cfg.threshold else 0
+            if self._onset_count < self.onset_frames:
                 self._add_idle(frame)
+                return
+            # Only sustained speech opens a segment. Keep the entire preroll
+            # and all its confidence values instead of clipping its first word.
+            self._emit_probe(len(self._idle) - previous_preroll)
+            self._in_speech = True
+            self._frames = list(self._preroll)
+            self._probs = list(self._preroll_probs)
+            self._start_sample = self._next_frame_sample - (len(self._frames) - 1) * FRAME
+            self._speech_start_sample = max(
+                self._start_sample,
+                self._next_frame_sample - (self.onset_frames - 1) * FRAME,
+            )
+            self._silence = 0
             return
 
         self._frames.append(frame)
@@ -324,6 +338,9 @@ class Segmenter:
             self._frames, self._probs = [], []
             self._preroll.clear()
             self._preroll.extend(rest_frames)  # deque(maxlen) keeps only the last `pad`
+            self._preroll_probs.clear()
+            self._preroll_probs.extend(rest_probs)
+            self._onset_count = 0
             self._idle, self._idle_start = list(rest_frames), end
 
     def _add_idle(self, frame: np.ndarray) -> None:

@@ -10,8 +10,8 @@ from auto_translate.config import VadConfig, load_config
 class VadConfigurationTests(unittest.TestCase):
     def test_recommended_defaults(self):
         cfg = VadConfig()
-        self.assertEqual(cfg.threshold, 0.35)
-        self.assertEqual(cfg.neg_threshold, 0.25)
+        self.assertEqual(cfg.threshold, 0.30)
+        self.assertEqual(cfg.neg_threshold, 0.20)
         self.assertEqual(cfg.speech_pad_ms, 200)
         self.assertEqual(cfg.min_silence_ms, 400)
         self.assertEqual(cfg.min_speech_ms, 100)
@@ -20,6 +20,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.split_pause_min_ms, 80)
         self.assertEqual(cfg.split_context_ms, 120)
         self.assertEqual(cfg.fallback_s, 5.0)
+        self.assertEqual(cfg.fallback_min_db, -50.0)
 
     def test_partial_override_preserves_other_defaults(self):
         with tempfile.TemporaryDirectory() as directory:

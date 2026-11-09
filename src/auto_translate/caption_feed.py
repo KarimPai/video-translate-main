@@ -118,6 +118,10 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
     Explicit split grammar endings are joined without inserting spaces.
     """
     output: list[CaptionCue] = []
+    # The start of a merged subtitle is its earliest speech onset, but
+    # a further join must compare against the most recent original fragment.
+    # Otherwise joining A+B can prevent a valid A+B+C completion.
+    last_piece: CaptionCue | None = None
     previous_raw = ""
     previous_end = -1.0
     rolling_repeats = 0
@@ -141,6 +145,7 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
                     output[-1] = CaptionCue(
                         old.start_s, max(old.end_s, cue.end_s), old.text
                     )
+                    last_piece = CaptionCue(cue.start_s, cue.end_s, text)
                 rolling_repeats += 1
                 continue
             shared = _rolling_suffix(previous_raw, text)
@@ -156,6 +161,7 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
                     output[-1] = CaptionCue(
                         prior.start_s, max(prior.end_s, cue.end_s), text
                     )
+                    last_piece = CaptionCue(cue.start_s, cue.end_s, text)
                     previous_raw = text
                     previous_end = max(previous_end, cue.end_s)
                     rolling_repeats += 1
@@ -177,32 +183,42 @@ def prepare_caption_cues(index: CaptionIndex, *, join_gap_s: float = 0.25) -> li
         previous_raw = _clean(cue.text)
 
         next_cue = CaptionCue(start, cue.end_s, text)
-        if output and _can_join(output[-1], next_cue, join_gap_s):
-            prior = output[-1]
-            # Japanese grammatical fragments concatenate without a space.
-            # Do not defer subtitle start to the newly seen ending's time.
-            combined = prior.text.rstrip(" 、,") + next_cue.text.lstrip(" 、,")
+        previous = output[-1] if output else None
+        boundary = (
+            CaptionCue(last_piece.start_s, last_piece.end_s, previous.text)
+            if previous is not None and last_piece is not None else previous
+        )
+        can_join = bool(
+            boundary is not None
+            and next_cue.end_s - previous.start_s <= 17.0
+            and _can_join(boundary, next_cue, join_gap_s)
+        )
+        if can_join:
+            # Use the aggregate for the text and original onset; use the
+            # last piece only when deciding whether a new join is justified.
+            combined = previous.text.rstrip(" 、,") + next_cue.text.lstrip(" 、,")
             output[-1] = CaptionCue(
-                prior.start_s, max(prior.end_s, next_cue.end_s), combined
+                previous.start_s, max(previous.end_s, next_cue.end_s), combined
             )
             fragment_joins += 1
         else:
             if (
-                output
-                and _clipped_ending(output[-1].text, next_cue.text)
+                previous is not None and boundary is not None
+                and _clipped_ending(boundary.text, next_cue.text)
                 and skipped_clipped < 12
             ):
                 skipped_clipped += 1
-                prev = output[-1]
                 log.info(
                     "Caption split not joined: %.2f-%.2f %r => %.2f-%.2f %r"
-                    " (onset_gap=%.2fs display_gap=%.2fs)",
-                    prev.start_s, prev.end_s, prev.text[-32:],
+                    " (onset_gap=%.2fs display_gap=%.2fs total_span=%.2fs)",
+                    boundary.start_s, boundary.end_s, boundary.text[-32:],
                     next_cue.start_s, next_cue.end_s, next_cue.text[:32],
-                    next_cue.start_s - prev.start_s,
-                    next_cue.start_s - prev.end_s,
+                    next_cue.start_s - boundary.start_s,
+                    next_cue.start_s - boundary.end_s,
+                    next_cue.end_s - previous.start_s,
                 )
             output.append(next_cue)
+        last_piece = next_cue
 
     log.info(
         "Japanese captions reconstructed: source=%d output=%d "

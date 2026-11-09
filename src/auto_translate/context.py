@@ -35,7 +35,7 @@ def strip_context_echo(previous: str, candidate: str) -> str | None:
             if size == len(new_words):
                 return None
             new_start = new_words[size][1]
-            remainder = candidate[new_start:].strip(" \t\n.,!?;:-")
+            remainder = candidate[new_start:].lstrip(" \t\n.,!?;:-").rstrip()
             return remainder or None
     return None
 
@@ -100,7 +100,7 @@ class RecentSpeechContext:
             return None
         valid: list[str] = []
         for item in terms:
-            if not isinstance(item, str):
+            if not isinstance(item, str) or "\n" in item or "\r" in item:
                 continue
             text = " ".join(item.split())
             # English words/names only; no long instruction-like prompts.

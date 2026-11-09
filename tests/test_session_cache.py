@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from auto_translate.output.mpv import MpvOutput
-from auto_translate.pipeline import run_asr, run_translate
+from auto_translate.pipeline import run_granite
 from auto_translate.session_cache import SessionSubtitleCache
 from auto_translate.types import Subtitle, Utterance
 
@@ -16,7 +16,7 @@ class SessionCacheTests(unittest.TestCase):
     def setUp(self):
         self.cache = SessionSubtitleCache()
         self.line = Subtitle(
-            10.0, 12.0, "わためが悪い", "Watame was wrong!",
+            10.0, 12.0, "", "Watame was wrong!",
             generation=0, speech_start_s=10.1,
         )
 
@@ -46,46 +46,28 @@ class SessionCacheTests(unittest.TestCase):
         self.assertEqual(len(other_video), 0)
         self.assertEqual(other_video.active_at(11.0), [])
 
-    def test_revisited_utterance_skips_both_asr_and_translation(self):
+    def test_revisited_utterance_skips_granite_speech_decode(self):
         self.cache.add(self.line)
 
-        class AsrMustNotRun:
-            def transcribe(self, audio, probe):
-                raise AssertionError("ASR should be skipped for cached audio")
+        class MustNotDecode:
+            def translate_audio(self, audio):
+                raise AssertionError("Granite should not decode a cached VOD cue")
 
-        class TranslatorMustNotRun:
-            def translate(self, ja, history):
-                raise AssertionError("Translator should be skipped for cached audio")
-
-        utterances = queue.Queue()
-        transcripts = queue.Queue()
-        subtitles = queue.Queue()
+        utterances, subtitles = queue.Queue(), queue.Queue()
         utterances.put(Utterance(
-            start_s=10.0,
-            end_s=12.0,
+            start_s=10.0, end_s=12.0,
             audio=np.zeros(160, dtype=np.float32),
-            generation=3,
-            speech_start_s=10.1,
+            generation=3, speech_start_s=10.1,
         ))
         utterances.put(None)
-        run_asr(
-            AsrMustNotRun(),
-            utterances,
-            transcripts,
-            get_generation=lambda: 3,
-            session_cache=self.cache,
-        )
-        run_translate(
-            TranslatorMustNotRun(),
-            context_lines=8,
-            in_q=transcripts,
-            out_q=subtitles,
-            get_generation=lambda: 3,
+        run_granite(
+            MustNotDecode(), utterances, subtitles,
+            get_generation=lambda: 3, session_cache=self.cache,
         )
         reused = subtitles.get_nowait()
         self.assertIsInstance(reused, Subtitle)
         self.assertEqual(reused.generation, 3)
-        self.assertEqual(reused.ja, "わためが悪い")
+        self.assertEqual(reused.ja, "")
         self.assertEqual(reused.en, "Watame was wrong!")
         self.assertIsNone(subtitles.get_nowait())
 
@@ -108,24 +90,15 @@ class SessionCacheTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertEqual(calls[-1][1]["format"], "ass-events")
 
-    def test_interrupted_speakers_translate_as_two_independent_cues(self):
-        class FakeASR:
+    def test_interrupted_speakers_remain_two_independent_granite_cues(self):
+        class FakeGranite:
             def __init__(self):
-                self.calls = []
+                self.calls = 0
+            def translate_audio(self, audio):
+                self.calls += 1
+                return ["I'm heading out—", "Wait a second!"][self.calls - 1]
 
-            def transcribe(self, audio, probe):
-                self.calls.append(len(audio))
-                return ["今から行くよ", "ちょっと待ってください"][len(self.calls) - 1]
-
-        class FakeTranslator:
-            memory_lines = 0
-            vod_title = ""
-
-            def translate(self, japanese, history):
-                return {"今から行くよ": "I'm heading out—",
-                        "ちょっと待ってください": "Wait a second!"}[japanese]
-
-        utterances, transcripts, subtitles = queue.Queue(), queue.Queue(), queue.Queue()
+        utterances, subtitles = queue.Queue(), queue.Queue()
         utterances.put(Utterance(
             0.0, 1.5, np.full(24000, .1, dtype=np.float32),
             speech_start_s=0.0, speaker_handoff=False,
@@ -135,14 +108,13 @@ class SessionCacheTests(unittest.TestCase):
             speech_start_s=1.5, speaker_handoff=True,
         ))
         utterances.put(None)
-        asr = FakeASR()
-        run_asr(asr, utterances, transcripts)
-        run_translate(FakeTranslator(), 4, transcripts, subtitles)
+        granite = FakeGranite()
+        run_granite(granite, utterances, subtitles)
         first, second, sentinel = (
             subtitles.get_nowait(), subtitles.get_nowait(), subtitles.get_nowait()
         )
         self.assertIsNone(sentinel)
-        self.assertEqual(asr.calls, [24000, 40000])
+        self.assertEqual(granite.calls, 2)
         self.assertEqual([first.en, second.en],
                          ["I'm heading out—", "Wait a second!"])
         self.assertEqual([(first.start_s, first.end_s), (second.start_s, second.end_s)],
@@ -153,7 +125,7 @@ class SessionCacheTests(unittest.TestCase):
     def test_vod_cache_replay_stops_old_subtitle_at_speaker_handoff(self):
         first = Subtitle(10.0, 11.5, "先に", "I'll go first.",
                          speech_start_s=10.0)
-        second = Subtitle(11.5, 13.0, "待って", "Wait!",
+        second = Subtitle(11.5, 13.0, "", "Wait!",
                           speech_start_s=11.5, speaker_handoff=True)
         self.cache.add(first)
         self.cache.add(second)
@@ -175,7 +147,7 @@ class SessionCacheTests(unittest.TestCase):
         self.assertNotIn("I'll go first.", out._shown)
 
     def test_cached_handoff_metadata_survives_seek_generation(self):
-        cached = Subtitle(20.0, 21.5, "待って", "Wait!",
+        cached = Subtitle(20.0, 21.5, "", "Wait!",
                           speech_start_s=20.0, speaker_handoff=True)
         self.cache.add(cached)
         source, translated = queue.Queue(), queue.Queue()
@@ -185,12 +157,12 @@ class SessionCacheTests(unittest.TestCase):
         ))
         source.put(None)
 
-        class NoASR:
-            def transcribe(self, audio, probe):
+        class MustNotDecode:
+            def translate_audio(self, audio):
                 raise AssertionError("should reuse matching cached subtitle")
 
-        run_asr(NoASR(), source, translated,
-                get_generation=lambda: 2, session_cache=self.cache)
+        run_granite(MustNotDecode(), source, translated,
+                    get_generation=lambda: 2, session_cache=self.cache)
         reuse = translated.get_nowait()
         self.assertIsInstance(reuse, Subtitle)
         self.assertEqual(reuse.generation, 2)

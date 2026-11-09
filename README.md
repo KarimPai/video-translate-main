@@ -58,9 +58,13 @@ Counts above are illustrative only. If it prints **VTT**, JSON3 was not
 available or the download failed and a cached VTT was used. When diagnosing
 unreconstructed `わかん / ない` or `思い / ます` splits, see
 `Caption split not joined` and `Japanese captions reconstructed` in
-`logs/run.log` for the exact original timestamps. The strong-ending joiner
-uses onset-to-onset timing, not rolling caption display expiry, and does not
-join across long silent gaps.
+`logs/run.log` for the exact original timestamps. The strong-ending joiner now accepts up to 5.5 seconds between adjacent
+JSON3 event onsets only for specific clipped Japanese word endings, while
+rejecting long silent gaps and spans over 17 seconds. This is a conservative
+heuristic, not audio-based word alignment; longer joins may display the full
+English sentence at the start of the combined Japanese phrase. For any
+remaining split, inspect the logged original cue starts and ends before
+increasing timing thresholds again.
 
 Startup and translation diagnostics go to `logs/run.log`; MPV errors go to
 `logs/mpv.log`.

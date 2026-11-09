@@ -22,6 +22,8 @@ from .context_memory import repair_near_repeated_word
 from .text_filter import (
     is_isolated_reaction, is_nonspeech_probe, is_sound_caption_artifact,
     is_usable_transcript, strip_nonverbal_labels, rejection_reason,
+    is_short_acknowledgement, is_stationary_mechanical_audio,
+    caption_confirms_short_acknowledgement,
 )
 from .config import Config
 from .ingest import Ingest
@@ -226,6 +228,21 @@ def run_asr(
         if is_isolated_reaction(text):
             log.debug("Discarding isolated reaction: %s", text)
             continue
+
+        # Mechanical sounds sometimes hallucinate as isolated "うん" -> "Yeah".
+        # Protect real acknowledgements: reject only VAD-negative probes or
+        # highly stationary tonal audio, unless a tightly aligned caption
+        # independently confirms the same Japanese response.
+        if (getattr(getattr(asr, "cfg", None), "engine_noise_ack_guard", True)
+                and is_short_acknowledgement(text)
+                and not caption_confirms_short_acknowledgement(text, caption_match)):
+            if utt.probe or is_stationary_mechanical_audio(utt.audio):
+                log.debug(
+                    "Skipping unverified short acknowledgment over likely game audio "
+                    "at %.2f-%.2fs (probe=%s, text=%r)",
+                    utt.start_s, utt.end_s, utt.probe, text,
+                )
+                continue
 
         if get_generation is not None and utt.generation != get_generation():
             continue

@@ -17,6 +17,7 @@ from typing import Callable
 import numpy as np
 
 from .config import Config
+from .context import RecentSpeechContext, strip_context_echo
 from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
@@ -95,10 +96,12 @@ def run_whisper(
     get_generation: Callable[[], int] | None = None,
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:
-    """Decode speech directly to English once per completed VAD utterance."""
+    """Emit each accepted utterance once; never shift its source timestamps."""
     empty_count = 0
     recent_outros: list[float] = []
     last_generation: int | None = None
+    cfg = getattr(whisper, "cfg", None)
+    context = RecentSpeechContext(cfg)
     while True:
         item = in_q.get()
         if item is None:
@@ -108,56 +111,164 @@ def run_whisper(
             continue
         if last_generation is None or item.generation != last_generation:
             recent_outros.clear()
+            context.reset()
             last_generation = item.generation
         if isinstance(item, AudioProgress):
             if item.reset:
                 recent_outros.clear()
+                context.reset()
             out_q.put(item)
             continue
+
         utt = item
+        context.prepare(utt)
         cached = session_cache.match(utt.start_s, utt.end_s) if session_cache is not None else None
         if cached is not None:
+            context.accept(utt, cached.en)
             out_q.put(replace(
                 cached, generation=utt.generation, timings=utt.timings,
                 speaker_handoff=utt.speaker_handoff or cached.speaker_handoff,
             ))
             continue
-
         if utt.probe and _discard_probe(utt.audio):
             continue
 
-        utt.timings.asr_start = time.monotonic()  # direct Whisper decode clock
-        english = whisper.translate_audio(utt.audio)
+        utt.timings.asr_start = time.monotonic()
+        retried = False
+        retry_reason = ""
+        selected = None
+        if hasattr(whisper, "decode_audio"):
+            original = whisper.decode_audio(
+                utt.audio, prompt=context.prompt(utt),
+                hotwords=context.hotwords(),
+            )
+            selected = original
+            english = original.text
+            normalized = " ".join(re.sub(r"[^\w\s]", "", english).split())
+            generic_outro = bool(_OUTRO.fullmatch(normalized))
+
+            retry_reason = (
+                "outro" if generic_outro and getattr(cfg, "retry_on_outro", True)
+                else "uncertain" if original.suspicious else ""
+            )
+            if retry_reason and getattr(cfg, "retry_uncertain", True):
+                max_samples = round(max(1.0, float(
+                    getattr(cfg, "retry_max_audio_s", 12.0)
+                )) * SAMPLE_RATE)
+                tail = context.audio_context(utt)
+                if tail is not None and utt.audio.size + tail.size > max_samples:
+                    tail = None
+                samples = (
+                    np.concatenate((tail, utt.audio))
+                    if tail is not None else utt.audio
+                )
+                retried = True
+                second = whisper.decode_audio(
+                    samples, hotwords=context.hotwords(),
+                    temperature=float(getattr(cfg, "retry_temperature", 0.2)),
+                )
+                # Translation is not word-aligned. Do not publish previous
+                # dialogue again just because we included its audio.
+                candidate = (
+                    strip_context_echo(context.last_text, second.text)
+                    if tail is not None else second.text
+                )
+                if candidate and not second.suspicious:
+                    first_logp = (
+                        original.avg_logprob if original.avg_logprob is not None
+                        else -1.0
+                    )
+                    second_logp = (
+                        second.avg_logprob if second.avg_logprob is not None
+                        else first_logp
+                    )
+                    if (
+                        not english or
+                        (original.suspicious and
+                         second_logp >= first_logp - 0.15) or
+                        (generic_outro and
+                         second_logp >= first_logp - 0.15 and
+                         not _OUTRO.fullmatch(
+                             " ".join(re.sub(r"[^\w\s]", "", candidate).split())
+                         ))
+                    ):
+                        english = candidate
+                        selected = second
+                        log.info(
+                            "Whisper retry accepted (%s, context_audio=%.2fs, "
+                            "gen=%d %.2f-%.2fs)",
+                            retry_reason,
+                            0.0 if tail is None else tail.size / SAMPLE_RATE,
+                            utt.generation, utt.start_s, utt.end_s,
+                        )
+                    else:
+                        log.info(
+                            "Whisper retry discarded: failed quality comparison "
+                            "(gen=%d %.2f-%.2fs)",
+                            utt.generation, utt.start_s, utt.end_s,
+                        )
+        else:
+            # Existing test doubles and older API-compatible adapters.
+            english = whisper.translate_audio(utt.audio)
+
         utt.timings.asr_end = time.monotonic()
         utt.timings.mt_start = utt.timings.asr_end
         utt.timings.mt_end = utt.timings.asr_end
         if get_generation is not None and utt.generation != get_generation():
             continue
 
+        if getattr(cfg, "diagnostics", False):
+            rms = float(np.sqrt(np.mean(np.square(
+                np.asarray(utt.audio, dtype=np.float64)
+            )))) if utt.audio.size else 0.0
+            peak = float(np.max(np.abs(utt.audio))) if utt.audio.size else 0.0
+            log.info(
+                "Whisper diagnostic: gen=%d speech=%.2f-%.2fs %.2fs "
+                "rms=%.4f peak=%.3f gtcrn=%s speaker_handoff=%s "
+                "model=%.3fs retry=%s reason=%s "
+                "avg_logprob=%s no_speech=%s compression=%s "
+                "discarded=%s output=%r",
+                utt.generation, utt.start_s, utt.end_s,
+                utt.end_s - utt.start_s, rms, peak,
+                getattr(cfg, "_gtcrn_enabled", "unknown"),
+                utt.speaker_handoff,
+                utt.timings.asr_end - utt.timings.asr_start,
+                retried, retry_reason,
+                getattr(selected, "avg_logprob", None),
+                getattr(selected, "no_speech_prob", None),
+                getattr(selected, "compression_ratio", None),
+                getattr(selected, "discarded_segments", None),
+                english[:100],
+            )
+
         if not english.strip():
             empty_count += 1
             if empty_count % 8 == 0:
                 log.warning(
-                    "Whisper returned empty English for %d utterances (latest %.2f-%.2fs)",
+                    "Whisper returned empty English for %d utterances "
+                    "(latest %.2f-%.2fs)",
                     empty_count, utt.start_s, utt.end_s,
                 )
             continue
         empty_count = 0
-        cfg = getattr(whisper, "cfg", None)
-        if (getattr(cfg, "suppress_repeated_signoffs", True) and
-                _is_repeated_outro(
-                    english, utt.start_s, recent_outros,
-                    getattr(cfg, "signoff_cooldown_s", 1200.0),
-                )):
+        if (
+            getattr(cfg, "suppress_repeated_signoffs", True) and
+            _is_repeated_outro(
+                english, utt.start_s, recent_outros,
+                getattr(cfg, "signoff_cooldown_s", 1200.0),
+            )
+        ):
             log.info(
                 "Suppressed repeated generic Whisper outro (%.2fs): %r",
                 utt.start_s, english,
             )
             continue
+
+        context.accept(utt, english)
         out_q.put(Subtitle(
             start_s=utt.start_s,
             end_s=utt.end_s,
-            ja="",  # direct translation has no Japanese transcript
+            ja="",
             en=english,
             timings=utt.timings,
             generation=utt.generation,

@@ -115,6 +115,13 @@ def select_best(candidates: list[str], *, duration_s: float, caption: Any = None
     best = first
     for number, text in enumerate(candidates[1:], start=2):
         cleaned = strip_nonverbal_labels(text)
+        # Without independent caption evidence, a penalty for one known
+        # homophone cannot justify switching to unrelated fluent Japanese.
+        # Demand the exact supported replacement in this narrow case.
+        if (_KNOWN_ASR_CONFUSION.search(first.text)
+                and not _strong_caption(caption)
+                and "バーガーキング" not in cleaned):
+            continue
         score = quality_score(cleaned, duration_s=duration_s, caption=caption)
         if score > best.score + 0.35:
             best = Candidate(cleaned, number, score)

@@ -115,6 +115,8 @@ class EngineNoiseGuardTests(unittest.TestCase):
         self.assertEqual(strip_nonverbal_labels("[engine noise]"), "")
         self.assertEqual(strip_nonverbal_labels("エンジン音"), "")
         self.assertEqual(strip_nonverbal_labels("[エンジン音] 今行きます"), "今行きます")
+        self.assertEqual(strip_nonverbal_labels("[engine sounds]"), "")
+        self.assertEqual(strip_nonverbal_labels("engine"), "engine")
 
     def test_short_ack_scope(self):
         self.assertTrue(is_short_acknowledgement("うん。"))

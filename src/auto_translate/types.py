@@ -1,8 +1,4 @@
-"""Data passed between pipeline stages.
-
-Media timestamps (`start_s` / `end_s`) are seconds since ingest start, computed from the
-PCM sample count. Wall-clock times live only in `Timings` and are used for latency logging.
-"""
+"""Timestamped audio, VAD utterances, and English-only subtitle packets."""
 
 from dataclasses import dataclass, field
 
@@ -13,28 +9,29 @@ SAMPLE_RATE = 16000
 
 @dataclass
 class Timings:
-    """time.monotonic() checkpoints for one utterance (for latency logs only)."""
-
-    audio_read: float = 0.0  # (estimated) the utterance's last sample arrived from ffmpeg
-    segmented: float = 0.0  # VAD decided the utterance was complete
+    audio_read: float = 0.0
+    segmented: float = 0.0
+    # Retained field names for compatibility with existing MPV/seek consumers;
+    # the interval now measures Granite direct audio-to-English inference.
     asr_start: float = 0.0
     asr_end: float = 0.0
-    mt_start: float = 0.0  # translation
+    mt_start: float = 0.0
     mt_end: float = 0.0
 
 
 @dataclass
 class AudioChunk:
     start_sample: int
-    pcm: np.ndarray  # float32 mono 16 kHz, values in [-1, 1]
-    read_at: float  # time.monotonic() when it was read from ffmpeg
-    reset: bool = False  # discontinuity (vod jump): audio continues at start_sample, pcm is empty
+    pcm: np.ndarray
+    read_at: float
+    reset: bool = False
     generation: int = 0
+
 
 @dataclass
 class AudioProgress:
-    sample: int  # processed audio position at 16 kHz
-    reset: bool = False  # new VOD seek position; replace the previous watermark
+    sample: int
+    reset: bool = False
     generation: int = 0
 
 
@@ -42,18 +39,8 @@ class AudioProgress:
 class Utterance:
     start_s: float
     end_s: float
-    audio: np.ndarray  # float32 mono 16 kHz
-    probe: bool = False  # VAD heard no speech; send fallback audio to Haas ASR
-    timings: Timings = field(default_factory=Timings)
-    generation: int = 0
-    speech_start_s: float | None = None  # first FireRed speech-positive frame; excludes VAD pre-roll
-    speaker_handoff: bool = False  # another voice took over; stop prior subtitle linger
-
-@dataclass
-class Transcript:
-    start_s: float
-    end_s: float
-    ja: str
+    audio: np.ndarray
+    probe: bool = False
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None
@@ -64,8 +51,8 @@ class Transcript:
 class Subtitle:
     start_s: float
     end_s: float
-    ja: str
-    en: str  # "" when translation is off
+    ja: str  # blank in direct Granite audio-to-English mode
+    en: str
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None

@@ -13,6 +13,11 @@ from pathlib import Path
 
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term
+from ..translation_integrity import (
+    enforce_known_name_spellings,
+    enforce_numeric_fidelity,
+    japanese_number_facts,
+)
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
 from ..watame import correct_translation
@@ -36,7 +41,12 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "If a driver is not explicitly named, say The driving was bad, "
     "not My driving was bad or Your driving was bad. "
     "If the source only describes a crash, say There was a collision, "
-    "not I crashed or You crashed."
+    "not I crashed or You crashed. "
+    "Translate ONLY the current Japanese line. Previous subtitles are context, "
+    "not additional words to include. They may be spoken by different people. "
+    "Keep physical movement, directions and place references literal when supported "
+    "by the Japanese. Do not invent emotions, names, destinations or actions. "
+    "Use exact glossary spellings for names and preserve every Japanese number."
 )
 
 
@@ -173,13 +183,23 @@ class PlamoTranslator:
             self._server_log = None
         atexit.unregister(self.close)
 
-    def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+    def translate(
+        self, ja: str, history: list[tuple[str, str]],
+        *, fragment_context: tuple[str, ...] = (),
+    ) -> str:
         if getattr(self, "memory_lines", 0):
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 return reused
-        english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        english = _clean(self._chat(
+            ja, history, timeout=self.cfg.timeout_s,
+            fragment_context=fragment_context,
+        ))
+        if getattr(self.cfg, "protect_numbers", True):
+            english = enforce_numeric_fidelity(ja, english)
+        if getattr(self.cfg, "protect_names", True):
+            english = enforce_known_name_spellings(ja, english, self.glossary)
         english = correct_translation(ja, english)
         corrected = neutralize_unsupported_subjects(ja, english)
         if corrected != english:
@@ -191,6 +211,7 @@ class PlamoTranslator:
         ja: str,
         history: list[tuple[str, str]],
         timeout: float,
+        fragment_context: tuple[str, ...] = (),
     ) -> str:
         messages: list[dict[str, str]] = []
         dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
@@ -215,6 +236,20 @@ class PlamoTranslator:
                 "\n" + memory if memory else ""
             ),
         }
+        if fragment_context:
+            options["context"] += (
+                "\nImmediately preceding Japanese speech fragments "
+                "(context only, possibly different speakers; do NOT translate "
+                "these fragments again): " + " / ".join(fragment_context)
+            )
+        if number_facts := japanese_number_facts(ja):
+            pairs = "; ".join(
+                f"{original} = {number}"
+                for original, number in number_facts[:4]
+            )
+            options["context"] += (
+                "\nExact numbers in the CURRENT Japanese line: " + pairs
+            )
         if hits := self.glossary.find(ja):
             options["glossary"] = [
                 {"source": source, "target": target}

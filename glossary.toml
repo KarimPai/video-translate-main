@@ -58,6 +58,11 @@
 "野うさぎ" = "Nousagi"
 "35P" = "35P"
 "宝鐘マリン" = "Houshou Marine"
+# Explicit Japanese name variants; do not invent names when ASR is uncertain.
+"マリン" = "Marine"
+"ベイ" = "Bae"
+"ベイちゃん" = "Bae"
+"ベーちゃん" = "Bae"
 "兎田ぺこら" = "Usada Pekora"
 "さくらみこ" = "Sakura Miko"
 

@@ -24,7 +24,9 @@ _JP_NUM = re.compile(
     r"(?:[0-9０-９][0-9０-９,，]*|[〇零一二三四五六七八九十百千万億]{2,})"
     r"(?![0-9０-９〇零一二三四五六七八九十百千万億])"
 )
-_EN_NUM = re.compile(r"(?<![\w.])\d[\d,]*(?![\w.])")
+_EN_NUM = re.compile(
+    r"(?<![\w.:])(?:\d{1,3}(?:,\d{3})+|\d+)(?![\w.:])"
+)
 _NAME_ALIASES = (
     ("マリン", "Marine", re.compile(r"\bMarin\b", re.IGNORECASE)),
     ("ベイ", "Bae", re.compile(r"\bBay\b", re.IGNORECASE)),
@@ -136,12 +138,9 @@ def enforce_numeric_fidelity(japanese: str, english: str) -> str:
     english_matches = list(_EN_NUM.finditer(english))
     if not source_numbers or not english_matches:
         return english
-    if len(source_numbers) == len(english_matches):
-        target_numbers = source_numbers
-    elif len(set(source_numbers)) == 1 and len(english_matches) <= 3:
-        target_numbers = source_numbers[:1] * len(english_matches)
-    else:
+    if len(source_numbers) != len(english_matches):
         return english  # ambiguity: never silently replace unrelated numbers
+    target_numbers = source_numbers
 
     result = english
     for match, correct in reversed(list(zip(english_matches, target_numbers))):

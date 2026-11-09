@@ -67,6 +67,12 @@ class TranslateConfig:
     context_lines: int = 8
     # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
     memory_lines: int = 24
+    # Translation look-behind uses only prior, timestamp-adjacent Japanese.
+    # It never changes ASR/VAD segmentation or MPV subtitle timing.
+    fragment_context_lines: int = 2
+    fragment_max_gap_s: float = 1.8
+    protect_numbers: bool = True
+    protect_names: bool = True
     glossary: str = "glossary.toml"
 
 

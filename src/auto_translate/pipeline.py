@@ -14,6 +14,7 @@ from .asr.base import ASR
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
+from .translation_integrity import nearby_japanese_fragments
 from .text_filter import is_usable_transcript
 from .config import Config
 from .ingest import Ingest
@@ -145,6 +146,7 @@ def run_translate(
     """Translate transcripts while retaining recent context and forwarding progress."""
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
+    recent_ja: deque[tuple[float, float, str]] = deque(maxlen=4)
     memory_generation: int | None = None
 
     while True:
@@ -162,6 +164,7 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                recent_ja.clear()
             memory_generation = item.generation
 
             out_q.put(item)
@@ -176,6 +179,7 @@ def run_translate(
         # against a new generation reaching this queue before its marker.
         if memory_generation is not None and tr.generation != memory_generation:
             history.clear()
+            recent_ja.clear()
         memory_generation = tr.generation
 
         # A cached Subtitle already includes its Japanese transcript and
@@ -183,6 +187,7 @@ def run_translate(
         if isinstance(tr, Subtitle):
             if tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))
+            recent_ja.append((tr.start_s, tr.end_s, tr.ja))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
             out_q.put(tr)
@@ -199,8 +204,18 @@ def run_translate(
                 if repaired_ja != tr.ja:
                     log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
                     tr = replace(tr, ja=repaired_ja)
+            # A short sentence may be split by VAD. Give PLaMo nearby Japanese
+            # fragments as reference context, but keep every output cue's
+            # original source text, boundaries and MPV timestamps unchanged.
+            fragment_context = nearby_japanese_fragments(
+                list(recent_ja), tr.start_s, tr.ja,
+                max_gap_s=getattr(translator.cfg, "fragment_max_gap_s", 1.8),
+                max_fragments=getattr(translator.cfg, "fragment_context_lines", 2),
+            ) if getattr(translator, "cfg", None) is not None else ()
             try:
-                en = translator.translate(tr.ja, list(history))
+                en = translator.translate(
+                    tr.ja, list(history), fragment_context=fragment_context
+                )
             except Exception as e:
                 log.error("translation failed: %s", e)
                 en = "[translation failed]"
@@ -210,6 +225,7 @@ def run_translate(
 
             if en and en != "[translation failed]":
                 history.append((tr.ja, en))
+            recent_ja.append((tr.start_s, tr.end_s, tr.ja))
 
             if not en.strip():
                 log.error(

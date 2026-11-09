@@ -120,3 +120,27 @@ def test_first_caption_renders_at_original_vod_timestamp():
     # Existing subtitle remains visible during the configured linger.
     player._render(2.0)
     assert player.cache.active_at(2.0, include_linger=True)
+
+
+def test_previous_history_uses_only_contiguous_nearby_translations():
+    from auto_translate.types import Subtitle
+    cues = CaptionIndex([
+        CaptionCue(0.0, 1.0, "old scene"),
+        CaptionCue(40.0, 41.0, "new scene one"),
+        CaptionCue(41.5, 42.0, "new scene two"),
+        CaptionCue(42.5, 43.0, "current"),
+    ])
+    player = CaptionOnlyPlayer(
+        Source("https://example.test/watch?v=x", False, duration=60),
+        Config(), cues, StubTranslator(),
+    )
+    player._translated[0] = Subtitle(0.0, 1.0, "old scene", "Old scene")
+    player._translated[1] = Subtitle(40.0, 41.0, "new scene one", "Scene one")
+    player._translated[2] = Subtitle(41.5, 42.0, "new scene two", "Scene two")
+    assert player._previous_history(3) == [
+        ("new scene one", "Scene one"), ("new scene two", "Scene two")
+    ]
+    del player._translated[2]
+    # An unprocessed immediately preceding caption must not cause a jump
+    # back to an older but completed cue after seeking.
+    assert player._previous_history(3) == []

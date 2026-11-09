@@ -29,11 +29,13 @@ class GtcrnConfig:
 
 @dataclass
 class VadConfig:
-    threshold: float = 0.30
-    neg_threshold: float = 0.20
-    min_silence_ms: int = 400
-    speech_pad_ms: int = 200
-    min_speech_ms: int = 100
+    threshold: float = 0.50
+    neg_threshold: float = 0.30
+    min_silence_ms: int = 500
+    speech_pad_ms: int = 150
+    min_speech_ms: int = 250
+    onset_ms: int = 80  # continuous speech required before opening a segment
+    prob_smooth_frames: int = 5  # smooth raw FireRed probabilities across 50 ms
     max_utterance_s: float = 7.0
     # At the soft limit, prefer a sustained natural pause.
     max_split_extension_s: float = 1.0  # hard deadline remains 8s
@@ -68,12 +70,9 @@ class GraniteConfig:
     context_tokens: int = 4096
     gpu_layers: int = 99
     prompt: str = "translate the speech to English with proper punctuation and capitalization."
-    # IBM's supported AST keyword-biasing format is used when keywords are set.
-    # Keep the list small: overly broad lists can bias unrelated speech.
-    # Set keywords=[] to use the punctuated AST prompt above instead.
-    keywords: list[str] = field(default_factory=lambda: [
-        "Watame", "Towa", "Suisei", "Pekora", "Miko", "Subaru",
-    ])
+    # Do not bias unknown Japanese speech to familiar Hololive names.
+    # Opt in per stream with [granite] keywords = ["Watame", ...].
+    keywords: list[str] = field(default_factory=list)
     request_timeout_s: float = 45.0
     startup_timeout_s: float = 1200.0
 

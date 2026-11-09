@@ -128,10 +128,80 @@ Use `--audio-profile baseline|gtcrn|speaker|both` to compare preprocessing
 on identical video sections; `--diagnostics` logs every decoded utterance.
 Default: both GTCRN and Sherpa enabled.
 
-The next-stage context implementation uses an optional 1.2 s rolling
-speech tail for *uncertain decode retries*, with text overlap removal.
+The current context implementation uses an optional 1.2 s rolling
+speech tail for *uncertain decode retries*. It requires exact overlap between
+the earlier accepted English and the contextual re-decode before it can
+publish a new line; otherwise it retains the original decode.
 `use_text_context = false` deliberately stays off by default because
 unverified prior English text can propagate hallucinations. Enable only for
 an A/B test. Optional [whisper] hotwords = ["Okayu", "Botan"] require the
 actual stream to contain those names; do not enable names globally.
 
+
+## Context, retry, and decoder options
+
+Additional optional [whisper] settings:
+
+    [whisper]
+    beam_size = 6
+    retry_uncertain = true
+    retry_on_outro = true
+    retry_temperature = 0.2
+    audio_context_enabled = true
+    audio_context_s = 1.2
+    audio_context_max_gap_s = 2.0
+    retry_max_audio_s = 12.0
+    use_text_context = false
+    text_context_lines = 2
+    text_context_chars = 120
+    text_context_max_gap_s = 5.0
+    hotwords = []
+    diagnostics = false
+
+Audio overlap is used only on suspicious or generic-outro retries, not every
+subtitle. The engine never shifts utterance timestamps, and rejects a retry
+that cannot remove prior overlapping dialogue confidently. It is not a full
+SimulStreaming local-agreement implementation. Most clean lines are decoded
+once with beam size 6; suspicious lines can require a second inference.
+
+English context is deliberately off by default to avoid self-reinforcing
+hallucinations. Try it experimentally using a local config.toml:
+
+    [whisper]
+    use_text_context = true
+    hotwords = ["Okayu", "Botan"]
+
+Only put a name in hotwords when it is clearly relevant to that specific
+stream. A list of names can bias Whisper toward utterances nobody said.
+
+## Compare audio preprocessing using one command per run
+
+From C:\Games\video-translate-whisper-v3:
+
+    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile baseline --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile gtcrn --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile speaker --diagnostics
+    uv run --no-sync python -m auto_translate "<URL>" --mode vod --mpv --delay 10 --no-web --simple-terminal --audio-profile both --diagnostics
+
+- baseline: GTCRN OFF, Sherpa OFF
+- gtcrn: GTCRN ON, Sherpa OFF
+- speaker: GTCRN OFF, Sherpa ON
+- both: GTCRN ON, Sherpa ON (launcher default)
+
+Use the same five-minute video section, one run at a time. Rename or
+copy logs/run.log between runs. The diagnostics include source timestamps,
+utterance length, RMS and peak amplitude, VAD speech confidence, GTCRN and
+Sherpa state, speaker-change/split metadata, Whisper confidence/compression,
+retry reason and processing time.
+
+Windows launcher uses the last selected profile from config.toml defaults
+(both enabled) unless overridden from the command line. No change to MPV
+seeking or English subtitle stacking.
+
+## Verification boundaries
+
+Tests in tests/test_context_retry.py and the existing suite mock inference
+and do not measure the RTX 3070's true throughput. A second inference and
+beam size 6 can increase latency; use logs/run.log to compare before/after.
+Model confidence and exact string overlap are heuristics, not proofs that
+an English translation is correct.

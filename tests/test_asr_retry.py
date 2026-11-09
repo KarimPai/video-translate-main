@@ -134,6 +134,14 @@ class RetryScoringTests(unittest.TestCase):
         )
         self.assertEqual(result, "え")
         self.assertEqual(len(asr.calls), 1)
+        self.assertGreater(asr._retry_backoff_until, 0)
+        # Back off rather than repeatedly timing out on a congested worker.
+        second = choose_hypothesis(
+            asr, audio, "え", start_s=10, end_s=12,
+            speech_start_s=10.2,
+        )
+        self.assertEqual(second, "え")
+        self.assertEqual(len(asr.calls), 1)
 
     def test_new_seek_prevents_followup_work(self):
         asr = FakeHaas(["まだ変"], config=AsrConfig(retry_max_passes=3))
@@ -154,7 +162,7 @@ class RetryScoringTests(unittest.TestCase):
         # The bounded worker claims to succeed but violates the time
         # contract. No late transcript should be handed to PLaMo.
         with patch("auto_translate.asr_retry.time.monotonic",
-                   side_effect=[0.0, 0.0, .2]):
+                   side_effect=[0.0, 0.0, 0.0, .2]):
             result = choose_hypothesis(
                 asr, audio, "え", start_s=0, end_s=2,
                 speech_start_s=.2,

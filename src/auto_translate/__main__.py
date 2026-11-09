@@ -46,6 +46,7 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .config import load_config
+    from .hololive_names import select_hololive_hints
     from .whisper_v3 import WhisperLargeV3
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
@@ -71,6 +72,16 @@ def main() -> None:
     )
     source = resolve_source(
         args.source, args.mode, args.start, args.fast, cfg.ingest,
+    )
+
+    cfg.whisper.hololive_detected_names = select_hololive_hints(
+        source.timeline,
+        enabled=cfg.whisper.hololive_names_enabled,
+        limit=cfg.whisper.hololive_name_limit,
+    )
+    log.info(
+        "Hololive name hints: %s (from title/channel metadata)",
+        ", ".join(cfg.whisper.hololive_detected_names) or "none",
     )
 
     started = time.perf_counter()

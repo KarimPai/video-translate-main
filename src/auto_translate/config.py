@@ -97,6 +97,15 @@ class WhisperConfig:
     text_context_max_gap_s: float = 5.0
     # Only exact, stream-relevant English names; no global Hololive glossary.
     hotwords: list[str] = field(default_factory=list)
+    # Official talent roster; only stream-relevant names are sent to Whisper.
+    hololive_names_enabled: bool = True
+    hololive_name_limit: int = 6
+    hololive_detected_names: list[str] = field(default_factory=list)
+    # Whisper is not instruction-tuned; this is a *hint*, not a command.
+    concise_english: bool = True
+    style_prompt: str = "Short, plain English subtitles. No added commentary."
+    remove_fillers: bool = True
+    collapse_repetitions: bool = True
     # Keep the recent speech waveform for *uncertain-only* contextual retries.
     audio_context_enabled: bool = True
     audio_context_s: float = 1.2

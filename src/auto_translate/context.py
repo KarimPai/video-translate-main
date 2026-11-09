@@ -95,10 +95,14 @@ class RecentSpeechContext:
         return " ".join(self.lines[-max_lines:])[-max_chars:] or None
 
     def hotwords(self) -> str | None:
-        terms = getattr(self.cfg, "hotwords", ()) or ()
-        if not isinstance(terms, (list, tuple)):
+        manual = getattr(self.cfg, "hotwords", ()) or ()
+        detected = getattr(self.cfg, "hololive_detected_names", ()) or ()
+        if not isinstance(manual, (list, tuple)) or not isinstance(detected, (list, tuple)):
             return None
+        terms = [*manual, *detected]
+        limit = max(0, min(6, int(getattr(self.cfg, "hololive_name_limit", 6))))
         valid: list[str] = []
+        seen: set[str] = set()
         for item in terms:
             if not isinstance(item, str) or "\n" in item or "\r" in item:
                 continue
@@ -106,8 +110,10 @@ class RecentSpeechContext:
             # English words/names only; no long instruction-like prompts.
             if (2 <= len(text) <= 36 and len(text.split()) <= 2 and
                     re.fullmatch(r"[A-Za-z][A-Za-z0-9 '\-]*", text)):
-                valid.append(text)
-            if len(valid) == 6:
+                if text.casefold() not in seen:
+                    seen.add(text.casefold())
+                    valid.append(text)
+            if len(valid) == limit:
                 break
         return ", ".join(valid) or None
 

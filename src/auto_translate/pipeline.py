@@ -127,6 +127,24 @@ def run_asr(
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         utt.timings.asr_end = time.monotonic()
+        # A single bounded retry for empty or implausibly short voiced output.
+        # Never retry fallback probes or exceed the configured audio length.
+        retry_cfg = getattr(asr, "cfg", None)
+        if (retry_cfg is not None
+                and getattr(retry_cfg, "retry_uncertain_enabled", False)
+                and not utt.probe
+                and 16000 <= len(utt.audio) <= getattr(retry_cfg, "retry_max_audio_s", 8.0) * 16000):
+            first = strip_nonverbal_labels(text)
+            ambiguous = not first or (len(first.strip("。、!?！？ ")) <= 2 and len(utt.audio) >= 32000)
+            if ambiguous and time.monotonic() - utt.timings.asr_start < getattr(retry_cfg, "retry_budget_s", 3.0):
+                try:
+                    alternate = strip_nonverbal_labels(asr.transcribe(utt.audio[:-1600], False))
+                    if alternate and len(alternate) > len(first):
+                        text = alternate
+                        log.debug("Selective Haas retry improved transcript at %.2fs", utt.start_s)
+                except Exception as exc:
+                    log.debug("Selective Haas retry failed: %s", exc)
+                utt.timings.asr_end = time.monotonic()
         original_asr = text
         text = strip_nonverbal_labels(text)
         if original_asr != text:

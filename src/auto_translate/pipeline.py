@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -25,6 +26,30 @@ from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Subtitle, Utterance
 from .vad import run_segmenter
 
 log = logging.getLogger(__name__)
+
+# Whisper can hallucinate stock YouTube outro captions on ambiguous speech.
+# Only suppress repeats of these complete phrases; never discard their first
+# occurrence, or suppress ordinary, genuine conversational thanks.
+_OUTRO = re.compile(
+    r"^(?:thank you|thanks)(?: very much)? for watching"
+    r"(?: (?:until )?the end)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_repeated_outro(
+    text: str, timestamp_s: float, recent: list[float], cooldown_s: float
+) -> bool:
+    normalized = re.sub(r"[^\w\s]", "", text).strip()
+    normalized = " ".join(normalized.split())
+    if not _OUTRO.fullmatch(normalized):
+        return False
+    # Timestamps are from the video; clear on seeks, and accept after expiry.
+    recent[:] = [t for t in recent if 0 <= timestamp_s - t <= cooldown_s]
+    if recent:
+        return True
+    recent.append(timestamp_s)
+    return False
 
 
 def _guard_stage(
@@ -72,6 +97,8 @@ def run_whisper(
 ) -> None:
     """Decode speech directly to English once per completed VAD utterance."""
     empty_count = 0
+    recent_outros: list[float] = []
+    last_generation: int | None = None
     while True:
         item = in_q.get()
         if item is None:
@@ -79,7 +106,12 @@ def run_whisper(
             return
         if get_generation is not None and item.generation != get_generation():
             continue
+        if last_generation is None or item.generation != last_generation:
+            recent_outros.clear()
+            last_generation = item.generation
         if isinstance(item, AudioProgress):
+            if item.reset:
+                recent_outros.clear()
             out_q.put(item)
             continue
         utt = item
@@ -111,6 +143,17 @@ def run_whisper(
                 )
             continue
         empty_count = 0
+        cfg = getattr(whisper, "cfg", None)
+        if (getattr(cfg, "suppress_repeated_signoffs", True) and
+                _is_repeated_outro(
+                    english, utt.start_s, recent_outros,
+                    getattr(cfg, "signoff_cooldown_s", 1200.0),
+                )):
+            log.info(
+                "Suppressed repeated generic Whisper outro (%.2fs): %r",
+                utt.start_s, english,
+            )
+            continue
         out_q.put(Subtitle(
             start_s=utt.start_s,
             end_s=utt.end_s,

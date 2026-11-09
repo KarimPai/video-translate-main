@@ -29,6 +29,25 @@ be disabled independently. No separate translation model or default keyword bias
     log_prob_threshold = -1.0
     compression_ratio_threshold = 2.4
     condition_on_previous_text = false
+    repetition_penalty = 1.05
+    no_repeat_ngram_size = 3
+    max_new_tokens = 160
+    reject_low_confidence = true
+    min_avg_logprob = -1.20
+    max_compression_ratio = 2.4
+    noisy_segment_no_speech_prob = 0.60
+    noisy_segment_min_avg_logprob = -0.50
+    suppress_repeated_signoffs = true
+    signoff_cooldown_s = 1200.0
+
+The additional filters reject decoding segments with poor model confidence,
+high repetition/compression or a high no-speech score combined with weak
+decoding confidence. N-gram/repetition limits and a 160-token ceiling reduce
+runaway "well well" or "yes yes" loops. Generic "thank you for watching"
+outros are allowed the first time but suppressed if repeated within 20 minutes
+of video time. This last rule is heuristic and can hide a real repeated
+outro: disable with [whisper] suppress_repeated_signoffs = false.
+All drops are logged in logs/run.log; no separate ASR or LLM is loaded.
 
 Large-v3 (not Turbo) is explicitly trained for native speech translation.
 The implementation enforces Japanese input and English translation, disables

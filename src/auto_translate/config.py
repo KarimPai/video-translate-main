@@ -77,6 +77,19 @@ class WhisperConfig:
     log_prob_threshold: float = -1.0
     compression_ratio_threshold: float = 2.4
     condition_on_previous_text: bool = False
+    # Conservative safeguards for short, noisy VTuber/gaming utterances.
+    repetition_penalty: float = 1.05
+    no_repeat_ngram_size: int = 3
+    max_new_tokens: int = 160
+    reject_low_confidence: bool = True
+    min_avg_logprob: float = -1.20
+    max_compression_ratio: float = 2.4
+    noisy_segment_no_speech_prob: float = 0.60
+    noisy_segment_min_avg_logprob: float = -0.50
+    # Do not categorically ban real signoffs: suppress repeated identical
+    # outro-like phrases within this playback-time window.
+    suppress_repeated_signoffs: bool = True
+    signoff_cooldown_s: float = 1200.0
 
 
 @dataclass

@@ -176,6 +176,15 @@ def main() -> None:
             from .output.mpv import MpvOutput
             outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
     
+        # Caption downloads normally finish during ASR/PLaMo warm-up.
+        # Give a still-pending VOD caption fetch a small bounded chance to
+        # finish so the FIRST utterance can use YouTube-first selection too.
+        # Never block live playback or hold startup for the 90s yt-dlp timeout.
+        if video_id and cfg.asr.youtube_captions_first and caption_thread.is_alive():
+            caption_thread.join(timeout=2.0)
+            if caption_thread.is_alive():
+                log.info("Japanese captions still loading; Haas runs until available")
+
         run(
             ingest,
             cfg,

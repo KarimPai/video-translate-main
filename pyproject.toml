@@ -17,17 +17,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-diarization = ["sherpa-onnx>=1.10.28"]
+diarization = ["sherpa-onnx>=1.12.30"]
 # Install only the heavy runtime packages for features you actually enable.
 separation = [
     "audio-separator>=0.48.0",
     "scipy",
     "soundfile",
     "torch==2.15.0",
-]
-deepfilter = [
-    "deepfilternet-rs>=0.1.1",
-    "scipy",
 ]
 
 [project.scripts]

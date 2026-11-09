@@ -166,6 +166,14 @@ class PlamoTranslator:
         self._job = None
         self._server_log = None
         self._registered_exit = False
+        log.info(
+            "PLaMo 8B PFML3: context=%d tokens, output=%d, history=%d pairs, "
+            "video title context=%s",
+            cfg.plamo_context,
+            cfg.max_tokens,
+            max(0, min(int(cfg.context_lines), 8)),
+            "on" if cfg.context_title_enabled else "off",
+        )
         self._start_server()
         try:
             self._warmup()
@@ -278,9 +286,8 @@ class PlamoTranslator:
     ) -> str:
         # Build only official PFML3 elements. Drop the oldest history pairs
         # when the approximate input budget would exceed the configured slot.
-        history_pairs = list(history or ())[-max(0, min(int(self.cfg.context_lines), 8)):]
-        if not self.cfg.context_lines:
-            history_pairs = []
+        history_limit = max(0, min(int(self.cfg.context_lines), 8))
+        history_pairs = list(history or ())[-history_limit:] if history_limit else []
         title_context = self.vod_title if self.cfg.context_title_enabled else ""
         glossary_hits = self.glossary.find(japanese)
         prompt_budget = max(256, self.cfg.plamo_context - self.cfg.max_tokens - 96)
@@ -329,10 +336,8 @@ class PlamoTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 return reused
-        previous = (
-            list(history[-max(0, min(int(self.cfg.context_lines), 8)):])
-            if self.cfg.context_lines else []
-        )
+        history_limit = max(0, min(int(self.cfg.context_lines), 8))
+        previous = list(history[-history_limit:]) if history_limit else []
         # A raw completion for an identical caption can differ between
         # conversations. The original JA-only cache was context-unsafe.
         cache_key = (

@@ -120,7 +120,7 @@ class PlamoTranslationTests(unittest.TestCase):
         obj = self._unit()
         obj.cfg.plamo_context = 512
         previous = [
-            ("とても長い話が続いています。" * 18, "A long conversation. " * 15)
+            ("とても長い話が続いています。" * 8, "A long conversation. " * 5)
             for _ in range(4)
         ]
         response = io.BytesIO(json.dumps({
@@ -132,6 +132,35 @@ class PlamoTranslationTests(unittest.TestCase):
         payload = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(payload["prompt"].count("<|plamo:tag|>input"), 1)
         self.assertIn("続けよう", payload["prompt"])
+
+    def test_only_last_four_pairs_are_added_to_prompt(self):
+        obj = self._unit()
+        previous = [(f"source-{i}", f"target-{i}") for i in range(7)]
+        response = io.BytesIO(json.dumps({
+            "choices": [{"text": "Ready."}],
+        }).encode("utf-8"))
+        with patch("auto_translate.translate.plamo.urllib.request.urlopen",
+                   return_value=response) as urlopen:
+            obj._complete("現在のセリフ", timeout=5, history=previous)
+        prompt = json.loads(urlopen.call_args.args[0].data)["prompt"]
+        self.assertEqual(prompt.count("<|plamo:tag|>input"), 5)
+        self.assertNotIn("source-2", prompt)
+        self.assertIn("source-3", prompt)
+        self.assertIn("source-6", prompt)
+
+    def test_context_can_be_turned_off_by_config(self):
+        obj = self._unit()
+        obj.cfg.context_lines = 0
+        obj.cfg.context_title_enabled = False
+        response = io.BytesIO(json.dumps({
+            "choices": [{"text": "Ready."}],
+        }).encode("utf-8"))
+        with patch("auto_translate.translate.plamo.urllib.request.urlopen",
+                   return_value=response) as urlopen:
+            obj._complete("現在のセリフ", timeout=5, history=[("前", "Before")])
+        prompt = json.loads(urlopen.call_args.args[0].data)["prompt"]
+        self.assertEqual(prompt.count("<|plamo:tag|>input"), 1)
+        self.assertNotIn("<|plamo:tag|>context", prompt)
 
     def test_cache_key_includes_recent_history(self):
         obj = self._unit()

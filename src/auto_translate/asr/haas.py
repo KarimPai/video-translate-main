@@ -155,9 +155,10 @@ class HaasASR:
         timeout_s: float | None = None,
         use_keywords: bool | None = None,
     ) -> str:
-        # An absolute deadline also covers PCM encoding and pipe writes.
-        # Only retry calls pass a shorter timeout. The primary decoding
-        # request retains its normal response_timeout_s.
+        # Count PCM preparation and pipe write time against the response
+        # deadline, although a blocked OS pipe write cannot be interrupted.
+        # Only retry calls pass a shorter timeout; primary recognition
+        # retains its configured response_timeout_s.
         limit = float(self.cfg.response_timeout_s)
         if timeout_s is not None:
             limit = min(limit, float(timeout_s))

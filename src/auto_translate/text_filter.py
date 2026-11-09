@@ -64,6 +64,70 @@ def is_sound_caption_artifact(text: str) -> bool:
     }
 
 
+
+def is_short_acknowledgement(text: str) -> bool:
+    """Target only very short replies; never suppress surrounding dialogue."""
+    compact = _compact(text)
+    return compact in {"うん", "ウン", "ん", "んん", "うーん"}
+
+
+def is_stationary_mechanical_audio(audio: np.ndarray) -> bool:
+    """Conservative high-confidence stationary engine/tone check.
+
+    This is not general speech recognition or a reliable engine classifier.
+    Flag only sustained, nearly unchanged low-frequency harmonic audio.
+    Ordinary changing speech, mixed voices and broadband game sound pass.
+    """
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.size < 8000 or not np.all(np.isfinite(samples)):
+        return False
+    # Maximum 8s of PCM; bounded CPU work and no additional model.
+    samples = samples[:128000]
+    window_size, hop = 1024, 512
+    count = 1 + (samples.size - window_size) // hop
+    if count < 12:
+        return False
+    # Use at most ~160 windows even for an 8s VAD utterance.
+    indices = np.linspace(0, count - 1, min(count, 160), dtype=int) * hop
+    blocks = samples[indices[:, None] + np.arange(window_size)]
+    rms = np.sqrt(np.mean(blocks * blocks, axis=1))
+    peak = float(np.max(rms))
+    if peak < 1e-3:
+        return False
+    active = rms >= peak * 0.35
+    if int(np.count_nonzero(active)) < 10 or float(np.mean(active)) < 0.65:
+        return False
+    active_blocks = blocks[active]
+    active_rms = rms[active]
+    envelope_variation = float(np.std(active_rms) / np.mean(active_rms))
+    if envelope_variation > 0.08:
+        return False
+    windowed = active_blocks * np.hanning(window_size).astype(np.float32)
+    spectrum = np.abs(np.fft.rfft(windowed, axis=1)) ** 2
+    frequencies = np.fft.rfftfreq(window_size, d=1 / 16000)
+    band = spectrum[:, (frequencies >= 60) & (frequencies <= 4000)]
+    low = spectrum[:, (frequencies >= 60) & (frequencies < 350)]
+    total_energy = float(np.sum(band))
+    if total_energy < 1e-10 or float(np.sum(low) / total_energy) < 0.88:
+        return False
+    magnitude = band / np.maximum(
+        np.linalg.norm(band, axis=1, keepdims=True), 1e-12
+    )
+    similarity = np.sum(magnitude[1:] * magnitude[:-1], axis=1)
+    return bool(np.median(similarity) > 0.999)
+
+
+def caption_confirms_short_acknowledgement(text: str, caption: object | None) -> bool:
+    """Only aligned captions containing the *same* ack can verify it."""
+    if caption is None or not bool(getattr(caption, "reliable", False)):
+        return False
+    if (float(getattr(caption, "coverage", 0.0)) < 0.8
+            or float(getattr(caption, "overlap_s", 0.0)) < 0.45):
+        return False
+    return _compact(str(getattr(caption, "text", ""))) == _compact(text)
+
+
+
 def is_nonspeech_probe(audio: np.ndarray) -> bool:
     """Only for VAD-negative probes. Recognize silence, sparse clicks or a pure tone."""
     frame_size = 320  # 20 ms of mono PCM at 16 kHz
@@ -77,6 +141,9 @@ def is_nonspeech_probe(audio: np.ndarray) -> bool:
     active = np.abs(frames) > peak * 0.05
     # Every active frame contains at most 1 ms above threshold.
     if np.max(active.sum(axis=1)) <= 16:
+        return True
+    # Multi-harmonic stationary motor noise may evade the pure-tone check.
+    if is_stationary_mechanical_audio(audio):
         return True
     # Check only sustained, nearly single-frequency signals (e.g. game tones).
     # A sinusoid obeys x[n+2] + x[n] = 2*cos(w)*x[n+1].

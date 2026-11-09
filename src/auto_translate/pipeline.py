@@ -146,6 +146,10 @@ def run_asr(
             probe=utt.probe,
             caption=caption_match,
             live=live,
+            cancelled=(
+                (lambda: utt.generation != get_generation())
+                if get_generation is not None else None
+            ),
         )
         utt.timings.asr_end = time.monotonic()
         original_asr = text

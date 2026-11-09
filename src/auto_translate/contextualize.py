@@ -33,7 +33,6 @@ def repair_nearby_terms(
     japanese: str,
     recent: list[str] | tuple[str, ...] = (),
     future: list[str] | tuple[str, ...] = (),
-    *,
     title: str = "",
 ) -> str:
     """Repair narrowly observed homophones only with independent evidence."""

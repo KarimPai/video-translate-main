@@ -293,6 +293,8 @@ class CaptionOnlyPlayer:
         last_pos: float | None = None
         last_at = time.monotonic()
         had_clock = False
+        clock_wait_started = time.monotonic()
+        warned_clock_fallback = False
         try:
             self._load_player()
             assert self._ipc is not None and self._proc is not None
@@ -310,18 +312,34 @@ class CaptionOnlyPlayer:
             while self._proc.poll() is None and not self._stop.is_set():
                 self._handle_keys()
                 reported = self._ipc.get("time-pos")
-                paused = self._ipc.get("pause")
                 if reported is None:
-                    # MPV can report file-loaded before it exposes a real media
-                    # position. Never treat the fallback source start as proof
-                    # that the first subtitle has a valid playback clock.
+                    reported = self._ipc.get("playback-time")
+                paused = self._ipc.get("pause")
+                if reported is None and had_clock:
+                    # A transient missing sample must not move the timeline.
                     time.sleep(TICK_SECONDS)
                     continue
-                position = max(0.0, float(reported))
-                if not had_clock:
-                    had_clock = True
-                    log.info("First MPV VOD clock: %.3fs", position)
-                    self._shown = ""  # force an overlay update after load
+                if reported is None:
+                    # Some MPV builds expose the first timestamp only once
+                    # playback is unpaused. Buffer first, then permit that
+                    # clock to initialize rather than hanging indefinitely.
+                    if time.monotonic() - clock_wait_started < 5.0:
+                        time.sleep(TICK_SECONDS)
+                        continue
+                    if not warned_clock_fallback:
+                        warned_clock_fallback = True
+                        log.warning(
+                            "MPV clock unavailable while paused; buffering "
+                            "captions at source start %.2fs before playback",
+                            self.source.start_s,
+                        )
+                    position = self.source.start_s
+                else:
+                    position = max(0.0, float(reported))
+                    if not had_clock:
+                        had_clock = True
+                        log.info("First MPV VOD clock: %.3fs", position)
+                        self._shown = ""  # force an overlay update after load
                 now = time.monotonic()
                 if last_pos is not None and not buffering:
                     expected = last_pos + (0.0 if paused else now - last_at)
@@ -337,7 +355,9 @@ class CaptionOnlyPlayer:
                             position, lead_s,
                         )
                         self._ipc.command("set_property", "pause", True)
-                last_pos, last_at = position, now
+                # A guessed clock must not be used as a native-seek
+                # baseline when MPV finally reports its actual position.
+                last_pos, last_at = (position if reported is not None else None), now
                 self._set_target(position)
 
                 # Avoid the opening subtitles being printed in CMD after the

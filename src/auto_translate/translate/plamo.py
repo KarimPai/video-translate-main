@@ -101,7 +101,7 @@ def _estimate_prompt_tokens(prompt: str) -> int:
 
     No extra tokenizer HTTP request is made for every subtitle.
     """
-    text_only = re.sub(r"<\\|plamo:[^|>]+\\|>", "", prompt)
+    text_only = re.sub(r"<\|plamo:[^|>]+\|>", "", prompt)
     return int(
         sum(2 if ord(ch) > 127 else 0.5 for ch in text_only)
         + 4 * prompt.count("<|plamo:") + 24

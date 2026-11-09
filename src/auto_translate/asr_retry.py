@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 
 _JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _LATIN = re.compile(r"[A-Za-z]")
+# Observed repeatedly as an erroneous Burger King transcription in VODs.
+_KNOWN_ASR_CONFUSION = re.compile(r"防(?:御|号)キング")
 _PUNCT = re.compile(r"[\s\u3000、。，．・!?！？…〜～.,:;:「」『』（）()\[\]【】ー]+")
 
 
@@ -72,6 +74,8 @@ def quality_score(text: str, *, duration_s: float, caption: Any = None) -> float
         score -= 2.2
     elif duration_s >= 4.0 and len(normalized) <= 5:
         score -= 1.0
+    if _KNOWN_ASR_CONFUSION.search(text):
+        score -= 1.0  # prefer a repaired Japanese brand name if independently decoded
     # Decoder artifacts often insert isolated Latin letters into Japanese.
     if _JAPANESE.search(normalized):
         if re.search(r"(?<![a-z])[a-z](?![a-z])", normalized):
@@ -87,6 +91,8 @@ def quality_score(text: str, *, duration_s: float, caption: Any = None) -> float
 def needs_retry(text: str, *, duration_s: float, caption: Any = None) -> bool:
     normalized = compact(strip_nonverbal_labels(text))
     if not normalized or rejection_reason(text) is not None:
+        return True
+    if _KNOWN_ASR_CONFUSION.search(text):
         return True
     if duration_s >= 2.0 and len(normalized) <= 2:
         return True
@@ -138,6 +144,10 @@ def choose_hypothesis(
     cfg = getattr(asr, "cfg", None)
     bounded = getattr(asr, "transcribe_bounded", None)
     duration = max(0.0, end_s - start_s)
+    # Reliable aligned captions already provide a fallback for empty ASR.
+    # An expensive retry would only postpone an available transcription.
+    if not strip_nonverbal_labels(original) and _strong_caption(caption):
+        return original
     if (probe or cfg is None or not callable(bounded)
             or not getattr(cfg, "retry_uncertain_enabled", False)
             or duration > getattr(cfg, "retry_max_audio_s", 8.0)

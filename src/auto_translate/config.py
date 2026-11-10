@@ -63,15 +63,15 @@ class SpeakerConfig:
 
 @dataclass
 class WhisperConfig:
-    """One Whisper Large-v3 model for direct Japanese audio -> English text."""
+    """Whisper Large-v3 for Japanese transcription only; PLaMo translates later."""
 
     model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
     device: str = "cuda"
     compute_type: str = "int8_float16"  # RTX 3070 8 GB
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
-    task: str = "translate"  # Whisper native English speech translation
-    beam_size: int = 6
+    task: str = "transcribe"  # Japanese ASR ONLY; PLaMo handles English
+    beam_size: int = 5
     temperature: float = 0.0
     no_speech_threshold: float = 0.6
     log_prob_threshold: float = -1.0
@@ -123,6 +123,27 @@ class WhisperConfig:
 
 
 @dataclass
+class TranslateConfig:
+    """Local PLaMo 3 Translate 2B GGUF, the sole JA->EN translation engine."""
+
+    plamo_base_url: str = "http://127.0.0.1:8000/v1"
+    plamo_model: str = "plamo-3-translate"
+    plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
+    plamo_context: int = 4096  # RTX 3070 headroom for Whisper INT8/FP16
+    plamo_gpu_layers: int = 99
+    max_tokens: int = 120
+    timeout_s: float = 20.0
+    load_timeout_s: float = 300.0
+    context_lines: int = 8
+    memory_lines: int = 24
+    fragment_context_lines: int = 2
+    fragment_max_gap_s: float = 1.8
+    protect_numbers: bool = True
+    protect_names: bool = True
+    glossary: str = "glossary.toml"
+
+
+@dataclass
 class OutputConfig:
     terminal: bool = True
     web: bool = True
@@ -157,6 +178,7 @@ class Config:
     vad: VadConfig = field(default_factory=VadConfig)
     speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
+    translate: TranslateConfig = field(default_factory=TranslateConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
     stats_interval_s: float = 30.0
@@ -191,12 +213,21 @@ def load_config(path: Path) -> Config:
         if key in valid_speaker_keys
     }
 
-    # Ignore retired Granite, ASR, text-translator and caption blocks.
+    # Ignore retired Granite and incompatible legacy ASR/caption blocks.
     # Old git-ignored config.toml files remain safe to reuse.
     whisper_fields = {entry.name for entry in fields(WhisperConfig)}
     whisper_data = {
         name: value for name, value in data.get("whisper", {}).items()
         if name in whisper_fields
+    }
+
+    # Retire the previous direct-translation setting even in old ignored
+    # local config files. Japanese->English MUST happen only in PLaMo.
+    whisper_data.pop("task", None)
+    translate_fields = {entry.name for entry in fields(TranslateConfig)}
+    translate_data = {
+        name: value for name, value in data.get("translate", {}).items()
+        if name in translate_fields
     }
 
     return Config(
@@ -206,6 +237,7 @@ def load_config(path: Path) -> Config:
         vad=VadConfig(**data.get("vad", {})),
         speaker=SpeakerConfig(**speaker_data),
         whisper=WhisperConfig(**whisper_data),
+        translate=TranslateConfig(**translate_data),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),

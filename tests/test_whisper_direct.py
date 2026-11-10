@@ -114,7 +114,7 @@ class WhisperDirectTests(unittest.TestCase):
         self.assertEqual((cfg.model, cfg.device, cfg.compute_type),
                          ("large-v3", "cuda", "int8_float16"))
         self.assertEqual((cfg.language, cfg.task, cfg.beam_size),
-                         ("ja", "translate", 6))
+                         ("ja", "transcribe", 5))
 
     def test_source_language_and_task_forced(self):
         fake = FakeModel(("Get in the car!", "Watch out!"))
@@ -124,8 +124,8 @@ class WhisperDirectTests(unittest.TestCase):
         self.assertEqual(fake.calls, 1)
         self.assertEqual(fake.audio.dtype, np.float32)
         self.assertEqual(fake.kwargs["language"], "ja")
-        self.assertEqual(fake.kwargs["task"], "translate")
-        self.assertEqual(fake.kwargs["beam_size"], 6)
+        self.assertEqual(fake.kwargs["task"], "transcribe")
+        self.assertEqual(fake.kwargs["beam_size"], 5)
         self.assertEqual(fake.kwargs["temperature"], 0.0)
         self.assertFalse(fake.kwargs["condition_on_previous_text"])
         self.assertFalse(fake.kwargs["vad_filter"])
@@ -159,7 +159,7 @@ class WhisperDirectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "language="):
             WhisperLargeV3(WhisperConfig(language="en"), model=FakeModel())
         with self.assertRaisesRegex(ValueError, "task="):
-            WhisperLargeV3(WhisperConfig(task="transcribe"), model=FakeModel())
+            WhisperLargeV3(WhisperConfig(task="translate"), model=FakeModel())
 
     def test_legacy_granite_config_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:

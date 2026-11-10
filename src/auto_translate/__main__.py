@@ -24,6 +24,9 @@ def main() -> None:
                         help="print direct English translation only")
     parser.add_argument("--mpv", action="store_true")
     parser.add_argument("--delay", type=float, metavar="SECONDS")
+    parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
+                        metavar="{360,480,720,1080}",
+                        help="maximum YouTube playback height; selects a lower quality if unavailable")
     parser.add_argument("--whisper-compute", choices=("float16", "int8_float16"),
                         help="Whisper CUDA precision; FP16 OOM falls back to int8_float16")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
@@ -49,7 +52,7 @@ def main() -> None:
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     cuda_dlls.setup()
 
-    from .config import load_config
+    from .config import load_config, mpv_youtube_format
     from .hololive_names import select_hololive_hints
     from .whisper_v3 import WhisperLargeV3
     from .ingest import Ingest, resolve_source
@@ -59,6 +62,9 @@ def main() -> None:
     from .session_cache import SessionSubtitleCache
 
     cfg = load_config(args.config)
+    if args.video_quality is not None:
+        cfg.mpv.ytdlp_format = mpv_youtube_format(args.video_quality, live=True)
+        cfg.mpv.vod_ytdlp_format = mpv_youtube_format(args.video_quality, live=False)
     if args.whisper_compute is not None:
         cfg.whisper.compute_type = args.whisper_compute
     if args.audio_profile is not None:
@@ -80,6 +86,12 @@ def main() -> None:
     source = resolve_source(
         args.source, args.mode, args.start, args.fast, cfg.ingest,
     )
+    if args.video_quality is not None and not Path(args.source).exists():
+        log.info(
+            "YouTube playback quality: maximum %dp (lower-quality fallback; %s)",
+            args.video_quality,
+            "live HLS" if source.live else "VOD HTTPS/DASH first",
+        )
 
     cfg.whisper.hololive_detected_names = select_hololive_hints(
         source.timeline,

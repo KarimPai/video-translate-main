@@ -24,6 +24,21 @@ if not defined VIDEO_URL (
     exit /b 1
 )
 
+:select_quality
+set "VIDEO_QUALITY="
+echo.
+set /p "VIDEO_QUALITY=YouTube video quality (360/480/720/1080) [720]: "
+if not defined VIDEO_QUALITY set "VIDEO_QUALITY=720"
+if "%VIDEO_QUALITY%"=="360" goto quality_selected
+if "%VIDEO_QUALITY%"=="480" goto quality_selected
+if "%VIDEO_QUALITY%"=="720" goto quality_selected
+if "%VIDEO_QUALITY%"=="1080" goto quality_selected
+echo Invalid quality. Enter 360, 480, 720, or 1080.
+goto select_quality
+
+:quality_selected
+echo YouTube video quality: up to %VIDEO_QUALITY%p (lower if unavailable)
+
 if not exist "logs" mkdir "logs"
 if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
@@ -54,7 +69,7 @@ echo Playback hitch test: optional audio processors OFF, MPV safe hardware decod
 echo                  Whisper efficient mixed precision (stable GPU decode baseline).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --whisper-compute int8_float16 --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --video-quality %VIDEO_QUALITY% --whisper-compute int8_float16 --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

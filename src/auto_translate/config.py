@@ -5,6 +5,34 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
+VIDEO_QUALITY_HEIGHTS = (360, 480, 720, 1080)
+
+
+def mpv_youtube_format(max_height: int, *, live: bool) -> str:
+    """Build an mpv/yt-dlp selector with a strict resolution ceiling.
+
+    Choose the best rendition *at or below* the requested height. Keep
+    finished VODs on HTTPS/DASH first, then HLS fallback; live streams
+    retain their existing HLS-first behavior.
+    """
+    if max_height not in VIDEO_QUALITY_HEIGHTS:
+        raise ValueError(f"Unsupported YouTube video quality: {max_height}")
+    height = f"[height<={max_height}]"
+    if live:
+        return (
+            f"bv*{height}[vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
+            f"/b{height}[protocol^=m3u8]"
+            f"/bv*{height}+ba/b{height}"
+        )
+    return (
+        f"bv*{height}[vcodec^=avc1][protocol=https]+ba[protocol=https]"
+        f"/bv*{height}[protocol=https]+ba[protocol=https]"
+        f"/bv*{height}[vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
+        f"/b{height}[protocol^=m3u8]"
+        f"/bv*{height}+ba/b{height}"
+    )
+
+
 @dataclass
 class IngestConfig:
     # Preserve the existing near-live audio selection independently of VODs.

@@ -21,6 +21,12 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
 
 Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute int8_float16 (prior smooth-playback baseline; opt into FP16 with --whisper-compute float16), --delay 10; no translator server is started. The previous FP16-by-default trial was rolled back after a report of a prolonged video freeze with audio continuing. This is an isolation test; causality is not yet proven. Stop old standalone servers manually if still running to free VRAM.
 
+## YouTube quality selector
+
+`Start translate.bat` now asks for a video quality after the URL: **360p, 480p, 720p, or 1080p**. Press Enter for **720p**. The choice is applied before MPV opens the video, and yt-dlp chooses the best available stream **not exceeding** that height (for example, 480p if 720p is unavailable). A mid-playback quality change is intentionally not offered because reloading the source may disturb native seeking and subtitle timing.
+
+You can also run the CLI with `--video-quality 720`. The launcher choice takes precedence over custom video format selectors in `config.toml`; when the CLI flag is absent, the existing selectors remain unchanged. Finished VODs still prefer HTTPS/DASH and fall back to HLS; live streams still prefer HLS. Whisper audio inference, GTCRN, VAD, and the independent audio ingest format are unaffected.
+
 ## Key defaults and silence protections
 
     [whisper]

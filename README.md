@@ -36,13 +36,19 @@ compatibility but is not connected to the active run() function.
     [translate]
     plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
     plamo_context = 4096
-    plamo_gpu_layers = 99
+    plamo_gpu_layers = 16
     context_lines = 8
     memory_lines = 24
     fragment_context_lines = 2
     fragment_max_gap_s = 1.8
     protect_numbers = true
     protect_names = true
+
+The default Start translate.bat uses --audio-profile baseline (disables
+optional GTCRN and Sherpa speaker-turn processing), --hwdec no (software
+video decoding), and --plamo-gpu-layers 16 to reduce GPU memory pressure.
+This is a temporary diagnostic/stability profile, not a proven solution
+to MPV crashes. To change these defaults manually, edit the .bat options.
 
 An old local config.toml containing [whisper] task="translate" is ignored.
 Japanese transcription is enforced. Other explicitly set local settings
@@ -88,6 +94,9 @@ The llama.cpp server writes to logs/plamo-server.log.
 
 ## Fidelity and subtitle synchronization
 
+- Whisper Latin-only recognition output is discarded before PLaMo translation.
+  Forced Japanese decoding does not prevent code-switching on its own; mixed
+  Japanese/English speech containing Japanese script remains supported.
 - Whisper transcribes Japanese only and does not use English history as an
   initial_prompt or hotword list, minimizing language-mode contamination.
 - Short speech fragments can use preceding Japanese cues as optional PLaMo
@@ -113,3 +122,26 @@ These tests use fake models and do not benchmark actual GPU inference, total
 VRAM, true Hololive transcription accuracy, model-loading compatibility,
 or MPV playback. Test the complete runtime on Windows before treating this
 branch as a stable replacement for main.
+
+
+## Diagnosing sudden MPV closure
+
+On this branch, an application/pipeline failure may shut down a still-running
+mpv.exe deliberately. New logs distinguish this from an mpv.exe process crash.
+
+After a closure:
+
+    powershell -NoProfile -Command "Get-Content 'logs\run.log' -Tail 60"
+    powershell -NoProfile -Command "Get-Content 'logs\mpv.log' -Tail 40"
+    powershell -NoProfile -Command "Get-Content 'logs\plamo-server.log' -Tail 30"
+    nvidia-smi
+
+A true mpv.exe crash shows a nonzero player exit code in logs/run.log. If it
+states "MPV was still running when application cleanup began", the pipeline
+initiated closure instead. GPU snapshots report used/free/total MiB where
+nvidia-smi is available. No Windows crash cause is assumed without logs.
+
+If another llama-server process is still responding at port 8000, the
+application reuses it and **cannot** enforce the lower -ngl/4096 settings.
+Stop that server before launching a fresh low-VRAM test, otherwise an old
+high-VRAM PLaMo process can invalidate the stability profile.

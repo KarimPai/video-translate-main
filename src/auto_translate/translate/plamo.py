@@ -79,7 +79,13 @@ class PlamoTranslator:
     def _start_server(self) -> None:
         """Reuse a responding local server; otherwise launch and own one."""
         if _server_responds(self.base_url):
-            log.info("Using existing llama.cpp server at %s", self.base_url)
+            log.warning(
+                "Reusing existing llama.cpp server at %s. "
+                "Requested -ngl %s / -c %s cannot be applied to an already "
+                "running server; close the old server if it uses more VRAM.",
+                self.base_url, self.cfg.plamo_gpu_layers,
+                self.cfg.plamo_context,
+            )
             return
 
         executable = shutil.which("llama-server")

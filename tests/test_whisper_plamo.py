@@ -163,11 +163,11 @@ class TwoStageTests(unittest.TestCase):
                 self.calls.append((len(audio), prompt, hotwords, temperature))
                 if len(self.calls) == 1:
                     return WhisperDecode("怪しい", avg_logprob=-0.9)
-                return WhisperDecode("危ない", avg_logprob=-0.2)
+                return WhisperDecode("怪しくない", avg_logprob=-0.2)
         asr = Uncertain([])
         asr.cfg = WhisperConfig(retry_uncertain=True)
         result = run_stage(run_whisper_asr, asr, [audio_utt()])
-        self.assertEqual([x.ja for x in result], ["危ない"])
+        self.assertEqual([x.ja for x in result], ["怪しくない"])
         self.assertEqual(len(asr.calls), 2)
         self.assertEqual(asr.calls[0][0], asr.calls[1][0])
 

@@ -37,7 +37,7 @@ class VoicePingASTTests(unittest.TestCase):
         self.assertFalse(hasattr(WhisperConfig(), "verify_standalone_names"))
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            path.write_text("[ast]\\nverify_standalone_names = false\\n".replace("\\\\n", "\\n"), encoding="utf-8")
+            path.write_text("[ast]\nverify_standalone_names = false\n", encoding="utf-8")
             cfg = load_config(path)
             self.assertFalse(cfg.ast.verify_standalone_names)
 

@@ -11,7 +11,7 @@ SAMPLE_RATE = 16000
 class Timings:
     audio_read: float = 0.0
     segmented: float = 0.0
-    # Single Whisper direct AST inference interval.
+    # One-stage direct AST model inference interval.
     asr_start: float = 0.0
     asr_end: float = 0.0
 

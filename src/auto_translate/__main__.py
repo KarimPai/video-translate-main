@@ -1,4 +1,4 @@
-"""Whisper Large-v3 Japanese ASR -> PLaMo 3 Translate 2B -> MPV subtitles."""
+"""Kotoba-Whisper v2.2 Japanese ASR -> PLaMo 3 Translate 2B -> MPV subtitles."""
 
 import argparse
 import logging
@@ -53,7 +53,7 @@ def main() -> None:
     from .hololive_names import select_hololive_hints
     from .glossary import Glossary
     from .translate import create_translator
-    from .whisper_v3 import WhisperLargeV3
+    from .kotoba_whisper import KotobaWhisperASR
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
@@ -85,7 +85,7 @@ def main() -> None:
     )
     log.info(
         "Audio processing: GTCRN=%s (CPU), Sherpa speaker segmentation=%s (CPU); "
-        "FireRedVAD (CUDA), Whisper Large-v3 Japanese ASR -> PLaMo 3 2B",
+        "FireRedVAD (CUDA), Kotoba-Whisper v2.2 Japanese ASR -> PLaMo 3 2B",
         "on" if cfg.gtcrn.enabled else "off",
         "on" if cfg.speaker.enabled else "off",
     )
@@ -104,9 +104,9 @@ def main() -> None:
     )
 
     started = time.perf_counter()
-    whisper = WhisperLargeV3(cfg.whisper)
+    whisper = KotobaWhisperASR(cfg.whisper)
     log.info(
-        "Whisper Large-v3 Japanese ASR ready in %.1fs",
+        "Kotoba-Whisper v2.2 Japanese ASR ready in %.1fs",
         time.perf_counter() - started,
     )
     translator = None

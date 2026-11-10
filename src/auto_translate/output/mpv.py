@@ -1030,7 +1030,7 @@ class MpvOutput:
                 self._render(self._now)
                 # Periodic diagnostics separate video decode/network hitches
                 # from subtitle inference falling behind playback.
-                if (sample_now >= self._vod_health_next_at
+                if (sample_now >= getattr(self, "_vod_health_next_at", float("inf"))
                         and not self.ingest.source.live):
                     self._vod_health_next_at = sample_now + 30.0
                     with self._buffer_condition:

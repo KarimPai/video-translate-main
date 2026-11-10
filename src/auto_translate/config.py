@@ -123,6 +123,8 @@ class WhisperConfig:
     # Do not re-decode a wholly rejected window when Whisper strongly
     # predicts non-speech. Higher values preserve more faint speech retries.
     no_speech_retry_block_threshold: float = 0.85
+    # Verify stock English outro phrases against the original Japanese audio.
+    verify_stock_outros: bool = True
     retry_temperature: float = 0.2
     # Only recover a weak translation when both decoding passes agree
     # verbatim, FireRedVAD is confident, and both passes indicate speech.

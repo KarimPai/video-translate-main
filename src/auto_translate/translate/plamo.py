@@ -17,6 +17,7 @@ from ..translation_integrity import (
     enforce_known_name_spellings,
     enforce_numeric_fidelity,
     japanese_number_facts,
+    contextual_translation_hints,
 )
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
@@ -247,6 +248,14 @@ class PlamoTranslator:
                 "\nImmediately preceding Japanese speech fragments "
                 "(context only, possibly different speakers; do NOT translate "
                 "these fragments again): " + " / ".join(fragment_context)
+            )
+        # These are conditional interpretations grounded in the CURRENT text
+        # or timestamp-adjacent Japanese, not edits to the ASR transcript.
+        if hints := contextual_translation_hints(ja, recent_fragments=fragment_context):
+            options["context"] += (
+                "\nPossible ASR homophones in CURRENT Japanese (interpret only "
+                "when supported; never invent speech or change the source): "
+                + " ".join(hints)
             )
         if number_facts := japanese_number_facts(ja):
             pairs = "; ".join(

@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Offline Whisper Large-v3 direct Japanese-to-English AST MPV subtitles"
+description = "Offline VoicePing Qwen3 direct Japanese-to-English AST MPV subtitles"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }
@@ -9,7 +9,10 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26.4",
-    "faster-whisper>=1.2.1",
+    "qwen-asr",
+    "torch>=2.6.0",
+    "transformers>=4.57.0",
+    "librosa>=0.10.2",
     "fireredvad[gpu]>=0.0.2",
     "huggingface-hub>=0.34.0",
     "nvidia-cublas-cu12==12.9.2.10",

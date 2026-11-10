@@ -41,17 +41,20 @@ collapse_repetitions = true
 diagnostics = false
 
 [vad]
-threshold = 0.35
+threshold = 0.45
 neg_threshold = 0.30
-min_speech_ms = 100
-min_silence_ms = 400
-speech_pad_ms = 80
+min_speech_ms = 200
+min_silence_ms = 500
+speech_pad_ms = 200
+onset_ms = 100
+short_reply_ms = 120
+short_reply_probability = 0.85
 max_utterance_s = 11.0
 max_split_extension_s = 1.0
 fallback_s = 0.0
 ```
 
-These are the **branch defaults** if no `config.toml` is supplied. Existing custom `[vad]` values in a local untracked config override the defaults. The soft speech split is at 11 seconds and the hard deadline is 12 seconds; the model supports up to 30 seconds.
+These are the **branch defaults** if no `config.toml` is supplied. Existing custom `[vad]` values in a local untracked config override the defaults. The new VAD profile is stricter to reduce false speech triggers in gameplay/laughter: threshold 0.45, 200ms ordinary speech minimum, 500ms silence, 200ms padding, and 100ms onset. The high-confidence 120ms short-reply exception is preserved to reduce missing brief Japanese replies. The soft speech split remains 11 seconds and the hard deadline remains 12 seconds; the model supports up to 30 seconds. Longer silence/padding can delay subtitle availability, and stricter thresholds can omit quiet speech; compare both profiles on identical VOD excerpts. No new separate audio-event classifier or fragment-merging algorithm is enabled.
 
 The initial test uses **BF16, batch size 1, default decoder, 192 maximum new tokens, and no quantization or forced aligner**. `qwen-asr` uses Transformers/PyTorch CUDA. Windows native PyTorch is used instead of Linux-only vLLM. Only one model is loaded in GPU memory for translation.
 

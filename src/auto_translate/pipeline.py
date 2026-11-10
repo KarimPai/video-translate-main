@@ -1,7 +1,7 @@
-"""Single-stage Whisper Large-v3 direct Japanese-audio-to-English AST.
+"""Direct VoicePing JA-to-EN AST with FireRedVAD, MPV and seek-safe buffering.
 
-Retains FireRedVAD, optional audio processing, VOD cache, seek-safe
-playback synchronization, audio pacing and manual-pause watchdog fixes.
+The older Whisper worker remains only for historical unit-test compatibility.
+The active runtime invokes run_ast() and never loads a Whisper model.
 """
 
 from __future__ import annotations
@@ -13,15 +13,17 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 import numpy as np
 
 from .config import Config
 from .context import RecentSpeechContext
 from .subtitle_style import concise_english
-from .whisper_v3 import WhisperLargeV3  # unused legacy test adapter
 from .voiceping_ast import VoicePingAST
+
+if TYPE_CHECKING:
+    from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache

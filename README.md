@@ -26,13 +26,23 @@ to keep the ASR accuracy comparison controlled.
   passed by the caller; Japanese is selected with `language="japanese"` and
   `task="transcribe"` as recommended by the author.
 - Default decoding: beam size 5, deterministic temperature 0,
-  no_repeat_ngram_size 5, repetition_penalty 1.0.
+  no_repeat_ngram_size 5, repetition_penalty 1.0. Adaptive short-clip
+  token budget is enabled (1s ~64 tokens, 3s ~122, 8s capped at 160),
+  reducing the chance of generating unsupported extra sentences.
 - Re-transcription on uncertain output is OFF in this initial comparison so
   model differences are easier to interpret. The existing FireRedVAD silence
   gate, Japanese script gate, and local PLaMo translator remain active.
-- The model can transcribe sighs, laughter, and expressive speech. This may
-  produce more nonverbal Japanese text; evaluate against the actual audio
-  rather than assuming these are hallucinations. PLaMo remains the only
+- FireRedVAD segmentation is tuned for fuller Japanese phrase boundaries:
+  threshold 0.50, speech padding 250ms, minimum silence 550ms,
+  minimum speech 180ms, 8s soft cap plus up to 1s extension.
+- Standalone laughter is hidden by default, while laughter that accompanies
+  actual dialogue is preserved. A repeated *exact* video outro is skipped
+  only on its second occurrence within 120s. These are presentation filters,
+  not proof of hallucination; disable either using config.toml if desired.
+- The Japanese text is passed unchanged from the ASR to PLaMo; the translator
+  still receives bounded prior context but cannot rewrite the shown JP text.
+- The model transcribes sighs, laughter, and expressive speech by design;
+  this may produce more nonverbal output, which is not inherently hallucination. PLaMo remains the only
   English translation engine and the ASR never generates explanatory narration.
 
 ## Windows / RTX 3070 8 GB
@@ -69,6 +79,15 @@ uv run --no-sync python -m unittest discover -s tests -p "test_anime_whisper.py"
 
 ```cmd
 uv run --no-sync python -m unittest discover -s tests -p "test_whisper_plamo.py" -v
+```
+
+Optional local overrides to disable output filters for a full verbatim comparison:
+
+```toml
+[whisper]
+suppress_standalone_laughter = false
+suppress_repeated_japanese_outros = false
+adaptive_max_tokens = false
 ```
 
 The tests use fake output models or dependency injection; they do **not**

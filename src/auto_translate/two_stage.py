@@ -1,6 +1,6 @@
 """Japanese-only Whisper ASR -> Japanese-to-English PLaMo translation.
 
-This is the active pipeline for the whisper-v3 branch. The original direct
+This is the active pipeline for the Kotoba v2.2 branch. The original direct
 Whisper translation function is not called by run() in this configuration.
 All timestamps belong to the source audio and remain unchanged at both stages.
 """
@@ -19,7 +19,7 @@ import numpy as np
 from .asr_quality import is_standalone_laughter, formulaic_japanese_outro_key
 from .translation_integrity import nearby_japanese_fragments
 from .types import SAMPLE_RATE, AudioProgress, Subtitle, Transcript, Utterance
-from .whisper_v3 import WhisperLargeV3
+from .kotoba_whisper import KotobaWhisperASR
 from .session_cache import SessionSubtitleCache
 from .translate.base import Translator
 
@@ -36,7 +36,7 @@ def has_japanese_script(text: str) -> bool:
 
 
 def run_whisper_asr(
-    whisper: WhisperLargeV3,
+    whisper: KotobaWhisperASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,

@@ -9,6 +9,9 @@ from pathlib import Path
 class IngestConfig:
     ytdlp_format: str = "bestaudio/93/best"
     cookies_from_browser: str = ""
+    # VOD with MPV only: cap decoded audio read-ahead relative to playback.
+    # Prevent ASR/PLaMo from running continuously hours ahead of the video.
+    vod_max_audio_lead_s: float = 75.0  # 0 disables, preserves prior behavior
 
 @dataclass
 class SeparationConfig:

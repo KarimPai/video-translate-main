@@ -113,12 +113,20 @@ class AnimeWhisperASR:
             self.device == "cuda" and self.cfg.compute_type == "float16"
         ) else torch.float32
         features = inputs["input_features"].to(device=self.device, dtype=dtype)
+        # The model pads Whisper features to a 30s window even when the speech
+        # is only a second long. Limit decoder tokens for short cues so it has
+        # less opportunity to invent extra sentences after the audio ends.
+        # Maintain a generous budget for rapid Japanese and longer phrases.
+        max_tokens = self.cfg.max_new_tokens
+        if getattr(self.cfg, "adaptive_max_tokens", True):
+            duration_s = pcm.size / SAMPLE_RATE
+            max_tokens = min(max_tokens, max(64, int(duration_s * 30) + 32))
         arguments = {
             "input_features": features,
             "language": "japanese",
             "task": "transcribe",
             "num_beams": self.cfg.beam_size,
-            "max_new_tokens": self.cfg.max_new_tokens,
+            "max_new_tokens": max_tokens,
             "no_repeat_ngram_size": self.cfg.no_repeat_ngram_size,
             "repetition_penalty": self.cfg.repetition_penalty,
             "do_sample": t > 0.0,

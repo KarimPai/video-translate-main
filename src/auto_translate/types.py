@@ -11,11 +11,9 @@ SAMPLE_RATE = 16000
 class Timings:
     audio_read: float = 0.0
     segmented: float = 0.0
-    # First interval: Whisper Japanese ASR; second: PLaMo translation.
+    # Single Whisper direct AST inference interval.
     asr_start: float = 0.0
     asr_end: float = 0.0
-    mt_start: float = 0.0
-    mt_end: float = 0.0
 
 
 @dataclass
@@ -49,21 +47,10 @@ class Utterance:
 
 
 @dataclass
-class Transcript:
-    start_s: float
-    end_s: float
-    ja: str
-    timings: Timings = field(default_factory=Timings)
-    generation: int = 0
-    speech_start_s: float | None = None
-    speaker_handoff: bool = False
-
-
-@dataclass
 class Subtitle:
     start_s: float
     end_s: float
-    ja: str  # recognized Japanese transcript
+    ja: str  # empty in direct AST; retained for subtitle interface
     en: str
     timings: Timings = field(default_factory=Timings)
     generation: int = 0

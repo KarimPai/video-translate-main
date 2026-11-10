@@ -1,8 +1,7 @@
-"""Streaming Japanese ASR + PLaMo translation, with MPV seek-safe subtitles.
+"""Single-stage Whisper Large-v3 direct Japanese-audio-to-English AST.
 
-Retains GTCRN, FireRedVAD, Sherpa speaker boundaries, MPV timing and VOD
-seek caching. Active run() uses Whisper transcribe ONLY, then PLaMo for English.
-The older direct-translation helper remains for earlier test compatibility.
+Retains FireRedVAD, optional audio processing, VOD cache, seek-safe
+playback synchronization, audio pacing and manual-pause watchdog fixes.
 """
 
 from __future__ import annotations
@@ -19,16 +18,14 @@ from typing import Callable
 import numpy as np
 
 from .config import Config
-from .context import RecentSpeechContext, strip_context_echo
+from .context import RecentSpeechContext
 from .subtitle_style import concise_english
 from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
 from .speaker import run_speaker
-from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Subtitle, Transcript, Utterance
-from .two_stage import run_whisper_asr, run_plamo_translate
-from .translate.base import Translator
+from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Subtitle, Utterance
 from .vad import run_segmenter
 
 log = logging.getLogger(__name__)
@@ -186,7 +183,12 @@ def run_whisper(
                 speaker_handoff=utt.speaker_handoff or cached.speaker_handoff,
             ))
             continue
-        if utt.probe and _discard_probe(utt.audio):
+        # VAD-negative noise probes are never safe for direct AST.
+        if utt.probe:
+            continue
+        if not len(utt.audio) or not np.isfinite(utt.audio).all():
+            continue
+        if float(np.max(np.abs(utt.audio))) < 1 / 32768:
             continue
 
         utt.timings.asr_start = time.monotonic()
@@ -213,63 +215,36 @@ def run_whisper(
                 "outro" if generic_outro and getattr(cfg, "retry_on_outro", True)
                 else "uncertain" if original.suspicious else ""
             )
-            if retry_reason and getattr(cfg, "retry_uncertain", True):
-                max_samples = round(max(1.0, float(
-                    getattr(cfg, "retry_max_audio_s", 12.0)
-                )) * SAMPLE_RATE)
-                tail = context.audio_context(utt)
-                if tail is not None and utt.audio.size + tail.size > max_samples:
-                    tail = None
-                samples = (
-                    np.concatenate((tail, utt.audio))
-                    if tail is not None else utt.audio
-                )
+            silent_reject = (
+                not english and original.discarded_segments > 0
+                and original.no_speech_prob is not None
+                and original.no_speech_prob >= float(getattr(
+                    cfg, "no_speech_retry_block_threshold", 0.85,
+                ))
+            )
+            if (retry_reason and getattr(cfg, "retry_uncertain", True)
+                    and not silent_reject):
                 retried = True
+                # Same utterance only: never concatenate a prior speech tail
+                # or feed old subtitles back into this decoder pass.
                 second = whisper.decode_audio(
-                    samples, prompt=style_prompt or None,
+                    utt.audio, prompt=style_prompt or None,
                     hotwords=context.hotwords(),
                     temperature=float(getattr(cfg, "retry_temperature", 0.2)),
                 )
-                # Translation is not word-aligned. Do not publish previous
-                # dialogue again just because we included its audio.
-                candidate = (
-                    strip_context_echo(context.last_text, second.text)
-                    if tail is not None else second.text
-                )
-                if candidate and not second.suspicious:
-                    first_logp = (
-                        original.avg_logprob if original.avg_logprob is not None
-                        else -1.0
+                candidate = second.text.strip()
+                first_logp = original.avg_logprob
+                second_logp = second.avg_logprob
+                if (candidate and not second.suspicious
+                        and (first_logp is None or second_logp is None
+                             or second_logp >= first_logp - 0.15)
+                        and (not generic_outro or not _is_outro_phrase(candidate))):
+                    english = candidate
+                    selected = second
+                    log.info(
+                        "Whisper AST retry accepted (%s, gen=%d %.2f-%.2fs)",
+                        retry_reason, utt.generation, utt.start_s, utt.end_s,
                     )
-                    second_logp = (
-                        second.avg_logprob if second.avg_logprob is not None
-                        else first_logp
-                    )
-                    if (
-                        not english or
-                        (original.suspicious and
-                         second_logp >= first_logp - 0.15) or
-                        (generic_outro and
-                         second_logp >= first_logp - 0.15 and
-                         not _OUTRO.fullmatch(
-                             " ".join(re.sub(r"[^\w\s]", "", candidate).split())
-                         ))
-                    ):
-                        english = candidate
-                        selected = second
-                        log.info(
-                            "Whisper retry accepted (%s, context_audio=%.2fs, "
-                            "gen=%d %.2f-%.2fs)",
-                            retry_reason,
-                            0.0 if tail is None else tail.size / SAMPLE_RATE,
-                            utt.generation, utt.start_s, utt.end_s,
-                        )
-                    else:
-                        log.info(
-                            "Whisper retry discarded: failed quality comparison "
-                            "(gen=%d %.2f-%.2fs)",
-                            utt.generation, utt.start_s, utt.end_s,
-                        )
         else:
             # Existing test doubles and older API-compatible adapters.
             english = whisper.translate_audio(utt.audio)
@@ -288,8 +263,6 @@ def run_whisper(
                 "Concise subtitle cleanup: before=%r after=%r",
                 raw_english[:160], english[:160],
             )
-        utt.timings.mt_start = utt.timings.asr_end
-        utt.timings.mt_end = utt.timings.asr_end
         if get_generation is not None and utt.generation != get_generation():
             continue
 
@@ -320,6 +293,10 @@ def run_whisper(
                 english[:100],
             )
 
+        if (re.search(r"[\u3040-\u30ff\u3400-\u9fff]", english)
+                and not re.search(r"[A-Za-z]", english)):
+            log.info("Skipped Japanese-only Whisper AST output")
+            continue
         if not english.strip():
             empty_count += 1
             if empty_count % 8 == 0:
@@ -372,8 +349,6 @@ class Stats:
     lines: int = 0
     sum_s: float = 0.0
     max_s: float = 0.0
-    mt_sum_s: float = 0.0
-    mt_max_s: float = 0.0
     total_sum_s: float = 0.0
     total_max_s: float = 0.0
     max_q: dict[str, int] = field(default_factory=dict)
@@ -381,13 +356,10 @@ class Stats:
     def add(self, sub: Subtitle) -> None:
         t = sub.timings
         decode_s = max(0.0, t.asr_end - t.asr_start)
-        mt_s = max(0.0, t.mt_end - t.mt_start)
-        total_s = max(0.0, t.mt_end - t.audio_read)
+        total_s = max(0.0, t.asr_end - t.audio_read)
         self.lines += 1
         self.sum_s += decode_s
         self.max_s = max(self.max_s, decode_s)
-        self.mt_sum_s += mt_s
-        self.mt_max_s = max(self.mt_max_s, mt_s)
         self.total_sum_s += total_s
         self.total_max_s = max(self.total_max_s, total_s)
 
@@ -396,9 +368,8 @@ class Stats:
             return "no Japanese-to-English subtitles yet"
         q = " ".join(f"{k}={v}" for k, v in self.max_q.items())
         return (
-            f"{self.lines} lines | Whisper ASR avg {self.sum_s / self.lines:.2f}s "
-            f"max {self.max_s:.2f}s | PLaMo MT avg {self.mt_sum_s / self.lines:.2f}s "
-            f"max {self.mt_max_s:.2f}s | audio-to-English "
+            f"{self.lines} lines | Whisper AST avg {self.sum_s / self.lines:.2f}s "
+            f"max {self.max_s:.2f}s | audio-to-English "
             f"avg {self.total_sum_s / self.lines:.2f}s "
             f"max {self.total_max_s:.2f}s | max queue {q}"
         )
@@ -435,20 +406,16 @@ def run(
     outputs: list[Output],
     stop: threading.Event,
     session_cache: SessionSubtitleCache | None = None,
-    translator: Translator | None = None,
 ) -> None:
-    """Run Whisper Japanese recognition followed by PLaMo English translation."""
-    if translator is None:
-        raise RuntimeError("PLaMo translator is required; Whisper never translates directly.")
+    """Run direct Whisper AST after FireRedVAD."""
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     speaker_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
-    text_q: queue.Queue[Transcript | Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
     failures: queue.Queue[tuple[str, BaseException]] = queue.Queue()
     queues = {
         "audio": audio_q, "vad": utt_q, "speaker": speaker_q,
-        "japanese": text_q, "subtitle": sub_q,
+        "subtitle": sub_q,
     }
     generation = lambda: ingest.generation
 
@@ -469,15 +436,11 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("whisper-asr", run_whisper_asr, failures,
-                  whisper, speaker_q, text_q, generation, session_cache),
-            name="whisper-asr", daemon=True,
-        ),
-        threading.Thread(
-            target=_guard_stage,
-            args=("plamo-mt", run_plamo_translate, failures,
-                  translator, text_q, sub_q, generation),
-            name="plamo-mt", daemon=True,
+            args=("whisper-ast", run_whisper, failures,
+                  whisper, speaker_q, sub_q, generation, session_cache,
+                  {"gtcrn": cfg.gtcrn.enabled, "speaker": cfg.speaker.enabled},
+                  {"live": ingest.source.live, "duration_s": ingest.source.duration}),
+            name="whisper-ast", daemon=True,
         ),
     ]
 
@@ -530,7 +493,7 @@ def run(
                     continue
                 if item.generation not in first_logged:
                     first_logged.add(item.generation)
-                    log.info("first Whisper JA -> PLaMo EN subtitle for generation=%d at %.2fs",
+                    log.info("first Whisper AST English subtitle for generation=%d at %.2fs",
                              item.generation, item.start_s)
                 stats.add(item)
                 if session_cache is not None:
@@ -553,7 +516,7 @@ def run(
                 # on the first scheduler tick after playback resumes.
                 if not was_expected_idle:
                     log.info(
-                        "Whisper/PLaMo watchdog: expected VOD inactivity "
+                        "Whisper AST watchdog: expected VOD inactivity "
                         "(manual pause or read-ahead limit); retaining queues %s",
                         backlog,
                     )
@@ -562,16 +525,16 @@ def run(
             else:
                 if was_expected_idle:
                     log.info(
-                        "Whisper/PLaMo watchdog active again after VOD resumes"
+                        "Whisper AST watchdog active again after VOD resumes"
                     )
                 if backlog and now - last_event >= 60:
                     raise RuntimeError(
-                        "Whisper/PLaMo pipeline stalled with queued work: "
+                        "Whisper AST pipeline stalled with queued work: "
                         + str(backlog) + "; inspect logs/run.log"
                     )
                 if backlog and now - last_event >= 20 and now >= last_warn:
                     last_warn = now + 20
-                    log.warning("Whisper/PLaMo pipeline backlog: %s", backlog)
+                    log.warning("Whisper AST pipeline backlog: %s", backlog)
             was_expected_idle = expected_idle
             if now >= next_stats:
                 next_stats = now + cfg.stats_interval_s

@@ -1,4 +1,4 @@
-"""Print recognized Japanese and PLaMo's English translation."""
+"""English-only Whisper Large-v3 direct AST terminal output."""
 
 from ..types import Subtitle
 
@@ -17,13 +17,14 @@ class TerminalOutput:
         if not sub.en:
             return
         if self.simple:
-            if sub.ja:
-                print(f"JP: {sub.ja}", flush=True)
             print(f"EN: {sub.en}", flush=True)
         else:
             decode_s = max(0.0, sub.timings.asr_end - sub.timings.asr_start)
-            print(f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}] "
-                  f"{'JP: ' + sub.ja + ' | ' if sub.ja else ''}EN: {sub.en}  (Whisper Large-v3 {decode_s:.2f}s)", flush=True)
+            print(
+                f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}] "
+                f"EN: {sub.en}  (Whisper Large-v3 AST {decode_s:.2f}s)",
+                flush=True,
+            )
 
     def drain(self) -> None:
         pass

@@ -1,4 +1,4 @@
-"""Japanese transcription-only Whisper Large-v3 inference.
+"""Japanese audio-to-English direct Whisper Large-v3 translation.
 
 The model is loaded once. The public decode_audio() method exposes Whisper's
 own evidence about reliability for optional one-pass retry and diagnostics.
@@ -47,8 +47,8 @@ class WhisperLargeV3:
 
     def __init__(self, cfg: WhisperConfig, *, model: object | None = None) -> None:
         self.cfg = cfg
-        if cfg.language != "ja" or cfg.task != "transcribe":
-            raise ValueError("Japanese ASR requires language='ja' and task='transcribe'")
+        if cfg.language != "ja" or cfg.task != "translate":
+            raise ValueError("Japanese AST requires language='ja' and task='translate'")
         if cfg.beam_size < 1:
             raise ValueError("Whisper beam_size must be at least 1")
         if model is not None:
@@ -73,15 +73,11 @@ class WhisperLargeV3:
                 "(CUDA 12 cuBLAS and cuDNN 9), VRAM and faster-whisper installation: "
                 + str(exc)
             ) from exc
-        log.info("Whisper Large-v3 ready: Japanese audio -> Japanese transcription only")
-
-    def transcribe_audio(self, audio: np.ndarray) -> str:
-        """Japanese ASR; translation must be performed separately by PLaMo."""
-        return self.decode_audio(audio).text
+        log.info("Whisper Large-v3 ready: Japanese audio -> English direct translation")
 
     def translate_audio(self, audio: np.ndarray) -> str:
-        """Legacy API retained for test doubles; now returns JAPANESE only."""
-        return self.transcribe_audio(audio)
+        """Translate Japanese audio to English with Whisper only."""
+        return self.decode_audio(audio).text
 
     def decode_audio(
         self,
@@ -91,7 +87,7 @@ class WhisperLargeV3:
         hotwords: str | None = None,
         temperature: float | None = None,
     ) -> WhisperDecode:
-        """Transcribe one bounded Japanese utterance (no native translation).
+        """Translate one bounded Japanese utterance directly into English.
 
         The caller owns the utterance's source timestamps; adding context audio
         must never shift those timestamps or bypass duplicate-text validation.
@@ -108,7 +104,7 @@ class WhisperLargeV3:
         segments, _ = self._model.transcribe(
             np.ascontiguousarray(pcm),
             language="ja",
-            task="transcribe",
+            task="translate",
             beam_size=self.cfg.beam_size,
             best_of=1,
             repetition_penalty=self.cfg.repetition_penalty,
@@ -171,12 +167,7 @@ class WhisperLargeV3:
         ) if scores else None
 
         return WhisperDecode(
-            text=(
-                "".join(texts) if any(
-                    "\u3040" <= c <= "\u9fff"
-                    for part in texts for c in part
-                ) else " ".join(texts)
-            ).strip(),
+            text=" ".join(texts).strip(),
             avg_logprob=avg,
             no_speech_prob=(
                 max(nospeech) if nospeech else

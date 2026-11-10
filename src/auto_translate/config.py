@@ -10,7 +10,7 @@ class IngestConfig:
     ytdlp_format: str = "bestaudio/93/best"
     cookies_from_browser: str = ""
     # VOD with MPV only: cap decoded audio read-ahead relative to playback.
-    # Prevent ASR/PLaMo from running continuously hours ahead of the video.
+    # Prevent Whisper AST from decoding continuously hours ahead of the video.
     vod_max_audio_lead_s: float = 75.0  # 0 disables, preserves prior behavior
 
 @dataclass
@@ -66,14 +66,14 @@ class SpeakerConfig:
 
 @dataclass
 class WhisperConfig:
-    """Whisper Large-v3 for Japanese transcription only; PLaMo translates later."""
+    """Whisper Large-v3 direct Japanese audio-to-English translation."""
 
     model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
     device: str = "cuda"
     compute_type: str = "int8_float16"  # RTX 3070 8 GB
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
-    task: str = "transcribe"  # Japanese ASR ONLY; PLaMo handles English
+    task: str = "translate"  # direct Japanese audio to English
     beam_size: int = 5
     temperature: float = 0.0
     no_speech_threshold: float = 0.6
@@ -113,13 +113,11 @@ class WhisperConfig:
     style_prompt: str = ""  # no instruction-style priming; concise output filter handles fillers
     remove_fillers: bool = True
     collapse_repetitions: bool = True
-    # Keep the recent speech waveform for *uncertain-only* contextual retries.
-    audio_context_enabled: bool = True
+    # Retries decode the same utterance without prior audio context.
+    audio_context_enabled: bool = False
     audio_context_s: float = 1.2
     audio_context_max_gap_s: float = 2.0
     suppress_standalone_laughter: bool = True  # skip only pure nonverbal laughs
-    suppress_repeated_japanese_outros: bool = True  # identical exact phrase only
-    japanese_outro_cooldown_s: float = 120.0
     retry_uncertain: bool = True
     # Do not re-decode a wholly rejected window when Whisper strongly
     # predicts non-speech. Higher values preserve more faint speech retries.
@@ -129,27 +127,6 @@ class WhisperConfig:
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = False
-
-
-@dataclass
-class TranslateConfig:
-    """Local PLaMo 3 Translate 2B GGUF, the sole JA->EN translation engine."""
-
-    plamo_base_url: str = "http://127.0.0.1:8000/v1"
-    plamo_model: str = "plamo-3-translate"
-    plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-    plamo_context: int = 4096  # RTX 3070 headroom for Whisper INT8/FP16
-    plamo_gpu_layers: int = 16  # conservative RTX 3070 stability profile
-    max_tokens: int = 120
-    timeout_s: float = 20.0
-    load_timeout_s: float = 300.0
-    context_lines: int = 8
-    memory_lines: int = 24
-    fragment_context_lines: int = 2
-    fragment_max_gap_s: float = 1.8
-    protect_numbers: bool = True
-    protect_names: bool = True
-    glossary: str = "glossary.toml"
 
 
 @dataclass
@@ -169,7 +146,7 @@ class MpvConfig:
     delay_s: float = 8.0
     start_wait_s: float = 3.0
     port: int = 9137
-    hwdec: str = "no"  # software decode leaves RTX 3070 VRAM for both models
+    hwdec: str = "no"  # reserves RTX 3070 VRAM for Whisper
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"
@@ -187,7 +164,6 @@ class Config:
     vad: VadConfig = field(default_factory=VadConfig)
     speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
-    translate: TranslateConfig = field(default_factory=TranslateConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
     stats_interval_s: float = 30.0
@@ -230,15 +206,8 @@ def load_config(path: Path) -> Config:
         if name in whisper_fields
     }
 
-    # Retire the previous direct-translation setting even in old ignored
-    # local config files. Japanese->English MUST happen only in PLaMo.
+    # Ignore legacy task and [translate] blocks from local config.toml.
     whisper_data.pop("task", None)
-    translate_fields = {entry.name for entry in fields(TranslateConfig)}
-    translate_data = {
-        name: value for name, value in data.get("translate", {}).items()
-        if name in translate_fields
-    }
-
     return Config(
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
@@ -246,7 +215,6 @@ def load_config(path: Path) -> Config:
         vad=VadConfig(**data.get("vad", {})),
         speaker=SpeakerConfig(**speaker_data),
         whisper=WhisperConfig(**whisper_data),
-        translate=TranslateConfig(**translate_data),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),

@@ -1,7 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
 chcp 65001 >nul
-title Whisper Large-v3 ASR + PLaMo 3 Translate 2B
+title Whisper Large-v3 Direct AST
 cd /d "%~dp0"
 
 if errorlevel 1 (
@@ -12,7 +12,7 @@ if errorlevel 1 (
 
 echo.
 echo ========================================
-echo   Whisper Large-v3 ASR + PLaMo 3 2B
+echo   Whisper Large-v3 Direct JA to EN AST
 echo ========================================
 echo.
 
@@ -49,23 +49,23 @@ if "%NEED_SYNC%"=="1" (
 )
 
 echo.
-echo Starting Whisper Japanese transcription + PLaMo English translation...
+echo Starting Whisper direct Japanese-audio-to-English translation...
 echo Stability test: optional audio processors OFF, MPV software decoding,
-echo                  PLaMo limited GPU offload (16 layers).
+echo                  Whisper-only inference (no model server).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec no --plamo-gpu-layers 16 --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec no --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 if not "%EXIT_CODE%"=="0" (
-    echo ERROR: Whisper + PLaMo translator exited with code %EXIT_CODE%.
+    echo ERROR: Whisper direct AST exited with code %EXIT_CODE%.
     echo Last 45 lines of application log:
     powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\run.log' -Encoding UTF8 -Tail 45"
     echo Last 30 lines of MPV log:
     if exist "logs\mpv.log" powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\mpv.log' -Encoding UTF8 -Tail 30"
 ) else (
-    echo Whisper + PLaMo translator stopped.
+    echo Whisper direct AST stopped.
 )
 echo Application log: "%CD%\logs\run.log"
 pause

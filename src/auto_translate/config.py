@@ -118,9 +118,12 @@ class WhisperConfig:
     audio_context_enabled: bool = True
     audio_context_s: float = 1.2
     audio_context_max_gap_s: float = 2.0
-    retry_uncertain: bool = False  # first compare raw Anime Whisper output
+    retry_uncertain: bool = True  # rerun only objectively suspicious cues
     retry_on_outro: bool = True
-    retry_temperature: float = 0.2
+    collect_token_scores: bool = True  # estimate average beam token log-prob
+    retry_beam_size: int = 8  # deterministic unprimed second pass
+    retry_min_logprob_gain: float = 0.18
+    retry_temperature: float = 0.2  # legacy fallback/test compatibility
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = True  # record performance and transcript anomalies

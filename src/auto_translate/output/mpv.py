@@ -41,6 +41,16 @@ INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
 
 JUMP_MESSAGE = "auto-translate-jump"
 
+# Limit network demux RAM on long YouTube VODs while retaining local seekback.
+# The previous 1 GiB forward + 1 GiB backward limits could retain 2 GiB
+# of demux packets; 256 + 64 MiB is sufficient for normal 1080p playback.
+BOUNDED_DEMUX_CACHE_OPTIONS = (
+    "--cache=yes",
+    "--demuxer-readahead-secs=30",
+    "--demuxer-max-bytes=256MiB",
+    "--demuxer-max-back-bytes=64MiB",
+)
+
 
 def _gpu_memory_snapshot() -> str:
     """Best-effort NVIDIA VRAM diagnostic; never changes player behavior."""
@@ -351,10 +361,7 @@ class MpvOutput:
 
             # Keep a modest forward/backward demux cache for the direct
             # YouTube video stream.
-            "--cache=yes",
-            "--demuxer-readahead-secs=30",
-            "--demuxer-max-bytes=256MiB",
-            "--demuxer-max-back-bytes=64MiB",
+            *BOUNDED_DEMUX_CACHE_OPTIONS,
             # Match the audio reader's live HLS edge and remove menu seeks.
             *(
                 ["--demuxer-lavf-o=live_start_index=-3", "--load-context-menu=no"]

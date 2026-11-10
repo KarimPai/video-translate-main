@@ -16,7 +16,7 @@ from typing import Callable
 
 import numpy as np
 
-from .asr_quality import is_standalone_laughter, is_formulaic_japanese_outro
+from .asr_quality import is_standalone_laughter, formulaic_japanese_outro_key
 from .translation_integrity import nearby_japanese_fragments
 from .types import SAMPLE_RATE, AudioProgress, Subtitle, Transcript, Utterance
 from .anime_whisper import AnimeWhisperASR
@@ -145,18 +145,19 @@ def run_whisper_asr(
 
         # A formulaic video outro may be genuine once. Reject only a second
         # identical standalone phrase in a narrow window of this generation.
+        outro_key = formulaic_japanese_outro_key(japanese)
         if (getattr(cfg, "suppress_repeated_japanese_outros", False)
-                and is_formulaic_japanese_outro(japanese)):
+                and outro_key is not None):
             recent = recent_outro
             cooldown = max(0.0, float(getattr(cfg, "japanese_outro_cooldown_s", 120.0)))
-            if (recent is not None and recent[0] == japanese
+            if (recent is not None and recent[0] == outro_key
                     and 0 <= utt.start_s - recent[1] <= cooldown):
                 log.info(
                     "Skipped repeated formulaic JP outro (generation=%d %.2f-%.2fs): %r",
                     utt.generation, utt.start_s, utt.end_s, japanese,
                 )
                 continue
-            recent_outro = (japanese, utt.start_s)
+            recent_outro = (outro_key, utt.start_s)
         if get_generation is not None and utt.generation != get_generation():
             continue
         out_q.put(Transcript(

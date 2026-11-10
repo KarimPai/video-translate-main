@@ -12,9 +12,15 @@ import re
 import numpy as np
 
 from .config import VoicePingAstConfig
+from .hololive_names import TALENTS
 from .types import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
+
+
+def _name_key(text: str) -> str:
+    """Exact comparison after removing punctuation/case, not fuzzy name matching."""
+    return " ".join(re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)?", text.casefold()))
 
 
 def build_ast_context(cfg: VoicePingAstConfig) -> str:
@@ -52,6 +58,11 @@ class VoicePingAST:
     def __init__(self, cfg: VoicePingAstConfig, *, model: object | None = None) -> None:
         self.cfg = cfg
         self.context = build_ast_context(cfg)
+        self._standalone_names = {
+            _name_key(name) for name in
+            [*(talent.hint for talent in TALENTS), *cfg.detected_names, *cfg.name_hints]
+            if isinstance(name, str) and name.strip()
+        }
         if cfg.dtype != "bfloat16":
             raise ValueError("This AST experiment uses BF16 only; quantization is disabled")
         if cfg.max_inference_batch_size != 1:
@@ -84,7 +95,12 @@ class VoicePingAST:
         log.info("VoicePing AST ready: Japanese speech -> English text; no second translator")
         log.info("VoicePing native context: %s", self.context or "off")
 
-    def translate_audio(self, audio: np.ndarray) -> str:
+    def is_standalone_name(self, text: str) -> bool:
+        """Candidate single-name hallucination, only when text context was used."""
+        key = _name_key(text.strip())
+        return bool(self.context and key and key in self._standalone_names)
+
+    def translate_audio(self, audio: np.ndarray, *, use_context: bool = True) -> str:
         pcm = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
         if not pcm.size or not np.isfinite(pcm).all():
             return ""
@@ -98,7 +114,7 @@ class VoicePingAST:
             output = self._model.transcribe(
                 audio=(pcm, SAMPLE_RATE),
                 language="English",
-                context=self.context,
+                context=self.context if use_context else "",
             )
         if not output:
             return ""

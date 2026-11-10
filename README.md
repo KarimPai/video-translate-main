@@ -28,9 +28,9 @@ device = "cuda:0"
 dtype = "bfloat16"
 max_inference_batch_size = 1
 max_new_tokens = 192
-context_enabled = true
-japanese_source_only = true  # soft bias: ignore English-source speech
-concise_context = true
+context_enabled = false  # recommended: no prompt echo or name bias
+japanese_source_only = false  # legacy key, not a reliable language gate
+concise_context = false  # legacy key, instructions are not sent to Qwen
 hololive_names_enabled = true
 hololive_name_limit = 6
 verify_standalone_names = true
@@ -55,42 +55,38 @@ These are the **branch defaults** if no `config.toml` is supplied. Existing cust
 
 The initial test uses **BF16, batch size 1, default decoder, 192 maximum new tokens, and no quantization or forced aligner**. `qwen-asr` uses Transformers/PyTorch CUDA. Windows native PyTorch is used instead of Linux-only vLLM. Only one model is loaded in GPU memory for translation.
 
-## Concise context and stream names
+## Critical fix: prompt echo and repeated translations
 
-The Qwen3-ASR API accepts native `transcribe(context=..., language="English")`. By default, the experiment passes a **short context instruction for concise, faithful translation** and only official Hololive names detected from the video's channel/title metadata. It does **not** feed past English subtitles back into the model; this avoids a potential echo/hallucination loop. These context instructions are an experiment, not proven to improve this fine-tuned model. Disable instructions alone with `concise_context = false` or all native context with `context_enabled = false`.
+VoicePing printed its native context instructions as an English subtitle. The
+prompt included wording that was not spoken. Natural-language instructions
+are therefore disabled for this ASR translation fine-tune. The project sends
+**no instructions** to `transcribe(context=...)` at any setting.
+`language="English"` still selects Japanese-audio → English-text.
 
-For names spoken in the video but not detectable from its title/channel, add manual hints in a local `config.toml`:
+- Default: `context_enabled = false` (no application-generated prompt).
+- Optional name bias: `[ast] context_enabled = true` sends only comma-separated
+  names selected from stream metadata or manual `name_hints`, such as
+  `Watame, Okayu`. This is disabled by default because names were being
+  hallucinated over laughter.
+- `japanese_source_only` and `concise_context` are accepted for legacy config
+  compatibility but no longer inject instructions. Strict Japanese-language
+  gating would require tested acoustic language identification.
+- A new generation-loop guard detects long phrases repeated three times,
+  including multi-sentence cycles. It drops the entire suspect output rather
+  than printing potentially fabricated text. Short "No, no, no!" remains.
+- English filler and adjacent-cue suppression remain enabled.
+
+Optional vocabulary bias:
 
 ```toml
 [ast]
+context_enabled = true
 name_hints = ["Watame", "Jack"]
 ```
 
-Use only actual names relevant to that stream. Up to eight validated names are passed to the model, prioritizing up to six title/channel-grounded Hololive names. Names are **hints, not forced substitutions**, so incorrect names can still appear. This does not use a second translation model or any ASR/transcript history.
-
-Postprocessing removes filler-only utterances (including Unicode ellipsis such as "Um…"), conservatively drops *identical adjacent sentences*, and suppresses the third and later identical nearby cues in the same seek generation. Two repetitions remain to preserve possible genuine spoken emphasis. Negations, proper names and meaningful shorter repetitions are not rewritten. This can remove real repetition, and it cannot correct inaccurate or hallucinated but fluent translations.
-
-## Japanese-only source bias
-
-The fine-tuned VoicePing model's `language="English"` requests **English
-translation output**, not English audio recognition. Never change it to
-`language="Japanese"` to gate source speech: that reverses the translation
-direction.
-
-With `[ast].japanese_source_only = true` (default), the native Qwen context
-now asks it to translate **Japanese-source speech only**, return empty output
-for English-only speech, laughter and game audio, and retain English loanwords
-within Japanese sentences. This is a **prompt/context bias, not measured
-source-language classification**. VoicePing may ignore it or translate English
-audio anyway, and it may accidentally omit Japanese utterances. To return to
-the previous mode, set `japanese_source_only = false` in `config.toml`.
-`context_enabled = false` disables all context including this bias.
-
-The pipeline still emits **English-only subtitles** and does not add an
-ASR stage, extra translator or acoustic language-ID model. A reliable strict
-Japanese-source gate would need a separate language detector tested against
-short mixed-language speech and laughter.
-
+A standalone name promoted by the optional context is still verified with an
+unprompted second inference on the same audio. This is heuristic, not proof
+of accurate transcription, and has an additional latency cost.
 ## Standalone-name hallucination guard
 
 If laughter or game effects are misrecognized as a single Hololive name such

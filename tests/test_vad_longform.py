@@ -38,6 +38,24 @@ class LongformBoundaryTests(unittest.TestCase):
         probs[120:134] = 0.98  # 140ms, should not meet 250ms voiced minimum
         self.assertEqual(self._process(pcm, probs, VadConfig(min_speech_ms=250)), [])
 
+    def test_high_confidence_short_japanese_reply_survives(self):
+        frames = 300
+        pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
+        probs = np.full(frames, 0.01, dtype=np.float32)
+        # 180ms voice: under the ordinary 200ms limit but strong enough
+        # to qualify for the 120ms high-confidence short-reply exception.
+        probs[120:138] = 0.99
+        result = self._process(pcm, probs)
+        self.assertEqual(len(result), 1)
+        self.assertGreater(result[0].vad_confidence, 0.45)
+
+    def test_weak_short_noise_does_not_use_short_reply_exception(self):
+        frames = 300
+        pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
+        probs = np.full(frames, 0.01, dtype=np.float32)
+        probs[120:138] = 0.60
+        self.assertEqual(self._process(pcm, probs), [])
+
     def test_sustained_speech_survives_onset_filter(self):
         frames = 300
         pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)

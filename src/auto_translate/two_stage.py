@@ -16,7 +16,7 @@ from typing import Callable
 
 import numpy as np
 
-from .context_memory import repair_near_repeated_word
+from .asr_quality import is_standalone_laughter, is_formulaic_japanese_outro
 from .translation_integrity import nearby_japanese_fragments
 from .types import SAMPLE_RATE, AudioProgress, Subtitle, Transcript, Utterance
 from .anime_whisper import AnimeWhisperASR
@@ -44,6 +44,7 @@ def run_whisper_asr(
 ) -> None:
     """Recognize Japanese ONLY; route cache hits without another model call."""
     last_generation: int | None = None
+    recent_outro: tuple[str, float] | None = None
     while True:
         item = in_q.get()
         if item is None:
@@ -54,11 +55,13 @@ def run_whisper_asr(
         if isinstance(item, AudioProgress):
             if item.reset:
                 last_generation = item.generation
+                recent_outro = None
             out_q.put(item)
             continue
 
         utt = item
         if last_generation is None or utt.generation != last_generation:
+            recent_outro = None
             last_generation = utt.generation
 
         if session_cache is not None:
@@ -130,6 +133,30 @@ def run_whisper_asr(
                 retry, chosen.avg_logprob, chosen.no_speech_prob,
                 chosen.discarded_segments, japanese[:120],
             )
+        # Suppress *only* isolated laughs; keep spoken words such as
+        # "そうだね、あはは" verbatim. This is a subtitle presentation policy,
+        # not a claim that the laughter was hallucinated.
+        if getattr(cfg, "suppress_standalone_laughter", False) and is_standalone_laughter(japanese):
+            log.info(
+                "Skipped standalone laughter (generation=%d %.2f-%.2fs): %r",
+                utt.generation, utt.start_s, utt.end_s, japanese[:100],
+            )
+            continue
+
+        # A formulaic video outro may be genuine once. Reject only a second
+        # identical standalone phrase in a narrow window of this generation.
+        if (getattr(cfg, "suppress_repeated_japanese_outros", False)
+                and is_formulaic_japanese_outro(japanese)):
+            recent = recent_outro
+            cooldown = max(0.0, float(getattr(cfg, "japanese_outro_cooldown_s", 120.0)))
+            if (recent is not None and recent[0] == japanese
+                    and 0 <= utt.start_s - recent[1] <= cooldown):
+                log.info(
+                    "Skipped repeated formulaic JP outro (generation=%d %.2f-%.2fs): %r",
+                    utt.generation, utt.start_s, utt.end_s, japanese,
+                )
+                continue
+            recent_outro = (japanese, utt.start_s)
         if get_generation is not None and utt.generation != get_generation():
             continue
         out_q.put(Transcript(
@@ -192,9 +219,9 @@ def run_plamo_translate(
             continue
 
         tr.timings.mt_start = time.monotonic()
+        # Fidelity first: don't rewrite the ASR transcript from prior guesses.
+        # Prior JP/EN context remains available *to the translator only*.
         japanese = tr.ja
-        if memory_lines:
-            japanese = repair_near_repeated_word(japanese, list(history))
         fragments = nearby_japanese_fragments(
             list(recent_ja), tr.start_s, japanese,
             max_fragments=int(getattr(cfg, "fragment_context_lines", 2)),

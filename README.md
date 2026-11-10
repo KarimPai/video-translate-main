@@ -151,12 +151,49 @@ itself stays available across the entire video for fast translation reuse
 and backwards seeking. These changes target long-session CPU/RAM growth but
 are not yet verified on your 7-hour recording.
 
+### Further mitigation for occasional hitches and slower subtitles
+
+Unpaced FFmpeg previously decoded and queued as much of the entire VOD as
+the worker pipeline would consume. On very long videos this could keep
+Whisper large-v3, FireRedVAD, PLaMo, FFmpeg and MPV competing for system
+resources even while the translated subtitles were already far ahead.
+When MPV is active for a VOD, FFmpeg now yields once its audio has advanced
+75 seconds beyond the measured MPV playback clock and resumes as the video
+catches up. Five-second initial translation buffering and native seeks remain
+unchanged; every seek resets the audio reader's source timestamp. Live streams,
+standalone transcription, and fMP4 fallback are not throttled.
+
+Tune in `config.toml` (only when needed):
+
+```toml
+[ingest]
+vod_max_audio_lead_s = 75.0  # 0 disables playback-relative pacing
+```
+
+Because `--cache=yes` can override the readahead setting with an effectively
+unbounded default `cache-secs`, this branch explicitly sets `--cache-secs=30`
+and `--demuxer-hysteresis-secs=10` for predictable network buffering.
+
+The application logs a `VOD playback health` line every 30 seconds:
+`translation_lead` (translated timeline minus current video time),
+`dropped_frames`, `paused_for_cache`, and `cache_duration`.
+A negative translation lead identifies the ASR/MT pipeline falling behind;
+growing dropped frames with no cache pause points toward video decoding/
+resource contention; `paused_for_cache=True` suggests network buffering.
+These metrics do not by themselves prove a root cause, but let the next
+long-VOD trace distinguish where the hitch originates.
+
+The launcher keeps software decode (`--hwdec no`) to reserve GPU VRAM.
+If dropped frames remain high while VRAM has headroom, test `--hwdec auto-safe`
+separately rather than enabling it blindly on an 8 GB RTX 3070.
+
 If playback is still choppy, check whether MPV reports dropped frames,
 `paused-for-cache` or cache underruns before changing ASR or subtitles;
 the launcher's `--hwdec no` also means video decoding is done on CPU.
 
 ## Tests
 
+    uv run --no-sync python -m unittest discover -s tests -p "test_vod_pacing.py" -v
     uv run --no-sync python -m unittest discover -s tests -p "test_whisper_long_vod.py" -v
     uv run --no-sync python -m unittest discover -s tests -p "test_whisper_plamo.py" -v
     uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v

@@ -69,11 +69,11 @@ class WhisperLargeV3:
             )
         except Exception as exc:
             raise RuntimeError(
-                "Whisper Large-v3 failed to load. Verify RTX 3070 CUDA libraries "
+                f"Whisper model {cfg.model} failed to load. Verify RTX 3070 CUDA libraries "
                 "(CUDA 12 cuBLAS and cuDNN 9), VRAM and faster-whisper installation: "
                 + str(exc)
             ) from exc
-        log.info("Whisper Large-v3 ready: Japanese audio -> Japanese transcription only")
+        log.info("Whisper %s ready: Japanese audio -> Japanese transcription only", cfg.model)
 
     def transcribe_audio(self, audio: np.ndarray) -> str:
         """Japanese ASR; translation must be performed separately by PLaMo."""

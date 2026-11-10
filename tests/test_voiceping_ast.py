@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from auto_translate.config import VoicePingAstConfig
+from auto_translate.config import VoicePingAstConfig, WhisperConfig, load_config
 from auto_translate.pipeline import run_ast
 from auto_translate.types import AudioProgress, SAMPLE_RATE, Utterance
 from auto_translate.voiceping_ast import VoicePingAST, build_ast_context
@@ -29,6 +29,18 @@ class MockVoicePing:
 
 
 class VoicePingASTTests(unittest.TestCase):
+    def test_standalone_name_guard_setting_belongs_to_ast_not_whisper(self):
+        import tempfile
+        from pathlib import Path
+
+        self.assertTrue(VoicePingAstConfig().verify_standalone_names)
+        self.assertFalse(hasattr(WhisperConfig(), "verify_standalone_names"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text("[ast]\\nverify_standalone_names = false\\n".replace("\\\\n", "\\n"), encoding="utf-8")
+            cfg = load_config(path)
+            self.assertFalse(cfg.ast.verify_standalone_names)
+
     def test_target_language_and_original_pcm(self):
         fake = MockVoicePing()
         model = VoicePingAST(VoicePingAstConfig(), model=fake)

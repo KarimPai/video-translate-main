@@ -8,6 +8,8 @@ YouTube live/VOD or local media → FFmpeg 16kHz mono → optional GTCRN (CPU) �
 
 Whisper uses language=ja, task=translate, condition_on_previous_text=False and vad_filter=False. Old config.toml values requesting transcription are ignored. Previous [translate] settings are ignored. Large-v3 Turbo is not recommended because its model is not trained for speech translation.
 
+Whisper uses FP16 quality mode on the RTX 3070 (with int8_float16 fallback on model-load VRAM exhaustion), and text-only decoding because FireRedVAD already provides timestamps. Wholly rejected low-confidence utterances can only be recovered when two independent decodes agree exactly and both the VAD and Whisper scores strongly indicate real speech. This is a guarded improvement, not a guarantee of translation correctness.
+
 Direct AST cannot also supply a verbatim Japanese transcript without a second model pass. The command prompt therefore shows EN: lines only.
 
 ## Update and start (Windows)
@@ -17,16 +19,17 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
     uv sync
     "Start translate.bat"
 
-Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --delay 10; no translator server is started. Stop old standalone servers manually if still running to free VRAM.
+Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute float16 (fallback to int8_float16 only if FP16 model load is out of VRAM), --delay 10; no translator server is started. Disable the FP16 trial with --whisper-compute int8_float16 in the launcher. Stop old standalone servers manually if still running to free VRAM.
 
 ## Key defaults and silence protections
 
     [whisper]
     model = "large-v3"
-    compute_type = "int8_float16"
+    compute_type = "float16"
     beam_size = 5
     temperature = 0.0
     no_speech_retry_block_threshold = 0.85
+    rescue_stable_weak_speech = true
 
     [vad]
     threshold = 0.50

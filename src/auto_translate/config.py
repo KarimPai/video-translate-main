@@ -70,7 +70,7 @@ class WhisperConfig:
 
     model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
     device: str = "cuda"
-    compute_type: str = "int8_float16"  # RTX 3070 8 GB
+    compute_type: str = "float16"  # quality test on RTX 3070 8 GB; OOM falls back to int8_float16
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
     task: str = "translate"  # direct Japanese audio to English
@@ -124,6 +124,9 @@ class WhisperConfig:
     no_speech_retry_block_threshold: float = 0.85
     retry_on_outro: bool = True
     retry_temperature: float = 0.2
+    # Only recover a weak translation when both decoding passes agree
+    # verbatim, FireRedVAD is confident, and both passes indicate speech.
+    rescue_stable_weak_speech: bool = True
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = False

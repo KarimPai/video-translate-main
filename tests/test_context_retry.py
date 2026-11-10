@@ -98,6 +98,39 @@ class FakeDecoder:
 
 
 class RetryTests(unittest.TestCase):
+    def test_two_matching_weak_passes_can_recover_confident_vad_speech(self):
+        weak = lambda phrase, confidence: WhisperDecode(
+            "", discarded_segments=1, no_speech_prob=confidence,
+            weak_text=phrase, weak_avg_logprob=-1.31,
+            weak_no_speech_prob=confidence,
+        )
+        decoder = FakeDecoder([
+            weak("Get out of the car!", .08),
+            weak("Get out of the car.", .10),
+        ])
+        cues = run_once(decoder, [utt()])
+        self.assertEqual([cue.en for cue in cues], ["Get out of the car!"])
+        self.assertEqual(len(decoder.calls), 2)
+
+    def test_weak_rescue_rejects_disagreement_and_probable_noise(self):
+        cases = [
+            (WhisperDecode("", discarded_segments=1, no_speech_prob=.15,
+                           weak_text="Stop the car.", weak_avg_logprob=-1.4,
+                           weak_no_speech_prob=.15),
+             WhisperDecode("", discarded_segments=1, no_speech_prob=.15,
+                           weak_text="Turn the wheel.", weak_avg_logprob=-1.35,
+                           weak_no_speech_prob=.15)),
+            (WhisperDecode("", discarded_segments=1, no_speech_prob=.56,
+                           weak_text="Stop the car.", weak_avg_logprob=-1.4,
+                           weak_no_speech_prob=.56),
+             WhisperDecode("", discarded_segments=1, no_speech_prob=.55,
+                           weak_text="Stop the car.", weak_avg_logprob=-1.35,
+                           weak_no_speech_prob=.55)),
+        ]
+        for first, second in cases:
+            decoder = FakeDecoder([first, second])
+            self.assertEqual(run_once(decoder, [utt()]), [])
+
     def test_uncertain_audio_retried_once(self):
         decoder = FakeDecoder([
             WhisperDecode("Not good.", avg_logprob=-.95, decoded_segments=1),

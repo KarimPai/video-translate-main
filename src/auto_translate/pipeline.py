@@ -132,6 +132,40 @@ def _discard_probe(audio: np.ndarray) -> bool:
     return False
 
 
+
+def _stable_weak_speech(first: object, second: object, vad_confidence: float | None,
+                        cfg: object | None) -> str:
+    """Conservatively recover quiet real speech rejected by both passes.
+
+    Exact word agreement is required, not a fuzzy semantic match. This does
+    not promote a single hallucination, weak VAD evidence, or likely silence.
+    """
+    if not getattr(cfg, "rescue_stable_weak_speech", True):
+        return ""
+    if vad_confidence is None or not math.isfinite(float(vad_confidence)):
+        return ""
+    if float(vad_confidence) < 0.78:
+        return ""
+    if getattr(first, "text", "") or getattr(second, "text", ""):
+        return ""
+
+    tokens: list[list[str]] = []
+    for decoded in (first, second):
+        candidate = getattr(decoded, "weak_text", "").strip()
+        avg = getattr(decoded, "weak_avg_logprob", None)
+        ns = getattr(decoded, "weak_no_speech_prob", None)
+        if (not candidate or avg is None or ns is None
+                or not math.isfinite(float(avg)) or not math.isfinite(float(ns))
+                or float(avg) < -1.60 or float(ns) > 0.35
+                or _is_outro_phrase(candidate)):
+            return ""
+        words = re.findall(r"[a-z]+(?:'[a-z]+)?", candidate.casefold())
+        if len(words) < 2 or sum(map(len, words)) < 8:
+            return ""
+        tokens.append(words)
+    return first.weak_text if tokens[0] == tokens[1] else ""
+
+
 def run_whisper(
     whisper: WhisperLargeV3,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
@@ -245,6 +279,19 @@ def run_whisper(
                         "Whisper AST retry accepted (%s, gen=%d %.2f-%.2fs)",
                         retry_reason, utt.generation, utt.start_s, utt.end_s,
                     )
+                elif not english and not candidate:
+                    rescued = _stable_weak_speech(
+                        original, second, utt.vad_confidence, cfg,
+                    )
+                    if rescued:
+                        english = rescued
+                        selected = second
+                        log.info(
+                            "Whisper AST recovered matching weak speech "
+                            "(gen=%d %.2f-%.2fs vad=%.2f)",
+                            utt.generation, utt.start_s, utt.end_s,
+                            utt.vad_confidence,
+                        )
         else:
             # Existing test doubles and older API-compatible adapters.
             english = whisper.translate_audio(utt.audio)

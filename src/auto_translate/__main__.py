@@ -24,6 +24,8 @@ def main() -> None:
                         help="print direct English translation only")
     parser.add_argument("--mpv", action="store_true")
     parser.add_argument("--delay", type=float, metavar="SECONDS")
+    parser.add_argument("--whisper-compute", choices=("float16", "int8_float16"),
+                        help="Whisper CUDA precision; FP16 OOM falls back to int8_float16")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV video decoder (no saves GPU memory)")
     parser.add_argument(
@@ -57,6 +59,8 @@ def main() -> None:
     from .session_cache import SessionSubtitleCache
 
     cfg = load_config(args.config)
+    if args.whisper_compute is not None:
+        cfg.whisper.compute_type = args.whisper_compute
     if args.audio_profile is not None:
         cfg.gtcrn.enabled = args.audio_profile in ("gtcrn", "both")
         cfg.speaker.enabled = args.audio_profile in ("speaker", "both")

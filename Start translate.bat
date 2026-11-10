@@ -51,10 +51,10 @@ if "%NEED_SYNC%"=="1" (
 echo.
 echo Starting Whisper direct Japanese-audio-to-English translation...
 echo Playback hitch test: optional audio processors OFF, MPV safe hardware decoding,
-echo                  Whisper-only inference (no model server).
+echo                  Whisper FP16 quality mode (fallback to int8 on load OOM).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --whisper-compute float16 --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

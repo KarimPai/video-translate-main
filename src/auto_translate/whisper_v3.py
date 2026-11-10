@@ -28,6 +28,11 @@ class WhisperDecode:
     discarded_segments: int = 0
     duration_s: float = 0.0
     temperature: float = 0.0
+    # Wholly rejected low-confidence English from a single model pass;
+    # never shown unless an independent retry agrees and VAD is strong.
+    weak_text: str = ""
+    weak_avg_logprob: float | None = None
+    weak_no_speech_prob: float | None = None
 
     @property
     def suspicious(self) -> bool:
@@ -47,6 +52,7 @@ class WhisperLargeV3:
 
     def __init__(self, cfg: WhisperConfig, *, model: object | None = None) -> None:
         self.cfg = cfg
+        self.compute_type = cfg.compute_type
         if cfg.language != "ja" or cfg.task != "translate":
             raise ValueError("Japanese AST requires language='ja' and task='translate'")
         if cfg.beam_size < 1:
@@ -59,21 +65,38 @@ class WhisperLargeV3:
         from faster_whisper import WhisperModel
 
         log.info("Loading Whisper %s on %s (%s)", cfg.model, cfg.device, cfg.compute_type)
-        try:
-            self._model = WhisperModel(
-                cfg.model,
-                device=cfg.device,
-                compute_type=cfg.compute_type,
-                download_root=cfg.download_root or None,
-                num_workers=1,
+        def load(compute_type: str):
+            return WhisperModel(
+                cfg.model, device=cfg.device, compute_type=compute_type,
+                download_root=cfg.download_root or None, num_workers=1,
             )
+
+        try:
+            self._model = load(cfg.compute_type)
         except Exception as exc:
-            raise RuntimeError(
-                "Whisper Large-v3 failed to load. Verify RTX 3070 CUDA libraries "
-                "(CUDA 12 cuBLAS and cuDNN 9), VRAM and faster-whisper installation: "
-                + str(exc)
-            ) from exc
-        log.info("Whisper Large-v3 ready: Japanese audio -> English direct translation")
+            oom = any(marker in str(exc).lower() for marker in (
+                "out of memory", "cublas_status_alloc_failed",
+                "cuda_error_out_of_memory", "bad allocation",
+            ))
+            if cfg.device == "cuda" and cfg.compute_type == "float16" and oom:
+                log.warning("Whisper FP16 model load ran out of VRAM; "
+                            "falling back to int8_float16")
+                try:
+                    self._model = load("int8_float16")
+                    self.compute_type = "int8_float16"
+                except Exception as fallback_exc:
+                    raise RuntimeError(
+                        "Whisper Large-v3 failed in both FP16 and int8_float16: "
+                        + str(fallback_exc)
+                    ) from fallback_exc
+            else:
+                raise RuntimeError(
+                    "Whisper Large-v3 failed to load. Verify RTX 3070 CUDA libraries "
+                    "(CUDA 12 cuBLAS and cuDNN 9), VRAM and faster-whisper installation: "
+                    + str(exc)
+                ) from exc
+        log.info("Whisper Large-v3 ready: Japanese audio -> English direct "
+                 "translation (precision=%s)", self.compute_type)
 
     def translate_audio(self, audio: np.ndarray) -> str:
         """Translate Japanese audio to English with Whisper only."""
@@ -120,6 +143,9 @@ class WhisperLargeV3:
             compression_ratio_threshold=self.cfg.compression_ratio_threshold,
             initial_prompt=prompt or None,
             hotwords=hotwords or None,
+            # FireRedVAD owns source timestamps, so avoid decoding timestamp
+            # tokens that are never used by the output/seek pipeline.
+            without_timestamps=True,
             word_timestamps=False,
         )
 
@@ -129,6 +155,7 @@ class WhisperLargeV3:
         ratios: list[float] = []
         nospeech: list[float] = []
         rejected_nospeech: list[float] = []
+        weak_candidates: list[tuple[str, float, float | None]] = []
         total = discarded = 0
         for segment in segments:
             text = segment.text.strip()
@@ -142,6 +169,13 @@ class WhisperLargeV3:
                 rejected_prob = getattr(segment, "no_speech_prob", None)
                 if rejected_prob is not None and math.isfinite(float(rejected_prob)):
                     rejected_nospeech.append(float(rejected_prob))
+                lp = getattr(segment, "avg_logprob", None)
+                if lp is not None and math.isfinite(float(lp)):
+                    weak_candidates.append((
+                        text, float(lp),
+                        float(rejected_prob) if rejected_prob is not None
+                        and math.isfinite(float(rejected_prob)) else None,
+                    ))
                 log.info(
                     "Discarded uncertain Whisper segment: no_speech=%s "
                     "avg_logprob=%s compression=%s text=%r",
@@ -166,6 +200,10 @@ class WhisperLargeV3:
             sum(weight for weight, _ in scores)
         ) if scores else None
 
+        # Never expose rejected material as normal output. A separate,
+        # agreement-gated rescue may inspect it after a second decode.
+        weak = (weak_candidates[0] if not texts and total == 1
+                and len(weak_candidates) == 1 else None)
         return WhisperDecode(
             text=" ".join(texts).strip(),
             avg_logprob=avg,
@@ -178,6 +216,9 @@ class WhisperLargeV3:
             discarded_segments=discarded,
             duration_s=time.monotonic() - started,
             temperature=float(used_temperature),
+            weak_text=weak[0] if weak else "",
+            weak_avg_logprob=weak[1] if weak else None,
+            weak_no_speech_prob=weak[2] if weak else None,
         )
 
     def _unreliable(self, segment: object) -> bool:

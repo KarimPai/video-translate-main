@@ -109,7 +109,6 @@ class WhisperConfig:
     # Official talent roster; only stream-relevant names are sent to Whisper.
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
-    verify_standalone_names: bool = True  # re-decode isolated name without text context
     hololive_detected_names: list[str] = field(default_factory=list)
     # Optional style prompt; independent of the two cleanup switches below.
     # Whisper is not instruction-tuned: a style prompt is only a hint.
@@ -150,6 +149,7 @@ class VoicePingAstConfig:
     concise_context: bool = True
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
+    verify_standalone_names: bool = True  # confirm lone names without context
     name_hints: list[str] = field(default_factory=list)
     detected_names: list[str] = field(default_factory=list)  # filled from video metadata
     repeat_short_cue_limit: int = 2  # keep two genuine repetitions, suppress more

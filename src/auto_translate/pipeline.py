@@ -20,7 +20,8 @@ import numpy as np
 from .config import Config
 from .context import RecentSpeechContext
 from .subtitle_style import concise_english
-from .whisper_v3 import WhisperLargeV3
+from .whisper_v3 import WhisperLargeV3  # unused legacy test adapter
+from .voiceping_ast import VoicePingAST
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -345,6 +346,75 @@ def run_whisper(
         ))
 
 
+def run_ast(
+    ast: VoicePingAST,
+    in_q: "queue.Queue[Utterance | AudioProgress | None]",
+    out_q: "queue.Queue[Subtitle | AudioProgress | None]",
+    get_generation: Callable[[], int] | None = None,
+    session_cache: SessionSubtitleCache | None = None,
+) -> None:
+    """Single-pass direct Japanese-audio -> English subtitles via VoicePing."""
+    cfg = ast.cfg
+    empty_count = 0
+    while True:
+        item = in_q.get()
+        if item is None:
+            out_q.put(None)
+            return
+        if get_generation is not None and item.generation != get_generation():
+            continue
+        if isinstance(item, AudioProgress):
+            out_q.put(item)
+            continue
+        utt = item
+        cached = session_cache.match(utt.start_s, utt.end_s) if session_cache is not None else None
+        if cached is not None:
+            out_q.put(replace(cached, generation=utt.generation, timings=utt.timings,
+                              speaker_handoff=utt.speaker_handoff or cached.speaker_handoff))
+            continue
+        if utt.probe or not utt.audio.size or not np.isfinite(utt.audio).all():
+            continue
+        if float(np.max(np.abs(utt.audio))) < 1 / 32768:
+            continue
+        utt.timings.asr_start = time.monotonic()
+        english = ast.translate_audio(utt.audio)
+        utt.timings.asr_end = time.monotonic()
+        if get_generation is not None and utt.generation != get_generation():
+            continue
+        # VoicePing does not supply Whisper-specific probability and
+        # log-likelihood scores. Never apply those unrelated retry heuristics.
+        if _structural_issue(english, len(utt.audio) / SAMPLE_RATE) == "loop":
+            log.warning("Discarded repetitive VoicePing AST output at %.2fs", utt.start_s)
+            continue
+        if cfg.remove_fillers or cfg.collapse_repetitions:
+            english = concise_english(
+                english,
+                remove_fillers=cfg.remove_fillers,
+                collapse_repetitions=cfg.collapse_repetitions,
+            )
+        if cfg.diagnostics:
+            log.info(
+                "VoicePing AST: generation=%d speech=%.2f-%.2fs vad=%s inference=%.3fs output=%r",
+                utt.generation, utt.start_s, utt.end_s, utt.vad_confidence,
+                utt.timings.asr_end - utt.timings.asr_start, english[:120],
+            )
+        if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", english) and not re.search(r"[A-Za-z]", english):
+            log.info("Skipped Japanese-only AST output")
+            continue
+        if not english.strip():
+            empty_count += 1
+            if empty_count % 8 == 0:
+                log.warning("VoicePing AST empty output: %d utterances", empty_count)
+            continue
+        empty_count = 0
+        out_q.put(Subtitle(
+            start_s=utt.start_s, end_s=utt.end_s, ja="", en=english,
+            timings=utt.timings, generation=utt.generation,
+            speech_start_s=utt.speech_start_s,
+            speaker_handoff=utt.speaker_handoff,
+        ))
+
+
 @dataclass
 class Stats:
     lines: int = 0
@@ -403,12 +473,12 @@ def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
 def run(
     ingest: Ingest,
     cfg: Config,
-    whisper: WhisperLargeV3,
+    ast: VoicePingAST,
     outputs: list[Output],
     stop: threading.Event,
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:
-    """Run direct Whisper AST after FireRedVAD."""
+    """Run direct VoicePing AST after FireRedVAD."""
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
@@ -431,9 +501,9 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("whisper-ast", run_whisper, failures,
-                  whisper, utt_q, sub_q, generation, session_cache),
-            name="whisper-ast", daemon=True,
+            args=("voiceping-ast", run_ast, failures,
+                  ast, utt_q, sub_q, generation, session_cache),
+            name="voiceping-ast", daemon=True,
         ),
     ]
 
@@ -486,7 +556,7 @@ def run(
                     continue
                 if item.generation not in first_logged:
                     first_logged.add(item.generation)
-                    log.info("first Whisper AST English subtitle for generation=%d at %.2fs",
+                    log.info("first VoicePing AST English subtitle for generation=%d at %.2fs",
                              item.generation, item.start_s)
                 stats.add(item)
                 if session_cache is not None:
@@ -509,7 +579,7 @@ def run(
                 # on the first scheduler tick after playback resumes.
                 if not was_expected_idle:
                     log.info(
-                        "Whisper AST watchdog: expected VOD inactivity "
+                        "VoicePing AST watchdog: expected VOD inactivity "
                         "(manual pause or read-ahead limit); retaining queues %s",
                         backlog,
                     )
@@ -518,23 +588,23 @@ def run(
             else:
                 if was_expected_idle:
                     log.info(
-                        "Whisper AST watchdog active again after VOD resumes"
+                        "VoicePing AST watchdog active again after VOD resumes"
                     )
                 if backlog and now - last_event >= 60:
                     raise RuntimeError(
-                        "Whisper AST pipeline stalled with queued work: "
+                        "VoicePing AST pipeline stalled with queued work: "
                         + str(backlog) + "; inspect logs/run.log"
                     )
                 if backlog and now - last_event >= 20 and now >= last_warn:
                     last_warn = now + 20
-                    log.warning("Whisper AST pipeline backlog: %s", backlog)
+                    log.warning("VoicePing AST pipeline backlog: %s", backlog)
             was_expected_idle = expected_idle
             if now >= next_stats:
                 next_stats = now + cfg.stats_interval_s
                 log.info("[%.0fs] %s", now - start, stats.summary())
                 for name, q in queues.items():
                     if q.qsize() >= max(1, int(q.maxsize * 0.75)):
-                        log.warning("Whisper backpressure: %s queue %d/%d",
+                        log.warning("VoicePing backpressure: %s queue %d/%d",
                                     name, q.qsize(), q.maxsize)
     except KeyboardInterrupt:
         log.info("stopping (Ctrl+C)")

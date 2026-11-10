@@ -390,6 +390,26 @@ def run_ast(
             continue
         utt.timings.asr_start = time.monotonic()
         english = ast.translate_audio(utt.audio)
+        if cfg.verify_standalone_names and ast.is_standalone_name(english):
+            # Context-promoted names can be hallucinated from laughter/music.
+            # Compare against a second decode of this SAME PCM with no text
+            # context. Publish the name only on exact word agreement.
+            try:
+                confirmation = ast.translate_audio(utt.audio, use_context=False)
+            except Exception:
+                log.exception(
+                    "Unprompted name verification failed at %.2fs; suppressing suspect name",
+                    utt.start_s,
+                )
+                confirmation = ""
+            if normalized_cue(confirmation) != normalized_cue(english):
+                log.info(
+                    "Suppressed unconfirmed standalone name: gen=%d range=%.2f-%.2fs "
+                    "contextual=%r unprompted=%r",
+                    utt.generation, utt.start_s, utt.end_s, english[:100],
+                    confirmation[:100],
+                )
+                english = ""
         utt.timings.asr_end = time.monotonic()
         if get_generation is not None and utt.generation != get_generation():
             continue

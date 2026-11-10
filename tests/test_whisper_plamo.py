@@ -78,7 +78,7 @@ class TwoStageTests(unittest.TestCase):
         self.assertEqual(
             (cfg.model, cfg.device, cfg.compute_type, cfg.language,
              cfg.task, cfg.beam_size),
-            ("large-v3", "cuda", "int8_float16", "ja", "transcribe", 5),
+            ("litagin/anime-whisper", "cuda", "float16", "ja", "transcribe", 5),
         )
         self.assertEqual(TranslateConfig().plamo_context, 4096)
         self.assertIn("Q4_K_M", TranslateConfig().plamo_hf_model)

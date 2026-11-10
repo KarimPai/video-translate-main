@@ -1,4 +1,4 @@
-"""Whisper Large-v3: Japanese audio -> English MPV subtitles, one local model."""
+"""Whisper Large-v3 Japanese ASR -> PLaMo 3 Translate 2B -> MPV subtitles."""
 
 import argparse
 import logging
@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--fast", action="store_true", help="unpaced VOD audio ingestion")
     parser.add_argument("--no-web", action="store_true")
     parser.add_argument("--simple-terminal", action="store_true",
-                        help="print only final English subtitles")
+                        help="print Japanese detection and English translation only")
     parser.add_argument("--mpv", action="store_true")
     parser.add_argument("--delay", type=float, metavar="SECONDS")
     parser.add_argument(
@@ -47,6 +47,8 @@ def main() -> None:
 
     from .config import load_config
     from .hololive_names import select_hololive_hints
+    from .glossary import Glossary
+    from .translate import create_translator
     from .whisper_v3 import WhisperLargeV3
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
@@ -66,7 +68,7 @@ def main() -> None:
     log = logging.getLogger("auto_translate")
     log.info(
         "Audio processing: GTCRN=%s (CPU), Sherpa speaker segmentation=%s (CPU); "
-        "FireRedVAD (CUDA), Whisper Large-v3 direct JP-to-EN",
+        "FireRedVAD (CUDA), Whisper Large-v3 Japanese ASR -> PLaMo 3 2B",
         "on" if cfg.gtcrn.enabled else "off",
         "on" if cfg.speaker.enabled else "off",
     )
@@ -87,10 +89,24 @@ def main() -> None:
     started = time.perf_counter()
     whisper = WhisperLargeV3(cfg.whisper)
     log.info(
-        "Whisper Large-v3 Japanese-to-English ready in %.1fs",
+        "Whisper Large-v3 Japanese ASR ready in %.1fs",
         time.perf_counter() - started,
     )
+    translator = None
     try:
+        glossary = Glossary.load(Path(cfg.translate.glossary))
+        timeline = source.timeline or {}
+        title_context = " - ".join(
+            str(timeline.get(field) or "") for field in ("title", "channel")
+            if timeline.get(field)
+        )[:240]
+        translator = create_translator(
+            cfg.translate, glossary, vod_title=title_context,
+        )
+        log.info(
+            "PLaMo 3 Translate 2B ready (Q4_K_M, context=%d, glossary=%d terms)",
+            cfg.translate.plamo_context, len(glossary.terms),
+        )
         use_mpv = args.mpv or cfg.mpv.enabled
         if use_mpv and not source.live and source.paced:
             source = replace(source, paced=False)
@@ -117,8 +133,11 @@ def main() -> None:
             from .output.mpv import MpvOutput
             outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=cache))
 
-        run(ingest, cfg, whisper, outputs, stop, session_cache=cache)
+        run(ingest, cfg, whisper, outputs, stop,
+            session_cache=cache, translator=translator)
     finally:
+        if translator is not None:
+            translator.close()
         whisper.close()
 
 

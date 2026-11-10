@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Offline Whisper Large-v3 direct Japanese audio-to-English MPV subtitles"
+description = "Offline Whisper Large-v3 Japanese ASR and PLaMo 3 Translate 2B MPV subtitles"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }

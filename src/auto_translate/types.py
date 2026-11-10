@@ -11,8 +11,7 @@ SAMPLE_RATE = 16000
 class Timings:
     audio_read: float = 0.0
     segmented: float = 0.0
-    # Retained field names for compatibility with existing MPV/seek consumers;
-    # the interval now measures Whisper direct audio-to-English inference.
+    # First interval: Whisper Japanese ASR; second: PLaMo translation.
     asr_start: float = 0.0
     asr_end: float = 0.0
     mt_start: float = 0.0
@@ -50,10 +49,21 @@ class Utterance:
 
 
 @dataclass
+class Transcript:
+    start_s: float
+    end_s: float
+    ja: str
+    timings: Timings = field(default_factory=Timings)
+    generation: int = 0
+    speech_start_s: float | None = None
+    speaker_handoff: bool = False
+
+
+@dataclass
 class Subtitle:
     start_s: float
     end_s: float
-    ja: str  # blank in direct Whisper audio-to-English mode
+    ja: str  # recognized Japanese transcript
     en: str
     timings: Timings = field(default_factory=Timings)
     generation: int = 0

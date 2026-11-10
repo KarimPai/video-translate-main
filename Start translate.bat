@@ -1,7 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
 chcp 65001 >nul
-title Whisper Large-v3 - Japanese to English
+title Whisper Large-v3 ASR + PLaMo 3 Translate 2B
 cd /d "%~dp0"
 
 if errorlevel 1 (
@@ -12,7 +12,7 @@ if errorlevel 1 (
 
 echo.
 echo ========================================
-echo   Whisper Large-v3 Direct Translator
+echo   Whisper Large-v3 ASR + PLaMo 3 2B
 echo ========================================
 echo.
 
@@ -49,7 +49,7 @@ if "%NEED_SYNC%"=="1" (
 )
 
 echo.
-echo Starting Whisper Large-v3 JP-to-EN with GTCRN and Sherpa speaker segmentation...
+echo Starting Whisper Japanese transcription + PLaMo English translation...
 echo.
 
 uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
@@ -57,11 +57,11 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 if not "%EXIT_CODE%"=="0" (
-    echo ERROR: Whisper Large-v3 translator exited with code %EXIT_CODE%.
+    echo ERROR: Whisper + PLaMo translator exited with code %EXIT_CODE%.
     echo Last diagnostic messages:
     powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\run.log' -Encoding UTF8 -Tail 12 | ForEach-Object { if ($_.Length -gt 350) { $_.Substring(0,350) } else { $_ } }"
 ) else (
-    echo Whisper Large-v3 translator stopped.
+    echo Whisper + PLaMo translator stopped.
 )
 echo Application log: "%CD%\logs\run.log"
 pause

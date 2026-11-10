@@ -1,7 +1,8 @@
-"""Direct streaming speech translation: audio -> Whisper Large-v3 -> English subtitles.
+"""Streaming Japanese ASR + PLaMo translation, with MPV seek-safe subtitles.
 
 Retains GTCRN, FireRedVAD, Sherpa speaker boundaries, MPV timing and VOD
-seek caching. No intermediate Japanese ASR, YouTube transcripts, or MT model.
+seek caching. Active run() uses Whisper transcribe ONLY, then PLaMo for English.
+The older direct-translation helper remains for earlier test compatibility.
 """
 
 from __future__ import annotations
@@ -25,7 +26,9 @@ from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
 from .speaker import run_speaker
-from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Subtitle, Utterance
+from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Subtitle, Transcript, Utterance
+from .two_stage import run_whisper_asr, run_plamo_translate
+from .translate.base import Translator
 from .vad import run_segmenter
 
 log = logging.getLogger(__name__)
@@ -369,6 +372,8 @@ class Stats:
     lines: int = 0
     sum_s: float = 0.0
     max_s: float = 0.0
+    mt_sum_s: float = 0.0
+    mt_max_s: float = 0.0
     total_sum_s: float = 0.0
     total_max_s: float = 0.0
     max_q: dict[str, int] = field(default_factory=dict)
@@ -376,20 +381,24 @@ class Stats:
     def add(self, sub: Subtitle) -> None:
         t = sub.timings
         decode_s = max(0.0, t.asr_end - t.asr_start)
-        total_s = max(0.0, t.asr_end - t.audio_read)
+        mt_s = max(0.0, t.mt_end - t.mt_start)
+        total_s = max(0.0, t.mt_end - t.audio_read)
         self.lines += 1
         self.sum_s += decode_s
         self.max_s = max(self.max_s, decode_s)
+        self.mt_sum_s += mt_s
+        self.mt_max_s = max(self.mt_max_s, mt_s)
         self.total_sum_s += total_s
         self.total_max_s = max(self.total_max_s, total_s)
 
     def summary(self) -> str:
         if not self.lines:
-            return "no English subtitles yet"
+            return "no Japanese-to-English subtitles yet"
         q = " ".join(f"{k}={v}" for k, v in self.max_q.items())
         return (
-            f"{self.lines} lines | Whisper avg {self.sum_s / self.lines:.2f}s "
-            f"max {self.max_s:.2f}s | audio-to-English "
+            f"{self.lines} lines | Whisper ASR avg {self.sum_s / self.lines:.2f}s "
+            f"max {self.max_s:.2f}s | PLaMo MT avg {self.mt_sum_s / self.lines:.2f}s "
+            f"max {self.mt_max_s:.2f}s | audio-to-English "
             f"avg {self.total_sum_s / self.lines:.2f}s "
             f"max {self.total_max_s:.2f}s | max queue {q}"
         )
@@ -402,14 +411,21 @@ def run(
     outputs: list[Output],
     stop: threading.Event,
     session_cache: SessionSubtitleCache | None = None,
+    translator: Translator | None = None,
 ) -> None:
-    """Run four streaming workers with bounded queues and reliable teardown."""
+    """Run Whisper Japanese recognition followed by PLaMo English translation."""
+    if translator is None:
+        raise RuntimeError("PLaMo translator is required; Whisper never translates directly.")
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     speaker_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
+    text_q: queue.Queue[Transcript | Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
     failures: queue.Queue[tuple[str, BaseException]] = queue.Queue()
-    queues = {"audio": audio_q, "vad": utt_q, "speaker": speaker_q, "subtitle": sub_q}
+    queues = {
+        "audio": audio_q, "vad": utt_q, "speaker": speaker_q,
+        "japanese": text_q, "subtitle": sub_q,
+    }
     generation = lambda: ingest.generation
 
     threads = [
@@ -429,11 +445,15 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("whisper", run_whisper, failures, whisper, speaker_q, sub_q,
-                  generation, session_cache,
-                  {"gtcrn": cfg.gtcrn.enabled, "speaker": cfg.speaker.enabled},
-                  {"live": ingest.source.live, "duration_s": ingest.source.duration}),
-            name="whisper", daemon=True,
+            args=("whisper-asr", run_whisper_asr, failures,
+                  whisper, speaker_q, text_q, generation, session_cache),
+            name="whisper-asr", daemon=True,
+        ),
+        threading.Thread(
+            target=_guard_stage,
+            args=("plamo-mt", run_plamo_translate, failures,
+                  translator, text_q, sub_q, generation),
+            name="plamo-mt", daemon=True,
         ),
     ]
 
@@ -485,7 +505,7 @@ def run(
                     continue
                 if item.generation not in first_logged:
                     first_logged.add(item.generation)
-                    log.info("first Whisper English subtitle for generation=%d at %.2fs",
+                    log.info("first Whisper JA -> PLaMo EN subtitle for generation=%d at %.2fs",
                              item.generation, item.start_s)
                 stats.add(item)
                 if session_cache is not None:
@@ -502,12 +522,12 @@ def run(
             backlog = {k: q.qsize() for k, q in queues.items() if q.qsize()}
             if backlog and now - last_event >= 60:
                 raise RuntimeError(
-                    "Whisper pipeline stalled with queued work: " + str(backlog)
-                    + "; inspect logs/run.log and logs/run.log"
+                    "Whisper/PLaMo pipeline stalled with queued work: " + str(backlog)
+                    + "; inspect logs/run.log"
                 )
             if backlog and now - last_event >= 20 and now >= last_warn:
                 last_warn = now + 20
-                log.warning("Whisper pipeline backlog: %s", backlog)
+                log.warning("Whisper/PLaMo pipeline backlog: %s", backlog)
             if now >= next_stats:
                 next_stats = now + cfg.stats_interval_s
                 log.info("[%.0fs] %s", now - start, stats.summary())

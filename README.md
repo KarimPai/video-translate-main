@@ -1,67 +1,90 @@
-# Japanese Video Translator
+# Haas Japanese ASR + PLaMo 3 Translate 2B — 2026-11-11 Retest
 
-Japanese-to-English subtitles for YouTube streams/VODs and local media. The current Windows MPV workflow uses FireRedVAD, Haas Japanese ASR (speech.cpp / Vulkan), and PLaMo 3 Translate 2B running locally through llama.cpp. MPV plays the original source; the translator processes audio independently.
+**Experimental branch:** `feature/haas-plamo-retest-20261111`, forked from the latest Haas/PLaMo `main` baseline. This is not the VoicePing/Whisper AST pipeline. `main` is unchanged.
 
-## Windows requirements
+## Active pipeline
 
-- Python 3.12+, `uv`, `yt-dlp`, `ffmpeg`, and `mpv`.
-- `speech` from speech.cpp on PATH, with the `haas-ja-v1.0` model and a working Vulkan device.
-- A CUDA-capable GPU for FireRedVAD.
-- `llama-server` from a GPU-enabled llama.cpp build on PATH for PLaMo 3 Translate 2B. The translator can start its own server.
+`YouTube live/VOD or local source → FFmpeg original 16 kHz mono audio → FireRedVAD (CUDA) → Haas-ja-v1.0 (Vulkan speech.cpp) → PLaMo 3 Translate 2B Q4_K_M (local llama.cpp) → English-only MPV captions`.
 
-Install Python dependencies with `uv sync`. Optional packages for separation and DeepFilterNet are declared under `[project.optional-dependencies]` in `pyproject.toml`.
+- MPV plays the original video with the native timeline and seekbar. Source ingest is audio-only for direct-video playback.
+- Terminal prints `JP:` and `EN:` lines; MPV overlays only English, up to three stacked lines.
+- Japanese YouTube VOD captions are optional evidence and can assist Haas misrecognition.
+- `glossary.toml` and the original title/channel context remain active for proper names and terms. Existing conservative Watame/Watanabe correction is preserved.
+- No VoicePing, Whisper, separate LLM beyond PLaMo, Sherpa diarization, forced aligner or new audio classifier.
+- Vocal separation and DeepFilterNet are disabled by default; the original speech signal is used.
 
-## Start a YouTube VOD
+## First-time Windows setup (separate from main and VoicePing)
 
-From CMD in the project directory:
+Requires Python 3.12+, uv, FFmpeg, yt-dlp, mpv, a working Vulkan `speech` CLI from speech.cpp, Haas-ja-v1.0 model, and a GPU-enabled `llama-server` for PLaMo.
 
-```cmd
-"Start translate.bat"
+```bat
+cd /d C:\Games && git clone -b feature/haas-plamo-retest-20261111 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-haas-plamo-retest && cd /d C:\Games\video-translate-haas-plamo-retest && uv sync && uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v && "Start translate.bat"
 ```
 
-Paste a YouTube URL. The launcher runs a **single translator process** with `--simple-terminal`, displays **JP:** and **EN:** lines directly in CMD, and writes diagnostics to `logs\run.log`. There is no second `uv` process or stdout pipe. On startup failure, the launcher prints the exit code and matching error lines.
+Choose video quality **1=360p, 2=480p, 3=720p (default), 4=1080p**. VODs prefer direct HTTPS/DASH sources with lower-quality fallback; live sources prefer HLS.
 
-Equivalent direct command:
+## New FireRedVAD defaults
 
-```cmd
-uv run --no-sync auto-translate "YOUTUBE_URL" --mode vod --mpv --no-web
+```toml
+[vad]
+threshold = 0.45
+neg_threshold = 0.30
+min_speech_ms = 200
+min_silence_ms = 500
+speech_pad_ms = 200
+onset_ms = 100
+prob_smooth_frames = 5
+short_reply_ms = 120
+short_reply_probability = 0.85
+max_utterance_s = 11.0
+max_split_extension_s = 1.0
+split_pause_min_ms = 80
+split_context_ms = 120
+fallback_s = 0.0
 ```
 
-For extra diagnostic logging, append `-v`. Use `uv run auto-translate --help` for the active CLI switches. PLaMo 3 Translate 2B is the only translation engine; no backend selection is necessary.
+The VAD uses smoothed probability, sustained speech onset, a confidence-gated short-reply exception, and phrase splitting near natural pauses with a 12-second hard cap. VAD-negative probes are **off** to reduce hallucinations over game music/effects. These experimental thresholds may miss soft-spoken Japanese and delay subtitles by hundreds of milliseconds; compare against the old 0.35/100/400/80ms baseline.
 
-## PLaMo 3 Translate 2B
-
-`config.toml` is local and intentionally git-ignored. PLaMo is enabled by default; optionally configure it with:
+## PLaMo context and safeguards
 
 ```toml
 [translate]
-plamo_base_url = "http://127.0.0.1:8000/v1"
-plamo_model = "plamo-3-translate"
 plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
+plamo_context = 4096
 plamo_gpu_layers = 99
-context_lines = 8
-memory_lines = 24  # additional recent subtitle pairs for term and scene memory
+max_tokens = 120
+context_lines = 6
+memory_lines = 12
 glossary = "glossary.toml"
+remove_fillers = true
+collapse_repetitions = true
+suppress_runaway_loops = true
+max_identical_cues = 2
 ```
 
-If no `[translate]` configuration is supplied, PLaMo 3 Translate 2B Q4_K_M is selected automatically. The translator starts a managed `llama-server` when no server responds at the configured URL; its log is `logs\plamo-server.log`. Older local engine selectors and unused legacy translator options are ignored for compatibility. Configure `[asr]`, `[vad]`, and `[mpv]` via `src/auto_translate/config.py`.
+PLaMo's dedicated translation template still uses the Japanese transcript, relevant glossary matches, video metadata, and short recent JP/EN pairs. Unlike VoicePing ASR, PLaMo is the **translation** model; its existing translation template is retained. Memory has been bounded from 24 to 12 and dialogue from 8 to 6 to reduce prompt feedback and latency.
 
-PLaMO keeps the last `context_lines` JP/EN pairs as dialogue and can inspect up to `memory_lines` recent pairs for brief terminology and earlier Japanese scene hints. Exact glossary spellings remain authoritative; learned short-term word hints are tentative. A conservative no-model-pass repair can fix one-edit repetitions of short Katakana words (for example `シャッター` / `シャッタ`) from adjacent subtitles, or from two matching words on either side of a misheard word in one subtitle. It cannot resolve unrelated ASR misrecognitions. Memory is limited to the current video segment and is cleared on seeks; set `memory_lines = 0` to disable the extra memory and repetition repair. Larger memory may add prompt tokens and translation time.
+New post-processing filters obvious filler/laughter-only English, long repeated sentence loops, recognizable template echoes, and the third or later identical nearby multiword subtitle. It **does not paraphrase** the Japanese text or arbitrarily change names/negation. Long-loop rejection discards the suspicious cue entirely rather than guessing which parts were spoken.
 
-Translation failures and missing subtitles should be investigated using `logs\run.log` first; `logs\mpv.log` contains MPV warnings and errors. Use `-v` for additional pipeline diagnostics.
+## Playback and reliability
 
-## Detection and subtitles
+- **MPV VOD starts after approximately five seconds of translated audio lead**, and later seeks rebuild this buffer while retaining the original source's seek timeline.
+- MPV VOD audio read-ahead is capped at **75 seconds** relative to video position. During intentional manual pause, the reader eventually parks instead of processing a whole VOD in advance. Set `[ingest] vod_max_audio_lead_s = 0` to disable.
+- Worker failures are reported to the main runner instead of silently hanging. The queue watchdog excludes intentional VOD pause and audio read-ahead parking.
+- Session-only subtitles and processed-region caching are preserved, including reuse after backward seeking.
+- MPV safe hardware decode and the existing native OSC seekbar are preserved.
+- For live playback, the configured original delay remains **9 seconds** (not a hard subtitle timestamp offset).
 
-1. FFmpeg decodes Japanese audio, with accelerated VOD ingestion in MPV mode.
-2. FireRedVAD detects utterance boundaries. By default, the silence interval is 400 ms, maximum utterance length is 5 seconds, and fallback probing checks speech that VAD may miss.
-3. Haas transcribes utterances, with optional Japanese YouTube caption assistance. A conservative filter suppresses obvious non-speech ASR outputs.
-4. PLaMo 3 Translate 2B renders English-only subtitles; `glossary.toml` handles proper names and streaming terms.
-5. MPV initially waits until translation covers **5 seconds ahead of playback**, then plays. Pressing Play manually bypasses the wait. Playback should not repeatedly pause when translation falls behind.
+## Scope and limitations
 
-The MPV demux limits are **1 GiB forward + 1 GiB backward**, with 120 seconds of readahead. These are upper limits, not preallocated memory.
+This is a **port of compatible VoicePing/Whisper project findings**, not a model swap. Haas has no Whisper-style `no_speech_prob` or comparable decoder metrics, so Whisper retry thresholds were not copied. Qwen-specific natural-language prompts were not copied because they were emitted as subtitles in a prior VoicePing test. The optional language/audio-event detector ideas have not been integrated: FireRedVAD identifies speech but does not verify Japanese source language.
 
-A separate **RAM-only session subtitle cache** stores translated cues and processed regions for the currently loaded VOD. Seeking back to a translated region can immediately restore existing English subtitles and reuse matching ASR/translation results. The subtitle cache is discarded when the application closes or a different video is loaded; it is not an on-disk translation archive.
+The strict VAD, 12-second segments and memory reductions are **new experiments**, not yet measured for Haas accuracy or latency. Existing local untracked `config.toml` overrides these defaults, so first retest with a clean checkout or inspect local overrides. Live testing and native Windows GPU/Vulkan testing are still required.
 
-## Optional processing
+Run offline regression tests:
 
-Vocal separation and DeepFilterNet are **disabled by default** and require their respective optional dependencies.
+```bat
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Check `logs\run.log` for application errors and `logs\mpv.log` for player warnings. Benchmark with the same VOD/time ranges as the earlier Haas/PLaMo baseline to compare recognition completeness, laughter hallucinations, names, negation, lead after seeks, 95th-percentile subtitle latency, and peak VRAM.

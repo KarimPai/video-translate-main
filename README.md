@@ -29,15 +29,24 @@ to keep the ASR accuracy comparison controlled.
   no_repeat_ngram_size 5, repetition_penalty 1.0. Adaptive short-clip
   token budget is enabled (1s ~64 tokens, 3s ~122, 8s capped at 160),
   reducing the chance of generating unsupported extra sentences.
-- Accuracy-first retry: the primary decode uses beam 5 and optionally returns
-  token transition scores. When scores indicate an uncertain cue, or a stock
-  Japanese outro appears, the same audio is decoded again unprimed with beam 8
-  at temperature 0. The alternate hypothesis is accepted ONLY if it improves
-  the average token score by >=0.18, retains numbers, is Japanese, and has
-  sufficient text agreement (or replaces a stock outro). If scores are
-  unavailable, the first hypothesis is preserved. Token scores are heuristic,
-  not calibrated hallucination probabilities. Extra decoder scores may use
-  additional GPU memory (disable with [whisper] collect_token_scores=false).
+- Accuracy-first retry: the primary decode uses beam 5, collecting the
+  completed beam's `sequences_scores` when available. A suspicious cue or
+  stock Japanese outro can be decoded again unprimed with beam 8 and
+  temperature 0. The alternate hypothesis is accepted ONLY if the beam
+  score improves by >=0.18, explicit numbers match, and the text is Japanese
+  with sufficient agreement (or replaces a stock outro). If beam scores are
+  missing, the first hypothesis is preserved. These sequence-level scores
+  are heuristics, not calibrated hallucination probabilities; beam search
+  uses a length penalty, so improvements must still be checked against audio.
+- **CUDA 710 fix (Nov 10, 2026):** Never call
+  `compute_transition_scores()` on Whisper beam-search output. Transformers
+  issue https://github.com/huggingface/transformers/issues/48621 documents a
+  double beam-index gather in that helper; the resulting CUDA out-of-bounds
+  assertion was confirmed in the user's 5:04:45 seek log. The adapter now
+  reads `sequences_scores` directly instead and never gathers token scores.
+  Extra beam scoring still uses memory; turn it off with
+  `[whisper] collect_token_scores=false`, which also disables score-based
+  replacements. This does not change the model or beam size.
 - The existing FireRedVAD silence gate, Japanese script gate, and local PLaMo
   translator remain active.
 - FireRedVAD runs on CPU by default on the Anime Whisper branch. This is the
@@ -115,13 +124,16 @@ retry_uncertain = false
 collect_token_scores = false
 ```
 
-The previous long-VOD seek crash (CUDA error 710) was reported from the VAD
-stage, but CUDA errors are asynchronous and the true originating kernel is
-not established. This branch isolates FireRedVAD on CPU, and avoids calling
-`torch.cuda.empty_cache()` during shutdown, which previously masked the first
-error. A sticky CUDA device assertion requires a fresh process; it cannot
-safely be recovered within the same Python process. If a crash recurs, set
-`CUDA_LAUNCH_BLOCKING=1` before launching to collect a more precise trace.
+Long-VOD seek logs initially reported CUDA 710 during VAD processing,
+but the second reproduction with FireRedVAD on CPU showed the actual
+`whisper-asr` stage and a CUDA ScatterGatherKernel index assertion on the
+first decoded segment after seeking to 18285.93s. The now-removed Whisper
+token-transition scoring helper matches the published Transformers bug above.
+FireRedVAD remains isolated on CPU; shutdown avoids
+`torch.cuda.empty_cache()`, which otherwise masked the first error.
+A sticky CUDA device assertion requires a fresh process; it cannot safely
+be recovered in the same Python process. If any CUDA assert remains, run with
+`CUDA_LAUNCH_BLOCKING=1` and provide `logs/run.log` for the precise stack.
 
 The tests use fake output models or dependency injection; they do **not**
 establish CUDA runtime compatibility or Hololive ASR quality. For an accuracy

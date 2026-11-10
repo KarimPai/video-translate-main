@@ -31,14 +31,14 @@ class GtcrnConfig:
 class VadConfig:
     threshold: float = 0.50
     neg_threshold: float = 0.30
-    min_silence_ms: int = 500
-    speech_pad_ms: int = 150
-    min_speech_ms: int = 250
+    min_silence_ms: int = 550
+    speech_pad_ms: int = 250
+    min_speech_ms: int = 180
     onset_ms: int = 80  # continuous speech required before opening a segment
     prob_smooth_frames: int = 5  # smooth raw FireRed probabilities across 50 ms
-    max_utterance_s: float = 7.0
+    max_utterance_s: float = 8.0
     # At the soft limit, prefer a sustained natural pause.
-    max_split_extension_s: float = 1.0  # hard deadline remains 8s
+    max_split_extension_s: float = 1.0  # hard deadline remains 9s
     split_pause_min_ms: int = 80
     split_context_ms: int = 120  # retain boundary audio, without duplication
     fallback_s: float = 0.0  # opt-in probes risk invented words on non-speech/game audio
@@ -81,6 +81,7 @@ class WhisperConfig:
     repetition_penalty: float = 1.0  # model card recommendation
     no_repeat_ngram_size: int = 5  # model card anti-repetition example
     max_new_tokens: int = 160
+    adaptive_max_tokens: bool = True  # cap very short clips to reduce runaway filler
     reject_low_confidence: bool = True
     min_avg_logprob: float = -1.20
     max_compression_ratio: float = 2.4
@@ -93,6 +94,9 @@ class WhisperConfig:
     # Standalone video outros are frequently hallucinated on weak game audio.
     # Allow at the actual end of a completed VOD, not during live/gameplay.
     suppress_generic_outros: bool = True
+    suppress_standalone_laughter: bool = True  # output-only; never delete speech mixed with laughter
+    suppress_repeated_japanese_outros: bool = True  # identical second occurrence only
+    japanese_outro_cooldown_s: float = 120.0
     outro_allow_near_vod_end_s: float = 90.0
     # Opt-in bounded English context; no cross-window Whisper feedback loop.
     use_text_context: bool = False
@@ -101,7 +105,7 @@ class WhisperConfig:
     text_context_max_gap_s: float = 5.0
     # These legacy fields are ignored by the Anime Whisper model adapter.
     hotwords: list[str] = field(default_factory=list)
-    # Official talent roster; only stream-relevant names are sent to Whisper.
+    # Legacy talent fields remain for config compatibility; no ASR prompts are sent.
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
     hololive_detected_names: list[str] = field(default_factory=list)

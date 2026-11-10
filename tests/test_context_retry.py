@@ -181,7 +181,7 @@ class RetryTests(unittest.TestCase):
         result = engine.decode_audio(utt().audio, prompt="Let's go!", hotwords="Okayu")
         self.assertEqual(result.text, "The car is ready.")
         self.assertAlmostEqual(result.avg_logprob, -.25)
-        self.assertEqual(fake.kwargs["beam_size"], 6)
+        self.assertEqual(fake.kwargs["beam_size"], 5)
         self.assertEqual(fake.kwargs["initial_prompt"], "Let's go!")
         self.assertEqual(fake.kwargs["hotwords"], "Okayu")
 

@@ -107,8 +107,7 @@ class VoicePingASTTests(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            path.write_text("[ast]\\njapanese_source_only = false\\n".replace("\\\\n", "\\n"),
-                            encoding="utf-8")
+            path.write_text("[ast]\njapanese_source_only = false\n", encoding="utf-8")
             self.assertFalse(load_config(path).ast.japanese_source_only)
 
     def test_context_can_be_disabled_without_changing_ast(self):

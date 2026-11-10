@@ -184,10 +184,9 @@ class AnimeWhisperASR:
         return self.transcribe_audio(audio)
 
     def close(self) -> None:
+        # This process is about to exit; OS/PyTorch release its GPU allocations.
+        # CUDA_ERROR_ASSERT is sticky: calling empty_cache() after a kernel fault
+        # triggers a second exception and hides the original ASR/VAD traceback.
+        # Never issue additional CUDA commands during failed-device shutdown.
         self._model = None
         self._processor = None
-        if self.device == "cuda":
-            import gc
-            import torch
-            gc.collect()
-            torch.cuda.empty_cache()

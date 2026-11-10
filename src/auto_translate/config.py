@@ -87,15 +87,19 @@ class TranslateConfig:
     plamo_base_url: str = "http://127.0.0.1:8000/v1"
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-    plamo_context: int = 8192
+    plamo_context: int = 4096  # smaller KV/context footprint on RTX 3070
     plamo_gpu_layers: int = 99
     max_tokens: int = 120
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
-    context_lines: int = 8
+    context_lines: int = 6  # reduced prompt carryover and translation latency
     # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
-    memory_lines: int = 24
+    memory_lines: int = 12  # limit speculative previous-translation hints
     glossary: str = "glossary.toml"
+    remove_fillers: bool = True
+    collapse_repetitions: bool = True
+    suppress_runaway_loops: bool = True
+    max_identical_cues: int = 2
 
 
 @dataclass

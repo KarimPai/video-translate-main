@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Offline Whisper Large-v3 Japanese ASR and PLaMo 3 Translate 2B MPV subtitles"
+description = "Anime Whisper Japanese ASR and PLaMo 3 Translate 2B MPV subtitles"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }
@@ -9,10 +9,13 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26.4",
-    "faster-whisper>=1.2.1",
+    "torch>=2.11.0,<3",
+    "torchaudio>=2.11.0,<3",
+    "transformers>=5.16.0,<6",
     "fireredvad[gpu]>=0.0.2",
     "huggingface-hub>=0.34.0",
-    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cublas-cu12==12.9.2.10; sys_platform == 'win32'",
+    "nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'linux'",
     "nvidia-cudnn-cu12>=9.27.0.42",
     "onnxruntime-gpu[cuda,cudnn]>=1.31.1",
 ]

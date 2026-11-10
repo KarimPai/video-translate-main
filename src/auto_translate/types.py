@@ -47,6 +47,9 @@ class Utterance:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None  # first FireRed speech-positive frame; excludes VAD pre-roll
+    vad_confidence: float | None = None  # mean VAD speech confidence
+    speaker_handoff: bool = False  # future-compatible boundary metadata
+    speaker_split: bool = False
 
 @dataclass
 class Transcript:

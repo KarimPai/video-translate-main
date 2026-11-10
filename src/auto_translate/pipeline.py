@@ -15,6 +15,7 @@ from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
+from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
 from .config import Config
 from .ingest import Ingest
 from .output.base import Output
@@ -104,7 +105,7 @@ def run_asr(
                 utt.start_s, utt.end_s, caption_match.coverage * 100, text,
             )
 
-        if not text:
+        if not text or not is_usable_transcript(text):
             continue
 
         # Proper names must be repaired before translation and glossary lookup.
@@ -190,6 +191,7 @@ def run_translate(
 
         tr.timings.mt_start = time.monotonic()
         en = ""
+        suppressed = False
 
         if translator is not None:
             # Correct a near-identical repeated Katakana word only when
@@ -209,9 +211,27 @@ def run_translate(
                 continue
 
             if en and en != "[translation failed]":
+                tcfg = getattr(translator, "cfg", None)
+                if (getattr(tcfg, "suppress_runaway_loops", True)
+                        and (has_generation_loop(en) or looks_like_prompt_echo(en))):
+                    log.warning(
+                        "Suppressed repeated/prompt-like PLaMo output: gen=%d source=%.2f-%.2fs",
+                        tr.generation, tr.start_s, tr.end_s,
+                    )
+                    en, suppressed = "", True
+                else:
+                    en = clean_english_output(
+                        en,
+                        remove_fillers=getattr(tcfg, "remove_fillers", True),
+                        collapse_repetitions=getattr(tcfg, "collapse_repetitions", True),
+                    )
+                    if not en:
+                        suppressed = True
+
+            if en and en != "[translation failed]":
                 history.append((tr.ja, en))
 
-            if not en.strip():
+            if not en.strip() and not suppressed:
                 log.error(
                     "translator returned an empty English result "
                     "(generation=%d, %.2f-%.2fs, Japanese=%r)",
@@ -222,6 +242,8 @@ def run_translate(
                 )
 
         tr.timings.mt_end = time.monotonic()
+        if suppressed:
+            continue
 
         out_q.put(
             Subtitle(

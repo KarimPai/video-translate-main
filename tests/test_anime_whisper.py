@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -53,7 +54,9 @@ class AnimeWhisperTests(unittest.TestCase):
         self.assertEqual(cfg.task, "transcribe")
         self.assertEqual(cfg.no_repeat_ngram_size, 5)
         self.assertEqual(cfg.repetition_penalty, 1.0)
-        self.assertFalse(cfg.retry_uncertain)
+        self.assertTrue(cfg.retry_uncertain)
+        self.assertTrue(cfg.collect_token_scores)
+        self.assertEqual(cfg.retry_beam_size, 8)
         self.assertTrue(cfg.adaptive_max_tokens)
         self.assertTrue(cfg.suppress_standalone_laughter)
         self.assertEqual(cfg.max_new_tokens, 160)
@@ -77,6 +80,8 @@ class AnimeWhisperTests(unittest.TestCase):
         self.assertNotIn("initial_prompt", kwargs)
         self.assertNotIn("prompt_ids", kwargs)
         self.assertNotIn("hotwords", kwargs)
+        self.assertTrue(kwargs["return_dict_in_generate"])
+        self.assertTrue(kwargs["output_scores"])
         self.assertEqual(kwargs["max_new_tokens"], 64)  # 1s audio
 
     def test_silence_and_empty_audio_never_run_decoder(self):
@@ -130,6 +135,40 @@ class AnimeWhisperTests(unittest.TestCase):
         self.assertTrue(is_formulaic_japanese_outro("ご視聴ありがとうございました。"))
         self.assertFalse(is_formulaic_japanese_outro("ご視聴ありがとうございました、またね"))
         self.assertFalse(is_formulaic_japanese_outro("ありがとう！"))
+
+    def test_recovers_optional_beam_token_scores_without_prompt(self):
+        class ScoredModel(FakeModel):
+            def generate(self, **kwargs):
+                self.calls.append(kwargs)
+                return SimpleNamespace(
+                    sequences=torch.tensor([[10, 11, 12]]),
+                    scores=(torch.ones((5, 100)), torch.ones((5, 100))),
+                    beam_indices=torch.tensor([[0, 0, 0]]),
+                )
+
+            def compute_transition_scores(self, sequences, scores,
+                                          beam_indices=None, normalize_logits=False):
+                self.normalized = normalize_logits
+                return torch.tensor([[-0.2, -0.4]], dtype=torch.float32)
+
+        model = ScoredModel()
+        adapter = AnimeWhisperASR(
+            WhisperConfig(device="cpu", compute_type="float32"),
+            model=model, processor=FakeProcessor(),
+        )
+        result = adapter.decode_audio(np.full(16000, .1, dtype=np.float32))
+        self.assertAlmostEqual(result.avg_logprob, -0.3, places=5)
+        self.assertTrue(model.normalized)
+
+    def test_retry_override_keeps_deterministic_beam_search(self):
+        asr, model, _ = self.make_backend()
+        asr.decode_audio(np.full(16000, .2, dtype=np.float32),
+                         temperature=0.0, beam_size=8)
+        self.assertEqual(model.calls[0]["num_beams"], 8)
+        self.assertFalse(model.calls[0]["do_sample"])
+        with self.assertRaisesRegex(ValueError, "beam_size"):
+            asr.decode_audio(np.full(16000, .2, dtype=np.float32), beam_size=17)
+
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""English-only terminal regression tests for Whisper Large-v3 direct translation."""
+"""English-only terminal regression tests for VoicePing direct AST."""
 
 from contextlib import redirect_stdout
 from io import StringIO
@@ -23,11 +23,11 @@ class TerminalOutputTests(unittest.TestCase):
             TerminalOutput(simple=True).show(Subtitle(2.0, 3.0, "", "Got it."))
         self.assertEqual(buf.getvalue().splitlines(), ["EN: Watch out!", "EN: Got it."])
 
-    def test_verbose_output_includes_timestamps_and_granite(self):
+    def test_verbose_output_includes_timestamps_and_voiceping(self):
         buf = StringIO()
         with redirect_stdout(buf):
             TerminalOutput(simple=False).show(Subtitle(1.0, 2.0, "", "Watch out!"))
-        self.assertIn("Whisper Large-v3", buf.getvalue())
+        self.assertIn("VoicePing Qwen3", buf.getvalue())
         self.assertIn("Watch out!", buf.getvalue())
         self.assertNotIn("JP:", buf.getvalue())
 

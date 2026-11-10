@@ -1315,7 +1315,17 @@ class Ingest:
                 # Stop consuming on seek, and avoid decoding a full 7-hour
                 # VOD ahead of playback. A bounded ~75s lead keeps subtitles
                 # available while leaving resources for smooth MPV rendering.
-                if not self._wait_for_vod_lead(sample, generation):
+                if worker:
+                    reader_sample = first + round(
+                        input_frames * SAMPLE_RATE / SEPARATION_INPUT_RATE
+                    )
+                elif gtcrn_worker:
+                    reader_sample = first + round(
+                        input_frames * SAMPLE_RATE / GTCRN_INPUT_RATE
+                    )
+                else:
+                    reader_sample = sample
+                if not self._wait_for_vod_lead(reader_sample, generation):
                     break
 
                 if worker:

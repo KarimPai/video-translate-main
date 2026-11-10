@@ -34,6 +34,43 @@ from .vad import run_segmenter
 log = logging.getLogger(__name__)
 
 
+def _guard_stage(
+    name: str,
+    fn: Callable,
+    failures: "queue.Queue[tuple[str, Exception]]",
+    *args,
+) -> None:
+    """Surface ASR/MT/ingest worker failures in the main runner."""
+    try:
+        fn(*args)
+    except Exception as exc:
+        log.exception("pipeline worker %s crashed", name)
+        failures.put((name, exc))
+
+
+def _raise_worker_failure(
+    failures: "queue.Queue[tuple[str, Exception]]",
+) -> None:
+    try:
+        name, exc = failures.get_nowait()
+    except queue.Empty:
+        return
+    raise RuntimeError(f"pipeline worker '{name}' failed: {exc}") from exc
+
+
+def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
+    if ingest.source.live:
+        return False
+    parked = getattr(ingest, "is_vod_audio_lead_limited", None)
+    if callable(parked) and parked():
+        return True
+    for output in outputs:
+        manually_paused = getattr(output, "is_manually_paused", None)
+        if callable(manually_paused) and manually_paused():
+            return True
+    return False
+
+
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
@@ -337,24 +374,26 @@ def run(
         "text": text_q,
         "subtitle": sub_q,
     }
+    failures: queue.Queue[tuple[str, Exception]] = queue.Queue()
 
     threads = [
         threading.Thread(
-            target=ingest.run,
-            args=(audio_q,),
+            target=_guard_stage,
+            args=("ingest", ingest.run, failures, audio_q),
             name="ingest",
             daemon=True,
         ),
         threading.Thread(
-            target=run_segmenter,
-            args=(cfg.vad, audio_q, utt_q, lambda: ingest.generation),
+            target=_guard_stage,
+            args=("vad", run_segmenter, failures, cfg.vad, audio_q, utt_q,
+                  lambda: ingest.generation),
             name="vad",
             daemon=True,
         ),
         threading.Thread(
-            target=run_asr,
+            target=_guard_stage,
             args=(
-                asr,
+                "asr", run_asr, failures, asr,
                 utt_q,
                 text_q,
                 lambda: ingest.generation,
@@ -366,9 +405,9 @@ def run(
             daemon=True,
         ),
         threading.Thread(
-            target=run_translate,
+            target=_guard_stage,
             args=(
-                translator,
+                "translate", run_translate, failures, translator,
                 cfg.translate.context_lines,
                 text_q,
                 sub_q,
@@ -388,13 +427,24 @@ def run(
     processed_from = ingest.source.start_s
     started = time.monotonic()
     next_stats = started + cfg.stats_interval_s
+    last_activity = started
+    last_warning = started
+    last_guard_key = ""
+    last_guard_end = -float("inf")
+    last_guard_generation: int | None = None
+    identical_count = 0
 
     try:
         while not stop.is_set():
+            _raise_worker_failure(failures)
             try:
                 item = sub_q.get(timeout=0.5)
+                last_activity = time.monotonic()
 
                 if item is None:
+                    for thread in threads:
+                        thread.join(timeout=0.2)
+                    _raise_worker_failure(failures)
                     for out in outputs:
                         finish = getattr(out, "finish", None)
                         if finish is not None:
@@ -411,6 +461,9 @@ def run(
                 if isinstance(item, AudioProgress):
                     progress_s = item.sample / SAMPLE_RATE
                     if item.reset:
+                        last_guard_key, last_guard_end = "", -float("inf")
+                        identical_count = 0
+                        last_guard_generation = item.generation
                         processed_generation = item.generation
                         processed_from = progress_s
                     elif session_cache is not None:
@@ -440,6 +493,22 @@ def run(
                         item.start_s,
                     )
 
+                if item.generation != last_guard_generation:
+                    last_guard_key, last_guard_end, identical_count = "", -float("inf"), 0
+                    last_guard_generation = item.generation
+                key = normalized_cue(item.en) if item.en else ""
+                if (key and len(key.split()) >= 2 and key == last_guard_key
+                        and -0.2 <= item.start_s - last_guard_end <= 10.0):
+                    identical_count += 1
+                else:
+                    identical_count = 1
+                last_guard_key, last_guard_end = key, item.end_s
+                if (key and identical_count >
+                        max(1, int(cfg.translate.max_identical_cues))):
+                    log.info("Suppressed repeat subtitle: gen=%d count=%d text=%r",
+                             item.generation, identical_count, item.en[:110])
+                    continue
+
                 stats.add(item)
 
                 if session_cache is not None:
@@ -450,6 +519,22 @@ def run(
 
             except queue.Empty:
                 pass
+
+            _raise_worker_failure(failures)
+            now = time.monotonic()
+            if _expected_vod_idle(ingest, outputs):
+                # User pause or intentional audio lead cap is not a stall.
+                last_activity = now
+                last_warning = now
+            else:
+                backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
+                if backlog and now - last_activity > 90.0:
+                    raise RuntimeError(
+                        "Haas/PLaMo pipeline stalled with queued work: " + str(backlog)
+                    )
+                if backlog and now - last_activity > 30.0 and now - last_warning > 30.0:
+                    last_warning = now
+                    log.warning("Haas/PLaMo pipeline waiting with queued work: %s", backlog)
 
             for name, q in queues.items():
                 stats.max_q[name] = max(

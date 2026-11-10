@@ -171,6 +171,40 @@ class TwoStageTests(unittest.TestCase):
         self.assertEqual(len(asr.calls), 2)
         self.assertEqual(asr.calls[0][0], asr.calls[1][0])
 
+    def test_anime_laughter_filter_preserves_speech_with_laughter(self):
+        asr = FakeWhisper(["あははは", "そうだね、あはは", "ふふ…", "うん"])
+        results = run_stage(run_whisper_asr, asr, [
+            audio_utt(1, 2), audio_utt(3, 4),
+            audio_utt(5, 6), audio_utt(7, 8),
+        ])
+        self.assertEqual([sub.ja for sub in results],
+                         ["そうだね、あはは", "うん"])
+
+    def test_anime_outro_repeated_normalizes_punctuation_and_resets_on_seek(self):
+        asr = FakeWhisper([
+            "ご視聴ありがとうございました",
+            "ご視聴ありがとうございました。",
+            "ご視聴ありがとうございました",
+        ])
+        results = run_stage(run_whisper_asr, asr, [
+            audio_utt(1, 2), audio_utt(4, 5),
+            AudioProgress(160000, reset=True, generation=1),
+            audio_utt(11, 12, generation=1),
+        ])
+        self.assertEqual(
+            [sub.ja for sub in results if isinstance(sub, Transcript)],
+            ["ご視聴ありがとうございました", "ご視聴ありがとうございました"],
+        )
+
+    def test_japanese_asr_output_is_not_context_rewritten(self):
+        translator = FakeTranslator()
+        results = run_stage(run_plamo_translate, translator, [
+            Transcript(1.0, 2.0, "シャッター"),
+            Transcript(2.2, 3.0, "シャッタ"),
+        ])
+        self.assertEqual(translator.calls[1][0], "シャッタ")
+        self.assertEqual(results[1].ja, "シャッタ")
+
     def test_translator_receives_recent_japanese_without_merging_subtitles(self):
         translator = FakeTranslator()
         output = run_stage(run_plamo_translate, translator, [

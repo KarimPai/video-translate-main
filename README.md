@@ -31,7 +31,7 @@ Whisper now avoids promoting **weakly decoded standalone generic thanks** from i
 
 ## YouTube quality selector
 
-`Start translate.bat` now asks for a video quality after the URL: **360p, 480p, 720p, or 1080p**. Press Enter for **720p**. The choice is applied before MPV opens the video, and yt-dlp chooses the best available stream **not exceeding** that height (for example, 480p if 720p is unavailable). A mid-playback quality change is intentionally not offered because reloading the source may disturb native seeking and subtitle timing.
+`Start translate.bat` now displays a numbered video-quality menu after the URL: **1 = 360p, 2 = 480p, 3 = 720p, 4 = 1080p**. Enter **3**, or press Enter to use the default **720p**. The choice is applied before MPV opens the video, and yt-dlp chooses the best available stream **not exceeding** that height (for example, 480p if 720p is unavailable). A mid-playback quality change is intentionally not offered because reloading the source may disturb native seeking and subtitle timing.
 
 You can also run the CLI with `--video-quality 720`. The launcher choice takes precedence over custom video format selectors in `config.toml`; when the CLI flag is absent, the existing selectors remain unchanged. Finished VODs still prefer HTTPS/DASH and fall back to HLS; live streams still prefer HLS. Whisper audio inference, GTCRN, VAD, and the independent audio ingest format are unaffected.
 

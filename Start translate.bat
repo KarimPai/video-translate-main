@@ -25,16 +25,24 @@ if not defined VIDEO_URL (
 )
 
 :select_quality
+set "QUALITY_CHOICE="
 set "VIDEO_QUALITY="
 echo.
-set /p "VIDEO_QUALITY=YouTube video quality (360/480/720/1080) [720]: "
-if not defined VIDEO_QUALITY set "VIDEO_QUALITY=720"
-if "%VIDEO_QUALITY%"=="360" goto quality_selected
-if "%VIDEO_QUALITY%"=="480" goto quality_selected
-if "%VIDEO_QUALITY%"=="720" goto quality_selected
-if "%VIDEO_QUALITY%"=="1080" goto quality_selected
-echo Invalid quality. Enter 360, 480, 720, or 1080.
-goto select_quality
+echo Select YouTube video quality:
+echo   1. 360p
+echo   2. 480p
+echo   3. 720p ^(default^)
+echo   4. 1080p
+set /p "QUALITY_CHOICE=Enter choice [3]: "
+if not defined QUALITY_CHOICE set "QUALITY_CHOICE=3"
+if "%QUALITY_CHOICE%"=="1" set "VIDEO_QUALITY=360"
+if "%QUALITY_CHOICE%"=="2" set "VIDEO_QUALITY=480"
+if "%QUALITY_CHOICE%"=="3" set "VIDEO_QUALITY=720"
+if "%QUALITY_CHOICE%"=="4" set "VIDEO_QUALITY=1080"
+if not defined VIDEO_QUALITY (
+    echo Invalid choice. Enter 1, 2, 3, or 4.
+    goto select_quality
+)
 
 :quality_selected
 echo YouTube video quality: up to %VIDEO_QUALITY%p (lower if unavailable)

@@ -22,7 +22,13 @@ class LauncherAudioTests(unittest.TestCase):
 
     def test_video_and_whisper_baseline_preserved(self):
         self.assertIn("--video-quality %VIDEO_QUALITY%", self.script)
-        self.assertIn('set "VIDEO_QUALITY=720"', self.script)
+        self.assertIn('if not defined QUALITY_CHOICE set "QUALITY_CHOICE=3"', self.script)
+        for choice, quality in ((1, 360), (2, 480), (3, 720), (4, 1080)):
+            self.assertIn(
+                f'if "%QUALITY_CHOICE%"=="{choice}" set "VIDEO_QUALITY={quality}"',
+                self.script,
+            )
+        self.assertIn("Enter 1, 2, 3, or 4", self.script)
         self.assertIn("--hwdec auto-safe", self.script)
         self.assertIn("--whisper-compute int8_float16", self.script)
 

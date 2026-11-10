@@ -19,11 +19,13 @@ from auto_translate.voiceping_cleanup import concise_voiceping
 class MockVoicePing:
     def __init__(self, text="There is one sheep."):
         self.text = text
+        self.responses = iter(text) if isinstance(text, list) else None
         self.calls = []
 
     def transcribe(self, *, audio, language, context=""):
         self.calls.append((audio, language, context))
-        return [types.SimpleNamespace(text=self.text)]
+        text = next(self.responses) if self.responses is not None else self.text
+        return [types.SimpleNamespace(text=text)]
 
 
 class VoicePingASTTests(unittest.TestCase):
@@ -89,6 +91,66 @@ class VoicePingASTTests(unittest.TestCase):
             subtitles.append(item)
         self.assertEqual(len(fake.calls), 4)
         self.assertEqual([sub.en for sub in subtitles], ["In this way.", "In this way."])
+
+    def test_laughter_misread_as_context_name_is_suppressed(self):
+        fake = MockVoicePing(["Watame.", "Hahaha!"])
+        model = VoicePingAST(
+            VoicePingAstConfig(detected_names=["Watame"]), model=fake
+        )
+        inp, out = queue.Queue(), queue.Queue()
+        inp.put(Utterance(5.0, 6.0, np.full(SAMPLE_RATE, .1, dtype=np.float32)))
+        inp.put(None)
+        with patch.dict(sys.modules, {"torch": types.SimpleNamespace(
+                inference_mode=contextlib.nullcontext)}):
+            run_ast(model, inp, out)
+        self.assertEqual([call[2] != "" for call in fake.calls], [True, False])
+        self.assertIsNone(out.get_nowait())
+
+    def test_real_name_confirmed_on_second_ast_pass(self):
+        fake = MockVoicePing(["Watame.", "Watame"])
+        model = VoicePingAST(
+            VoicePingAstConfig(detected_names=["Watame"]), model=fake
+        )
+        inp, out = queue.Queue(), queue.Queue()
+        inp.put(Utterance(5.0, 6.0, np.full(SAMPLE_RATE, .1, dtype=np.float32)))
+        inp.put(None)
+        with patch.dict(sys.modules, {"torch": types.SimpleNamespace(
+                inference_mode=contextlib.nullcontext)}):
+            run_ast(model, inp, out)
+        self.assertEqual(out.get_nowait().en, "Watame.")
+        self.assertIsNone(out.get_nowait())
+        self.assertEqual(len(fake.calls), 2)
+
+    def test_names_inside_sentences_are_not_redecoded(self):
+        fake = MockVoicePing("Come here, Watame!")
+        model = VoicePingAST(
+            VoicePingAstConfig(detected_names=["Watame"]), model=fake
+        )
+        inp, out = queue.Queue(), queue.Queue()
+        inp.put(Utterance(5.0, 6.0, np.full(SAMPLE_RATE, .1, dtype=np.float32)))
+        inp.put(None)
+        with patch.dict(sys.modules, {"torch": types.SimpleNamespace(
+                inference_mode=contextlib.nullcontext)}):
+            run_ast(model, inp, out)
+        self.assertEqual(out.get_nowait().en, "Come here, Watame!")
+        self.assertIsNone(out.get_nowait())
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_name_verification_can_be_switched_off(self):
+        fake = MockVoicePing("Watame.")
+        model = VoicePingAST(
+            VoicePingAstConfig(detected_names=["Watame"],
+                               verify_standalone_names=False), model=fake
+        )
+        inp, out = queue.Queue(), queue.Queue()
+        inp.put(Utterance(5.0, 6.0, np.full(SAMPLE_RATE, .1, dtype=np.float32)))
+        inp.put(None)
+        with patch.dict(sys.modules, {"torch": types.SimpleNamespace(
+                inference_mode=contextlib.nullcontext)}):
+            run_ast(model, inp, out)
+        self.assertEqual(out.get_nowait().en, "Watame.")
+        self.assertIsNone(out.get_nowait())
+        self.assertEqual(len(fake.calls), 1)
 
     def test_invalid_pcm_not_passed_to_translation(self):
         fake = MockVoicePing()

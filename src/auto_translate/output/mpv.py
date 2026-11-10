@@ -41,6 +41,24 @@ INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
 JUMP_MESSAGE = "auto-translate-jump"
 
 
+def _gpu_memory_snapshot() -> str:
+    """Best-effort NVIDIA VRAM diagnostic; never changes player behavior."""
+    try:
+        args = [
+            "nvidia-smi", "--query-gpu=memory.used,memory.free,memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().splitlines()[0] + " MiB (used, free, total)"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "unavailable"
+
+
 from ..process_cleanup import _create_kill_job, _close_job
 
 
@@ -308,6 +326,10 @@ class MpvOutput:
 
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
+        log.info(
+            "Before MPV startup: hwdec=%s; GPU memory=%s",
+            cfg.hwdec, _gpu_memory_snapshot(),
+        )
 
         # Concurrent Windows launches must never attach to a previous player.
         ipc_path = (
@@ -568,6 +590,17 @@ class MpvOutput:
             return
 
         self._closed = True
+        previous_code = self._proc.poll()
+        if previous_code is None:
+            log.info(
+                "MPV was still running when application cleanup began; "
+                "closing it now (this is not an mpv.exe crash)."
+            )
+        else:
+            log.info(
+                "MPV process was already exited at cleanup (code=%s, hex=0x%08X)",
+                previous_code, previous_code & 0xFFFFFFFF,
+            )
         self.stop.set()
 
         with self._buffer_condition:
@@ -648,9 +681,10 @@ class MpvOutput:
                     log.info("MPV window closed; stopping translator")
                 elif returncode is not None:
                     log.error(
-                        "MPV exited with code %s; IPC closed (%s). "
-                        "Check logs/mpv.log for the playback error.",
-                        returncode, exc,
+                        "MPV exited with code %s (hex=0x%08X); IPC closed (%s). "
+                        "GPU memory=%s. Check logs/mpv.log.",
+                        returncode, returncode & 0xFFFFFFFF, exc,
+                        _gpu_memory_snapshot(),
                         exc_info=True,
                     )
                 else:
@@ -658,6 +692,10 @@ class MpvOutput:
                         "MPV IPC connection closed while the player may "
                         "still be running; check logs/mpv.log"
                     )
+                self.stop.set()
+        except Exception:
+            if not self.stop.is_set():
+                log.exception("MPV scheduler failed unexpectedly")
                 self.stop.set()
 
     def _play_session(self, show_hint: bool) -> None:

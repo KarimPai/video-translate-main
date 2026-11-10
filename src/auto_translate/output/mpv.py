@@ -47,6 +47,8 @@ JUMP_MESSAGE = "auto-translate-jump"
 BOUNDED_DEMUX_CACHE_OPTIONS = (
     "--cache=yes",
     "--demuxer-readahead-secs=30",
+    "--cache-secs=30",
+    "--demuxer-hysteresis-secs=10",
     "--demuxer-max-bytes=256MiB",
     "--demuxer-max-back-bytes=64MiB",
 )
@@ -299,6 +301,11 @@ class MpvOutput:
         self.ingest = ingest
         self.stop = stop
         self._subtitle_cache = subtitle_cache
+        # Only direct MPV VOD playback is paced; standalone ASR and live
+        # transcription retain their original audio-ingestion behavior.
+        pacing = getattr(ingest, "enable_vod_playback_pacing", None)
+        if not ingest.source.live and callable(pacing):
+            pacing(getattr(ingest.cfg, "vod_max_audio_lead_s", 75.0))
 
         self._lines: list[_Line] = []
         self._subtitle_ready = threading.Event()
@@ -327,6 +334,7 @@ class MpvOutput:
         self._audio_clock_diag_until = 0.0
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
+        self._vod_health_next_at = 0.0
         self._direct_video_loaded = False
         # The original VOD's mpv time-pos is the source timestamp. Do not
         # derive a new offset from the restarted FFmpeg audio reader on seek.
@@ -1016,7 +1024,28 @@ class MpvOutput:
                     self._clock_last_sample_at = sample_now
                     self._clock_last_sample_pos = float(pos)
 
+                set_playback_pos = getattr(self.ingest, "set_playback_position", None)
+                if callable(set_playback_pos):
+                    set_playback_pos(self._now)
                 self._render(self._now)
+                # Periodic diagnostics separate video decode/network hitches
+                # from subtitle inference falling behind playback.
+                if (sample_now >= self._vod_health_next_at
+                        and not self.ingest.source.live):
+                    self._vod_health_next_at = sample_now + 30.0
+                    with self._buffer_condition:
+                        translated_until = self._translated_until
+                    log.info(
+                        "VOD playback health: video=%.1fs translated=%.1fs "
+                        "translation_lead=%+.1fs dropped_frames=%s "
+                        "paused_for_cache=%s cache_duration=%s hwdec=%s",
+                        self._now, translated_until,
+                        translated_until - self._now,
+                        self.ipc.get("frame-drop-count"),
+                        self.ipc.get("paused-for-cache"),
+                        self.ipc.get("demuxer-cache-duration"),
+                        self.cfg.hwdec,
+                    )
 
                 sample_at = time.monotonic()
                 if (

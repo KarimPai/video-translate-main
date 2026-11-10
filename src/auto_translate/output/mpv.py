@@ -335,6 +335,11 @@ class MpvOutput:
         self._audio_clock_diag_last_at = 0.0
         self._audio_clock_diag_done = False
         self._vod_health_next_at = 0.0
+        # Track actual user pause separately from startup/seek translation
+        # buffering so the pipeline's stall watchdog can distinguish them.
+        self._playback_started = False
+        self._manual_pause = False
+        self._pause_poll_after = 0.0
         self._direct_video_loaded = False
         # The original VOD's mpv time-pos is the source timestamp. Do not
         # derive a new offset from the restarted FFmpeg audio reader on seek.
@@ -453,6 +458,10 @@ class MpvOutput:
         self._thread.start()
 
     # ---- Output interface ----
+
+    def is_manually_paused(self) -> bool:
+        """Cached player state; no cross-thread MPV IPC requests."""
+        return bool(getattr(self, "_manual_pause", False))
 
     def show(self, sub: Subtitle) -> None:
         if sub.end_s < self._session_start:
@@ -859,6 +868,9 @@ class MpvOutput:
             return
 
         paused = True
+        self._manual_pause = False
+        self._playback_started = False
+        self._pause_poll_after = 0.0
         last_audio_pts = None
         logged_live_sync = False
         live_tick = time.monotonic()
@@ -868,6 +880,26 @@ class MpvOutput:
         while not self.stop.is_set():
 
             self._subtitle_ready.clear()
+            # MPV can be manually paused while 'paused' (the startup-only
+            # flag) is False. Poll ~1/s, not 10/s; the watchdog reads this
+            # cached state without adding IPC traffic on another thread.
+            pause_now = time.monotonic()
+            if pause_now >= self._pause_poll_after:
+                self._pause_poll_after = pause_now + 1.0
+                actual_pause = self.ipc.get("pause")
+                if actual_pause is False:
+                    self._playback_started = True
+                manually_paused = (
+                    self._playback_started and actual_pause is True
+                    and not self.ingest.source.live
+                )
+                if manually_paused != self._manual_pause:
+                    log.info(
+                        "MPV manual VOD %s; pipeline inactivity watchdog %s",
+                        "pause" if manually_paused else "resume",
+                        "suspended" if manually_paused else "active",
+                    )
+                self._manual_pause = manually_paused
             if self.ingest.video_failed.is_set():
                 if self._recover_video_stream():
                     return

@@ -32,6 +32,7 @@ context_enabled = true
 concise_context = true
 hololive_names_enabled = true
 hololive_name_limit = 6
+verify_standalone_names = true
 name_hints = []  # e.g. ["Watame", "Jack"] for this specific stream
 repeat_short_cue_limit = 2
 remove_fillers = true
@@ -67,6 +68,28 @@ name_hints = ["Watame", "Jack"]
 Use only actual names relevant to that stream. Up to eight validated names are passed to the model, prioritizing up to six title/channel-grounded Hololive names. Names are **hints, not forced substitutions**, so incorrect names can still appear. This does not use a second translation model or any ASR/transcript history.
 
 Postprocessing removes filler-only utterances (including Unicode ellipsis such as "Um…"), conservatively drops *identical adjacent sentences*, and suppresses the third and later identical nearby cues in the same seek generation. Two repetitions remain to preserve possible genuine spoken emphasis. Negations, proper names and meaningful shorter repetitions are not rewritten. This can remove real repetition, and it cannot correct inaccurate or hallucinated but fluent translations.
+
+## Standalone-name hallucination guard
+
+If laughter or game effects are misrecognized as a single Hololive name such
+as `Watame.`, the pipeline now runs **one verification decode of the same
+audio without text context**. It only publishes the standalone name if both
+decodes produce exactly the same words (ignoring punctuation/case). Names
+inside meaningful sentences are not re-decoded. The guard uses the same
+VoicePing model, not a second ASR or translator. It can also suppress a true
+name when unprompted recognition fails. **It is a conservative heuristic, not
+a speech-versus-laughter detector**, and may miss hallucinations where the two
+decodes agree. The default is `verify_standalone_names = true`; set false
+in `[ast]` to turn it off.
+
+If you still see names replacing laughter, compare your original VOD with
+`[ast] hololive_names_enabled = false` (automatic title/channel hints off)
+and optionally `context_enabled = false` (all Qwen context off). This helps
+determine whether the model's intrinsic recognition or context bias is the cause.
+Never globally delete every occurrence of Watame: some are legitimate speech.
+
+Run `uv run --no-sync python -m unittest discover -s tests -p "test_voiceping_ast.py" -v`
+for mock regression coverage. Actual GPU/stream testing is still required.
 
 ## Retained features
 

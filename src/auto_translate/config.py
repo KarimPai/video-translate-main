@@ -5,6 +5,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+VIDEO_QUALITY_HEIGHTS = (360, 480, 720, 1080)
+
+
+def mpv_youtube_format(max_height: int, *, live: bool) -> str:
+    """Choose max requested YouTube resolution, with lower-quality fallback."""
+    if max_height not in VIDEO_QUALITY_HEIGHTS:
+        raise ValueError(f"Unsupported video height: {max_height}")
+    ceiling = f"[height<={max_height}]"
+    if live:
+        return (
+            f"bv*{ceiling}[vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
+            f"/b{ceiling}[protocol^=m3u8]"
+            f"/bv*{ceiling}+ba/b{ceiling}"
+        )
+    return (
+        f"bv*{ceiling}[vcodec^=avc1][protocol=https]+ba[protocol=https]"
+        f"/bv*{ceiling}[protocol=https]+ba[protocol=https]"
+        f"/bv*{ceiling}[vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
+        f"/b{ceiling}[protocol^=m3u8]"
+        f"/bv*{ceiling}+ba/b{ceiling}"
+    )
+
+
 @dataclass
 class IngestConfig:
     ytdlp_format: str = "bestaudio/93/best"

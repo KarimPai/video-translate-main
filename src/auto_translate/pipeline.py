@@ -21,7 +21,7 @@ from .config import Config
 from .context import RecentSpeechContext
 from .subtitle_style import concise_english
 from .voiceping_ast import VoicePingAST
-from .voiceping_cleanup import concise_voiceping, normalized_cue
+from .voiceping_cleanup import concise_voiceping, normalized_cue, has_generation_loop
 
 if TYPE_CHECKING:
     from .whisper_v3 import WhisperLargeV3
@@ -415,8 +415,12 @@ def run_ast(
             continue
         # VoicePing does not supply Whisper-specific probability and
         # log-likelihood scores. Never apply those unrelated retry heuristics.
-        if _structural_issue(english, len(utt.audio) / SAMPLE_RATE) == "loop":
-            log.warning("Discarded repetitive VoicePing AST output at %.2fs", utt.start_s)
+        if (has_generation_loop(english)
+                or _structural_issue(english, len(utt.audio) / SAMPLE_RATE) == "loop"):
+            log.warning(
+                "Discarded repetitive VoicePing AST output: gen=%d range=%.2f-%.2fs words=%d",
+                utt.generation, utt.start_s, utt.end_s, len(english.split()),
+            )
             continue
         english = concise_voiceping(
             english,

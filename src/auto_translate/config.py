@@ -144,11 +144,13 @@ class VoicePingAstConfig:
     dtype: str = "bfloat16"
     max_inference_batch_size: int = 1
     max_new_tokens: int = 192  # still ample for a 12-second English sentence
-    # Native Qwen3-ASR context (not Whisper prompts or a separate translator).
-    context_enabled: bool = True
-    # Soft source-language preference only; does not identify the audio language.
-    japanese_source_only: bool = True
-    concise_context: bool = True
+    # Context is OFF by default: long instructions were echoed as subtitles.
+    # Opt in to short vocabulary hints with context_enabled=true.
+    context_enabled: bool = False
+    # Legacy config compatibility; these flags intentionally do not send
+    # natural-language instructions to Qwen3-ASR.
+    japanese_source_only: bool = False
+    concise_context: bool = False
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
     verify_standalone_names: bool = True  # confirm lone names without context

@@ -379,6 +379,11 @@ class MpvOutput:
         self._uses_original_timeline = False
         self._last_direct_pos: float | None = None
         self._last_direct_sample_at = 0.0
+        self._manually_paused = False
+        if not ingest.source.live:
+            ingest.enable_vod_playback_pacing(
+                getattr(ingest.cfg, "vod_max_audio_lead_s", 75.0)
+            )
 
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +488,10 @@ class MpvOutput:
         self._thread.start()
 
     # ---- Output interface ----
+
+    def is_manually_paused(self) -> bool:
+        """Expose manual VOD pause to the pipeline watchdog."""
+        return self._manually_paused
 
     def show(self, sub: Subtitle) -> None:
         if sub.end_s < self._session_start:
@@ -829,6 +838,9 @@ class MpvOutput:
                     fmt_hms(self._session_start),
                 )
 
+            self._manually_paused = (
+                not paused and self.ipc.get("pause") is True
+            )
             if (pos := self.ipc.get("time-pos")) is not None:
                 if self._direct_video_loaded and not self.ingest.source.live:
                     sampled_at = time.monotonic()
@@ -879,6 +891,8 @@ class MpvOutput:
                     )
 
                 self._now = self._source_time_from_mpv(float(pos))
+                if not self.ingest.source.live:
+                    self.ingest.set_playback_position(self._now)
                 if self.ingest.source.duration is not None:
                     self._now = min(self._now, self.ingest.source.duration)
 

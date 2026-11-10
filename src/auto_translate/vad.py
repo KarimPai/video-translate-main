@@ -4,7 +4,7 @@ Loads the FireRed streaming model from Hugging Face on first use and keeps its
 recurrent model state across calls so it works on a live stream.
 
 Audio rejected by VAD isn't necessarily discarded: every `fallback_s` it can send a
-"probe" utterance to Whisper Large-v3, helping retain speech mixed with loud music or singing.
+"probe" utterance to the ASR model, helping retain speech mixed with loud music or singing.
 """
 
 import logging
@@ -29,15 +29,16 @@ class StreamingFireRedVAD:
 
     WINDOW_SAMPLES = 400  # 25 ms model window
 
-    def __init__(self, speech_threshold: float) -> None:
+    def __init__(self, speech_threshold: float, device: str = "cpu") -> None:
         from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
 
-        if not torch.cuda.is_available():
+        if device not in ("cpu", "cuda"):
+            raise ValueError("FireRed VAD device must be 'cpu' or 'cuda'")
+        if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(
-                "FireRedVAD requires CUDA, but torch.cuda.is_available() is false. "
-                "Install a CUDA-enabled PyTorch build and verify the NVIDIA driver."
+                "FireRedVAD was configured for CUDA but the GPU is unavailable."
             )
 
         assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad"
@@ -51,7 +52,7 @@ class StreamingFireRedVAD:
             )
 
         config = FireRedStreamVadConfig(
-            use_gpu=True,
+            use_gpu=(device == "cuda"),
             smooth_window_size=5,
             speech_threshold=speech_threshold,
             pad_start_frame=5,
@@ -62,8 +63,14 @@ class StreamingFireRedVAD:
         )
         self._stream = FireRedStreamVad.from_pretrained(str(model_dir), config)
         self._history = np.zeros(self.WINDOW_SAMPLES - FRAME, dtype=np.int16)
-        self.device = torch.cuda.get_device_name(0)
-        log.info("FireRed VAD initialized on CUDA (%s)", self.device)
+        self.device = (
+            torch.cuda.get_device_name(0) if device == "cuda" else "CPU"
+        )
+        log.info(
+            "FireRed VAD initialized on %s (device=%s, model and VAD "
+            "segmentation unchanged; seek reset reuses model)",
+            self.device, device,
+        )
 
     def reset(self) -> None:
         """Reset streaming caches at a VOD seek without reloading model weights."""
@@ -170,7 +177,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD(cfg.threshold)
+        self.vad = StreamingFireRedVAD(cfg.threshold, device=cfg.device)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:
@@ -357,7 +364,7 @@ class Segmenter:
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
-        """Send the first `n` idle frames to Whisper Large-v3 as a probe (if long and loud enough)."""
+        """Send the first `n` idle frames to ASR as a probe (if long and loud enough)."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME

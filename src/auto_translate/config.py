@@ -55,18 +55,18 @@ class SeparationConfig:
 
 @dataclass
 class VadConfig:
-    threshold: float = 0.50
+    threshold: float = 0.35
     neg_threshold: float = 0.30
-    min_silence_ms: int = 500
-    speech_pad_ms: int = 150
-    min_speech_ms: int = 250
+    min_silence_ms: int = 400
+    speech_pad_ms: int = 80
+    min_speech_ms: int = 100
     short_reply_ms: int = 120
     short_reply_probability: float = 0.85
     onset_ms: int = 80  # continuous speech required before opening a segment
     prob_smooth_frames: int = 5  # smooth raw FireRed probabilities across 50 ms
-    max_utterance_s: float = 7.0
+    max_utterance_s: float = 11.0
     # At the soft limit, prefer a sustained natural pause.
-    max_split_extension_s: float = 1.0  # hard deadline remains 8s
+    max_split_extension_s: float = 1.0  # hard deadline 12s
     split_pause_min_ms: int = 80
     split_context_ms: int = 120  # retain boundary audio, without duplication
     fallback_s: float = 0.0  # opt-in probes risk invented words on non-speech/game audio
@@ -136,6 +136,20 @@ class WhisperConfig:
 
 
 @dataclass
+class VoicePingAstConfig:
+    """Direct JA-to-EN AST with no separate translator or aligner."""
+
+    model: str = "voiceping-ai/qwen3-asr-ja-en-speech-translation"
+    device: str = "cuda:0"
+    dtype: str = "bfloat16"
+    max_inference_batch_size: int = 1
+    max_new_tokens: int = 256
+    remove_fillers: bool = True
+    collapse_repetitions: bool = True
+    diagnostics: bool = False
+
+
+@dataclass
 class OutputConfig:
     terminal: bool = True
     web: bool = True
@@ -177,7 +191,8 @@ class Config:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
     vad: VadConfig = field(default_factory=VadConfig)
-    whisper: WhisperConfig = field(default_factory=WhisperConfig)
+    whisper: WhisperConfig = field(default_factory=WhisperConfig)  # legacy config compatibility only
+    ast: VoicePingAstConfig = field(default_factory=VoicePingAstConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
     stats_interval_s: float = 30.0
@@ -220,6 +235,10 @@ def load_config(path: Path) -> Config:
         separation=SeparationConfig(**data.get("separation", {})),
         vad=VadConfig(**data.get("vad", {})),
         whisper=WhisperConfig(**whisper_data),
+        ast=VoicePingAstConfig(**{
+            name: value for name, value in data.get("ast", {}).items()
+            if name in {entry.name for entry in fields(VoicePingAstConfig)}
+        }),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),
         stats_interval_s=data.get("stats_interval_s", 30.0),

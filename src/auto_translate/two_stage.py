@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import time
 from collections import deque
 from dataclasses import replace
@@ -23,6 +24,15 @@ from .session_cache import SessionSubtitleCache
 from .translate.base import Translator
 
 log = logging.getLogger(__name__)
+
+# Whisper's language='ja' is a decoder hint, not an output-language validator.
+# Reject English-only hallucinations and spoken English in this Japanese-only
+# experimental pipeline. Any Japanese kana or Kanji allows normal code-switching.
+_JAPANESE_SCRIPT = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+
+
+def has_japanese_script(text: str) -> bool:
+    return bool(_JAPANESE_SCRIPT.search(text))
 
 
 def run_whisper_asr(
@@ -103,6 +113,13 @@ def run_whisper_asr(
         utt.timings.asr_end = time.monotonic()
         japanese = chosen.text.strip()
         if not japanese:
+            continue
+        if not has_japanese_script(japanese):
+            log.info(
+                "Skipped Whisper Latin-only ASR result (generation=%d "
+                "%.2f-%.2fs): %r",
+                utt.generation, utt.start_s, utt.end_s, japanese[:120],
+            )
             continue
         if getattr(cfg, "diagnostics", False):
             log.info(

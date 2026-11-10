@@ -20,7 +20,9 @@ from auto_translate.config import TranslateConfig, WhisperConfig, load_config
 from auto_translate.glossary import Glossary
 from auto_translate.output.terminal import TerminalOutput
 from auto_translate.pipeline import run
-from auto_translate.two_stage import run_plamo_translate, run_whisper_asr
+from auto_translate.two_stage import (
+    has_japanese_script, run_plamo_translate, run_whisper_asr,
+)
 from auto_translate.types import AudioProgress, Subtitle, Transcript, Utterance
 from auto_translate.whisper_v3 import WhisperDecode, WhisperLargeV3
 from auto_translate.translate.plamo import PlamoTranslator
@@ -114,6 +116,23 @@ class TwoStageTests(unittest.TestCase):
         self.assertEqual(backend.kwargs["language"], "ja")
         self.assertEqual(backend.kwargs["beam_size"], 5)
         self.assertFalse(backend.kwargs["vad_filter"])
+
+    def test_only_japanese_asr_reaches_translator(self):
+        self.assertFalse(has_japanese_script("Thank you for watching."))
+        self.assertFalse(has_japanese_script("Get in the car!"))
+        self.assertFalse(has_japanese_script("OK OK"))
+        self.assertTrue(has_japanese_script("ありがとう"))
+        self.assertTrue(has_japanese_script("マリンが着いた"))
+        self.assertTrue(has_japanese_script("GTAで遊んでる"))
+        asr = FakeWhisper(["Thank you for watching.", "ありがとう"])
+        transcript = run_stage(run_whisper_asr, asr, [
+            audio_utt(1, 2), audio_utt(3, 4),
+        ])
+        self.assertEqual([x.ja for x in transcript], ["ありがとう"])
+        mt = FakeTranslator()
+        subtitled = run_stage(run_plamo_translate, mt, transcript)
+        self.assertEqual(len(mt.calls), 1)
+        self.assertEqual(subtitled[0].en, "Thank you")
 
     def test_asr_preserves_japanese_timestamps_and_speaker_handoff(self):
         asr = FakeWhisper(["マリンが着いた", "今正面の道"])

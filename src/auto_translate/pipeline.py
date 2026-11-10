@@ -33,6 +33,32 @@ def _words(text: str) -> list[str]:
     return re.findall(r"\w+(?:'\w+)*", text.casefold().replace("’", "'"))
 
 
+def _is_stock_outro(text: str) -> bool:
+    """Only target complete, generic closing sentences, not ordinary thanks."""
+    words = _words(text)
+    return words in (
+        ["thank", "you", "for", "watching"],
+        ["thanks", "for", "watching"],
+        ["thank", "you", "very", "much", "for", "watching"],
+        ["thanks", "very", "much", "for", "watching"],
+    )
+
+
+def _japanese_supports_outro(text: str) -> bool:
+    """Require language-specific evidence for the *watching* claim.
+
+    A generic spoken 'arigatou' is evidence for 'thank you', not for an
+    invented 'for watching'. Checking the Japanese transcription remains a
+    heuristic: two passes from one model are not independent ground truth.
+    """
+    normalized = re.sub(r"\s+", "", text).casefold()
+    if "thankyouforwatching" in normalized or "thanksforwatching" in normalized:
+        return True  # Japanese speakers occasionally say this in English.
+    watching = any(term in normalized for term in ("視聴", "見て", "観て", "ご覧", "見に", "観に"))
+    gratitude = any(term in normalized for term in ("ありがと", "感謝", "サンキュー"))
+    return watching and gratitude
+
+
 def _structural_issue(text: str, seconds: float) -> str:
     words = _words(text)
     if len(words) > max(12, 8 * seconds + 4):
@@ -226,6 +252,25 @@ def run_whisper(
                     english = _stable_weak_speech(original, second, utt.vad_confidence, cfg)
             if (issue or weak_speech) and not verified:
                 english = ""
+            if (english and getattr(cfg, "verify_stock_outros", True)
+                    and _is_stock_outro(english)):
+                # A short fluent outro can score well even over music/game
+                # noise. Verify the *meaning* against the original Japanese
+                # audio, not against the first English translation.
+                japanese = ""
+                verifier = getattr(whisper, "transcribe_japanese_evidence", None)
+                if callable(verifier):
+                    try:
+                        japanese = verifier(utt.audio)
+                    except Exception as exc:
+                        log.warning("Whisper stock-outro verification failed: %s", exc)
+                if not _japanese_supports_outro(japanese):
+                    log.info(
+                        "Suppressed uncorroborated Whisper stock outro: "
+                        "vad=%s en=%r ja_check=%r",
+                        utt.vad_confidence, english[:120], japanese[:120],
+                    )
+                    english = ""
         else:
             # Existing test doubles and older API-compatible adapters.
             english = whisper.translate_audio(utt.audio)

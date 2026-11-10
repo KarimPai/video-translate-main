@@ -10,14 +10,14 @@ from auto_translate.config import VadConfig, load_config
 class VadConfigurationTests(unittest.TestCase):
     def test_recommended_defaults(self):
         cfg = VadConfig()
-        self.assertEqual(cfg.threshold, 0.50)
+        self.assertEqual(cfg.threshold, 0.35)
         self.assertEqual(cfg.neg_threshold, 0.30)
-        self.assertEqual(cfg.speech_pad_ms, 150)
-        self.assertEqual(cfg.min_silence_ms, 500)
-        self.assertEqual(cfg.min_speech_ms, 250)
+        self.assertEqual(cfg.speech_pad_ms, 80)
+        self.assertEqual(cfg.min_silence_ms, 400)
+        self.assertEqual(cfg.min_speech_ms, 100)
         self.assertEqual(cfg.onset_ms, 80)
         self.assertEqual(cfg.prob_smooth_frames, 5)
-        self.assertEqual(cfg.max_utterance_s, 7.0)
+        self.assertEqual(cfg.max_utterance_s, 11.0)
         self.assertEqual(cfg.max_split_extension_s, 1.0)
         self.assertEqual(cfg.split_pause_min_ms, 80)
         self.assertEqual(cfg.split_context_ms, 120)
@@ -30,8 +30,8 @@ class VadConfigurationTests(unittest.TestCase):
             path.write_text("[vad]\nthreshold = 0.40\n", encoding="utf-8")
             cfg = load_config(path).vad
         self.assertEqual(cfg.threshold, 0.40)
-        self.assertEqual(cfg.speech_pad_ms, 150)
-        self.assertEqual(cfg.max_utterance_s, 7.0)
+        self.assertEqual(cfg.speech_pad_ms, 80)
+        self.assertEqual(cfg.max_utterance_s, 11.0)
 
     def test_noise_probe_can_be_opted_in(self):
         with tempfile.TemporaryDirectory() as directory:

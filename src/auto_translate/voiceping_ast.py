@@ -24,26 +24,15 @@ def _name_key(text: str) -> str:
 
 
 def build_ast_context(cfg: VoicePingAstConfig) -> str:
-    """Use bounded name hints and style, never past translated subtitles."""
+    """Return vocabulary ONLY; this model is not an instruction-following LLM.
+
+    A previous natural-language context prompt was emitted verbatim as a
+    subtitle. Do not embed translation rules, questions or prose here.
+    """
     if not cfg.context_enabled:
         return ""
-    parts = []
-    if cfg.japanese_source_only:
-        # The fine-tuned model still receives language="English": that is the
-        # target output language. Context is an unverified source preference,
-        # not an acoustic language-ID gate.
-        parts.append(
-            "Translate Japanese speech to English only. For English-only speech, "
-            "laughter or game sounds, output nothing. Keep English words "
-            "embedded in Japanese sentences."
-        )
-    if cfg.concise_context:
-        parts.append(
-            "Use concise, natural English. Preserve meaning, negation and "
-            "proper names. Do not invent details or repeat phrases unnecessarily."
-        )
     names: list[str] = []
-    seen = set()
+    seen: set[str] = set()
     for candidate in [*cfg.detected_names, *cfg.name_hints]:
         if not isinstance(candidate, str):
             continue
@@ -55,18 +44,8 @@ def build_ast_context(cfg: VoicePingAstConfig) -> str:
             names.append(name)
         if len(names) >= 8:
             break
-    if names:
-        prefix = "Relevant names (only when actually spoken): "
-        available = 450 - len(" ".join(parts)) - len(prefix) - 2
-        selected = []
-        for name in names:
-            candidate = ", ".join([*selected, name])
-            if len(candidate) > available:
-                break  # never truncate a name mid-word
-            selected.append(name)
-        if selected:
-            parts.append(prefix + ", ".join(selected) + ".")
-    return " ".join(parts)
+    # Context is an optional vocabulary hint, not a Japanese-language gate.
+    return ", ".join(names)
 
 
 class VoicePingAST:

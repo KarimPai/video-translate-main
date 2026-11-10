@@ -101,7 +101,11 @@ The llama.cpp server writes to logs/plamo-server.log.
   initial_prompt or hotword list, minimizing language-mode contamination.
 - Short speech fragments can use preceding Japanese cues as optional PLaMo
   context without re-transcribing or retiming earlier subtitles.
-- PLaMo uses the 315-term Hololive/game glossary. Explicit Japanese numbers
+- PLaMo uses the Hololive/game glossary, now expanded with てぇてぇ/てーてー,
+  wireless versus wired mouse, 玉突き事故, Ferris wheels and other GTA phrases.
+  Evidence-gated translation hints cover suspected homophones ONLY where the
+  current or recent speech supports them (including item-exchange confusion).
+  They never rewrite the Japanese ASR transcript. Explicit Japanese numbers
   can be corrected after translation if PLaMo changes their value, without
   guessing what Whisper heard.
 - Both history and nearby-fragment context reset on a seek and on generation
@@ -111,10 +115,45 @@ The llama.cpp server writes to logs/plamo-server.log.
   timestamps; no artificial hard offset is added.
 - Suspicious ASR clips can be retried on the SAME current audio segment
   with a different temperature. No past English or expanded audio window is
-  mixed into the transcript.
+  mixed into the transcript. Whisper large-v3 remains CTranslate2 (beam 5);
+  the separate Anime Whisper Transformers sequence-scoring experiment is
+  NOT imported here. This avoids the earlier CUDA beam-index crash.
+- The JP terminal transcript is kept verbatim from Whisper: older short-term
+  word-memory repair no longer silently changes the recognized Japanese.
+- Isolated laughter-only cues are skipped by default. Speech mixed with
+  laughter is retained. A second identical stock JP outro within 120 seconds
+  is skipped; its first occurrence is preserved. Filters reset on seek.
+  To disable either filter, add to local config.toml:
+  `[whisper] suppress_standalone_laughter=false` or
+  `[whisper] suppress_repeated_japanese_outros=false`.
+
+## Seven-hour VOD playback optimization
+
+The former MPV config allowed up to 1 GiB forward and 1 GiB backward demux
+cache with 120s readahead. This branch now uses **256 MiB forward**, **64 MiB
+backward**, and **30s readahead**; mpv's native seeking and original VOD
+timestamps remain unchanged. MPV may use additional memory for decoders.
+
+**Important performance fix:** the original MPV subtitle renderer scanned
+`_lines` on every 100ms display tick even for VODs, despite an existing
+per-second indexed `SessionSubtitleCache`. With unpaced ingest, many hours
+of subtitles could accumulate ahead of playback, so rendering became
+progressively more expensive. Cached VODs now render only the cues indexed
+at the current time. Live subtitles still use the original rolling list.
+
+Long-running sync diagnostics are limited to the last 4,096 displayed cues;
+first-visible diagnostic keys are capped at 8,192. The VOD subtitle cache
+itself stays available across the entire video for fast translation reuse
+and backwards seeking. These changes target long-session CPU/RAM growth but
+are not yet verified on your 7-hour recording.
+
+If playback is still choppy, check whether MPV reports dropped frames,
+`paused-for-cache` or cache underruns before changing ASR or subtitles;
+the launcher's `--hwdec no` also means video decoding is done on CPU.
 
 ## Tests
 
+    uv run --no-sync python -m unittest discover -s tests -p "test_whisper_long_vod.py" -v
     uv run --no-sync python -m unittest discover -s tests -p "test_whisper_plamo.py" -v
     uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 

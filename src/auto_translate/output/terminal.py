@@ -1,4 +1,4 @@
-"""English-only Whisper Large-v3 direct AST terminal output."""
+"""English-only direct VoicePing AST terminal output."""
 
 from ..types import Subtitle
 
@@ -22,7 +22,7 @@ class TerminalOutput:
             decode_s = max(0.0, sub.timings.asr_end - sub.timings.asr_start)
             print(
                 f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}] "
-                f"EN: {sub.en}  (Whisper Large-v3 AST {decode_s:.2f}s)",
+                f"EN: {sub.en}  (VoicePing Qwen3 AST {decode_s:.2f}s)",
                 flush=True,
             )
 

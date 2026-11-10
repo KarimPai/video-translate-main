@@ -29,6 +29,12 @@ def main() -> None:
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
+    parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
+                        help="YouTube maximum playback height; lower-quality fallback")
+    parser.add_argument("--hwdec", choices=("no", "auto-safe"),
+                        help="MPV hardware decode mode")
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="log additional pipeline metrics")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -49,7 +55,7 @@ def main() -> None:
 
     from .asr import create_asr
     from .captions import PendingCaptions, download_vod_captions
-    from .config import load_config
+    from .config import load_config, mpv_youtube_format
     from .glossary import Glossary
     from .ingest import Ingest, resolve_source
     from .output.base import Output
@@ -63,6 +69,8 @@ def main() -> None:
 
     if args.delay is not None:
         cfg.mpv.delay_s = args.delay
+    if args.hwdec is not None:
+        cfg.mpv.hwdec = args.hwdec
 
     log = logging.getLogger("auto_translate")
     source = resolve_source(
@@ -72,6 +80,16 @@ def main() -> None:
         args.fast,
         cfg.ingest,
     )
+
+    if args.video_quality is not None and not Path(args.source).exists():
+        cfg.mpv.ytdlp_format = mpv_youtube_format(
+            args.video_quality, live=source.live,
+        )
+        log.info(
+            "MPV YouTube quality: up to %dp, lower fallback (%s)",
+            args.video_quality,
+            "live HLS" if source.live else "VOD HTTPS/DASH first",
+        )
 
     # Fetch VOD captions in parallel with model loading. Captions are optional:
     # any download/parse failure leaves the Haas-only pipeline unchanged.

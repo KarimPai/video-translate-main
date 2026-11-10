@@ -1,4 +1,4 @@
-"""Launcher contract for GTCRN and Sherpa opt-in CPU processing."""
+"""Launcher contract for direct VoicePing AST and video quality selection."""
 import unittest
 from pathlib import Path
 
@@ -17,7 +17,7 @@ class LauncherAudioTests(unittest.TestCase):
         self.assertNotIn("--extra diarization", self.script)
         self.assertNotIn("--audio-profile", self.script)
 
-    def test_video_and_whisper_baseline_preserved(self):
+    def test_video_and_voiceping_ast_preserved(self):
         self.assertIn("--video-quality %VIDEO_QUALITY%", self.script)
         self.assertIn('if not defined QUALITY_CHOICE set "QUALITY_CHOICE=3"', self.script)
         for choice, quality in ((1, 360), (2, 480), (3, 720), (4, 1080)):
@@ -27,7 +27,9 @@ class LauncherAudioTests(unittest.TestCase):
             )
         self.assertIn("Enter 1, 2, 3, or 4", self.script)
         self.assertIn("--hwdec auto-safe", self.script)
-        self.assertIn("--whisper-compute int8_float16", self.script)
+        self.assertIn("VoicePing BF16", self.script)
+        self.assertNotIn("--whisper-compute", self.script)
+        self.assertIn("qwen_asr", self.script)
 
     def test_default_models_and_vocal_separation_flags(self):
         cfg = Config()

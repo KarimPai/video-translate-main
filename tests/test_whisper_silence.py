@@ -106,6 +106,20 @@ class SilenceGuardTests(unittest.TestCase):
         self.assertEqual([item.en for item in results], ["Yes."])
         self.assertEqual(fake.calls, 2)
 
+    def test_brief_strong_reply_and_pre_onset_padding(self):
+        probabilities = np.zeros(250, dtype=np.float32)
+        probabilities[50:54] = .98  # a 40 ms transient
+        probabilities[100:120] = .98
+        pcm = np.linspace(-.2, .2, len(probabilities) * FRAME, dtype=np.float32)
+        with patch("auto_translate.vad.StreamingFireRedVAD") as factory:
+            factory.return_value.return_value = probabilities
+            segmenter = Segmenter(VadConfig(speech_pad_ms=80))
+            cues = segmenter.feed(AudioChunk(0, pcm, 0.0)) + segmenter.flush()
+        self.assertEqual(len(cues), 1)
+        cue = cues[0]
+        self.assertAlmostEqual(cue.speech_start_s - cue.start_s, .08)
+        np.testing.assert_array_equal(cue.audio, pcm[round(cue.start_s*16000):round(cue.end_s*16000)])
+
     def test_silence_gap_is_not_sent_to_whisper_and_keeps_timestamps(self):
         # Near-threshold but sustained speech is preserved on both sides
         # of a long gap; no extra fallback ASR probes come from the gap.

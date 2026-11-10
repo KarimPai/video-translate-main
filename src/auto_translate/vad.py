@@ -156,6 +156,7 @@ class Segmenter:
         self.min_silence = _ms_to_frames(cfg.min_silence_ms)
         self.pad = _ms_to_frames(cfg.speech_pad_ms)
         self.min_speech = _ms_to_frames(cfg.min_speech_ms)
+        self.short_reply_frames = _ms_to_frames(cfg.short_reply_ms)
         self.onset_frames = _ms_to_frames(cfg.onset_ms)
         self.prob_smooth_frames = max(1, cfg.prob_smooth_frames)
         self.max_frames = _ms_to_frames(cfg.max_utterance_s * 1000)
@@ -179,8 +180,8 @@ class Segmenter:
         self.vad.reset()
         self._leftover = np.zeros(0, dtype=np.float32)  # samples not yet a whole frame
         self._next_frame_sample = next_sample  # sample index of the next frame to process
-        self._preroll: deque[np.ndarray] = deque(maxlen=self.pad)  # recent audio, including onset
-        self._preroll_probs: deque[float] = deque(maxlen=self.pad)
+        self._preroll: deque[np.ndarray] = deque(maxlen=self.pad + self.onset_frames)  # recent audio, including onset
+        self._preroll_probs: deque[float] = deque(maxlen=self.pad + self.onset_frames)
         self._prob_history: deque[float] = deque(maxlen=self.prob_smooth_frames)
         self._onset_count = 0
         self._idle: list[np.ndarray] = []  # non-speech frames since the last utterance (fallback)
@@ -311,7 +312,17 @@ class Segmenter:
         end = start + n * FRAME
 
         speech_probs = [p for p in probs if p >= self.cfg.threshold]
-        if len(speech_probs) >= self.min_speech:
+        # Keep brief, sustained high-probability replies without opening
+        # the gate for isolated peaks or lowering the ordinary speech floor.
+        confident_run = 0
+        short_reply = False
+        if 0 < len(speech_probs) < self.min_speech:
+            for prob in probs:
+                confident_run = confident_run + 1 if prob >= self.cfg.short_reply_probability else 0
+                if confident_run >= self.short_reply_frames:
+                    short_reply = True
+                    break
+        if len(speech_probs) >= self.min_speech or short_reply:
             utt = Utterance(
                 start / SAMPLE_RATE,
                 end / SAMPLE_RATE,

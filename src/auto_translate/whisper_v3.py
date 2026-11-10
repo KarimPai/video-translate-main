@@ -39,9 +39,9 @@ class WhisperDecode:
         # No speech at all is not automatically a failed translation.
         if self.discarded_segments:
             return True
-        if not self.text or self.avg_logprob is None:
+        if not self.text:
             return False
-        return self.avg_logprob < -0.75 or (
+        return (self.avg_logprob is not None and self.avg_logprob < -0.75) or (
             self.compression_ratio is not None and
             self.compression_ratio > 2.0
         )
@@ -230,9 +230,8 @@ class WhisperLargeV3:
         for value in (avg, ratio, silent):
             if value is not None and not math.isfinite(float(value)):
                 return True
-        if avg is not None and float(avg) < cfg.min_avg_logprob:
-            return True
-        if ratio is not None and float(ratio) > cfg.max_compression_ratio:
+        if (avg is not None and ratio is not None and
+                float(avg) < cfg.min_avg_logprob and float(ratio) > cfg.max_compression_ratio):
             return True
         if (silent is not None and avg is not None and
                 float(silent) >= cfg.noisy_segment_no_speech_prob and

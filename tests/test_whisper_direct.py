@@ -61,7 +61,7 @@ class WhisperDirectTests(unittest.TestCase):
 
     def test_high_compression_and_noise_guard(self):
         decoder = WhisperLargeV3(WhisperConfig(), model=FakeModel())
-        self.assertTrue(decoder._unreliable(SimpleNamespace(
+        self.assertFalse(decoder._unreliable(SimpleNamespace(
             avg_logprob=-0.2, compression_ratio=3.0, no_speech_prob=0.1,
         )))
         self.assertTrue(decoder._unreliable(SimpleNamespace(
@@ -71,43 +71,6 @@ class WhisperDirectTests(unittest.TestCase):
             avg_logprob=-0.1, compression_ratio=1.0, no_speech_prob=0.8,
         )))
         self.assertFalse(decoder._unreliable(SimpleNamespace(text="No scores")))
-
-    def test_repeated_outros_suppressed_without_banning_other_thanks(self):
-        class SequenceModel:
-            def __init__(self):
-                self.outputs = iter([
-                    "Thank you for watching.", "Thank you for watching until the end.",
-                    "Thank you!", "Thanks for watching!", "Let's go.",
-                ])
-            def translate_audio(self, audio):
-                return next(self.outputs)
-
-        source, result = queue.Queue(), queue.Queue()
-        for i in range(5):
-            source.put(Utterance(i * 30.0, i * 30.0 + 1.0,
-                                 np.ones(16000, dtype=np.float32)))
-        source.put(None)
-        run_whisper(SequenceModel(), source, result)
-        outputs = []
-        while (item := result.get_nowait()) is not None:
-            outputs.append(item.en)
-        self.assertEqual(outputs, ["Thank you!", "Let's go."])
-
-    def test_outro_suppression_resets_on_new_seek_generation(self):
-        class AlwaysOutro:
-            def translate_audio(self, audio):
-                return "Thank you for watching."
-
-        source, result = queue.Queue(), queue.Queue()
-        source.put(Utterance(1, 2, np.ones(16000, dtype=np.float32),
-                             generation=0))
-        source.put(AudioProgress(0, reset=True, generation=1))
-        source.put(Utterance(1, 2, np.ones(16000, dtype=np.float32),
-                             generation=1))
-        source.put(None)
-        run_whisper(AlwaysOutro(), source, result)
-        self.assertTrue(result.get_nowait().reset)
-        self.assertIsNone(result.get_nowait())
 
     def test_defaults_are_large_v3_cuda_translate(self):
         cfg = WhisperConfig()

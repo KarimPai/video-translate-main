@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from .config import IngestConfig, SeparationConfig, GtcrnConfig
+from .config import IngestConfig, SeparationConfig
 from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
 
@@ -44,7 +44,6 @@ class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
 CHUNK_SAMPLES = 4096
 SEPARATION_READ_FRAMES = 8192
 SEPARATION_INPUT_RATE = 44100
-GTCRN_INPUT_RATE = SAMPLE_RATE
 
 @dataclass
 class Source:
@@ -208,7 +207,6 @@ class Ingest:
         video_format: str = "",
         burst_s: float = 0.0,
         separation_cfg: SeparationConfig | None = None,
-        gtcrn_cfg: GtcrnConfig | None = None,
     ):
         self.source = source
         self._vod_audio_url: str | None = None
@@ -244,16 +242,6 @@ class Ingest:
         self.separation_enabled = bool(
             separation_cfg and separation_cfg.enabled
         )
-
-        self.gtcrn_cfg = gtcrn_cfg
-        self.gtcrn_enabled = bool(
-            gtcrn_cfg and gtcrn_cfg.enabled
-        )
-
-        if self.separation_enabled and self.gtcrn_enabled:
-            raise ValueError(
-                "UVR separation and GTCRN cannot both be enabled."
-            )
 
         self._procs: list[subprocess.Popen] = []
         self._video_proc: subprocess.Popen | None = None
@@ -714,8 +702,6 @@ class Ingest:
 
         if self.separation_enabled:
             output_rate = SEPARATION_INPUT_RATE
-        elif self.gtcrn_enabled:
-            output_rate = GTCRN_INPUT_RATE
         else:
             output_rate = SAMPLE_RATE
 
@@ -739,13 +725,6 @@ class Ingest:
             ffmpeg += [
                 "-ac", "2",
                 "-ar", str(SEPARATION_INPUT_RATE),
-                "-f", "s16le",
-                "pipe:1",
-            ]
-        elif self.gtcrn_enabled:
-            ffmpeg += [
-                "-ac", "1",
-                "-ar", str(GTCRN_INPUT_RATE),
                 "-f", "s16le",
                 "pipe:1",
             ]
@@ -928,13 +907,6 @@ class Ingest:
             output_rate = SEPARATION_INPUT_RATE
             out = [
                 "-vn", "-ac", "2",
-                "-ar", str(output_rate),
-                "-f", "s16le", "pipe:1",
-            ]
-        elif self.gtcrn_enabled:
-            output_rate = GTCRN_INPUT_RATE
-            out = [
-                "-vn", "-ac", "1",
                 "-ar", str(output_rate),
                 "-f", "s16le", "pipe:1",
             ]
@@ -1303,7 +1275,6 @@ class Ingest:
         input_frames = 0
 
         worker = None
-        gtcrn_worker = None
         pending = b""
 
         try:
@@ -1324,23 +1295,6 @@ class Ingest:
                     SEPARATION_INPUT_RATE,
                 )
 
-            elif self.gtcrn_enabled:
-                from .gtcrn import GtcrnWorker
-
-                gtcrn_worker = GtcrnWorker(
-                    out_q,
-                    first,
-                    generation=generation,
-                    is_current=lambda: generation == self.generation and not self._stopped,
-                    num_threads=self.gtcrn_cfg.num_threads,
-                    model_path=self.gtcrn_cfg.model_path,
-                )
-
-                log.info(
-                    "GTCRN enabled: mono %d Hz input",
-                    GTCRN_INPUT_RATE,
-                )
-
             while True:
                 # Stop consuming on seek, and avoid decoding a full 7-hour
                 # VOD ahead of playback. A bounded ~75s lead keeps subtitles
@@ -1348,10 +1302,6 @@ class Ingest:
                 if worker:
                     reader_sample = first + round(
                         input_frames * SAMPLE_RATE / SEPARATION_INPUT_RATE
-                    )
-                elif gtcrn_worker:
-                    reader_sample = first + round(
-                        input_frames * SAMPLE_RATE / GTCRN_INPUT_RATE
                     )
                 else:
                     reader_sample = sample
@@ -1413,32 +1363,6 @@ class Ingest:
                     input_frames += len(pcm)
                     worker.put(pcm)
 
-                elif gtcrn_worker:
-                    data = pending + data
-
-                    usable = len(data) - (len(data) % 2)
-                    pending = data[usable:]
-                    data = data[:usable]
-
-                    if not data:
-                        continue
-
-                    pcm = (
-                        np.frombuffer(data, dtype="<i2")
-                        .astype(np.float32)
-                        / 32768.0
-                    )
-
-                    # Do not enqueue more old PCM if an MPV seek replaced
-                    # this generation while GTCRN was backpressured.
-                    if generation != self.generation:
-                        break
-                    if not gtcrn_worker.put(pcm):
-                        break
-                    input_frames += len(pcm)
-                    if not gtcrn_worker.put_progress():
-                        break
-
                 else:
                     pcm = (
                         np.frombuffer(data, dtype="<i2")
@@ -1471,14 +1395,6 @@ class Ingest:
                 if worker:
                     worker.close()
 
-                if gtcrn_worker:
-                    # The previous VOD generation may have queued enhanced
-                    # audio far ahead of playback. Cancel it on seeks rather
-                    # than draining a stale backlog before restarting.
-                    gtcrn_worker.close(
-                        cancel=(generation != self.generation or self._stopped)
-                    )
-
             finally:
                 for p in procs:
                     try:
@@ -1496,8 +1412,6 @@ class Ingest:
 
         if worker:
             processed_seconds = input_frames / SEPARATION_INPUT_RATE
-        elif gtcrn_worker:
-            processed_seconds = input_frames / GTCRN_INPUT_RATE
         else:
             processed_seconds = (sample - first) / SAMPLE_RATE
 
@@ -1511,12 +1425,12 @@ class Ingest:
             # Only consecutive short failures count against live recovery.
             self._live_retry_count = 0
 
-        if input_frames == 0 and (worker or gtcrn_worker):
+        if input_frames == 0 and worker:
             log.error(
                 "no audio received from FFmpeg; check the source and audio stream"
             )
 
-        elif sample == first and not (worker or gtcrn_worker):
+        elif sample == first and not worker:
             if self.source.start_s and self._restart_at is None:
                 log.error(
                     "no audio after %s: is the start time past the end of the video?",

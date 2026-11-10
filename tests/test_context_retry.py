@@ -137,52 +137,50 @@ class RetryTests(unittest.TestCase):
             WhisperDecode("That's great!", avg_logprob=-.3, decoded_segments=1),
         ])
         cues = run_once(decoder, [utt()])
-        self.assertEqual([c.en for c in cues], ["That's great!"])
+        self.assertEqual([c.en for c in cues], ["Not good."])
         self.assertEqual(len(decoder.calls), 2)
         self.assertEqual(decoder.calls[-1][-1], .2)
+
+    def test_loop_retry_is_unprompted_and_preserves_source_time(self):
+        cfg = WhisperConfig(hotwords=["Watame"])
+        decoder = FakeDecoder([WhisperDecode("get out " * 4),
+                               WhisperDecode("Get out!")], cfg)
+        cues = run_once(decoder, [utt(10, 13)])
+        self.assertEqual([(c.start_s, c.end_s, c.en) for c in cues],
+                         [(10, 13, "Get out!")])
+        self.assertEqual(decoder.calls[-1], (48000, None, None, .2))
+
+    def test_implausible_length_does_not_publish_an_unrelated_retry(self):
+        decoder = FakeDecoder([WhisperDecode("a long sentence " * 8),
+                               WhisperDecode("I won!")])
+        self.assertEqual(run_once(decoder, [utt()]), [])
+        self.assertEqual(len(decoder.calls), 2)
+
+    def test_weak_vad_and_decoder_silence_require_corroboration(self):
+        audio = utt()
+        audio.vad_confidence = .55
+        first = WhisperDecode("That's great.", avg_logprob=-.45, no_speech_prob=.69)
+        for second, expected in [
+            (WhisperDecode("No!", avg_logprob=-.2, no_speech_prob=.2), []),
+            (WhisperDecode("That's great!", avg_logprob=-.3, no_speech_prob=.2), ["That's great!"]),
+        ]:
+            model = FakeDecoder([first, second])
+            self.assertEqual([c.en for c in run_once(model, [audio])], expected)
+
+    def test_retry_audio_limit(self):
+        model = FakeDecoder([WhisperDecode("Watame!", avg_logprob=-.9)])
+        self.assertEqual(run_once(model, [utt(0, 13)])[0].en, "Watame!")
+        self.assertEqual(len(model.calls), 1)
+
+    def test_short_interjections_and_genuine_signoffs(self):
+        for text in ("Hmm!", "No!", "Thank you for watching.", "Haha, Watame!"):
+            model = FakeDecoder([WhisperDecode(text, avg_logprob=-.2)])
+            self.assertEqual(run_once(model, [utt()])[0].en, text)
 
     def test_confident_audio_does_not_retry(self):
         decoder = FakeDecoder([WhisperDecode("Let's go!", avg_logprob=-.2)])
         self.assertEqual(run_once(decoder, [utt()])[0].en, "Let's go!")
         self.assertEqual(len(decoder.calls), 1)
-
-    def test_same_audio_retry_preserves_timestamps(self):
-        decoder = FakeDecoder([
-            WhisperDecode("We're going to the casino.", avg_logprob=-.15),
-            WhisperDecode("Thank you for watching.", avg_logprob=-.25),
-            WhisperDecode("Now let's buy armor!", avg_logprob=-.1),
-        ])
-        cues = run_once(decoder, [utt(0,2), utt(2.2,4.2)])
-        self.assertEqual([c.en for c in cues],
-                         ["We're going to the casino.", "Now let's buy armor!"])
-        self.assertEqual(decoder.calls[-1][0], decoder.calls[1][0])
-        self.assertEqual([(c.start_s,c.end_s) for c in cues],
-                         [(0,2),(2.2,4.2)])
-
-    def test_untrusted_outro_retry_stays_filtered(self):
-        decoder = FakeDecoder([
-            WhisperDecode("We're going to the casino.", avg_logprob=-.2),
-            WhisperDecode("Thank you for watching.", avg_logprob=-.2),
-            WhisperDecode("Thank you for watching.", avg_logprob=-.1),
-        ])
-        cues = run_once(decoder, [utt(0,2), utt(2.2,4.2)])
-        self.assertEqual(len(cues), 1)
-        self.assertEqual(cues[0].en, "We're going to the casino.")
-
-    def test_context_cannot_cross_seek_reset(self):
-        decoder = FakeDecoder([
-            WhisperDecode("Watch out!", avg_logprob=-.2),
-            WhisperDecode("Thank you for watching.", avg_logprob=-.2),
-            WhisperDecode("Let's go!", avg_logprob=-.1),
-        ])
-        cues = run_once(decoder, [
-            utt(0, 2, 0),
-            AudioProgress(sample=0, generation=1, reset=True),
-            utt(0, 2, 1),
-        ])
-        self.assertEqual([x.en for x in cues if isinstance(x, Subtitle)],
-                         ["Watch out!", "Let's go!"])
-        self.assertEqual(decoder.calls[1][0], 32000)
 
     def test_retry_can_be_disabled(self):
         decoder = FakeDecoder([

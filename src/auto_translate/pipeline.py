@@ -24,108 +24,25 @@ from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
-from .speaker import run_speaker
 from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Subtitle, Utterance
 from .vad import run_segmenter
 
 log = logging.getLogger(__name__)
 
-# Whisper can hallucinate stock YouTube outro captions on ambiguous speech.
-# Only suppress repeats of these complete phrases; never discard their first
-# occurrence, or suppress ordinary, genuine conversational thanks.
-_OUTRO = re.compile(
-    r"^(?:thank you|thanks)(?: very much)? for watching"
-    r"(?: (?:until )?the end)?$",
-    re.IGNORECASE,
-)
-# Some weak Japanese gaming utterances decode into stock isolated thanks.
-# Never filter normal contextual expressions (e.g., \"Thanks for the help\").
-_STOCK_THANKS = re.compile(
-    r"^(?:thank you(?: very much)?|thanks(?: a lot)?)$",
-    re.IGNORECASE,
-)
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+(?:'\w+)*", text.casefold().replace("’", "'"))
 
 
-def _is_stock_thanks(text: str) -> bool:
-    normalized = " ".join(re.sub(r"[^a-zA-Z\s]", "", text).split())
-    return bool(_STOCK_THANKS.fullmatch(normalized))
-
-
-def _credible_repeated_thanks(first: object, second: object,
-                               vad_confidence: float | None) -> bool:
-    """Require corroboration and strong speech evidence on repeated stock thanks."""
-    if not _is_stock_thanks(getattr(first, "text", "")) or not _is_stock_thanks(
-        getattr(second, "text", "")
-    ):
-        return False
-    if vad_confidence is None or not math.isfinite(float(vad_confidence)):
-        return False
-    if float(vad_confidence) < 0.65:
-        return False
-    for decoded in (first, second):
-        lp = getattr(decoded, "avg_logprob", None)
-        ns = getattr(decoded, "no_speech_prob", None)
-        if (lp is None or ns is None or not math.isfinite(float(lp))
-                or not math.isfinite(float(ns)) or float(lp) < -0.55
-                or float(ns) > 0.25 or getattr(decoded, "suspicious", False)):
-            return False
-    return True
-
-
-
-def _is_outro_phrase(text: str) -> bool:
-    """Detect *standalone* stock closing phrases, not conversational thanks."""
-    normalized = " ".join(re.sub(r"[^\w\s]", "", text).split())
-    return bool(_OUTRO.fullmatch(normalized))
-
-
-def _suppress_generic_outro(
-    text: str,
-    end_s: float,
-    *,
-    cfg: object | None,
-    source_info: dict | None,
-) -> bool:
-    """Guard against stock-outro hallucinations in normal stream content.
-
-    Only allow standalone closing phrases within the last 90s of a completed
-    VOD when a trusted duration is available. Unknown-duration/live streams
-    cannot prove an ending; the safeguard can be disabled via config.toml.
-    """
-    if not getattr(cfg, "suppress_generic_outros", True):
-        return False
-    if not _is_outro_phrase(text):
-        return False
-    info = source_info or {}
-    if not info.get("live", False):
-        duration = info.get("duration_s")
-        if duration is not None:
-            try:
-                duration = float(duration)
-                allow_s = max(0.0, min(
-                    300.0, float(getattr(cfg, "outro_allow_near_vod_end_s", 90.0))
-                ))
-                if math.isfinite(duration) and duration > 0:
-                    if duration - allow_s <= end_s <= duration + 1.0:
-                        return False
-            except (TypeError, ValueError):
-                pass
-    return True
-
-
-def _is_repeated_outro(
-    text: str, timestamp_s: float, recent: list[float], cooldown_s: float
-) -> bool:
-    normalized = re.sub(r"[^\w\s]", "", text).strip()
-    normalized = " ".join(normalized.split())
-    if not _OUTRO.fullmatch(normalized):
-        return False
-    # Timestamps are from the video; clear on seeks, and accept after expiry.
-    recent[:] = [t for t in recent if 0 <= timestamp_s - t <= cooldown_s]
-    if recent:
-        return True
-    recent.append(timestamp_s)
-    return False
+def _structural_issue(text: str, seconds: float) -> str:
+    words = _words(text)
+    if len(words) > max(12, 8 * seconds + 4):
+        return "length"
+    for width in range(2, 7):
+        for end in range(4 * width, len(words) + 1):
+            phrase = words[end-width:end]
+            if len(set(phrase)) > 1 and words[end-4*width:end] == phrase * 4:
+                return "loop"
+    return ""
 
 
 def _guard_stage(
@@ -188,11 +105,10 @@ def _stable_weak_speech(first: object, second: object, vad_confidence: float | N
         ns = getattr(decoded, "weak_no_speech_prob", None)
         if (not candidate or avg is None or ns is None
                 or not math.isfinite(float(avg)) or not math.isfinite(float(ns))
-                or float(avg) < -1.60 or float(ns) > 0.35
-                or _is_outro_phrase(candidate) or _is_stock_thanks(candidate)):
+                or float(avg) < -1.60 or float(ns) > 0.35):
             return ""
-        words = re.findall(r"[a-z]+(?:'[a-z]+)?", candidate.casefold())
-        if len(words) < 2 or sum(map(len, words)) < 8:
+        words = _words(candidate)
+        if not words:
             return ""
         tokens.append(words)
     return first.weak_text if tokens[0] == tokens[1] else ""
@@ -204,13 +120,9 @@ def run_whisper(
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
     session_cache: SessionSubtitleCache | None = None,
-    audio_processing: dict[str, bool] | None = None,
-    source_info: dict | None = None,
 ) -> None:
     """Emit each accepted utterance once; never shift its source timestamps."""
     empty_count = 0
-    recent_outros: list[float] = []
-    recent_thanks: list[float] = []
     last_generation: int | None = None
     cfg = getattr(whisper, "cfg", None)
     context = RecentSpeechContext(cfg)
@@ -222,14 +134,10 @@ def run_whisper(
         if get_generation is not None and item.generation != get_generation():
             continue
         if last_generation is None or item.generation != last_generation:
-            recent_outros.clear()
-            recent_thanks.clear()
             context.reset()
             last_generation = item.generation
         if isinstance(item, AudioProgress):
             if item.reset:
-                recent_outros.clear()
-                recent_thanks.clear()
                 context.reset()
             out_q.put(item)
             continue
@@ -238,18 +146,6 @@ def run_whisper(
         context.prepare(utt)
         cached = session_cache.match(utt.start_s, utt.end_s) if session_cache is not None else None
         if cached is not None:
-            if _suppress_generic_outro(
-                cached.en, utt.end_s, cfg=cfg, source_info=source_info,
-            ):
-                log.info(
-                    "Suppressed cached generic Whisper outro (gen=%d %.2f-%.2fs): %r",
-                    utt.generation, utt.start_s, utt.end_s, cached.en,
-                )
-                continue
-            if _is_stock_thanks(cached.en):
-                recent_thanks[:] = [t for t in recent_thanks
-                                    if 0 <= utt.start_s - t <= 120.0]
-                recent_thanks.append(utt.start_s)
             context.accept(utt, cached.en)
             out_q.put(replace(
                 cached, generation=utt.generation, timings=utt.timings,
@@ -282,21 +178,15 @@ def run_whisper(
             )
             selected = original
             english = original.text
-            generic_outro = _is_outro_phrase(english)
-            # Only isolated generic thanks are checked, not meaningful
-            # sentences. Respect speaker handoffs and reset history on seek.
-            recent_thanks[:] = [t for t in recent_thanks
-                                if 0 <= utt.start_s - t <= 120.0]
-            recurring_thanks = (
-                _is_stock_thanks(english) and bool(recent_thanks)
-                and not utt.speaker_handoff
-                and getattr(cfg, "confirm_repeated_stock_thanks", True)
+            seconds = len(utt.audio) / SAMPLE_RATE
+            issue = _structural_issue(english or original.weak_text, seconds)
+            weak_speech = (
+                utt.vad_confidence is not None and utt.vad_confidence < 0.60
+                and original.no_speech_prob is not None and original.no_speech_prob >= 0.60
+                and original.avg_logprob is not None and original.avg_logprob < -0.35
             )
-            retry_reason = (
-                "recurring_thanks" if recurring_thanks
-                else "outro" if generic_outro and getattr(cfg, "retry_on_outro", True)
-                else "uncertain" if original.suspicious else ""
-            )
+            retry_reason = issue or ("weak_speech" if weak_speech else
+                                     "uncertain" if original.suspicious else "")
             silent_reject = (
                 not english and original.discarded_segments > 0
                 and original.no_speech_prob is not None
@@ -304,57 +194,38 @@ def run_whisper(
                     cfg, "no_speech_retry_block_threshold", 0.85,
                 ))
             )
+            verified = False
             if (retry_reason and getattr(cfg, "retry_uncertain", True)
-                    and not silent_reject):
+                    and not silent_reject and seconds <= getattr(cfg, "retry_max_audio_s", 12.0)
+                    and (get_generation is None or utt.generation == get_generation())):
                 retried = True
                 # Same utterance only: never concatenate a prior speech tail
                 # or feed old subtitles back into this decoder pass.
                 second = whisper.decode_audio(
-                    utt.audio, prompt=style_prompt or None,
-                    hotwords=context.hotwords(),
+                    utt.audio, prompt=None, hotwords=None,
                     temperature=float(getattr(cfg, "retry_temperature", 0.2)),
                 )
                 candidate = second.text.strip()
-                first_logp = original.avg_logprob
-                second_logp = second.avg_logprob
-                if (candidate and not second.suspicious
-                        and (first_logp is None or second_logp is None
-                             or second_logp >= first_logp - 0.15)
-                        and (not generic_outro or not _is_outro_phrase(candidate))
-                        and (not recurring_thanks or not _is_stock_thanks(candidate)
-                             or _credible_repeated_thanks(
-                                 original, second, utt.vad_confidence))):
-                    english = candidate
-                    selected = second
-                    log.info(
-                        "Whisper AST retry accepted (%s, gen=%d %.2f-%.2fs)",
-                        retry_reason, utt.generation, utt.start_s, utt.end_s,
-                    )
-                elif recurring_thanks:
-                    # A repeated isolated thank-you was not independently
-                    # supported by strong speech/model evidence. The first
-                    # occurrence is untouched; do not spam later weak ones.
-                    log.info(
-                        "Suppressed unconfirmed recurring generic thanks "
-                        "(gen=%d %.2f-%.2fs vad=%s first_lp=%s second_lp=%s)",
-                        utt.generation, utt.start_s, utt.end_s,
-                        utt.vad_confidence, original.avg_logprob,
-                        second.avg_logprob,
-                    )
-                    english = ""
-                elif not english and not candidate:
-                    rescued = _stable_weak_speech(
-                        original, second, utt.vad_confidence, cfg,
-                    )
-                    if rescued:
-                        english = rescued
+                first_words = _words(english or original.weak_text)
+                second_words = _words(candidate)
+                agrees = bool(first_words) and first_words == second_words
+                second_issue = _structural_issue(candidate, seconds)
+                if candidate and not second.suspicious:
+                    # Preserve corroborated chants with plausible pacing. Only
+                    # shorten a loop if both passes say exactly the same words.
+                    repeated = (issue == "loop" and second_words
+                                and first_words == second_words * (len(first_words) // len(second_words)))
+                    speech_supported = (not weak_speech or
+                                        (second.no_speech_prob is not None and second.no_speech_prob < 0.60))
+                    plausible = speech_supported and (not second_issue or (second_issue == "loop" and agrees))
+                    if plausible and (agrees or repeated or not first_words):
+                        english = candidate
                         selected = second
-                        log.info(
-                            "Whisper AST recovered matching weak speech "
-                            "(gen=%d %.2f-%.2fs vad=%.2f)",
-                            utt.generation, utt.start_s, utt.end_s,
-                            utt.vad_confidence,
-                        )
+                        verified = True
+                elif not english and not candidate and not issue:
+                    english = _stable_weak_speech(original, second, utt.vad_confidence, cfg)
+            if (issue or weak_speech) and not verified:
+                english = ""
         else:
             # Existing test doubles and older API-compatible adapters.
             english = whisper.translate_audio(utt.audio)
@@ -383,17 +254,13 @@ def run_whisper(
             peak = float(np.max(np.abs(utt.audio))) if utt.audio.size else 0.0
             log.info(
                 "Whisper diagnostic: gen=%d speech=%.2f-%.2fs %.2fs "
-                "rms=%.4f peak=%.3f vad_confidence=%s gtcrn=%s "
-                "sherpa=%s speaker_split=%s speaker_handoff=%s "
+                "rms=%.4f peak=%.3f vad_confidence=%s "
                 "model=%.3fs retry=%s reason=%s "
                 "avg_logprob=%s no_speech=%s compression=%s "
                 "discarded=%s output=%r",
                 utt.generation, utt.start_s, utt.end_s,
                 utt.end_s - utt.start_s, rms, peak,
                 utt.vad_confidence,
-                (audio_processing or {}).get("gtcrn", "unknown"),
-                (audio_processing or {}).get("speaker", "unknown"),
-                utt.speaker_split, utt.speaker_handoff,
                 utt.timings.asr_end - utt.timings.asr_start,
                 retried, retry_reason,
                 getattr(selected, "avg_logprob", None),
@@ -417,34 +284,6 @@ def run_whisper(
                 )
             continue
         empty_count = 0
-        if _suppress_generic_outro(
-            english, utt.end_s, cfg=cfg, source_info=source_info,
-        ):
-            log.info(
-                "Suppressed generic Whisper outro during gameplay "
-                "(gen=%d %.2f-%.2fs live=%s duration=%s): %r",
-                utt.generation, utt.start_s, utt.end_s,
-                (source_info or {}).get("live", "unknown"),
-                (source_info or {}).get("duration_s", "unknown"), english,
-            )
-            continue
-        if (
-            getattr(cfg, "suppress_repeated_signoffs", True) and
-            _is_repeated_outro(
-                english, utt.start_s, recent_outros,
-                getattr(cfg, "signoff_cooldown_s", 1200.0),
-            )
-        ):
-            log.info(
-                "Suppressed repeated generic Whisper outro (%.2fs): %r",
-                utt.start_s, english,
-            )
-            continue
-
-        if _is_stock_thanks(english):
-            recent_thanks[:] = [t for t in recent_thanks
-                                if 0 <= utt.start_s - t <= 120.0]
-            recent_thanks.append(utt.start_s)
         context.accept(utt, english)
         out_q.put(Subtitle(
             start_s=utt.start_s,
@@ -524,11 +363,10 @@ def run(
     """Run direct Whisper AST after FireRedVAD."""
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
-    speaker_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
     failures: queue.Queue[tuple[str, BaseException]] = queue.Queue()
     queues = {
-        "audio": audio_q, "vad": utt_q, "speaker": speaker_q,
+        "audio": audio_q, "vad": utt_q,
         "subtitle": sub_q,
     }
     generation = lambda: ingest.generation
@@ -545,15 +383,8 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("speaker", run_speaker, failures, cfg.speaker, utt_q, speaker_q, generation),
-            name="speaker", daemon=True,
-        ),
-        threading.Thread(
-            target=_guard_stage,
             args=("whisper-ast", run_whisper, failures,
-                  whisper, speaker_q, sub_q, generation, session_cache,
-                  {"gtcrn": cfg.gtcrn.enabled, "speaker": cfg.speaker.enabled},
-                  {"live": ingest.source.live, "duration_s": ingest.source.duration}),
+                  whisper, utt_q, sub_q, generation, session_cache),
             name="whisper-ast", daemon=True,
         ),
     ]

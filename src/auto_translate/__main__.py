@@ -31,10 +31,6 @@ def main() -> None:
                         help="Whisper CUDA precision; FP16 OOM falls back to int8_float16")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV video decoder (no saves GPU memory)")
-    parser.add_argument(
-        "--audio-profile", choices=("baseline", "gtcrn", "speaker", "both"),
-        default=None, help="ablate GTCRN and Sherpa without changing config.toml",
-    )
     parser.add_argument("--diagnostics", action="store_true",
                         help="log each utterance's decoding and audio quality stats")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -67,9 +63,6 @@ def main() -> None:
         cfg.mpv.vod_ytdlp_format = mpv_youtube_format(args.video_quality, live=False)
     if args.whisper_compute is not None:
         cfg.whisper.compute_type = args.whisper_compute
-    if args.audio_profile is not None:
-        cfg.gtcrn.enabled = args.audio_profile in ("gtcrn", "both")
-        cfg.speaker.enabled = args.audio_profile in ("speaker", "both")
     if args.diagnostics:
         cfg.whisper.diagnostics = True
     if args.delay is not None:
@@ -77,12 +70,6 @@ def main() -> None:
     if args.hwdec is not None:
         cfg.mpv.hwdec = args.hwdec
     log = logging.getLogger("auto_translate")
-    log.info(
-        "Audio processing: GTCRN=%s, Sherpa=%s; "
-        "FireRedVAD CUDA + Whisper Large-v3 direct Japanese-to-English AST",
-        "on" if cfg.gtcrn.enabled else "off",
-        "on" if cfg.speaker.enabled else "off",
-    )
     source = resolve_source(
         args.source, args.mode, args.start, args.fast, cfg.ingest,
     )
@@ -121,8 +108,6 @@ def main() -> None:
             None,  # MPV plays the original video; FFmpeg ingests audio only
             cfg.mpv.ytdlp_format,
             0.0,
-            separation_cfg=cfg.separation,
-            gtcrn_cfg=cfg.gtcrn,
         )
         stop = threading.Event()
         outputs = []

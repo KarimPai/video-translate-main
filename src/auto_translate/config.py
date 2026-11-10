@@ -54,21 +54,14 @@ class SeparationConfig:
 
 
 @dataclass
-class GtcrnConfig:
-    """Real-time 16 kHz GTCRN speech enhancement on CPU via sherpa-onnx."""
-
-    enabled: bool = True
-    num_threads: int = 1
-    model_path: str = ""  # empty means cached official gtcrn_simple.onnx
-
-
-@dataclass
 class VadConfig:
     threshold: float = 0.50
     neg_threshold: float = 0.30
     min_silence_ms: int = 500
     speech_pad_ms: int = 150
     min_speech_ms: int = 250
+    short_reply_ms: int = 120
+    short_reply_probability: float = 0.85
     onset_ms: int = 80  # continuous speech required before opening a segment
     prob_smooth_frames: int = 5  # smooth raw FireRed probabilities across 50 ms
     max_utterance_s: float = 7.0
@@ -79,21 +72,6 @@ class VadConfig:
     fallback_s: float = 0.0  # opt-in probes risk invented words on non-speech/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
-
-
-@dataclass
-class SpeakerConfig:
-    """CPU Sherpa speaker diarization of each bounded VAD utterance."""
-    enabled: bool = True
-    model_dir: str = ""
-    num_threads: int = 2
-    min_turn_s: float = 0.55
-    max_turns: int = 5
-    boundary_search_ms: int = 180
-    boundary_quiet_ms: int = 40
-    boundary_quiet_ratio: float = 0.45
-    interruption_handoffs: bool = True
-    interruption_min_continuation_s: float = 0.25
 
 
 @dataclass
@@ -121,14 +99,6 @@ class WhisperConfig:
     max_compression_ratio: float = 2.4
     noisy_segment_no_speech_prob: float = 0.60
     noisy_segment_min_avg_logprob: float = -0.50
-    # Do not categorically ban real signoffs: suppress repeated identical
-    # outro-like phrases within this playback-time window.
-    suppress_repeated_signoffs: bool = True
-    signoff_cooldown_s: float = 1200.0
-    # Standalone video outros are frequently hallucinated on weak game audio.
-    # Allow at the actual end of a completed VOD, not during live/gameplay.
-    suppress_generic_outros: bool = True
-    outro_allow_near_vod_end_s: float = 90.0
     # Opt-in bounded English context; no cross-window Whisper feedback loop.
     use_text_context: bool = False
     text_context_lines: int = 2
@@ -141,7 +111,7 @@ class WhisperConfig:
     hololive_name_limit: int = 6
     hololive_detected_names: list[str] = field(default_factory=list)
     # Whisper is not instruction-tuned; this is a *hint*, not a command.
-    concise_english: bool = True
+    concise_english: bool = False
     style_prompt: str = ""  # no instruction-style priming; concise output filter handles fillers
     remove_fillers: bool = True
     collapse_repetitions: bool = True
@@ -149,18 +119,14 @@ class WhisperConfig:
     audio_context_enabled: bool = False
     audio_context_s: float = 1.2
     audio_context_max_gap_s: float = 2.0
-    suppress_standalone_laughter: bool = True  # skip only pure nonverbal laughs
     retry_uncertain: bool = True
     # Do not re-decode a wholly rejected window when Whisper strongly
     # predicts non-speech. Higher values preserve more faint speech retries.
     no_speech_retry_block_threshold: float = 0.85
-    retry_on_outro: bool = True
     retry_temperature: float = 0.2
     # Only recover a weak translation when both decoding passes agree
     # verbatim, FireRedVAD is confident, and both passes indicate speech.
     rescue_stable_weak_speech: bool = True
-    # Corroborate repeated isolated stock thanks before displaying them.
-    confirm_repeated_stock_thanks: bool = True
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = False
@@ -207,9 +173,7 @@ class MpvConfig:
 class Config:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
-    gtcrn: GtcrnConfig = field(default_factory=GtcrnConfig)
     vad: VadConfig = field(default_factory=VadConfig)
-    speaker: SpeakerConfig = field(default_factory=SpeakerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
@@ -238,13 +202,6 @@ def load_config(path: Path) -> Config:
     ):
         mpv_data.pop(obsolete, None)
 
-    # Retired cross-utterance identity fields in local config are ignored.
-    valid_speaker_keys = {entry.name for entry in fields(SpeakerConfig)}
-    speaker_data = {
-        key: value for key, value in data.get("speaker", {}).items()
-        if key in valid_speaker_keys
-    }
-
     # Ignore retired Granite and incompatible legacy ASR/caption blocks.
     # Old git-ignored config.toml files remain safe to reuse.
     whisper_fields = {entry.name for entry in fields(WhisperConfig)}
@@ -258,9 +215,7 @@ def load_config(path: Path) -> Config:
     return Config(
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
-        gtcrn=GtcrnConfig(**data.get("gtcrn", {})),
         vad=VadConfig(**data.get("vad", {})),
-        speaker=SpeakerConfig(**speaker_data),
         whisper=WhisperConfig(**whisper_data),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**mpv_data),

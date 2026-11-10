@@ -54,38 +54,27 @@ if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src"
 )
 
-rem Keep Sherpa-ONNX for CPU speaker-turn diarization; GTCRN is disabled.
-rem Check the installed package version without importing native ORT DLLs during sync detection.
 set "NEED_SYNC=0"
 if not exist "uv.lock" set "NEED_SYNC=1"
-uv run --no-sync python -c "import numpy, fireredvad, faster_whisper, auto_translate; import importlib.metadata as m; m.version('sherpa-onnx')" >nul 2>nul
+uv run --no-sync python -c "import numpy, fireredvad, faster_whisper, auto_translate" >nul 2>nul
 if errorlevel 1 set "NEED_SYNC=1"
 if "%NEED_SYNC%"=="1" (
-    echo Installing Whisper Large-v3, FireRedVAD and Sherpa-ONNX CPU audio models...
-    uv sync --extra diarization
+    echo Installing Whisper Large-v3 and FireRedVAD dependencies...
+    uv sync
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.
-        echo Try: uv sync --extra diarization
+        echo Try: uv sync
         pause
         exit /b 1
     )
 )
-rem Check that the Sherpa native runtime loads before opening the player.
-uv run --no-sync python -c "import sherpa_onnx" >nul 2>nul
-if errorlevel 1 (
-    echo ERROR: Sherpa-ONNX failed to import. Check Windows native runtime/DLL dependencies.
-    echo Try: uv sync --extra diarization
-    pause
-    exit /b 1
-)
-
 echo.
 echo Starting Whisper direct Japanese-audio-to-English translation...
-echo Audio processing: GTCRN enhancement OFF, Sherpa speaker turns ON (CPU).
+echo Audio processing: Original 16 kHz mono audio to FireRedVAD and Whisper.
 echo MPV safe hardware decoding, Whisper int8_float16 (stable GPU baseline).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --video-quality %VIDEO_QUALITY% --whisper-compute int8_float16 --audio-profile speaker --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --video-quality %VIDEO_QUALITY% --whisper-compute int8_float16 --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

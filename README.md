@@ -1,10 +1,10 @@
 # Whisper Large-v3 Direct Japanese Audio-to-English Translation (AST)
 
-Branch: whisper-v3. This is a **single-model** offline translation pipeline. Only CTranslate2/faster-whisper multilingual Whisper Large-v3 generates the English subtitles. No separate Japanese ASR stage, external LLM, model-server, or GGUF runtime.
+This is a **single-model** offline translation pipeline. Only CTranslate2/faster-whisper multilingual Whisper Large-v3 generates the English subtitles. No separate Japanese ASR stage, external LLM, model-server, or GGUF runtime.
 
 ## Pipeline
 
-YouTube live/VOD or local media → FFmpeg 16kHz mono → optional GTCRN (CPU) → FireRedVAD (CUDA) → optional Sherpa speaker turns (CPU) → **Whisper Large-v3 (Japanese audio → English)** → MPV English-only subtitles/terminal.
+YouTube live/VOD or local media → FFmpeg 16kHz mono → FireRedVAD (CUDA) → **Whisper Large-v3 (Japanese audio → English)** → MPV English-only subtitles/terminal.
 
 Whisper uses language=ja, task=translate, condition_on_previous_text=False and vad_filter=False. Old config.toml values requesting transcription are ignored. Previous [translate] settings are ignored. Large-v3 Turbo is not recommended because its model is not trained for speech translation.
 
@@ -15,25 +15,17 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
 ## Update and start (Windows)
 
     cd /d C:\Games\video-translate-whisper
-    git fetch origin && git switch whisper-v3 && git pull --ff-only origin whisper-v3
-    uv sync --extra diarization
+    git fetch origin && git switch feature/whisper-anti-hallucination && git pull --ff-only origin feature/whisper-anti-hallucination
+    uv sync
     "Start translate.bat"
 
-Launcher defaults: GTCRN speech enhancement **disabled**, Sherpa CPU speaker-turn segmentation **enabled** (`--audio-profile speaker`), --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute int8_float16 (prior smooth-playback baseline; opt into FP16 with --whisper-compute float16), --delay 10; no translator server is started. The previous FP16-by-default trial was rolled back after a report of a prolonged video freeze with audio continuing. This is an isolation test; causality is not yet proven. Stop old standalone servers manually if still running to free VRAM.
-
-## Sherpa speaker turns (GTCRN disabled)
-
-The launcher now runs with `--audio-profile speaker`: the original **16 kHz mono audio** goes directly to FireRedVAD, then Sherpa-ONNX detects possible **speaker-turn boundaries within VAD utterances on CPU** before Whisper. GTCRN enhancement and UVR vocal separation are disabled. Sherpa-ONNX remains installed by the launcher using `uv sync --extra diarization` when missing; its official ONNX models download on first use and are reused. It does **not** provide stable speaker identities or isolate overlapping voices.
-
-Sherpa segmentation can add CPU work and affect subtitle latency; switch to `--audio-profile baseline` if you need a GTCRN-off and Sherpa-off comparison. MPV video quality, HTTPS/DASH playback, and Whisper precision remain unchanged.
-
-Whisper now avoids promoting **weakly decoded standalone generic thanks** from its dual-decode recovery path. Repeated isolated `Thank you` / `Thank you very much` outputs within a short window get a confirming decode; low-confidence or inconsistent repetitions are suppressed, while confidently corroborated expressions of thanks and longer contextual sentences remain allowed. This does not guarantee hallucination-free translation.
+The launcher passes original 16 kHz mono PCM to FireRedVAD and Whisper. It uses MPV safe hardware decoding, a 10-second playback delay and CUDA int8_float16. Obsolete speaker and enhancement config sections are ignored.
 
 ## YouTube quality selector
 
 `Start translate.bat` now displays a numbered video-quality menu after the URL: **1 = 360p, 2 = 480p, 3 = 720p, 4 = 1080p**. Enter **3**, or press Enter to use the default **720p**. The choice is applied before MPV opens the video, and yt-dlp chooses the best available stream **not exceeding** that height (for example, 480p if 720p is unavailable). A mid-playback quality change is intentionally not offered because reloading the source may disturb native seeking and subtitle timing.
 
-You can also run the CLI with `--video-quality 720`. The launcher choice takes precedence over custom video format selectors in `config.toml`; when the CLI flag is absent, the existing selectors remain unchanged. Finished VODs still prefer HTTPS/DASH and fall back to HLS; live streams still prefer HLS. Whisper audio inference, GTCRN, VAD, and the independent audio ingest format are unaffected.
+You can also run the CLI with `--video-quality 720`. The launcher choice takes precedence over custom video format selectors in `config.toml`; when the CLI flag is absent, the existing selectors remain unchanged. Finished VODs still prefer HTTPS/DASH and fall back to HLS; live streams still prefer HLS. Whisper audio inference, VAD, and the independent audio ingest format are unaffected.
 
 ## Key defaults and silence protections
 
@@ -55,7 +47,32 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
     [ingest]
     vod_max_audio_lead_s = 75.0
 
-FireRedVAD gates incoming speech before translation. VAD-negative probes, silence and non-finite audio are skipped. Whisper rejects low-confidence/repetitive segments and preserves no-speech probabilities even for rejected segments. High-confidence silence rejection blocks another warmer decode (default 0.85), while uncertain quiet speech may still retry. Retries decode the **same audio window**, not previous audio context. Standalone generic video outros during gameplay are suppressed. No second Silero VAD or cross-window condition_on_previous_text feedback is enabled.
+The segmenter retains pre-onset audio in addition to the onset confirmation window. The usual 250 ms speech minimum also accepts short runs with at least 120 ms of consecutive smoothed speech probability at or above 0.85. This can recover brief replies and can admit more speech-like game audio.
+
+Whisper uses scalar temperature 0, beam 5, no-speech 0.6, log probability -1.0 and compression ratio 2.4. The verifier may decode the same PCM once at temperature 0.2 without prompts or names, up to 12 seconds per retry. It checks unusually long output, multiword loops and combinations of weak VAD and decoder evidence. A higher score alone cannot replace an existing translation with different words. Filler cleanup defaults off. Accepted short interjections and real signoffs can reach the overlay.
+
+## Repeat the comparison
+
+Run the commands below from the feature checkout. The synthetic replay uses a fixed 38-second PCM fixture and scripted FireRed probability inputs. It exercises actual segmentation logic without speech recognition. The matrix includes the checkout default plus every combination of 80/300 ms padding, 400/500 ms silence and 12/16/20 s hard caps. Each soft cap is one second below its hard cap.
+
+    uv run --no-sync python tools/benchmark_whisper.py --synthetic --output synthetic.jsonl
+
+For a GPU comparison, create a JSON array in `clips.json` with one entry per local 16 kHz mono 16-bit WAV. Use separate clips of game audio/music without speech and clips containing one annotated utterance each. Include longer exchanges to inspect segmentation and cue timing. Example entries:
+
+    [
+      {"wav":"effects.wav","kind":"non-speech"},
+      {"wav":"reply.wav","kind":"utterance","ja":"行かない","en":"I'm not going."},
+      {"wav":"conversation.wav","names":["Watame"]}
+    ]
+
+Create the baseline worktree once and run the same script and manifest in each environment. Use the same model files, package versions and GPU load. The baseline command uses the original launcher's speaker splitter. Model loading and the optional Japanese diagnostic are outside the reported processing interval.
+
+    git worktree add --detach ..\whisper-before 05665ed85e96a6016f239dff6dd587c13611bf6e
+    uv sync --project ..\whisper-before --extra diarization
+    uv run --project ..\whisper-before --no-sync python tools/benchmark_whisper.py --checkout ..\whisper-before --baseline --manifest clips.json --japanese --output before.jsonl
+    uv run --no-sync python tools/benchmark_whisper.py --manifest clips.json --japanese --output after.jsonl
+
+Compare records by PCM hash. Each includes segment boundaries, English cues, processing seconds and device-wide VRAM sampled after decoding. The per-cue latency estimate includes audio collected after the cue endpoint and decoder time. MPV display timing, pipeline backlog and peak VRAM require a playback run. Japanese CER uses the concatenated diagnostic transcript and a human reference. Single-utterance omission counts detect empty output only. Review nonempty translations against the audio and English references for wrong negation, names, omissions and additions.
 
 ## MPV / VOD performance
 

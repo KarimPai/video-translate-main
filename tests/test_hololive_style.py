@@ -104,7 +104,7 @@ class ConciseStyleTests(unittest.TestCase):
     def test_whisper_pipeline_passes_style_prompt_and_selected_names(self):
         class Fake:
             def __init__(self):
-                self.cfg = WhisperConfig(hololive_detected_names=["Watame"])
+                self.cfg = WhisperConfig(concise_english=True, hololive_detected_names=["Watame"])
                 self.calls = []
             def decode_audio(self, audio, *, prompt=None, hotwords=None,
                              temperature=None):
@@ -124,7 +124,7 @@ class ConciseStyleTests(unittest.TestCase):
     def test_explicit_style_prompt_can_still_be_opted_in(self):
         class Fake:
             def __init__(self):
-                self.cfg = WhisperConfig(style_prompt="GTA gaming subtitles.")
+                self.cfg = WhisperConfig(concise_english=True, style_prompt="GTA gaming subtitles.")
                 self.last_prompt = None
             def decode_audio(self, audio, *, prompt=None, hotwords=None,
                              temperature=None):

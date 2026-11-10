@@ -55,6 +55,7 @@ class IpcTests(unittest.TestCase):
             patch(mod + ".find_mpv", return_value="mpv"),
             patch(mod + ".subprocess.Popen") as launch,
             patch(mod + "._create_kill_job"),
+            patch(mod + "._gpu_memory_snapshot", return_value="unavailable"),
             patch(mod + ".MpvIpc") as connect,
             patch(mod + ".time.sleep"),
             patch(mod + ".threading.Thread.start"),

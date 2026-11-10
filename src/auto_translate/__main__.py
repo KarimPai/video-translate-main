@@ -48,6 +48,7 @@ def main() -> None:
 
     from .config import load_config, mpv_youtube_format
     from .voiceping_ast import VoicePingAST
+    from .hololive_names import select_hololive_hints
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
@@ -74,6 +75,17 @@ def main() -> None:
             args.video_quality,
             "live HLS" if source.live else "VOD HTTPS/DASH first",
         )
+
+    cfg.ast.detected_names = select_hololive_hints(
+        source.timeline,
+        enabled=cfg.ast.hololive_names_enabled,
+        limit=cfg.ast.hololive_name_limit,
+    )
+    log.info(
+        "VoicePing stream-grounded names: %s (manual: %s)",
+        ", ".join(cfg.ast.detected_names) or "none",
+        ", ".join(cfg.ast.name_hints) or "none",
+    )
 
     started = time.perf_counter()
     ast = VoicePingAST(cfg.ast)

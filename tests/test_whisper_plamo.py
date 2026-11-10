@@ -165,7 +165,7 @@ class TwoStageTests(unittest.TestCase):
                     return WhisperDecode("怪しい", avg_logprob=-0.9)
                 return WhisperDecode("危ない", avg_logprob=-0.2)
         asr = Uncertain([])
-        asr.cfg = WhisperConfig()
+        asr.cfg = WhisperConfig(retry_uncertain=True)
         result = run_stage(run_whisper_asr, asr, [audio_utt()])
         self.assertEqual([x.ja for x in result], ["危ない"])
         self.assertEqual(len(asr.calls), 2)

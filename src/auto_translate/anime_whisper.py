@@ -147,23 +147,25 @@ class AnimeWhisperASR:
             predicted = self._model.generate(**arguments)
         # Model outputs may be a tensor or GenerationOutput, depending on flags.
         sequences = getattr(predicted, "sequences", predicted)
-        # Score only the tokens actually selected by the final beam path.
-        # This is a ranking heuristic, NOT a calibrated hallucination risk.
+        # Critical Transformers 5.x Whisper beam-search workaround:
+        # Whisper's outputs.scores have ALREADY been selected by beam_indices.
+        # compute_transition_scores(sequences, scores, beam_indices) would
+        # index the beams a second time and can trigger a sticky CUDA
+        # ScatterGatherKernel out-of-bounds assertion (HF issue #48621).
+        # Read the finished beam's sequences_scores directly instead.
+        # This is the length-penalized beam score, not a calibrated probability.
         avg_logprob = None
-        score_steps = getattr(predicted, "scores", None)
-        if score_steps and hasattr(self._model, "compute_transition_scores"):
-            try:
-                transitions = self._model.compute_transition_scores(
-                    sequences, score_steps,
-                    beam_indices=getattr(predicted, "beam_indices", None),
-                    normalize_logits=True,
-                )
-                selected = transitions[0].detach().float()
-                selected = selected[torch.isfinite(selected) & (selected < 0)]
-                if selected.numel() >= 2:
-                    avg_logprob = float(selected.mean().item())
-            except (ValueError, RuntimeError, TypeError, AttributeError) as exc:
-                log.debug("Anime Whisper token score recovery unavailable: %s", exc)
+        if collect_scores:
+            sequence_scores = getattr(predicted, "sequences_scores", None)
+            if sequence_scores is not None:
+                values = sequence_scores.detach().float().reshape(-1)
+                if values.numel() == 1 and bool(torch.isfinite(values[0])):
+                    avg_logprob = float(values[0].item())
+                else:
+                    log.debug(
+                        "Anime Whisper beam sequence score unavailable "
+                        "(unexpected count or non-finite result)"
+                    )
         decoded = self._processor.batch_decode(
             sequences, skip_special_tokens=True,
         )

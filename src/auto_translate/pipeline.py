@@ -33,15 +33,41 @@ def _words(text: str) -> list[str]:
     return re.findall(r"\w+(?:'\w+)*", text.casefold().replace("’", "'"))
 
 
+# Conservative full-cue patterns: do not match ordinary dialogue containing
+# these words. English is the normal output of the direct JA->EN AST pipeline.
+_PHANTOM_PHRASE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "outro": (
+        re.compile(r"(?:thank you|thanks)(?: very much)? for watching"),
+    ),
+    "credits": (
+        re.compile(r"(?:subtitles?|captions?) (?:by|provided by|created by|made by)(?: [\w.'/-]+){0,6}"),
+        re.compile(r"(?:subtitled|captioned) by(?: [\w.'/-]+){0,6}"),
+    ),
+    "subscribe": (
+        re.compile(r"(?:please )?subscribe to (?:my|our|the) channel"),
+        re.compile(r"(?:please )?(?:like and )?subscribe"),
+        re.compile(r"(?:don'?t|do not) forget to (?:like and )?subscribe"),
+        re.compile(r"(?:please )?(?:hit|click) the subscribe button"),
+        re.compile(r"(?:please )?like,? share,? and subscribe"),
+    ),
+}
+
+
+def _phantom_phrase_kind(text: str) -> str:
+    """Return the matched kind for a standalone stock phrase, else empty."""
+    normalized = re.sub(r"\s+", " ", text).strip()
+    normalized = normalized.strip(" .!?…。、，:;\"'“”’").casefold()
+    if not normalized:
+        return ""
+    for kind, patterns in _PHANTOM_PHRASE_PATTERNS.items():
+        if any(pattern.fullmatch(normalized) for pattern in patterns):
+            return kind
+    return ""
+
+
 def _is_stock_outro(text: str) -> bool:
-    """Only target complete, generic closing sentences, not ordinary thanks."""
-    words = _words(text)
-    return words in (
-        ["thank", "you", "for", "watching"],
-        ["thanks", "for", "watching"],
-        ["thank", "you", "very", "much", "for", "watching"],
-        ["thanks", "very", "much", "for", "watching"],
-    )
+    """Retain the existing focused-outro matcher for compatibility."""
+    return _phantom_phrase_kind(text) == "outro"
 
 
 def _japanese_supports_outro(text: str) -> bool:
@@ -57,6 +83,54 @@ def _japanese_supports_outro(text: str) -> bool:
     watching = any(term in normalized for term in ("視聴", "見て", "観て", "ご覧", "見に", "観に"))
     gratitude = any(term in normalized for term in ("ありがと", "感謝", "サンキュー"))
     return watching and gratitude
+
+
+def _japanese_supports_phantom(kind: str, text: str) -> bool:
+    """Require matching Japanese content, not another English decode alone."""
+    if kind == "outro":
+        return _japanese_supports_outro(text)
+    normalized = re.sub(r"\s+", "", text).casefold()
+    if kind == "credits":
+        return (
+            any(word in normalized for word in ("字幕", "テロップ", "キャプション"))
+            and any(word in normalized for word in (
+                "作成", "制作", "提供", "担当", "協力", "による", "by",
+            ))
+        )
+    if kind == "subscribe":
+        return (
+            "チャンネル登録" in normalized
+            or ("subscribe" in normalized and "channel" in normalized)
+            or ("登録" in normalized and any(word in normalized for word in (
+                "お願いします", "よろしく", "してください",
+            )))
+        )
+    return False
+
+
+def _phantom_timing_implausible(text: str, duration_s: float) -> bool:
+    """Use only egregious rates: English words != Japanese speech timing."""
+    if duration_s < 0.28:
+        return True
+    words = len(_words(text))
+    return bool(words >= 3 and duration_s < 1.5 and words / duration_s > 8.0)
+
+
+def _phantom_weak_audio(vad_confidence: float | None, decoded: object) -> bool:
+    """Require combined low VAD and high no-speech evidence for an early drop."""
+    ns = getattr(decoded, "no_speech_prob", None)
+    if vad_confidence is None or ns is None:
+        return False
+    if not math.isfinite(float(vad_confidence)) or not math.isfinite(float(ns)):
+        return False
+    if vad_confidence < 0.60 and ns >= 0.85:
+        return True
+    logprob = getattr(decoded, "avg_logprob", None)
+    return bool(
+        vad_confidence < 0.50 and ns >= 0.60
+        and logprob is not None and math.isfinite(float(logprob))
+        and logprob < -0.80
+    )
 
 
 def _structural_issue(text: str, seconds: float) -> str:
@@ -252,25 +326,50 @@ def run_whisper(
                     english = _stable_weak_speech(original, second, utt.vad_confidence, cfg)
             if (issue or weak_speech) and not verified:
                 english = ""
-            if (english and getattr(cfg, "verify_stock_outros", True)
-                    and _is_stock_outro(english)):
-                # A short fluent outro can score well even over music/game
-                # noise. Verify the *meaning* against the original Japanese
-                # audio, not against the first English translation.
-                japanese = ""
-                verifier = getattr(whisper, "transcribe_japanese_evidence", None)
-                if callable(verifier):
-                    try:
-                        japanese = verifier(utt.audio)
-                    except Exception as exc:
-                        log.warning("Whisper stock-outro verification failed: %s", exc)
-                if not _japanese_supports_outro(japanese):
+            phantom_kind = _phantom_phrase_kind(english)
+            phantom_enabled = (
+                getattr(cfg, "verify_stock_outros", True)
+                if phantom_kind == "outro"
+                else getattr(cfg, "filter_phantom_phrases", True)
+            )
+            if phantom_kind and phantom_enabled:
+                duration_s = len(utt.audio) / SAMPLE_RATE
+                bad_timing = _phantom_timing_implausible(english, duration_s)
+                weak_audio = _phantom_weak_audio(utt.vad_confidence, selected)
+                if weak_audio:
                     log.info(
-                        "Suppressed uncorroborated Whisper stock outro: "
-                        "vad=%s en=%r ja_check=%r",
-                        utt.vad_confidence, english[:120], japanese[:120],
+                        "Suppressed Whisper phantom phrase (weak audio): "
+                        "kind=%s duration=%.2fs vad=%s en=%r",
+                        phantom_kind, duration_s, utt.vad_confidence,
+                        english[:120],
                     )
                     english = ""
+                else:
+                    # Decode the identical PCM once more, unprompted, into
+                    # Japanese. It is corroboration, not independent proof.
+                    japanese = ""
+                    verifier = getattr(whisper, "transcribe_japanese_evidence", None)
+                    if callable(verifier):
+                        try:
+                            japanese = verifier(utt.audio)
+                        except Exception as exc:
+                            log.warning("Whisper phantom verification failed: %s", exc)
+                    corroborated = _japanese_supports_phantom(phantom_kind, japanese)
+                    # Do not reject a genuine very fast phrase solely from the
+                    # English-word/JA-duration ratio when VAD is convincing.
+                    timing_reject = bad_timing and (
+                        utt.vad_confidence is None
+                        or utt.vad_confidence < 0.85
+                    )
+                    if not corroborated or timing_reject:
+                        log.info(
+                            "Suppressed uncorroborated Whisper phantom phrase: "
+                            "kind=%s duration=%.2fs timing=%s vad=%s en=%r ja_check=%r",
+                            phantom_kind, duration_s, bad_timing,
+                            utt.vad_confidence, english[:120], japanese[:120],
+                        )
+                        english = ""
+
         else:
             # Existing test doubles and older API-compatible adapters.
             english = whisper.translate_audio(utt.audio)

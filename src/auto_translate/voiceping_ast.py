@@ -28,11 +28,20 @@ def build_ast_context(cfg: VoicePingAstConfig) -> str:
     if not cfg.context_enabled:
         return ""
     parts = []
+    if cfg.japanese_source_only:
+        # The fine-tuned model still receives language="English": that is the
+        # target output language. Context is an unverified source preference,
+        # not an acoustic language-ID gate.
+        parts.append(
+            "Source audio: Japanese speech only. Translate Japanese speech to "
+            "English. When the speaker is speaking English rather than Japanese, "
+            "output nothing. Ignore English-only speech, laughter and game sounds. "
+            "Keep an English word when it occurs within a Japanese utterance."
+        )
     if cfg.concise_context:
         parts.append(
-            "Translate only audible Japanese speech into concise, natural English. "
-            "Preserve meaning, negation and proper names. Do not invent details, "
-            "explain, or repeat a phrase unnecessarily."
+            "Use concise, natural English. Preserve meaning, negation and "
+            "proper names. Do not invent details or repeat phrases unnecessarily."
         )
     names: list[str] = []
     seen = set()

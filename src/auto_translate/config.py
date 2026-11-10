@@ -114,6 +114,9 @@ class WhisperConfig:
     audio_context_enabled: bool = True
     audio_context_s: float = 1.2
     audio_context_max_gap_s: float = 2.0
+    suppress_standalone_laughter: bool = True  # skip only pure nonverbal laughs
+    suppress_repeated_japanese_outros: bool = True  # identical exact phrase only
+    japanese_outro_cooldown_s: float = 120.0
     retry_uncertain: bool = True
     retry_on_outro: bool = True
     retry_temperature: float = 0.2

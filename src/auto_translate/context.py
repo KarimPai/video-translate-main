@@ -1,8 +1,7 @@
-"""Bounded, seek-safe context for direct Whisper speech translation.
+"""Seek-safe optional English prompts and bounded Hololive name hints.
 
-Clean accepted English can optionally bias decoding. A tiny rolling audio
-tail is used only on uncertain retries; any output from overlapping audio
-must pass strict text-overlap removal before it can reach the subtitle track.
+The active Whisper AST retry uses the same current utterance without older
+audio, avoiding transcript echo and speech timestamp drift.
 """
 from __future__ import annotations
 

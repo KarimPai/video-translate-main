@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from auto_translate.config import VadConfig, WhisperConfig
-from auto_translate.two_stage import run_whisper_asr
+from auto_translate.pipeline import run_whisper
 from auto_translate.types import AudioChunk, Utterance
 from auto_translate.vad import FRAME, Segmenter
 from auto_translate.whisper_v3 import WhisperDecode, WhisperLargeV3
@@ -19,7 +19,7 @@ def run_asr(model, *utterances):
     for item in utterances:
         source.put(item)
     source.put(None)
-    run_whisper_asr(model, source, target)
+    run_whisper(model, source, target)
     results = []
     while (item := target.get_nowait()) is not None:
         results.append(item)
@@ -39,7 +39,7 @@ class SilenceGuardTests(unittest.TestCase):
             def transcribe(self, audio, **kwargs):
                 self.options = kwargs
                 return iter([SimpleNamespace(
-                    text="はい", avg_logprob=-0.2,
+                    text="Yes.", avg_logprob=-0.2,
                     compression_ratio=1.1, no_speech_prob=0.03,
                 )]), None
 
@@ -57,7 +57,7 @@ class SilenceGuardTests(unittest.TestCase):
         class Model:
             def transcribe(self, audio, **kwargs):
                 return iter([SimpleNamespace(
-                    text="ありがとうございました",
+                    text="Thank you for watching.",
                     avg_logprob=-1.5, compression_ratio=1.1,
                     no_speech_prob=0.96,
                 )]), None
@@ -98,12 +98,12 @@ class SilenceGuardTests(unittest.TestCase):
                         no_speech_prob=0.25,
                     )
                 return WhisperDecode(
-                    "はい", avg_logprob=-0.2, no_speech_prob=0.04,
+                    "Yes.", avg_logprob=-0.2, no_speech_prob=0.04,
                 )
 
         fake = FakeWhisper()
         results = run_asr(fake, utterance())
-        self.assertEqual([item.ja for item in results], ["はい"])
+        self.assertEqual([item.en for item in results], ["Yes."])
         self.assertEqual(fake.calls, 2)
 
     def test_silence_gap_is_not_sent_to_whisper_and_keeps_timestamps(self):

@@ -1,6 +1,6 @@
-"""Long-VOD rendering and transcription fidelity regression tests.
+"""Long-VOD indexed subtitle cache and diagnostic bound tests.
 
-Offline: MPV, CUDA and llama-server are not launched.
+Offline: MPV and CUDA models are not launched.
 """
 from __future__ import annotations
 
@@ -10,19 +10,12 @@ import unittest
 from collections import deque
 from types import SimpleNamespace
 
-from auto_translate.asr_quality import (
-    is_standalone_laughter, formulaic_japanese_outro_key,
-)
-from auto_translate.config import MpvConfig, TranslateConfig
+from auto_translate.config import MpvConfig
 from auto_translate.output.mpv import (
     BOUNDED_DEMUX_CACHE_OPTIONS, MpvOutput,
 )
 from auto_translate.session_cache import SessionSubtitleCache
-from auto_translate.translation_integrity import contextual_translation_hints
-from auto_translate.two_stage import run_plamo_translate, run_whisper_asr
-from auto_translate.types import AudioProgress, Subtitle, Transcript, Utterance
-from auto_translate.whisper_v3 import WhisperDecode
-import numpy as np
+from auto_translate.types import Subtitle
 
 
 class BombList(list):
@@ -84,89 +77,6 @@ class LongVodMpvTests(unittest.TestCase):
         out._subtitle_cache.add(cue)
         out._render(25190.0)
         self.assertLess(len(out._logged_displayed_subtitles), 8192)
-
-
-class ModelFidelityTests(unittest.TestCase):
-    def test_standalone_laughter_only(self):
-        self.assertTrue(is_standalone_laughter("あははは…"))
-        self.assertTrue(is_standalone_laughter("ふふ…"))
-        self.assertFalse(is_standalone_laughter("そうだね、あはは"))
-        self.assertFalse(is_standalone_laughter("え、すごい！"))
-
-    def test_outro_key_is_punctuation_tolerant(self):
-        self.assertEqual(
-            formulaic_japanese_outro_key("ご視聴ありがとうございました。"),
-            "ご視聴ありがとうございました",
-        )
-        self.assertIsNone(
-            formulaic_japanese_outro_key("ご視聴ありがとうございました、またね"),
-        )
-
-    def test_homophone_hints_require_context(self):
-        self.assertTrue(contextual_translation_hints(
-            "無線マウスに慣れると遊星に戻れない"))
-        self.assertFalse(contextual_translation_hints("遊星の風景"))
-        self.assertTrue(contextual_translation_hints("車が弾付き事故になった"))
-        self.assertFalse(contextual_translation_hints("弾付き事故"))
-        self.assertTrue(contextual_translation_hints(
-            "強姦", recent_fragments=("交換屋で渡した",)))
-        self.assertFalse(contextual_translation_hints("強姦"))
-
-    def test_translator_preserves_raw_katakana_and_timestamps(self):
-        class FakeTranslator:
-            cfg = TranslateConfig()
-            def translate(self, ja, history, *, fragment_context=()):
-                return "Translation: " + ja
-
-        q_in, q_out = queue.Queue(), queue.Queue()
-        q_in.put(Transcript(1.0, 2.0, "シャッター"))
-        q_in.put(Transcript(2.1, 2.5, "シャッタ"))
-        q_in.put(None)
-        run_plamo_translate(FakeTranslator(), q_in, q_out)
-        first, second = q_out.get_nowait(), q_out.get_nowait()
-        self.assertEqual(first.ja, "シャッター")
-        self.assertEqual(second.ja, "シャッタ")
-        self.assertEqual(second.start_s, 2.1)
-        self.assertEqual(second.en, "Translation: シャッタ")
-
-    def test_laughter_filter_resets_on_seek(self):
-        class FakeWhisper:
-            def __init__(self):
-                from auto_translate.config import WhisperConfig
-                self.cfg = WhisperConfig(retry_uncertain=False)
-                self.answers = iter([
-                    "あははは", "大丈夫、あはは",
-                    "ご視聴ありがとうございました",
-                    "ご視聴ありがとうございました。",
-                    "ご視聴ありがとうございました",
-                ])
-            def decode_audio(self, audio, *, prompt=None, hotwords=None, temperature=None):
-                return WhisperDecode(next(self.answers), avg_logprob=-.2)
-
-        q_in, q_out = queue.Queue(), queue.Queue()
-        def utt(t, generation=0):
-            return Utterance(t, t+.5, np.full(8000, .2, dtype=np.float32),
-                            generation=generation)
-        q_in.put(utt(1))
-        q_in.put(utt(2))
-        q_in.put(utt(3))
-        q_in.put(utt(4))
-        q_in.put(AudioProgress(5*3600*16000, reset=True, generation=1))
-        q_in.put(utt(5*3600, generation=1))
-        q_in.put(None)
-        run_whisper_asr(FakeWhisper(), q_in, q_out)
-        results = []
-        while True:
-            item = q_out.get_nowait()
-            if item is None:
-                break
-            if isinstance(item, Transcript):
-                results.append(item.ja)
-        self.assertEqual(results, [
-            "大丈夫、あはは",
-            "ご視聴ありがとうございました",
-            "ご視聴ありがとうございました",
-        ])
 
 
 if __name__ == "__main__":

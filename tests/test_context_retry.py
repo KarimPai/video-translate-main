@@ -35,7 +35,7 @@ def run_once(engine, items):
 
 class ContextTests(unittest.TestCase):
     def test_tail_is_bounded_and_clear_on_handoff(self):
-        cfg = WhisperConfig(use_text_context=True)
+        cfg = WhisperConfig(use_text_context=True, audio_context_enabled=True)
         state = RecentSpeechContext(cfg)
         state.accept(utt(0, 3), "Watch the road.")
         self.assertEqual(len(state.audio_context(utt(3.2, 4))), 19200)
@@ -45,7 +45,9 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(state.last_text, "")
 
     def test_seek_and_long_gap_cannot_leak_history(self):
-        state = RecentSpeechContext(WhisperConfig(use_text_context=True))
+        state = RecentSpeechContext(WhisperConfig(
+            use_text_context=True, audio_context_enabled=True,
+        ))
         state.accept(utt(0, 2), "Let's go.")
         late = utt(11, 12)
         state.prepare(late)
@@ -111,24 +113,24 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(run_once(decoder, [utt()])[0].en, "Let's go!")
         self.assertEqual(len(decoder.calls), 1)
 
-    def test_contextual_retry_de_duplicates_and_preserves_timestamps(self):
+    def test_same_audio_retry_preserves_timestamps(self):
         decoder = FakeDecoder([
             WhisperDecode("We're going to the casino.", avg_logprob=-.15),
             WhisperDecode("Thank you for watching.", avg_logprob=-.25),
-            WhisperDecode("to the casino, now let's buy armor!", avg_logprob=-.1),
+            WhisperDecode("Now let's buy armor!", avg_logprob=-.1),
         ])
         cues = run_once(decoder, [utt(0,2), utt(2.2,4.2)])
         self.assertEqual([c.en for c in cues],
                          ["We're going to the casino.", "Now let's buy armor!"])
-        self.assertGreater(decoder.calls[-1][0], decoder.calls[1][0])
+        self.assertEqual(decoder.calls[-1][0], decoder.calls[1][0])
         self.assertEqual([(c.start_s,c.end_s) for c in cues],
                          [(0,2),(2.2,4.2)])
 
-    def test_unmatched_audio_overlap_keeps_primary_translation(self):
+    def test_untrusted_outro_retry_stays_filtered(self):
         decoder = FakeDecoder([
             WhisperDecode("We're going to the casino.", avg_logprob=-.2),
             WhisperDecode("Thank you for watching.", avg_logprob=-.2),
-            WhisperDecode("Invented unrelated sentence.", avg_logprob=-.1),
+            WhisperDecode("Thank you for watching.", avg_logprob=-.1),
         ])
         cues = run_once(decoder, [utt(0,2), utt(2.2,4.2)])
         self.assertEqual(len(cues), 1)

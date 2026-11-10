@@ -32,7 +32,9 @@
 "メンバーシップ" = "membership"
 "待機所" = "waiting room"
 "マシュマロ" = "Marshmallow questions"
-"てぇてぇ" = "teetee"
+"てぇてぇ" = "tee-tee (adorably wholesome affectionate interaction)"
+"てーてー" = "tee-tee (adorably wholesome affectionate interaction)"
+"てえてえ" = "tee-tee (adorably wholesome affectionate interaction)"
 "ガチ恋" = "romantic fan"
 "推し" = "oshi"
 "推し活" = "supporting your oshi"
@@ -204,6 +206,18 @@
 "セレスファウナ" = "Ceres Fauna"
 
 # Gaming vocabulary
+# Accuracy-first contexts for conversational VTuber / GTA / game chatter.
+# These keys must actually appear in the ASR; do not guess unheard terms.
+"無線マウス" = "wireless mouse"
+"有線マウス" = "wired mouse"
+"玉突き事故" = "multi-car pile-up"
+"観覧車" = "Ferris wheel"
+"遊園地" = "amusement park"
+"ハネムーン" = "honeymoon"
+"ハレムーン" = "honeymoon (possible mispronunciation; check wedding context)"
+"ジェットコースター" = "roller coaster"
+"てぇてぇしてる" = "being sweet and adorably affectionate together"
+"てーてーしてる" = "being sweet and adorably affectionate together"
 "エイム" = "aim"
 "エイム力" = "aim skill"
 "ヘッドショット" = "headshot"

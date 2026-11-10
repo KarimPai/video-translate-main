@@ -33,6 +33,12 @@ def is_standalone_laughter(text: str) -> bool:
     return bool(_LAUGHTER.fullmatch(_plain(text)))
 
 
+def formulaic_japanese_outro_key(text: str) -> str | None:
+    """Return normalized exact stock phrase; punctuation variants compare equal."""
+    value = _plain(text)
+    return value if value in _OUTROS else None
+
+
 def is_formulaic_japanese_outro(text: str) -> bool:
     """Recognize exact stock outros but never delete their first occurrence."""
-    return _plain(text) in _OUTROS
+    return formulaic_japanese_outro_key(text) is not None

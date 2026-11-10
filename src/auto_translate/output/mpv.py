@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path

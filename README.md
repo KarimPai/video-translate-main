@@ -29,9 +29,17 @@ to keep the ASR accuracy comparison controlled.
   no_repeat_ngram_size 5, repetition_penalty 1.0. Adaptive short-clip
   token budget is enabled (1s ~64 tokens, 3s ~122, 8s capped at 160),
   reducing the chance of generating unsupported extra sentences.
-- Re-transcription on uncertain output is OFF in this initial comparison so
-  model differences are easier to interpret. The existing FireRedVAD silence
-  gate, Japanese script gate, and local PLaMo translator remain active.
+- Accuracy-first retry: the primary decode uses beam 5 and optionally returns
+  token transition scores. When scores indicate an uncertain cue, or a stock
+  Japanese outro appears, the same audio is decoded again unprimed with beam 8
+  at temperature 0. The alternate hypothesis is accepted ONLY if it improves
+  the average token score by >=0.18, retains numbers, is Japanese, and has
+  sufficient text agreement (or replaces a stock outro). If scores are
+  unavailable, the first hypothesis is preserved. Token scores are heuristic,
+  not calibrated hallucination probabilities. Extra decoder scores may use
+  additional GPU memory (disable with [whisper] collect_token_scores=false).
+- The existing FireRedVAD silence gate, Japanese script gate, and local PLaMo
+  translator remain active.
 - FireRedVAD segmentation is tuned for fuller Japanese phrase boundaries:
   threshold 0.50, speech padding 250ms, minimum silence 550ms,
   minimum speech 180ms, 8s soft cap plus up to 1s extension.
@@ -39,8 +47,15 @@ to keep the ASR accuracy comparison controlled.
   actual dialogue is preserved. A repeated *exact* video outro is skipped
   only on its second occurrence within 120s. These are presentation filters,
   not proof of hallucination; disable either using config.toml if desired.
-- The Japanese text is passed unchanged from the ASR to PLaMo; the translator
-  still receives bounded prior context but cannot rewrite the shown JP text.
+- Translation-only contextual hints handle observed ASR confusions:
+  遊星/有線 and 無銭/無線 *in mouse context*, 弾付き事故/玉突き事故 with
+  traffic evidence, 覡断車/観覧車 within a Ferris-wheel sentence, and
+  ハレムーン/ハネムーン when a wedding is explicitly mentioned. No broad
+  homophone substitutions, no invented proper names, and no ASR priming.
+- The glossary now covers てーてー/てぇてぇ (wholesome affectionate interaction),
+  wireless/wired mice, traffic pile-ups, amusement parks and Ferris wheels.
+- The Japanese ASR transcript remains unchanged in terminal and subtitle
+  output; PLaMo gets suggestions as non-authoritative translation context.
 - The model transcribes sighs, laughter, and expressive speech by design;
   this may produce more nonverbal output, which is not inherently hallucination. PLaMo remains the only
   English translation engine and the ASR never generates explanatory narration.
@@ -81,6 +96,10 @@ uv run --no-sync python -m unittest discover -s tests -p "test_anime_whisper.py"
 uv run --no-sync python -m unittest discover -s tests -p "test_whisper_plamo.py" -v
 ```
 
+```cmd
+uv run --no-sync python -m unittest discover -s tests -p "test_anime_accuracy.py" -v
+```
+
 Optional local overrides to disable output filters for a full verbatim comparison:
 
 ```toml
@@ -88,6 +107,8 @@ Optional local overrides to disable output filters for a full verbatim compariso
 suppress_standalone_laughter = false
 suppress_repeated_japanese_outros = false
 adaptive_max_tokens = false
+retry_uncertain = false
+collect_token_scores = false
 ```
 
 The tests use fake output models or dependency injection; they do **not**

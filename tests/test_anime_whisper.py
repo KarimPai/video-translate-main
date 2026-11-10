@@ -136,20 +136,22 @@ class AnimeWhisperTests(unittest.TestCase):
         self.assertFalse(is_formulaic_japanese_outro("ご視聴ありがとうございました、またね"))
         self.assertFalse(is_formulaic_japanese_outro("ありがとう！"))
 
-    def test_recovers_optional_beam_token_scores_without_prompt(self):
+    def test_uses_safe_sequence_scores_even_when_beam_ancestry_is_nonzero(self):
+        # Reproduces the shape mismatch in Transformers issue #48621:
+        # Whisper has already collapsed the score beam axis but retains
+        # beam_indices > 0. The legacy helper would gather out of bounds.
         class ScoredModel(FakeModel):
             def generate(self, **kwargs):
                 self.calls.append(kwargs)
                 return SimpleNamespace(
                     sequences=torch.tensor([[10, 11, 12]]),
-                    scores=(torch.ones((5, 100)), torch.ones((5, 100))),
-                    beam_indices=torch.tensor([[0, 0, 0]]),
+                    scores=(torch.ones((1, 100)), torch.ones((1, 100))),
+                    beam_indices=torch.tensor([[0, 3, 4]]),
+                    sequences_scores=torch.tensor([-0.3], dtype=torch.float32),
                 )
 
-            def compute_transition_scores(self, sequences, scores,
-                                          beam_indices=None, normalize_logits=False):
-                self.normalized = normalize_logits
-                return torch.tensor([[-0.2, -0.4]], dtype=torch.float32)
+            def compute_transition_scores(self, *args, **kwargs):
+                raise AssertionError("Unsafe Whisper token gather must not run")
 
         model = ScoredModel()
         adapter = AnimeWhisperASR(
@@ -158,7 +160,28 @@ class AnimeWhisperTests(unittest.TestCase):
         )
         result = adapter.decode_audio(np.full(16000, .1, dtype=np.float32))
         self.assertAlmostEqual(result.avg_logprob, -0.3, places=5)
-        self.assertTrue(model.normalized)
+        self.assertEqual(result.text, "ロケランと車が来た")
+
+    def test_missing_or_nonfinite_beam_scores_fail_closed(self):
+        for score in (None, float("nan")):
+            class ScoredModel(FakeModel):
+                def generate(self, **kwargs):
+                    self.calls.append(kwargs)
+                    result = dict(sequences=torch.tensor([[10, 11, 12]]))
+                    if score is not None:
+                        result["sequences_scores"] = torch.tensor([score])
+                    return SimpleNamespace(**result)
+
+                def compute_transition_scores(self, *args, **kwargs):
+                    raise AssertionError("Unsafe token scoring must never run")
+
+            backend = AnimeWhisperASR(
+                WhisperConfig(device="cpu", compute_type="float32"),
+                model=ScoredModel(), processor=FakeProcessor(),
+            )
+            result = backend.decode_audio(np.full(16000, .1, dtype=np.float32))
+            self.assertIsNone(result.avg_logprob)
+            self.assertEqual(result.text, "ロケランと車が来た")
 
     def test_retry_override_keeps_deterministic_beam_search(self):
         asr, model, _ = self.make_backend()

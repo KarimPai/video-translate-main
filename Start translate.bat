@@ -31,18 +31,18 @@ if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src"
 )
 
-rem Both optional Sherpa CPU processors are now enabled by default.
-rem uv sync --extra diarization provides sherpa-onnx for GTCRN and speaker turns.
+rem Stability baseline disables optional GTCRN and Sherpa segmentation.
+rem Do not import sherpa-onnx in preflight; its native ORT DLLs are unnecessary.
 set "NEED_SYNC=0"
 if not exist "uv.lock" set "NEED_SYNC=1"
-uv run --no-sync python -c "import numpy, fireredvad, faster_whisper, sherpa_onnx, auto_translate" >nul 2>nul
+uv run --no-sync python -c "import numpy, fireredvad, faster_whisper, auto_translate" >nul 2>nul
 if errorlevel 1 set "NEED_SYNC=1"
 if "%NEED_SYNC%"=="1" (
-    echo Installing Whisper Large-v3, FireRedVAD and Sherpa CPU runtime...
-    uv sync --extra diarization
+    echo Installing Whisper Large-v3 and FireRedVAD dependencies...
+    uv sync
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.
-        echo Try: uv sync --extra diarization
+        echo Try: uv sync
         pause
         exit /b 1
     )

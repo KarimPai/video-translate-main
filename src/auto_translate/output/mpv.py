@@ -597,10 +597,13 @@ class MpvOutput:
                 "closing it now (this is not an mpv.exe crash)."
             )
         else:
-            log.info(
-                "MPV process was already exited at cleanup (code=%s, hex=0x%08X)",
-                previous_code, previous_code & 0xFFFFFFFF,
-            )
+            if isinstance(previous_code, int):
+                log.info(
+                    "MPV process already exited at cleanup (code=%s, hex=0x%08X)",
+                    previous_code, previous_code & 0xFFFFFFFF,
+                )
+            else:
+                log.info("MPV process already exited at cleanup (code=%s)", previous_code)
         self.stop.set()
 
         with self._buffer_condition:

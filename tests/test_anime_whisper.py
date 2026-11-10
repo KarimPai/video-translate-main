@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from auto_translate.anime_whisper import AnimeWhisperASR, MODEL_ID
+from auto_translate.asr_quality import is_standalone_laughter, is_formulaic_japanese_outro
 from auto_translate.config import WhisperConfig
 
 
@@ -53,6 +54,9 @@ class AnimeWhisperTests(unittest.TestCase):
         self.assertEqual(cfg.no_repeat_ngram_size, 5)
         self.assertEqual(cfg.repetition_penalty, 1.0)
         self.assertFalse(cfg.retry_uncertain)
+        self.assertTrue(cfg.adaptive_max_tokens)
+        self.assertTrue(cfg.suppress_standalone_laughter)
+        self.assertEqual(cfg.max_new_tokens, 160)
 
     def test_decode_japanese_and_no_initial_prompt_or_hotwords(self):
         asr, model, processor = self.make_backend()
@@ -73,6 +77,7 @@ class AnimeWhisperTests(unittest.TestCase):
         self.assertNotIn("initial_prompt", kwargs)
         self.assertNotIn("prompt_ids", kwargs)
         self.assertNotIn("hotwords", kwargs)
+        self.assertEqual(kwargs["max_new_tokens"], 64)  # 1s audio
 
     def test_silence_and_empty_audio_never_run_decoder(self):
         asr, model, _ = self.make_backend()
@@ -103,6 +108,28 @@ class AnimeWhisperTests(unittest.TestCase):
         cfg = WhisperConfig(device="cpu", task="translate")
         with self.assertRaisesRegex(ValueError, "Japanese transcription"):
             AnimeWhisperASR(cfg, model=FakeModel(), processor=FakeProcessor())
+
+    def test_token_budget_respects_longer_audio_and_config_override(self):
+        asr, model, _ = self.make_backend()
+        asr.decode_audio(np.full(3 * 16000, .1, dtype=np.float32))
+        self.assertEqual(model.calls[0]["max_new_tokens"], 122)
+        asr.decode_audio(np.full(8 * 16000, .1, dtype=np.float32))
+        self.assertEqual(model.calls[1]["max_new_tokens"], 160)
+        asr.cfg.adaptive_max_tokens = False
+        asr.decode_audio(np.full(16000, .1, dtype=np.float32))
+        self.assertEqual(model.calls[2]["max_new_tokens"], 160)
+
+    def test_only_pure_laughter_is_suppressed(self):
+        for text in ("あははは", "はっはっはっ", "ふふ…", "ハハハ!", "ｗｗｗ"):
+            self.assertTrue(is_standalone_laughter(text), text)
+        for text in ("そうだね、あはは", "うん", "ありがとう", "あはは、やめて",
+                     "ええ", "すごい!", "はは、面白い", "何を言ってるんだ"):
+            self.assertFalse(is_standalone_laughter(text), text)
+
+    def test_exact_formulaic_japanese_outro_detection(self):
+        self.assertTrue(is_formulaic_japanese_outro("ご視聴ありがとうございました。"))
+        self.assertFalse(is_formulaic_japanese_outro("ご視聴ありがとうございました、またね"))
+        self.assertFalse(is_formulaic_japanese_outro("ありがとう！"))
 
 
 if __name__ == "__main__":

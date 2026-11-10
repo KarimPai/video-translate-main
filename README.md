@@ -1,246 +1,126 @@
-# Whisper Large-v3 Japanese ASR + PLaMo 3 Translate 2B
+# Kotoba-Whisper v2.2 + PLaMo 3 Translate 2B
 
-Branch: **whisper-v3**. Experimental offline Japanese-to-English MPV subtitles
-for YouTube live streams, VODs, and local video/audio files.
+**Experimental branch:** `experiment/kotoba-whisper-v2.2-plamo3`
 
-## Active speech and translation pipeline
+Based on `whisper-v3` at commit `aea3f7e` (Nov 10, 2026). Main and
+whisper-v3 are not changed by this experiment.
 
-YouTube audio -> FFmpeg 16 kHz mono -> optional GTCRN (CPU)
--> FireRedVAD (CUDA) -> optional Sherpa speaker-turn segmentation (CPU)
--> **Whisper Large-v3 (CUDA; JAPANESE TRANSCRIPTION ONLY)**
--> **PLaMo 3 Translate 2B (GGUF Q4_K_M; JAPANESE to ENGLISH)**
--> MPV English subtitles and terminal JP/EN.
+## Pipeline
 
-Whisper uses task="transcribe" and language="ja". Whisper's task="translate"
-is *never used* by the launcher or active five-worker pipeline. PLaMo is the
-sole English translator. Both models run locally, without Ollama.
+YouTube live / 7-hour VOD -> FFmpeg 16-kHz mono -> FireRedVAD (CUDA)
+-> **Kotoba-Whisper v2.2** (Japanese transcription only, CTranslate2)
+-> **PLaMo 3 Translate 2B Q4_K_M** (local llama.cpp Japanese -> English)
+-> MPV (English-only 3-row captions, seek support) and terminal JP/EN.
 
-MPV native playback, VOD seeking, session subtitle reuse, three-line English
-stacking and the branch's 10-second playback delay are retained. The
-Japanese transcript and final English translation are logged separately.
-The earlier direct-translation test helper is retained for regression
-compatibility but is not connected to the active run() function.
+**Kotoba selection:**
 
-## RTX 3070 8 GB defaults
+- Original official model: https://huggingface.co/kotoba-tech/kotoba-whisper-v2.2
+- Community CTranslate2 conversion: https://huggingface.co/RoachLin/kotoba-whisper-v2.2-faster
+- Default `[whisper] model = "RoachLin/kotoba-whisper-v2.2-faster"`
+- Uses faster-whisper with `int8_float16`, beam 5, Japanese transcribe,
+  `condition_on_previous_text = false` and no initial prompts/hotwords.
+- The CTranslate2 conversion contains the core v2.2 speech model. It **does not**
+  implement the official Transformers `KotobaWhisperPipeline`'s external
+  punctuation and diarization stages. The project uses its own FireRedVAD
+  and optional Sherpa segmentation; launcher disables optional Sherpa/GTCRN.
+- The converted model's FP32 download is approximately **3.03 GB** on first
+  use, then quantized at inference. This is a community conversion, not an
+  official Kotoba-published faster-whisper release. Validate transcript
+  quality against the official checkpoint before treating it as equivalent.
+- No dependency on the Anime Whisper Transformers sequence-score path
+  (previously linked to a CUDA scatter/gather assertion). Decoder evidence
+  comes from faster-whisper's segment log-probability/no-speech fields.
 
-    [whisper]
-    model = "large-v3"
-    device = "cuda"
-    compute_type = "int8_float16"
-    language = "ja"
-    task = "transcribe"
-    beam_size = 5
-    temperature = 0.0
-    condition_on_previous_text = false
+## Current PLaMo 3 configuration
 
-    [translate]
-    plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-    plamo_context = 4096
-    plamo_gpu_layers = 16
-    context_lines = 8
-    memory_lines = 24
-    fragment_context_lines = 2
-    fragment_max_gap_s = 1.8
-    protect_numbers = true
-    protect_names = true
+This branch reuses the most recent `whisper-v3` PLaMo 3 integration and
+Hololive/glossary improvements. It does not change the translator.
 
-The default Start translate.bat uses --audio-profile baseline (disables
-optional GTCRN and Sherpa speaker-turn processing), --hwdec no (software
-video decoding), and --plamo-gpu-layers 16 to reduce GPU memory pressure.
-This is a temporary diagnostic/stability profile, not a proven solution
-to MPV crashes. To change these defaults manually, edit the .bat options.
+| Parameter | Value |
+|---|---|
+| Model | `pfnet/plamo-3-translate-2b-GGUF:Q4_K_M` |
+| Runtime | local llama.cpp `llama-server` |
+| Context | `4096` tokens |
+| GPU offload | `-ngl 16` layers |
+| History | 8 dialogue turns; 24 memory lines |
+| Temperature | `0.0` |
+| Response length | 120 tokens |
+| Mode | `source_lang="ja"`, `target_lang="en"` |
+| Additional context | streaming/game dialogue, source-grounded hints |
+| Terminology | matching Hololive/game glossary entries sent in `chat_template_kwargs.glossary` |
 
-An old local config.toml containing [whisper] task="translate" is ignored.
-Japanese transcription is enforced. Other explicitly set local settings
-(e.g. beam_size) still override the defaults.
+The PLaMo GGUF chat-template behavior changed on Nov 8, 2026: specifying
+`target_lang="en"` explicitly is important and already implemented here.
+PLaMo model: https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF
 
-Whisper and llama.cpp/PLaMo VRAM usage has not yet been measured together on
-an RTX 3070: the total may exceed 8 GB depending on CUDA allocations,
-running applications, and the model server. PLaMo context reduction to 4096
-applies when **this project starts its own** llama-server. If another
-llama-server is already running at port 8000, it is reused with its existing
-settings and context size; shut down that server if you require 4096.
+**Existing server warning:** A responding `llama-server` at
+`127.0.0.1:8000` is reused. That means a previously started server can
+use different offload/context settings or a cached older GGUF; stop it
+before testing this branch if you need a fresh `-ngl 16 -c 4096` instance
+with the latest available GGUF chat template.
 
-To reduce load while benchmarking, disable optional CPU processors in
-config.toml with [gtcrn] enabled=false and [speaker] enabled=false, or use
---audio-profile baseline. Neither affects Whisper's role as Japanese ASR.
+## Windows setup / first run
 
-## Run on Windows
+Requirements: Windows, uv, FFmpeg, yt-dlp, MPV and GPU-compatible
+`llama-server` executable on PATH, plus NVIDIA CUDA libraries installed
+by `uv sync` and a working GPU driver.
 
-Install uv and a GPU-enabled llama-server executable available on PATH.
+Clone in a **new folder** so the Whisper large-v3 baseline stays intact:
 
-    cd /d C:\Games\video-translate-whisper
-    git fetch origin
-    git switch whisper-v3
-    git pull --ff-only origin whisper-v3
-    uv sync --extra diarization
-    "Start translate.bat"
-
-If creating a new directory instead:
-
-    cd /d C:\Games
-    git clone --branch whisper-v3 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-whisper
-    cd /d C:\Games\video-translate-whisper
-    uv sync --extra diarization
-    "Start translate.bat"
-
-On first launch, faster-whisper downloads Large-v3 if it is not cached.
-PLaMo uses the same pfnet GGUF reference as the existing main/Reazon project;
-llama.cpp normally reuses the model already stored in its shared cache.
-Do not copy or redownload a working model unnecessarily.
-
-The .bat launcher writes stderr and Python diagnostics to logs/run.log.
-The llama.cpp server writes to logs/plamo-server.log.
-
-## Fidelity and subtitle synchronization
-
-- Whisper Latin-only recognition output is discarded before PLaMo translation.
-  Forced Japanese decoding does not prevent code-switching on its own; mixed
-  Japanese/English speech containing Japanese script remains supported.
-- Whisper transcribes Japanese only and does not use English history as an
-  initial_prompt or hotword list, minimizing language-mode contamination.
-- Short speech fragments can use preceding Japanese cues as optional PLaMo
-  context without re-transcribing or retiming earlier subtitles.
-- PLaMo uses the Hololive/game glossary, now expanded with てぇてぇ/てーてー,
-  wireless versus wired mouse, 玉突き事故, Ferris wheels and other GTA phrases.
-  Evidence-gated translation hints cover suspected homophones ONLY where the
-  current or recent speech supports them (including item-exchange confusion).
-  They never rewrite the Japanese ASR transcript. Explicit Japanese numbers
-  can be corrected after translation if PLaMo changes their value, without
-  guessing what Whisper heard.
-- Both history and nearby-fragment context reset on a seek and on generation
-  changes. Speaker handoffs reset near-fragment look-behind.
-- Cached VOD subtitles with both JA and EN can be reused without another
-  Whisper/PLaMo call. English subtitles stay aligned with original audio
-  timestamps; no artificial hard offset is added.
-- Suspicious ASR clips can be retried on the SAME current audio segment
-  with a different temperature. No past English or expanded audio window is
-  mixed into the transcript. Whisper large-v3 remains CTranslate2 (beam 5);
-  the separate Anime Whisper Transformers sequence-scoring experiment is
-  NOT imported here. This avoids the earlier CUDA beam-index crash.
-- The JP terminal transcript is kept verbatim from Whisper: older short-term
-  word-memory repair no longer silently changes the recognized Japanese.
-- Isolated laughter-only cues are skipped by default. Speech mixed with
-  laughter is retained. A second identical stock JP outro within 120 seconds
-  is skipped; its first occurrence is preserved. Filters reset on seek.
-  To disable the display filters, add this valid TOML to config.toml:
-
-  ```toml
-  [whisper]
-  suppress_standalone_laughter = false
-  suppress_repeated_japanese_outros = false
-  ```
-
-## Seven-hour VOD playback optimization
-
-The former MPV config allowed up to 1 GiB forward and 1 GiB backward demux
-cache with 120s readahead. This branch now uses **256 MiB forward**, **64 MiB
-backward**, and **30s readahead**; mpv's native seeking and original VOD
-timestamps remain unchanged. MPV may use additional memory for decoders.
-
-**Important performance fix:** the original MPV subtitle renderer scanned
-`_lines` on every 100ms display tick even for VODs, despite an existing
-per-second indexed `SessionSubtitleCache`. With unpaced ingest, many hours
-of subtitles could accumulate ahead of playback, so rendering became
-progressively more expensive. Cached VODs now render only the cues indexed
-at the current time. Live subtitles still use the original rolling list.
-
-Long-running sync diagnostics are limited to the last 4,096 displayed cues;
-first-visible diagnostic keys are capped at 8,192. The VOD subtitle cache
-itself stays available across the entire video for fast translation reuse
-and backwards seeking. These changes target long-session CPU/RAM growth but
-are not yet verified on your 7-hour recording.
-
-### Manual pause crash fix
-
-A November 10 long-VOD run paused at about 5:48:06 with subtitles
-approximately 74 seconds ahead. The audio read-ahead reader correctly
-yielded at its 75-second cap, but the pipeline's 60-second "stalled with
-queued work" watchdog then terminated the process with one queued speaker
-item. This was a false-positive pipeline crash, not an MPV crash.
-
-The watchdog now checks cached player manual-pause status and the active
-audio read-ahead wait state. It suspends only its inactivity timeout while
-the VOD is deliberately idle, resetting its timer during the pause and
-restoring normal checks after playback resumes. Worker exceptions remain
-fatal and MPV itself is still monitored. Seek resets invalidate the waiting
-state so a stale generation cannot suppress real failures. Live-stream
-watchdog behavior is unchanged.
-
-The player polls manual-pause state once a second on its existing MPV
-scheduler thread; the pipeline watchdog never makes extra MPV IPC calls.
-
-### Further mitigation for occasional hitches and slower subtitles
-
-Unpaced FFmpeg previously decoded and queued as much of the entire VOD as
-the worker pipeline would consume. On very long videos this could keep
-Whisper large-v3, FireRedVAD, PLaMo, FFmpeg and MPV competing for system
-resources even while the translated subtitles were already far ahead.
-When MPV is active for a VOD, FFmpeg now yields once its audio has advanced
-75 seconds beyond the measured MPV playback clock and resumes as the video
-catches up. Five-second initial translation buffering and native seeks remain
-unchanged; every seek resets the audio reader's source timestamp. Live streams,
-standalone transcription, and fMP4 fallback are not throttled.
-
-Tune in `config.toml` (only when needed):
-
-```toml
-[ingest]
-vod_max_audio_lead_s = 75.0  # 0 disables playback-relative pacing
+```cmd
+cd /d C:\Games && git clone --branch experiment/kotoba-whisper-v2.2-plamo3 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-kotoba && cd /d C:\Games\video-translate-kotoba && uv sync --no-progress && "Start translate.bat"
 ```
 
-Because `--cache=yes` can override the readahead setting with an effectively
-unbounded default `cache-secs`, this branch explicitly sets `--cache-secs=30`
-and `--demuxer-hysteresis-secs=10` for predictable network buffering.
+Future updates in that folder:
 
-The application logs a `VOD playback health` line every 30 seconds:
-`translation_lead` (translated timeline minus current video time),
-`dropped_frames`, `paused_for_cache`, and `cache_duration`.
-A negative translation lead identifies the ASR/MT pipeline falling behind;
-growing dropped frames with no cache pause points toward video decoding/
-resource contention; `paused_for_cache=True` suggests network buffering.
-These metrics do not by themselves prove a root cause, but let the next
-long-VOD trace distinguish where the hitch originates.
+```cmd
+cd /d C:\Games\video-translate-kotoba && git pull --ff-only origin experiment/kotoba-whisper-v2.2-plamo3 && uv sync --no-progress && "Start translate.bat"
+```
 
-The launcher keeps software decode (`--hwdec no`) to reserve GPU VRAM.
-If dropped frames remain high while VRAM has headroom, test `--hwdec auto-safe`
-separately rather than enabling it blindly on an 8 GB RTX 3070.
+Launcher options: audio baseline (optional GTCRN/Sherpa off), MPV
+software decoding (`--hwdec no`), 16 PLaMo GPU layers, 10-second live
+delay and 5-second translation startup lead. Keeps native seek, 1080p-first
+video selection, 75-second bounded VOD audio processing, and fix for
+manual pause falsely tripping the 60-second watchdog.
 
-If playback is still choppy, check whether MPV reports dropped frames,
-`paused-for-cache` or cache underruns before changing ASR or subtitles;
-the launcher's `--hwdec no` also means video decoding is done on CPU.
+## Compare Japanese transcription accuracy
 
-## Tests
+For a fair evaluation, use the same Hololive VOD and the same exact
+speech segments on this branch and `whisper-v3`. Kotoba's core model is
+distilled for Japanese, so it may be faster, but **it has not been
+established as more accurate on Hololive**. Inspect:
 
-    uv run --no-sync python -m unittest discover -s tests -p "test_vod_pacing.py" -v
-    uv run --no-sync python -m unittest discover -s tests -p "test_whisper_long_vod.py" -v
-    uv run --no-sync python -m unittest discover -s tests -p "test_whisper_plamo.py" -v
-    uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+- Original Japanese transcript, missing/gibberish/imagined text and
+  silent or musical passages producing stock video outros
+- Names such as Watame and exchanges such as 交換, avoiding spurious 強姦
+- ASR and PLaMo latency, subtitle lag, dropped frames and GPU memory
+- Seek to ~5h/6h50m and manually pause for several minutes
 
-These tests use fake models and do not benchmark actual GPU inference, total
-VRAM, true Hololive transcription accuracy, model-loading compatibility,
-or MPV playback. Test the complete runtime on Windows before treating this
-branch as a stable replacement for main.
+The latest official Kotoba card lists v2.2 as the Japanese ASR checkpoint
+and its optional official postprocessing pipeline. No official comparison
+with this specific Hololive source has been performed.
 
+## Offline regression tests
 
-## Diagnosing sudden MPV closure
+```cmd
+uv run --no-sync python -m unittest discover -s tests -p "test_kotoba_plamo.py" -v
+uv run --no-sync python -m unittest discover -s tests -p "test_whisper_plamo.py" -v
+uv run --no-sync python -m unittest discover -s tests -p "test_vod_pacing.py" -v
+uv run --no-sync python -m unittest discover -s tests -p "test_whisper_long_vod.py" -v
+```
 
-On this branch, an application/pipeline failure may shut down a still-running
-mpv.exe deliberately. New logs distinguish this from an mpv.exe process crash.
+These tests inject fake models and do not require downloads. They do
+not prove actual CTranslate2 loading, VRAM compatibility, model decoding,
+or smooth MPV playback; test on Windows before considering a merge.
 
-After a closure:
+## Troubleshooting
 
-    powershell -NoProfile -Command "Get-Content 'logs\run.log' -Tail 60"
-    powershell -NoProfile -Command "Get-Content 'logs\mpv.log' -Tail 40"
-    powershell -NoProfile -Command "Get-Content 'logs\plamo-server.log' -Tail 30"
-    nvidia-smi
-
-A true mpv.exe crash shows a nonzero player exit code in logs/run.log. If it
-states "MPV was still running when application cleanup began", the pipeline
-initiated closure instead. GPU snapshots report used/free/total MiB where
-nvidia-smi is available. No Windows crash cause is assumed without logs.
-
-If another llama-server process is still responding at port 8000, the
-application reuses it and **cannot** enforce the lower -ngl/4096 settings.
-Stop that server before launching a fresh low-VRAM test, otherwise an old
-high-VRAM PLaMo process can invalidate the stability profile.
+- First run may download ~3.03 GB of Kotoba CT2 weights.
+- The `WhisperModel` constructor resolves the community model repo from
+  Hugging Face and caches it; repeated launches normally reuse cached weights.
+- Application errors: `logs\run.log`; MPV: `logs\mpv.log`;
+  PLaMo server: `logs\plamo-server.log`.
+- If the ASR conversion fails to load, confirm the repo contains
+  `model.bin`, `config.json`, `tokenizer.json` and `preprocessor_config.json`
+  and verify the CTranslate2 runtime. The official v2.2 Transformers
+  model is a separate, non-interchangeable file format.

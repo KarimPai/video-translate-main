@@ -84,9 +84,10 @@ def main() -> None:
     )
     log.info(
         "Audio processing: GTCRN=%s (CPU), Sherpa speaker segmentation=%s (CPU); "
-        "FireRedVAD (CUDA), Anime Whisper Japanese ASR -> PLaMo 3 2B",
+        "FireRedVAD (%s), Anime Whisper Japanese ASR -> PLaMo 3 2B",
         "on" if cfg.gtcrn.enabled else "off",
         "on" if cfg.speaker.enabled else "off",
+        cfg.vad.device.upper(),
     )
     source = resolve_source(
         args.source, args.mode, args.start, args.fast, cfg.ingest,

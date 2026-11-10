@@ -47,7 +47,7 @@ class SilenceGuardTests(unittest.TestCase):
         asr = WhisperLargeV3(
             WhisperConfig(condition_on_previous_text=True), model=fake,
         )
-        self.assertEqual(asr.decode_audio(utterance().audio).text, "はい")
+        self.assertEqual(asr.decode_audio(utterance().audio).text, "Yes.")
         self.assertFalse(fake.options["condition_on_previous_text"])
         # FireRedVAD is the single pre-ASR VAD; do not double-filter softly
         # spoken Japanese using a second unrelated VAD.

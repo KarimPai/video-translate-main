@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 from auto_translate.ingest import Ingest
@@ -43,6 +44,45 @@ class AudioCommandTests(unittest.TestCase):
         cmd = self.ingest._audio_commands()[0]
         self.assertNotIn("ashowinfo", " ".join(cmd))
         self.assertEqual(cmd[cmd.index("-loglevel") + 1], "warning")
+
+    def test_completed_vod_prefers_https_audio_with_fallback(self):
+        self.ingest.cfg = IngestConfig()
+        self.ingest._audio_format_override = None
+        self.ingest.source.location = "https://www.youtube.com/watch?v=some-vod"
+        with patch("auto_translate.ingest.subprocess.run", return_value=SimpleNamespace(
+            stdout="https://example.com/direct-audio\n",
+        )) as run:
+            self.assertEqual(
+                self.ingest._resolve_audio_url(), "https://example.com/direct-audio",
+            )
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("-f") + 1], self.ingest.cfg.vod_ytdlp_format)
+        self.assertIn("bestaudio[protocol=https]", cmd[cmd.index("-f") + 1])
+        self.assertIn("/bestaudio", cmd[cmd.index("-f") + 1])
+
+    def test_live_audio_selector_and_manual_recovery_override_unchanged(self):
+        self.ingest.cfg = IngestConfig()
+        self.ingest.source.live = True
+        self.ingest.source.location = "https://www.youtube.com/live/some-stream"
+        self.ingest._audio_format_override = None
+        with patch("auto_translate.ingest.subprocess.run", return_value=SimpleNamespace(
+            stdout="https://example.com/live-audio\n",
+        )) as run:
+            self.ingest._resolve_audio_url()
+        self.assertEqual(
+            run.call_args.args[0][run.call_args.args[0].index("-f") + 1],
+            self.ingest.cfg.ytdlp_format,
+        )
+        self.ingest.source.live = False
+        self.ingest._audio_format_override = "bestaudio[ext=m4a]/bestaudio"
+        with patch("auto_translate.ingest.subprocess.run", return_value=SimpleNamespace(
+            stdout="https://example.com/fallback-audio\n",
+        )) as run:
+            self.ingest._resolve_audio_url()
+        self.assertEqual(
+            run.call_args.args[0][run.call_args.args[0].index("-f") + 1],
+            self.ingest._audio_format_override,
+        )
 
     def test_live_hls_audio_starts_near_live_edge(self):
         self.ingest.source.live = True

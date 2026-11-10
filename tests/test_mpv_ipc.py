@@ -67,6 +67,36 @@ class IpcTests(unittest.TestCase):
             self.assertTrue(path.startswith(r"\\.\pipe\auto-translate-mpv-"))
             self.assertIn("--input-ipc-server=" + path, call.args[0])
 
+    def test_vod_prefers_https_different_from_live_hls_video(self):
+        mod = "auto_translate.output.mpv"
+        with (
+            patch(mod + ".find_mpv", return_value="mpv"),
+            patch(mod + ".subprocess.Popen") as launch,
+            patch(mod + "._gpu_memory_snapshot", return_value="unavailable"),
+            patch(mod + ".MpvIpc") as ipc,
+            patch(mod + ".threading.Thread.start"),
+            patch(mod + ".time.sleep"),
+        ):
+            for live in (False, True):
+                src = SimpleNamespace(start_s=0, live=live,
+                    location="https://www.youtube.com/watch?v=abc")
+                ingest = SimpleNamespace(source=src)
+                cfg = MpvConfig()
+                MpvOutput(cfg, ingest, threading.Event())
+                cmd = launch.call_args.args[0]
+                choice = next(x for x in cmd if x.startswith("--ytdl-format="))
+                expected = cfg.ytdlp_format if live else cfg.vod_ytdlp_format
+                self.assertEqual(choice, "--ytdl-format=" + expected)
+                if not live:
+                    self.assertTrue(expected.startswith(
+                        "bv*[height<=1080][vcodec^=avc1][protocol=https]"
+                    ))
+                    self.assertIn("[protocol^=m3u8]", expected)
+                else:
+                    self.assertTrue(expected.startswith(
+                        "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]"
+                    ))
+
     def test_reader_can_wait_while_command_is_sent(self):
         replies = queue.Queue()
         seen = []

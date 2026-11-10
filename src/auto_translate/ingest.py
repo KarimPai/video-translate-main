@@ -982,13 +982,20 @@ class Ingest:
         ] + out]
 
     def _resolve_audio_url(self) -> str:
+        # MPV and FFmpeg resolve their streams separately. In VOD mode,
+        # prefer a seekable direct HTTPS audio track, leaving HLS as fallback.
+        # Do not alter the live-edge reader or explicit AAC recovery choice.
+        selector = self._audio_format_override or (
+            self.cfg.ytdlp_format if self.source.live
+            else self.cfg.vod_ytdlp_format
+        )
         resolve_cmd = [
             "yt-dlp",
             "--no-warnings",
             "--remote-components",
             "ejs:github",
             "-f",
-            self._audio_format_override or self.cfg.ytdlp_format,
+            selector,
             "-g",
         ]
         resolve_cmd += _cookie_args(self.cfg) + [self.source.location]

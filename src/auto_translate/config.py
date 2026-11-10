@@ -7,7 +7,11 @@ from pathlib import Path
 
 @dataclass
 class IngestConfig:
+    # Preserve the existing near-live audio selection independently of VODs.
     ytdlp_format: str = "bestaudio/93/best"
+    # Completed VODs prefer direct HTTPS DASH-style audio tracks; the
+    # unfiltered fallback still handles videos with only HLS renditions.
+    vod_ytdlp_format: str = "bestaudio[protocol=https]/bestaudio/93/best"
     cookies_from_browser: str = ""
     # VOD with MPV only: cap decoded audio read-ahead relative to playback.
     # Prevent Whisper AST from decoding continuously hours ahead of the video.
@@ -150,9 +154,19 @@ class MpvConfig:
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"  # prefer hardware decode; fall back safely to software
+    # Live source: retain the existing HLS-based live-edge handling.
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"
+    )
+    # Completed VOD: select separately seekable HTTPS video/audio (DASH-like)
+    # first. Preserve 1080p ceiling and H.264 preference, then HLS fallback.
+    vod_ytdlp_format: str = (
+        "bv*[height<=1080][vcodec^=avc1][protocol=https]+ba[protocol=https]"
+        "/bv*[height<=1080][protocol=https]+ba[protocol=https]"
+        "/bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
+        "/b[height<=1080][protocol^=m3u8]"
+        "/bv*[height<=1080]+ba/b[height<=1080]"
     )
     en_size: int = 28
     ja_size: int = 0

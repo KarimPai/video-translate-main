@@ -360,6 +360,15 @@ class MpvOutput:
             rf"\\.\pipe\auto-translate-mpv-{uuid4().hex}"
             if sys.platform == "win32" else "/tmp/auto-translate-mpv.sock"
         )
+        ytdlp_format = (
+            cfg.ytdlp_format if ingest.source.live else cfg.vod_ytdlp_format
+        )
+        if not Path(ingest.source.location).exists():
+            log.info(
+                "MPV format selection: %s",
+                "live HLS preference" if ingest.source.live
+                else "VOD direct HTTPS/DASH first, HLS fallback",
+            )
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
 
@@ -386,7 +395,7 @@ class MpvOutput:
             # This preserves the full VOD timeline and lets MPV select both
             # video and audio tracks with the required HTTP headers.
             *(
-                [f"--ytdl-format={cfg.ytdlp_format}"]
+                [f"--ytdl-format={ytdlp_format}"]
                 if not Path(ingest.source.location).exists()
                 else []
             ),

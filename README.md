@@ -45,7 +45,9 @@ FireRedVAD gates incoming speech before translation. VAD-negative probes, silenc
 
 ## MPV / VOD performance
 
-MPV uses `--hwdec=auto-safe` to test whether hardware video decoding reduces occasional hitches during HLS playback or seeking. This may use additional VRAM; revert to `--hwdec no` if stability is worse. Whisper inference, translation, VAD, cache limits, and MPV seek behavior are unchanged.
+MPV keeps `--hwdec=auto-safe` and uses a separate format selector for each source mode: **completed VODs prioritize 1080p-or-lower H.264 video plus audio over direct HTTPS (DASH-style separate tracks)**, falling back to a direct non-H.264 pairing, then HLS renditions if direct formats are unavailable. Live streams retain the previous HLS-based format and live-edge options. The independent FFmpeg VOD audio reader now likewise prefers HTTPS audio but retains a best-audio fallback. Selection fallback occurs during initial yt-dlp format selection; it is **not** an automatic runtime switch after a network disconnect.
+
+This aims to bypass the HLS video-transport errors observed during a prolonged playback freeze. Hardware decoding, Whisper inference, FireRedVAD, subtitles, VOD cache limits, and seek semantics are unchanged. An older local `config.toml` can override the new `[mpv].vod_ytdlp_format` and `[ingest].vod_ytdlp_format` settings if needed.
 
 Preserved: playback-relative audio read-ahead cap of 75s, MPV demux cache 256MiB forward/64MiB backward, 30s readahead, session subtitle cache indexed by playback second, native seeking, English subtitle stacking (3 lines), 10s launcher delay, original source timestamps, pause-aware watchdog and real worker error reporting. FFmpeg audio ingest yields when safely ahead and resumes as playback catches up.
 
@@ -56,6 +58,8 @@ Preserved: playback-relative audio read-ahead cap of 75s, MPV demux cache 256MiB
     uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 
 These tests use mock models. Actual AST translation fidelity, live mpv behavior, and total VRAM use require a real Windows GPU run.
+
+The application logs `MPV format selection: VOD direct HTTPS/DASH first, HLS fallback` at startup when applicable. This describes the **preference**, not proof of the actual stream selected. Check the full MPV log for final demux/transport details if the freeze recurs.
 
 The MPV VOD health line now logs the actually active video decoder (`hwdec_active`), audio playback timestamp, AV sync, decoder/frame drops, and estimated video filter FPS every 30 seconds. This helps distinguish a video-only freeze from an audio/network/decoder stall. It does not restart playback automatically or change seek behavior. If video freezes while audio continues, save the full logs before restarting, and note the wall-clock timestamp.
 

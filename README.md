@@ -123,9 +123,13 @@ The llama.cpp server writes to logs/plamo-server.log.
 - Isolated laughter-only cues are skipped by default. Speech mixed with
   laughter is retained. A second identical stock JP outro within 120 seconds
   is skipped; its first occurrence is preserved. Filters reset on seek.
-  To disable either filter, add to local config.toml:
-  `[whisper] suppress_standalone_laughter=false` or
-  `[whisper] suppress_repeated_japanese_outros=false`.
+  To disable the display filters, add this valid TOML to config.toml:
+
+  ```toml
+  [whisper]
+  suppress_standalone_laughter = false
+  suppress_repeated_japanese_outros = false
+  ```
 
 ## Seven-hour VOD playback optimization
 

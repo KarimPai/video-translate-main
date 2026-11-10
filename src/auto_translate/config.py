@@ -126,6 +126,8 @@ class WhisperConfig:
     no_speech_retry_block_threshold: float = 0.85
     # Verify stock English outro phrases against the original Japanese audio.
     verify_stock_outros: bool = True
+    # Separately filter full-cue subtitle credits / subscribe prompts.
+    filter_phantom_phrases: bool = True
     retry_temperature: float = 0.2
     # Only recover a weak translation when both decoding passes agree
     # verbatim, FireRedVAD is confident, and both passes indicate speech.

@@ -23,6 +23,8 @@ _OUTROS = frozenset((
 
 def _plain(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
+    # Match katakana laughter as well as hiragana, not ordinary JP words.
+    normalized = normalized.translate(str.maketrans("アハフヘッ", "あはふへっ"))
     return normalized.strip(_PUNCTUATION)
 
 

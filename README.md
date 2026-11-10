@@ -35,6 +35,7 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
     beam_size = 5
     temperature = 0.0
     no_speech_retry_block_threshold = 0.85
+    verify_stock_outros = true
     rescue_stable_weak_speech = true
 
     [vad]
@@ -51,7 +52,16 @@ The segmenter retains pre-onset audio in addition to the onset confirmation wind
 
 Whisper uses scalar temperature 0, beam 5, no-speech 0.6, log probability -1.0 and compression ratio 2.4. The verifier may decode the same PCM once at temperature 0.2 without prompts or names, up to 12 seconds per retry. It checks unusually long output, multiword loops and combinations of weak VAD and decoder evidence. A higher score alone cannot replace an existing translation with different words. Filler cleanup defaults off. Accepted short interjections and real signoffs can reach the overlay.
 
-## Repeat the comparison
+## Targeted generic-outro verification
+
+When Whisper outputs a complete generic English signoff such as "Thank you for watching", the pipeline makes one additional unprompted Japanese transcription pass **on the same speech segment using the already-loaded Whisper Large-v3**. It only publishes the signoff when the Japanese text corroborates both watching and thanks. Ordinary thanks, gameplay dialogue, and all other English AST output follow the existing path. No second model is downloaded, and MPV/seek synchronization and the English-only overlay are unchanged.
+
+This is an anti-hallucination heuristic, **not independent acoustic proof**: both tasks use the same Whisper model, so correlated errors can still occur. It may also suppress a genuine signoff when the Japanese check fails to recognize it. Set `[whisper].verify_stock_outros = false` in a local `config.toml` to disable this targeted check. Filtered outputs are recorded as `Suppressed uncorroborated Whisper stock outro` in `logs/run.log`.
+
+Run the focused mock-model regression:
+
+    uv run --no-sync python -m unittest discover -s tests -p "test_whisper_outro_guard.py" -v
+
 
 Run the commands below from the feature checkout. The synthetic replay uses a fixed 38-second PCM fixture and scripted FireRed probability inputs. It exercises actual segmentation logic without speech recognition. The matrix includes the checkout default plus every combination of 80/300 ms padding, 400/500 ms silence and 12/16/20 s hard caps. Each soft cap is one second below its hard cap.
 

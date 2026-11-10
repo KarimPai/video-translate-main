@@ -21,7 +21,7 @@ import numpy as np
 from .config import Config
 from .context import RecentSpeechContext, strip_context_echo
 from .subtitle_style import concise_english
-from .whisper_v3 import WhisperLargeV3
+from .kotoba_whisper import KotobaWhisperASR
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -136,7 +136,7 @@ def _discard_probe(audio: np.ndarray) -> bool:
 
 
 def run_whisper(
-    whisper: WhisperLargeV3,
+    whisper: KotobaWhisperASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
@@ -396,7 +396,7 @@ class Stats:
             return "no Japanese-to-English subtitles yet"
         q = " ".join(f"{k}={v}" for k, v in self.max_q.items())
         return (
-            f"{self.lines} lines | Whisper ASR avg {self.sum_s / self.lines:.2f}s "
+            f"{self.lines} lines | Kotoba ASR avg {self.sum_s / self.lines:.2f}s "
             f"max {self.max_s:.2f}s | PLaMo MT avg {self.mt_sum_s / self.lines:.2f}s "
             f"max {self.mt_max_s:.2f}s | audio-to-English "
             f"avg {self.total_sum_s / self.lines:.2f}s "
@@ -431,7 +431,7 @@ def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
 def run(
     ingest: Ingest,
     cfg: Config,
-    whisper: WhisperLargeV3,
+    whisper: KotobaWhisperASR,
     outputs: list[Output],
     stop: threading.Event,
     session_cache: SessionSubtitleCache | None = None,

@@ -27,7 +27,13 @@ model = "voiceping-ai/qwen3-asr-ja-en-speech-translation"
 device = "cuda:0"
 dtype = "bfloat16"
 max_inference_batch_size = 1
-max_new_tokens = 256
+max_new_tokens = 192
+context_enabled = true
+concise_context = true
+hololive_names_enabled = true
+hololive_name_limit = 6
+name_hints = []  # e.g. ["Watame", "Jack"] for this specific stream
+repeat_short_cue_limit = 2
 remove_fillers = true
 collapse_repetitions = true
 diagnostics = false
@@ -45,7 +51,22 @@ fallback_s = 0.0
 
 These are the **branch defaults** if no `config.toml` is supplied. Existing custom `[vad]` values in a local untracked config override the defaults. The soft speech split is at 11 seconds and the hard deadline is 12 seconds; the model supports up to 30 seconds.
 
-The initial test uses **BF16, batch size 1, default decoder, 256 maximum new tokens, and no quantization or forced aligner**. `qwen-asr` uses Transformers/PyTorch CUDA. Windows native PyTorch is used instead of Linux-only vLLM. Only one model is loaded in GPU memory for translation.
+The initial test uses **BF16, batch size 1, default decoder, 192 maximum new tokens, and no quantization or forced aligner**. `qwen-asr` uses Transformers/PyTorch CUDA. Windows native PyTorch is used instead of Linux-only vLLM. Only one model is loaded in GPU memory for translation.
+
+## Concise context and stream names
+
+The Qwen3-ASR API accepts native `transcribe(context=..., language="English")`. By default, the experiment passes a **short context instruction for concise, faithful translation** and only official Hololive names detected from the video's channel/title metadata. It does **not** feed past English subtitles back into the model; this avoids a potential echo/hallucination loop. These context instructions are an experiment, not proven to improve this fine-tuned model. Disable instructions alone with `concise_context = false` or all native context with `context_enabled = false`.
+
+For names spoken in the video but not detectable from its title/channel, add manual hints in a local `config.toml`:
+
+```toml
+[ast]
+name_hints = ["Watame", "Jack"]
+```
+
+Use only actual names relevant to that stream. Up to eight validated names are passed to the model, prioritizing up to six title/channel-grounded Hololive names. Names are **hints, not forced substitutions**, so incorrect names can still appear. This does not use a second translation model or any ASR/transcript history.
+
+Postprocessing removes filler-only utterances (including Unicode ellipsis such as "Um…"), conservatively drops *identical adjacent sentences*, and suppresses the third and later identical nearby cues in the same seek generation. Two repetitions remain to preserve possible genuine spoken emphasis. Negations, proper names and meaningful shorter repetitions are not rewritten. This can remove real repetition, and it cannot correct inaccurate or hallucinated but fluent translations.
 
 ## Retained features
 

@@ -17,7 +17,7 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
     uv sync
     "Start translate.bat"
 
-Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec no (reserve RTX 3070 VRAM for Whisper), --delay 10; no translator server is started. Stop old standalone servers manually if still running to free VRAM.
+Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --delay 10; no translator server is started. Stop old standalone servers manually if still running to free VRAM.
 
 ## Key defaults and silence protections
 
@@ -41,6 +41,8 @@ Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec no (reserve RTX 3070 
 FireRedVAD gates incoming speech before translation. VAD-negative probes, silence and non-finite audio are skipped. Whisper rejects low-confidence/repetitive segments and preserves no-speech probabilities even for rejected segments. High-confidence silence rejection blocks another warmer decode (default 0.85), while uncertain quiet speech may still retry. Retries decode the **same audio window**, not previous audio context. Standalone generic video outros during gameplay are suppressed. No second Silero VAD or cross-window condition_on_previous_text feedback is enabled.
 
 ## MPV / VOD performance
+
+MPV uses `--hwdec=auto-safe` to test whether hardware video decoding reduces occasional hitches during HLS playback or seeking. This may use additional VRAM; revert to `--hwdec no` if stability is worse. Whisper inference, translation, VAD, cache limits, and MPV seek behavior are unchanged.
 
 Preserved: playback-relative audio read-ahead cap of 75s, MPV demux cache 256MiB forward/64MiB backward, 30s readahead, session subtitle cache indexed by playback second, native seeking, English subtitle stacking (3 lines), 10s launcher delay, original source timestamps, pause-aware watchdog and real worker error reporting. FFmpeg audio ingest yields when safely ahead and resumes as playback catches up.
 

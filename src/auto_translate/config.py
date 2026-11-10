@@ -146,7 +146,7 @@ class MpvConfig:
     delay_s: float = 8.0
     start_wait_s: float = 3.0
     port: int = 9137
-    hwdec: str = "no"  # reserves RTX 3070 VRAM for Whisper
+    hwdec: str = "auto-safe"  # prefer hardware decode; fall back safely to software
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"

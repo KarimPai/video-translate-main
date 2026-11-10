@@ -404,6 +404,30 @@ class Stats:
         )
 
 
+def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
+    """True only if a VOD is deliberately idle, NOT a failed worker.
+
+    The read-ahead cap parks FFmpeg when audio gets 75s ahead of MPV.
+    A manual MPV pause may then leave a partial utterance or one queued item
+    with no subsequent audio progress. This is normal; the watchdog must not
+    kill the session after 60 seconds. Worker exceptions are always checked
+    independently via _raise_stage_failure.
+    """
+    if getattr(ingest.source, "live", False):
+        return False
+
+    lead_limited = getattr(ingest, "is_vod_audio_lead_limited", None)
+    if callable(lead_limited) and lead_limited():
+        return True
+
+    for output in outputs:
+        is_manually_paused = getattr(output, "is_manually_paused", None)
+        if callable(is_manually_paused) and is_manually_paused():
+            return True
+
+    return False
+
+
 def run(
     ingest: Ingest,
     cfg: Config,
@@ -468,6 +492,7 @@ def run(
     next_stats = start + cfg.stats_interval_s
     last_event = start
     last_warn = start
+    was_expected_idle = False
     try:
         while not stop.is_set():
             _raise_stage_failure(failures)
@@ -520,14 +545,34 @@ def run(
             for name, q in queues.items():
                 stats.max_q[name] = max(stats.max_q.get(name, 0), q.qsize())
             backlog = {k: q.qsize() for k, q in queues.items() if q.qsize()}
-            if backlog and now - last_event >= 60:
-                raise RuntimeError(
-                    "Whisper/PLaMo pipeline stalled with queued work: " + str(backlog)
-                    + "; inspect logs/run.log"
-                )
-            if backlog and now - last_event >= 20 and now >= last_warn:
-                last_warn = now + 20
-                log.warning("Whisper/PLaMo pipeline backlog: %s", backlog)
+            expected_idle = _expected_vod_idle(ingest, outputs)
+            if expected_idle:
+                # A user pause or intentional 75s audio lead cap must not
+                # count as a stall. Reset the clock throughout the pause:
+                # otherwise the old timestamp would cause an immediate crash
+                # on the first scheduler tick after playback resumes.
+                if not was_expected_idle:
+                    log.info(
+                        "Whisper/PLaMo watchdog: expected VOD inactivity "
+                        "(manual pause or read-ahead limit); retaining queues %s",
+                        backlog,
+                    )
+                last_event = now
+                last_warn = now
+            else:
+                if was_expected_idle:
+                    log.info(
+                        "Whisper/PLaMo watchdog active again after VOD resumes"
+                    )
+                if backlog and now - last_event >= 60:
+                    raise RuntimeError(
+                        "Whisper/PLaMo pipeline stalled with queued work: "
+                        + str(backlog) + "; inspect logs/run.log"
+                    )
+                if backlog and now - last_event >= 20 and now >= last_warn:
+                    last_warn = now + 20
+                    log.warning("Whisper/PLaMo pipeline backlog: %s", backlog)
+            was_expected_idle = expected_idle
             if now >= next_stats:
                 next_stats = now + cfg.stats_interval_s
                 log.info("[%.0fs] %s", now - start, stats.summary())

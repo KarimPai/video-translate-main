@@ -146,6 +146,8 @@ class VoicePingAstConfig:
     max_new_tokens: int = 192  # still ample for a 12-second English sentence
     # Native Qwen3-ASR context (not Whisper prompts or a separate translator).
     context_enabled: bool = True
+    # Soft source-language preference only; does not identify the audio language.
+    japanese_source_only: bool = True
     concise_context: bool = True
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6

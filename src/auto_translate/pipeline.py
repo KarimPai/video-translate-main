@@ -1,7 +1,7 @@
 """Streaming Japanese ASR + PLaMo translation, with MPV seek-safe subtitles.
 
 Retains GTCRN, FireRedVAD, Sherpa speaker boundaries, MPV timing and VOD
-seek caching. Active run() uses Whisper transcribe ONLY, then PLaMo for English.
+seek caching. Active run() uses Anime Whisper transcribe ONLY, then PLaMo for English.
 The older direct-translation helper remains for earlier test compatibility.
 """
 
@@ -21,7 +21,7 @@ import numpy as np
 from .config import Config
 from .context import RecentSpeechContext, strip_context_echo
 from .subtitle_style import concise_english
-from .whisper_v3 import WhisperLargeV3
+from .anime_whisper import AnimeWhisperASR
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -136,7 +136,7 @@ def _discard_probe(audio: np.ndarray) -> bool:
 
 
 def run_whisper(
-    whisper: WhisperLargeV3,
+    whisper: AnimeWhisperASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
@@ -407,7 +407,7 @@ class Stats:
 def run(
     ingest: Ingest,
     cfg: Config,
-    whisper: WhisperLargeV3,
+    whisper: AnimeWhisperASR,
     outputs: list[Output],
     stop: threading.Event,
     session_cache: SessionSubtitleCache | None = None,

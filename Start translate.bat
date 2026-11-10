@@ -46,7 +46,7 @@ if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src"
 )
 
-rem Sherpa-ONNX provides both CPU GTCRN enhancement and speaker-turn diarization.
+rem Keep Sherpa-ONNX for CPU speaker-turn diarization; GTCRN is disabled.
 rem Check the installed package version without importing native ORT DLLs during sync detection.
 set "NEED_SYNC=0"
 if not exist "uv.lock" set "NEED_SYNC=1"
@@ -73,11 +73,11 @@ if errorlevel 1 (
 
 echo.
 echo Starting Whisper direct Japanese-audio-to-English translation...
-echo Audio processing: GTCRN enhancement ON, Sherpa speaker turns ON (CPU).
+echo Audio processing: GTCRN enhancement OFF, Sherpa speaker turns ON (CPU).
 echo MPV safe hardware decoding, Whisper int8_float16 (stable GPU baseline).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --video-quality %VIDEO_QUALITY% --whisper-compute int8_float16 --audio-profile both --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec auto-safe --video-quality %VIDEO_QUALITY% --whisper-compute int8_float16 --audio-profile speaker --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

@@ -159,6 +159,8 @@ class WhisperConfig:
     # Only recover a weak translation when both decoding passes agree
     # verbatim, FireRedVAD is confident, and both passes indicate speech.
     rescue_stable_weak_speech: bool = True
+    # Corroborate repeated isolated stock thanks before displaying them.
+    confirm_repeated_stock_thanks: bool = True
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = False

@@ -12,8 +12,9 @@ class LauncherAudioTests(unittest.TestCase):
             encoding="utf-8-sig"
         )
 
-    def test_launcher_enables_both_cpu_processors(self):
-        self.assertIn("--audio-profile both", self.script)
+    def test_launcher_keeps_sherpa_and_disables_gtcrn(self):
+        self.assertIn("--audio-profile speaker", self.script)
+        self.assertNotIn("--audio-profile both", self.script)
         self.assertNotIn("--audio-profile baseline --no-web", self.script)
         self.assertIn("uv sync --extra diarization", self.script)
         self.assertIn("m.version('sherpa-onnx')", self.script)
@@ -27,6 +28,7 @@ class LauncherAudioTests(unittest.TestCase):
 
     def test_default_models_and_vocal_separation_flags(self):
         cfg = Config()
+        # The CLI profile sets GTCRN off regardless of older config.toml values.
         self.assertTrue(cfg.gtcrn.enabled)
         self.assertEqual(cfg.gtcrn.num_threads, 1)
         self.assertTrue(cfg.speaker.enabled)

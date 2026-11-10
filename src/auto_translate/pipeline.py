@@ -38,6 +38,38 @@ _OUTRO = re.compile(
     r"(?: (?:until )?the end)?$",
     re.IGNORECASE,
 )
+# Some weak Japanese gaming utterances decode into stock isolated thanks.
+# Never filter normal contextual expressions (e.g., \"Thanks for the help\").
+_STOCK_THANKS = re.compile(
+    r"^(?:thank you(?: very much)?|thanks(?: a lot)?)$",
+    re.IGNORECASE,
+)
+
+
+def _is_stock_thanks(text: str) -> bool:
+    normalized = " ".join(re.sub(r"[^a-zA-Z\s]", "", text).split())
+    return bool(_STOCK_THANKS.fullmatch(normalized))
+
+
+def _credible_repeated_thanks(first: object, second: object,
+                               vad_confidence: float | None) -> bool:
+    """Require corroboration and strong speech evidence on repeated stock thanks."""
+    if not _is_stock_thanks(getattr(first, "text", "")) or not _is_stock_thanks(
+        getattr(second, "text", "")
+    ):
+        return False
+    if vad_confidence is None or not math.isfinite(float(vad_confidence)):
+        return False
+    if float(vad_confidence) < 0.65:
+        return False
+    for decoded in (first, second):
+        lp = getattr(decoded, "avg_logprob", None)
+        ns = getattr(decoded, "no_speech_prob", None)
+        if (lp is None or ns is None or not math.isfinite(float(lp))
+                or not math.isfinite(float(ns)) or float(lp) < -0.55
+                or float(ns) > 0.25 or getattr(decoded, "suspicious", False)):
+            return False
+    return True
 
 
 
@@ -157,7 +189,7 @@ def _stable_weak_speech(first: object, second: object, vad_confidence: float | N
         if (not candidate or avg is None or ns is None
                 or not math.isfinite(float(avg)) or not math.isfinite(float(ns))
                 or float(avg) < -1.60 or float(ns) > 0.35
-                or _is_outro_phrase(candidate)):
+                or _is_outro_phrase(candidate) or _is_stock_thanks(candidate)):
             return ""
         words = re.findall(r"[a-z]+(?:'[a-z]+)?", candidate.casefold())
         if len(words) < 2 or sum(map(len, words)) < 8:
@@ -178,6 +210,7 @@ def run_whisper(
     """Emit each accepted utterance once; never shift its source timestamps."""
     empty_count = 0
     recent_outros: list[float] = []
+    recent_thanks: list[float] = []
     last_generation: int | None = None
     cfg = getattr(whisper, "cfg", None)
     context = RecentSpeechContext(cfg)
@@ -190,11 +223,13 @@ def run_whisper(
             continue
         if last_generation is None or item.generation != last_generation:
             recent_outros.clear()
+            recent_thanks.clear()
             context.reset()
             last_generation = item.generation
         if isinstance(item, AudioProgress):
             if item.reset:
                 recent_outros.clear()
+                recent_thanks.clear()
                 context.reset()
             out_q.put(item)
             continue
@@ -211,6 +246,10 @@ def run_whisper(
                     utt.generation, utt.start_s, utt.end_s, cached.en,
                 )
                 continue
+            if _is_stock_thanks(cached.en):
+                recent_thanks[:] = [t for t in recent_thanks
+                                    if 0 <= utt.start_s - t <= 120.0]
+                recent_thanks.append(utt.start_s)
             context.accept(utt, cached.en)
             out_q.put(replace(
                 cached, generation=utt.generation, timings=utt.timings,
@@ -244,9 +283,18 @@ def run_whisper(
             selected = original
             english = original.text
             generic_outro = _is_outro_phrase(english)
-
+            # Only isolated generic thanks are checked, not meaningful
+            # sentences. Respect speaker handoffs and reset history on seek.
+            recent_thanks[:] = [t for t in recent_thanks
+                                if 0 <= utt.start_s - t <= 120.0]
+            recurring_thanks = (
+                _is_stock_thanks(english) and bool(recent_thanks)
+                and not utt.speaker_handoff
+                and getattr(cfg, "confirm_repeated_stock_thanks", True)
+            )
             retry_reason = (
-                "outro" if generic_outro and getattr(cfg, "retry_on_outro", True)
+                "recurring_thanks" if recurring_thanks
+                else "outro" if generic_outro and getattr(cfg, "retry_on_outro", True)
                 else "uncertain" if original.suspicious else ""
             )
             silent_reject = (
@@ -272,13 +320,28 @@ def run_whisper(
                 if (candidate and not second.suspicious
                         and (first_logp is None or second_logp is None
                              or second_logp >= first_logp - 0.15)
-                        and (not generic_outro or not _is_outro_phrase(candidate))):
+                        and (not generic_outro or not _is_outro_phrase(candidate))
+                        and (not recurring_thanks or not _is_stock_thanks(candidate)
+                             or _credible_repeated_thanks(
+                                 original, second, utt.vad_confidence))):
                     english = candidate
                     selected = second
                     log.info(
                         "Whisper AST retry accepted (%s, gen=%d %.2f-%.2fs)",
                         retry_reason, utt.generation, utt.start_s, utt.end_s,
                     )
+                elif recurring_thanks:
+                    # A repeated isolated thank-you was not independently
+                    # supported by strong speech/model evidence. The first
+                    # occurrence is untouched; do not spam later weak ones.
+                    log.info(
+                        "Suppressed unconfirmed recurring generic thanks "
+                        "(gen=%d %.2f-%.2fs vad=%s first_lp=%s second_lp=%s)",
+                        utt.generation, utt.start_s, utt.end_s,
+                        utt.vad_confidence, original.avg_logprob,
+                        second.avg_logprob,
+                    )
+                    english = ""
                 elif not english and not candidate:
                     rescued = _stable_weak_speech(
                         original, second, utt.vad_confidence, cfg,
@@ -378,6 +441,10 @@ def run_whisper(
             )
             continue
 
+        if _is_stock_thanks(english):
+            recent_thanks[:] = [t for t in recent_thanks
+                                if 0 <= utt.start_s - t <= 120.0]
+            recent_thanks.append(utt.start_s)
         context.accept(utt, english)
         out_q.put(Subtitle(
             start_s=utt.start_s,

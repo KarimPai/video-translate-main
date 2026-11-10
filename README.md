@@ -19,13 +19,15 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
     uv sync --extra diarization
     "Start translate.bat"
 
-Launcher defaults: GTCRN CPU speech enhancement and Sherpa CPU speaker-turn segmentation **enabled** (`--audio-profile both`), --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute int8_float16 (prior smooth-playback baseline; opt into FP16 with --whisper-compute float16), --delay 10; no translator server is started. The previous FP16-by-default trial was rolled back after a report of a prolonged video freeze with audio continuing. This is an isolation test; causality is not yet proven. Stop old standalone servers manually if still running to free VRAM.
+Launcher defaults: GTCRN speech enhancement **disabled**, Sherpa CPU speaker-turn segmentation **enabled** (`--audio-profile speaker`), --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute int8_float16 (prior smooth-playback baseline; opt into FP16 with --whisper-compute float16), --delay 10; no translator server is started. The previous FP16-by-default trial was rolled back after a report of a prolonged video freeze with audio continuing. This is an isolation test; causality is not yet proven. Stop old standalone servers manually if still running to free VRAM.
 
-## GTCRN enhancement and Sherpa speaker turns
+## Sherpa speaker turns (GTCRN disabled)
 
-The launcher now runs with `--audio-profile both`: GTCRN processes **16 kHz mono audio on CPU before FireRedVAD**; Sherpa-ONNX identifies possible **speaker-turn boundaries within VAD utterances on CPU** before Whisper. Both use `sherpa-onnx`, installed by the launcher using `uv sync --extra diarization` when the package is missing. A separate native import preflight reports a missing DLL/runtime before starting playback. On first use, the official GTCRN and Sherpa ONNX weights download to a local cache; later sessions reuse them. GTCRN does not modify the original MPV soundtrack. Sherpa does **not** assign stable speaker IDs or isolate voices into separate audio tracks. UVR vocal separation remains off.
+The launcher now runs with `--audio-profile speaker`: the original **16 kHz mono audio** goes directly to FireRedVAD, then Sherpa-ONNX detects possible **speaker-turn boundaries within VAD utterances on CPU** before Whisper. GTCRN enhancement and UVR vocal separation are disabled. Sherpa-ONNX remains installed by the launcher using `uv sync --extra diarization` when missing; its official ONNX models download on first use and are reused. It does **not** provide stable speaker identities or isolate overlapping voices.
 
-CPU processing and additional speaker splits can increase subtitle latency compared with the earlier baseline. To return temporarily to the previous audio-processing behavior, change `--audio-profile both` to `--audio-profile baseline` in the launcher. This does not alter MPV quality selection, HTTPS/DASH preference, or Whisper precision.
+Sherpa segmentation can add CPU work and affect subtitle latency; switch to `--audio-profile baseline` if you need a GTCRN-off and Sherpa-off comparison. MPV video quality, HTTPS/DASH playback, and Whisper precision remain unchanged.
+
+Whisper now avoids promoting **weakly decoded standalone generic thanks** from its dual-decode recovery path. Repeated isolated `Thank you` / `Thank you very much` outputs within a short window get a confirming decode; low-confidence or inconsistent repetitions are suppressed, while confidently corroborated expressions of thanks and longer contextual sentences remain allowed. This does not guarantee hallucination-free translation.
 
 ## YouTube quality selector
 

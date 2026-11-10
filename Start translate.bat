@@ -1,49 +1,82 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
-title Japanese Video Translator
+title Haas + PLaMo 3 Translate 2B Retest
 cd /d "%~dp0"
-
 if errorlevel 1 (
-    echo ERROR: Could not enter the project directory.
+    echo ERROR: Cannot enter the project directory.
     pause
     exit /b 1
 )
-
 echo.
 echo ========================================
-echo       Japanese Video Translator
+echo   Haas Japanese ASR + PLaMo 3 Translate
 echo ========================================
 echo.
-
 set "VIDEO_URL="
-set /p "VIDEO_URL=Paste YouTube VOD URL: "
-
+set /p "VIDEO_URL=Paste YouTube live or VOD URL: "
 if not defined VIDEO_URL (
     echo No URL entered.
     pause
     exit /b 1
 )
 
+:select_quality
+set "QUALITY_CHOICE="
+set "VIDEO_QUALITY="
+echo.
+echo Select YouTube video quality:
+echo   1. 360p
+echo   2. 480p
+echo   3. 720p ^(default^)
+echo   4. 1080p
+set /p "QUALITY_CHOICE=Enter choice [3]: "
+if not defined QUALITY_CHOICE set "QUALITY_CHOICE=3"
+if "%QUALITY_CHOICE%"=="1" set "VIDEO_QUALITY=360"
+if "%QUALITY_CHOICE%"=="2" set "VIDEO_QUALITY=480"
+if "%QUALITY_CHOICE%"=="3" set "VIDEO_QUALITY=720"
+if "%QUALITY_CHOICE%"=="4" set "VIDEO_QUALITY=1080"
+if not defined VIDEO_QUALITY (
+    echo Invalid choice. Enter 1, 2, 3, or 4.
+    goto select_quality
+)
+echo YouTube video quality: up to %VIDEO_QUALITY%p (lower if unavailable)
+
 if not exist "logs" mkdir "logs"
-
+if defined PYTHONPATH (
+    set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
+) else (
+    set "PYTHONPATH=%~dp0src"
+)
+uv run --no-sync python -c "import numpy, fireredvad, auto_translate" >nul 2>nul
+if errorlevel 1 (
+    echo Installing Haas + PLaMo pipeline Python dependencies...
+    uv sync
+    if errorlevel 1 (
+        echo ERROR: Dependency installation failed.
+        pause
+        exit /b 1
+    )
+)
 echo.
-echo Starting translation with MPV (paused)...
+echo Starting direct Japanese ASR with PLaMo 3 Translate 2B...
+echo Original 16 kHz audio, FireRedVAD CUDA, Haas Vulkan, PLaMo llama.cpp.
 echo.
 
-rem Run a single translator process. The previous two-uv pipe could exit
-rem early and hide MPV startup errors; the CLI now prints JP/EN directly.
-uv run --no-sync auto-translate "%VIDEO_URL%" --mode vod --mpv --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
-
 echo.
 if not "%EXIT_CODE%"=="0" (
     echo ERROR: Translator exited with code %EXIT_CODE%.
-    echo Relevant errors from logs\run.log:
-    findstr /i /c:"ERROR" /c:"Traceback" /c:"Exception" /c:"BrokenPipeError" "logs\run.log"
+    echo Last 45 application log lines:
+    powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\run.log' -Encoding UTF8 -Tail 45"
+    if exist "logs\mpv.log" (
+        echo Last 30 MPV log lines:
+        powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\mpv.log' -Encoding UTF8 -Tail 30"
+    )
 ) else (
     echo Translator stopped.
 )
-echo Full diagnostic log: "%CD%\logs\run.log"
+echo Application log: "%CD%\logs\run.log"
 pause
 exit /b %EXIT_CODE%

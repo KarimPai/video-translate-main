@@ -151,6 +151,25 @@ itself stays available across the entire video for fast translation reuse
 and backwards seeking. These changes target long-session CPU/RAM growth but
 are not yet verified on your 7-hour recording.
 
+### Manual pause crash fix
+
+A November 10 long-VOD run paused at about 5:48:06 with subtitles
+approximately 74 seconds ahead. The audio read-ahead reader correctly
+yielded at its 75-second cap, but the pipeline's 60-second "stalled with
+queued work" watchdog then terminated the process with one queued speaker
+item. This was a false-positive pipeline crash, not an MPV crash.
+
+The watchdog now checks cached player manual-pause status and the active
+audio read-ahead wait state. It suspends only its inactivity timeout while
+the VOD is deliberately idle, resetting its timer during the pause and
+restoring normal checks after playback resumes. Worker exceptions remain
+fatal and MPV itself is still monitored. Seek resets invalidate the waiting
+state so a stale generation cannot suppress real failures. Live-stream
+watchdog behavior is unchanged.
+
+The player polls manual-pause state once a second on its existing MPV
+scheduler thread; the pipeline watchdog never makes extra MPV IPC calls.
+
 ### Further mitigation for occasional hitches and slower subtitles
 
 Unpaced FFmpeg previously decoded and queued as much of the entire VOD as

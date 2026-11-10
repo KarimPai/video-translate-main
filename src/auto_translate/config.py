@@ -110,9 +110,10 @@ class WhisperConfig:
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
     hololive_detected_names: list[str] = field(default_factory=list)
-    # Whisper is not instruction-tuned; this is a *hint*, not a command.
+    # Optional style prompt; independent of the two cleanup switches below.
+    # Whisper is not instruction-tuned: a style prompt is only a hint.
     concise_english: bool = False
-    style_prompt: str = ""  # no instruction-style priming; concise output filter handles fillers
+    style_prompt: str = ""
     remove_fillers: bool = True
     collapse_repetitions: bool = True
     # Retries decode the same utterance without prior audio context.

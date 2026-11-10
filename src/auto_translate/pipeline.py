@@ -277,16 +277,19 @@ def run_whisper(
 
         utt.timings.asr_end = time.monotonic()
         raw_english = english
-        english = concise_english(
-            english,
-            remove_fillers=bool(getattr(cfg, "remove_fillers", True)),
-            collapse_repetitions=bool(
-                getattr(cfg, "collapse_repetitions", True)
-            ),
-        ) if getattr(cfg, "concise_english", True) else english
+        remove_fillers = bool(getattr(cfg, "remove_fillers", True))
+        collapse_repetitions = bool(getattr(cfg, "collapse_repetitions", True))
+        # Nonverbal/filler cleanup is independent of optional concise-style
+        # prompting. The default concise_english=False must not disable it.
+        if remove_fillers or collapse_repetitions:
+            english = concise_english(
+                english,
+                remove_fillers=remove_fillers,
+                collapse_repetitions=collapse_repetitions,
+            )
         if raw_english != english:
             log.debug(
-                "Concise subtitle cleanup: before=%r after=%r",
+                "Subtitle cleanup: before=%r after=%r",
                 raw_english[:160], english[:160],
             )
         if get_generation is not None and utt.generation != get_generation():

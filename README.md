@@ -37,6 +37,8 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
     no_speech_retry_block_threshold = 0.85
     verify_stock_outros = true
     rescue_stable_weak_speech = true
+    remove_fillers = true
+    collapse_repetitions = true
 
     [vad]
     threshold = 0.50
@@ -50,7 +52,7 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
 
 The segmenter retains pre-onset audio in addition to the onset confirmation window. The usual 250 ms speech minimum also accepts short runs with at least 120 ms of consecutive smoothed speech probability at or above 0.85. This can recover brief replies and can admit more speech-like game audio.
 
-Whisper uses scalar temperature 0, beam 5, no-speech 0.6, log probability -1.0 and compression ratio 2.4. The verifier may decode the same PCM once at temperature 0.2 without prompts or names, up to 12 seconds per retry. It checks unusually long output, multiword loops and combinations of weak VAD and decoder evidence. A higher score alone cannot replace an existing translation with different words. Filler cleanup defaults off. Accepted short interjections and real signoffs can reach the overlay.
+Whisper uses scalar temperature 0, beam 5, no-speech 0.6, log probability -1.0 and compression ratio 2.4. The verifier may decode the same PCM once at temperature 0.2 without prompts or names, up to 12 seconds per retry. It checks unusually long output, multiword loops and combinations of weak VAD and decoder evidence. A higher score alone cannot replace an existing translation with different words. Filler and nonverbal-only laughter cleanup is enabled by default even with the optional concise style prompt disabled; meaningful repetition and genuine signoffs remain eligible. To restore unfiltered text, set both `[whisper].remove_fillers = false` and `[whisper].collapse_repetitions = false` in local config.toml.
 
 ## Targeted generic-outro verification
 

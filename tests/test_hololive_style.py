@@ -138,7 +138,7 @@ class ConciseStyleTests(unittest.TestCase):
         self.assertEqual(outgoing.get_nowait().en, "Get in the car.")
         self.assertEqual(engine.last_prompt, "GTA gaming subtitles.")
 
-    def test_style_prompt_can_be_disabled_without_changing_raw_translation(self):
+    def test_style_prompt_disabled_still_filters_fillers(self):
         class Fake:
             def __init__(self):
                 self.cfg = WhisperConfig(concise_english=False)
@@ -152,8 +152,45 @@ class ConciseStyleTests(unittest.TestCase):
         incoming.put(Utterance(0, 1, np.ones(16000, dtype=np.float32)))
         incoming.put(None)
         run_whisper(model, incoming, outgoing)
-        self.assertEqual(outgoing.get_nowait().en, "Um, I need armor.")
+        self.assertEqual(outgoing.get_nowait().en, "I need armor.")
         self.assertIsNone(model.prompt)
+
+    def test_nonverbal_only_cues_are_suppressed_without_style_prompt(self):
+        class Fake:
+            def __init__(self):
+                self.cfg = WhisperConfig(concise_english=False)
+                self.responses = iter(("lol", "Hahahaha!", "Watame is really good!"))
+            def decode_audio(self, audio, *, prompt=None, hotwords=None,
+                             temperature=None):
+                return WhisperDecode(next(self.responses), avg_logprob=-0.2)
+        model = Fake()
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        for second in range(3):
+            incoming.put(Utterance(
+                second, second + 1, np.ones(16000, dtype=np.float32) * .1,
+            ))
+        incoming.put(None)
+        run_whisper(model, incoming, outgoing)
+        self.assertEqual(outgoing.get_nowait().en, "Watame is really good!")
+        self.assertIsNone(outgoing.get_nowait())
+
+    def test_both_cleanup_switches_off_preserve_raw_translation(self):
+        class Fake:
+            def __init__(self):
+                self.cfg = WhisperConfig(
+                    concise_english=False,
+                    remove_fillers=False,
+                    collapse_repetitions=False,
+                )
+            def decode_audio(self, audio, *, prompt=None, hotwords=None,
+                             temperature=None):
+                return WhisperDecode("Um, I need armor.", avg_logprob=-.2)
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Utterance(0, 1, np.ones(16000, dtype=np.float32)))
+        incoming.put(None)
+        run_whisper(Fake(), incoming, outgoing)
+        self.assertEqual(outgoing.get_nowait().en, "Um, I need armor.")
+        self.assertIsNone(outgoing.get_nowait())
 
 
 if __name__ == "__main__":

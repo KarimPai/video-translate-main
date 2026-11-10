@@ -221,6 +221,43 @@ class WhisperLargeV3:
             weak_no_speech_prob=weak[2] if weak else None,
         )
 
+    def transcribe_japanese_evidence(self, audio: np.ndarray) -> str:
+        """Check a suspected stock outro against the same audio in Japanese.
+
+        This is NOT a replacement for direct AST. It is a targeted, unprompted
+        second task on the already-loaded model, used only for suspect English
+        stock-outro sentences. A fluent English decode alone is not evidence
+        that someone actually said a closing phrase.
+        """
+        pcm = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if pcm.size == 0 or not np.isfinite(pcm).all():
+            return ""
+        segments, _ = self._model.transcribe(
+            np.ascontiguousarray(pcm),
+            language="ja",
+            task="transcribe",
+            beam_size=self.cfg.beam_size,
+            best_of=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            vad_filter=False,
+            without_timestamps=True,
+            word_timestamps=False,
+            initial_prompt=None,
+            hotwords=None,
+            no_speech_threshold=self.cfg.no_speech_threshold,
+            log_prob_threshold=self.cfg.log_prob_threshold,
+            compression_ratio_threshold=self.cfg.compression_ratio_threshold,
+        )
+        valid = []
+        for segment in segments:
+            if self._unreliable(segment):
+                continue
+            text = str(getattr(segment, "text", "")).strip()
+            if text:
+                valid.append(text)
+        return " ".join(valid)
+
     def _unreliable(self, segment: object) -> bool:
         """Use model confidence rather than a hard-coded profanity/phrase list."""
         cfg = self.cfg

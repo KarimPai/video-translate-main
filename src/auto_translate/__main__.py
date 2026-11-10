@@ -1,4 +1,4 @@
-"""Whisper Large-v3 Japanese speech -> English direct AST -> MPV subtitles."""
+"""VoicePing Qwen3 Japanese speech -> English direct AST -> MPV subtitles."""
 
 import argparse
 import logging
@@ -27,8 +27,6 @@ def main() -> None:
     parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
                         metavar="{360,480,720,1080}",
                         help="maximum YouTube playback height; selects a lower quality if unavailable")
-    parser.add_argument("--whisper-compute", choices=("float16", "int8_float16"),
-                        help="Whisper CUDA precision; FP16 OOM falls back to int8_float16")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV video decoder (no saves GPU memory)")
     parser.add_argument("--diagnostics", action="store_true",
@@ -49,8 +47,7 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .config import load_config, mpv_youtube_format
-    from .hololive_names import select_hololive_hints
-    from .whisper_v3 import WhisperLargeV3
+    from .voiceping_ast import VoicePingAST
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
@@ -61,10 +58,8 @@ def main() -> None:
     if args.video_quality is not None:
         cfg.mpv.ytdlp_format = mpv_youtube_format(args.video_quality, live=True)
         cfg.mpv.vod_ytdlp_format = mpv_youtube_format(args.video_quality, live=False)
-    if args.whisper_compute is not None:
-        cfg.whisper.compute_type = args.whisper_compute
     if args.diagnostics:
-        cfg.whisper.diagnostics = True
+        cfg.ast.diagnostics = True
     if args.delay is not None:
         cfg.mpv.delay_s = args.delay
     if args.hwdec is not None:
@@ -80,20 +75,10 @@ def main() -> None:
             "live HLS" if source.live else "VOD HTTPS/DASH first",
         )
 
-    cfg.whisper.hololive_detected_names = select_hololive_hints(
-        source.timeline,
-        enabled=cfg.whisper.hololive_names_enabled,
-        limit=cfg.whisper.hololive_name_limit,
-    )
-    log.info(
-        "Hololive name hints: %s (from title/channel metadata)",
-        ", ".join(cfg.whisper.hololive_detected_names) or "none",
-    )
-
     started = time.perf_counter()
-    whisper = WhisperLargeV3(cfg.whisper)
+    ast = VoicePingAST(cfg.ast)
     log.info(
-        "Whisper Large-v3 direct AST ready in %.1fs",
+        "VoicePing Qwen3 direct AST ready in %.1fs",
         time.perf_counter() - started,
     )
     try:
@@ -121,9 +106,9 @@ def main() -> None:
             from .output.mpv import MpvOutput
             outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=cache))
 
-        run(ingest, cfg, whisper, outputs, stop, session_cache=cache)
+        run(ingest, cfg, ast, outputs, stop, session_cache=cache)
     finally:
-        whisper.close()
+        ast.close()
 
 
 if __name__ == "__main__":

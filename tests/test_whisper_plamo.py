@@ -24,7 +24,8 @@ from auto_translate.two_stage import (
     has_japanese_script, run_plamo_translate, run_whisper_asr,
 )
 from auto_translate.types import AudioProgress, Subtitle, Transcript, Utterance
-from auto_translate.whisper_v3 import WhisperDecode, WhisperLargeV3
+from auto_translate.kotoba_whisper import KotobaWhisperASR, KOTOBA_CT2_ID
+from auto_translate.whisper_v3 import WhisperDecode
 from auto_translate.translate.plamo import PlamoTranslator
 
 
@@ -78,7 +79,7 @@ class TwoStageTests(unittest.TestCase):
         self.assertEqual(
             (cfg.model, cfg.device, cfg.compute_type, cfg.language,
              cfg.task, cfg.beam_size),
-            ("large-v3", "cuda", "int8_float16", "ja", "transcribe", 5),
+            (KOTOBA_CT2_ID, "cuda", "int8_float16", "ja", "transcribe", 5),
         )
         self.assertEqual(TranslateConfig().plamo_context, 4096)
         self.assertIn("Q4_K_M", TranslateConfig().plamo_hf_model)
@@ -107,7 +108,7 @@ class TwoStageTests(unittest.TestCase):
                 )]), None
 
         backend = Model()
-        asr = WhisperLargeV3(WhisperConfig(), model=backend)
+        asr = KotobaWhisperASR(WhisperConfig(), model=backend)
         self.assertEqual(
             asr.transcribe_audio(np.full(16000, .2, np.float32)),
             "ごめんマジでガチでバグってた",

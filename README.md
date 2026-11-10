@@ -8,7 +8,7 @@ YouTube live/VOD or local media → FFmpeg 16kHz mono → optional GTCRN (CPU) �
 
 Whisper uses language=ja, task=translate, condition_on_previous_text=False and vad_filter=False. Old config.toml values requesting transcription are ignored. Previous [translate] settings are ignored. Large-v3 Turbo is not recommended because its model is not trained for speech translation.
 
-Whisper uses FP16 quality mode on the RTX 3070 (with int8_float16 fallback on model-load VRAM exhaustion), and text-only decoding because FireRedVAD already provides timestamps. Wholly rejected low-confidence utterances can only be recovered when two independent decodes agree exactly and both the VAD and Whisper scores strongly indicate real speech. This is a guarded improvement, not a guarantee of translation correctness.
+Whisper defaults to int8_float16 to reserve GPU memory for MPV's hardware video decoder on the RTX 3070; FP16 remains available as an opt-in quality experiment with an int8_float16 fallback on model-load VRAM exhaustion. Text-only decoding remains enabled because FireRedVAD already provides timestamps. Wholly rejected low-confidence utterances can only be recovered when two independent decodes agree exactly and both the VAD and Whisper scores strongly indicate real speech. This is a guarded improvement, not a guarantee of translation correctness.
 
 Direct AST cannot also supply a verbatim Japanese transcript without a second model pass. The command prompt therefore shows EN: lines only.
 
@@ -19,13 +19,13 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
     uv sync
     "Start translate.bat"
 
-Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute float16 (fallback to int8_float16 only if FP16 model load is out of VRAM), --delay 10; no translator server is started. Disable the FP16 trial with --whisper-compute int8_float16 in the launcher. Stop old standalone servers manually if still running to free VRAM.
+Launcher defaults: optional GTCRN/Sherpa disabled, --hwdec auto-safe (use GPU-assisted decoding when available; fallback to software), --whisper-compute int8_float16 (prior smooth-playback baseline; opt into FP16 with --whisper-compute float16), --delay 10; no translator server is started. The previous FP16-by-default trial was rolled back after a report of a prolonged video freeze with audio continuing. This is an isolation test; causality is not yet proven. Stop old standalone servers manually if still running to free VRAM.
 
 ## Key defaults and silence protections
 
     [whisper]
     model = "large-v3"
-    compute_type = "float16"
+    compute_type = "int8_float16"
     beam_size = 5
     temperature = 0.0
     no_speech_retry_block_threshold = 0.85
@@ -56,6 +56,8 @@ Preserved: playback-relative audio read-ahead cap of 75s, MPV demux cache 256MiB
     uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 
 These tests use mock models. Actual AST translation fidelity, live mpv behavior, and total VRAM use require a real Windows GPU run.
+
+The MPV VOD health line now logs the actually active video decoder (`hwdec_active`), audio playback timestamp, AV sync, decoder/frame drops, and estimated video filter FPS every 30 seconds. This helps distinguish a video-only freeze from an audio/network/decoder stall. It does not restart playback automatically or change seek behavior. If video freezes while audio continues, save the full logs before restarting, and note the wall-clock timestamp.
 
 To inspect unexpected exits:
 

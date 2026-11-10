@@ -112,7 +112,7 @@ class WhisperDirectTests(unittest.TestCase):
     def test_defaults_are_large_v3_cuda_translate(self):
         cfg = WhisperConfig()
         self.assertEqual((cfg.model, cfg.device, cfg.compute_type),
-                         ("large-v3", "cuda", "float16"))
+                         ("large-v3", "cuda", "int8_float16"))
         self.assertEqual((cfg.language, cfg.task, cfg.beam_size),
                          ("ja", "translate", 5))
 
@@ -140,7 +140,7 @@ class WhisperDirectTests(unittest.TestCase):
             decoder = WhisperLargeV3(WhisperConfig())
         self.assertEqual(mock_class.call_args.args[0], "large-v3")
         self.assertEqual(mock_class.call_args.kwargs["device"], "cuda")
-        self.assertEqual(mock_class.call_args.kwargs["compute_type"], "float16")
+        self.assertEqual(mock_class.call_args.kwargs["compute_type"], "int8_float16")
         decoder.close()
 
     def test_fp16_load_oom_falls_back_to_quantized_model(self):
@@ -150,7 +150,7 @@ class WhisperDirectTests(unittest.TestCase):
             return FakeModel()
         with patch.dict("sys.modules", {"faster_whisper":
                          SimpleNamespace(WhisperModel=fake_loader)}):
-            decoder = WhisperLargeV3(WhisperConfig())
+            decoder = WhisperLargeV3(WhisperConfig(compute_type="float16"))
         self.assertEqual(decoder.compute_type, "int8_float16")
         decoder.close()
 

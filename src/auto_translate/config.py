@@ -70,7 +70,7 @@ class WhisperConfig:
 
     model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
     device: str = "cuda"
-    compute_type: str = "float16"  # quality test on RTX 3070 8 GB; OOM falls back to int8_float16
+    compute_type: str = "int8_float16"  # stable RTX 3070 8 GB video + Whisper baseline; FP16 opt-in
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
     task: str = "translate"  # direct Japanese audio to English

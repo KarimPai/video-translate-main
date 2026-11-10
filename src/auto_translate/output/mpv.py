@@ -1070,13 +1070,20 @@ class MpvOutput:
                     log.info(
                         "VOD playback health: video=%.1fs translated=%.1fs "
                         "translation_lead=%+.1fs dropped_frames=%s "
-                        "paused_for_cache=%s cache_duration=%s hwdec=%s",
+                        "paused_for_cache=%s cache_duration=%s "
+                        "hwdec_requested=%s hwdec_active=%s "
+                        "audio_pts=%s avsync=%s decoder_drops=%s "
+                        "vo_delayed=%s estimated_vf_fps=%s",
                         self._now, translated_until,
                         translated_until - self._now,
                         self.ipc.get("frame-drop-count"),
                         self.ipc.get("paused-for-cache"),
                         self.ipc.get("demuxer-cache-duration"),
-                        self.cfg.hwdec,
+                        self.cfg.hwdec, self.ipc.get("hwdec-current"),
+                        self.ipc.get("audio-pts"), self.ipc.get("avsync"),
+                        self.ipc.get("decoder-frame-drop-count"),
+                        self.ipc.get("vo-delayed-frame-count"),
+                        self.ipc.get("estimated-vf-fps"),
                     )
 
                 sample_at = time.monotonic()

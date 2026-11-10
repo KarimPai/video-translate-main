@@ -29,6 +29,7 @@ class GtcrnConfig:
 
 @dataclass
 class VadConfig:
+    device: str = "cpu"  # isolate FireRedVAD from Anime Whisper GPU; "cuda" opt-in
     threshold: float = 0.50
     neg_threshold: float = 0.30
     min_silence_ms: int = 550

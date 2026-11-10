@@ -36,6 +36,7 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
     temperature = 0.0
     no_speech_retry_block_threshold = 0.85
     verify_stock_outros = true
+    filter_phantom_phrases = true
     rescue_stable_weak_speech = true
     remove_fillers = true
     collapse_repetitions = true
@@ -56,9 +57,9 @@ Whisper uses scalar temperature 0, beam 5, no-speech 0.6, log probability -1.0 a
 
 ## Targeted generic-outro verification
 
-When Whisper outputs a complete generic English signoff such as "Thank you for watching", the pipeline makes one additional unprompted Japanese transcription pass **on the same speech segment using the already-loaded Whisper Large-v3**. It only publishes the signoff when the Japanese text corroborates both watching and thanks. Ordinary thanks, gameplay dialogue, and all other English AST output follow the existing path. No second model is downloaded, and MPV/seek synchronization and the English-only overlay are unchanged.
+When Whisper outputs a complete generic English signoff such as "Thank you for watching", the pipeline makes one additional unprompted Japanese transcription pass **on the same speech segment using the already-loaded Whisper Large-v3**. It only publishes the signoff when the Japanese text corroborates both watching and thanks. The same full-cue guard now covers stock subtitle-credit phrases (for example, `Subtitles by Amara.org`) and channel subscription requests (for example, `Please subscribe to my channel`). Patterns match complete cues, not normal dialogue mentioning these words. Wholly implausible speech duration and combined low-VAD/high-no-speech evidence can suppress a matched cue; strong acoustic evidence and Japanese corroboration preserve likely real speech. This duration heuristic uses the VAD utterance, **not** Whisper word timestamps, so it does not assume English and Japanese have identical word cadence. Ordinary thanks, gameplay dialogue, and all other English AST output follow the existing path. No second model is downloaded, and MPV/seek synchronization and the English-only overlay are unchanged.
 
-This is an anti-hallucination heuristic, **not independent acoustic proof**: both tasks use the same Whisper model, so correlated errors can still occur. It may also suppress a genuine signoff when the Japanese check fails to recognize it. Set `[whisper].verify_stock_outros = false` in a local `config.toml` to disable this targeted check. Filtered outputs are recorded as `Suppressed uncorroborated Whisper stock outro` in `logs/run.log`.
+This is an anti-hallucination heuristic, **not independent acoustic proof**: both tasks use the same Whisper model, so correlated errors can still occur. It may also suppress a genuine signoff when the Japanese check fails to recognize it. Set `[whisper].verify_stock_outros = false` to disable signoff verification, or `[whisper].filter_phantom_phrases = false` to disable the separate subtitle-credit/subscription guard. Filtered cues are recorded as `Suppressed Whisper phantom phrase` or `Suppressed uncorroborated Whisper phantom phrase` in `logs/run.log`.
 
 Run the focused mock-model regression:
 

@@ -5,7 +5,7 @@ The stable `main`, `whisper-v3`, and other non-Granite branches remain unchanged
 
 ## Pipeline
 
-YouTube live/VOD -> FFmpeg mono 16 kHz -> FireRedVAD (CUDA)
+YouTube live/VOD -> FFmpeg mono 16 kHz -> FireRedVAD (CPU by default)
 -> **litagin/anime-whisper** (Japanese ASR via Transformers/PyTorch CUDA)
 -> PLaMo 3 Translate 2B Q4_K_M (local llama.cpp, Japanese to English)
 -> MPV with English-only subtitles and JP/EN terminal output.
@@ -40,6 +40,10 @@ to keep the ASR accuracy comparison controlled.
   additional GPU memory (disable with [whisper] collect_token_scores=false).
 - The existing FireRedVAD silence gate, Japanese script gate, and local PLaMo
   translator remain active.
+- FireRedVAD runs on CPU by default on the Anime Whisper branch. This is the
+  same FireRed streaming model and segmentation, but isolated from Whisper's
+  CUDA context during large VOD seeks. To force the old GPU mode, set
+  `[vad] device = "cuda"` in local config.toml. CPU VAD may be slower.
 - FireRedVAD segmentation is tuned for fuller Japanese phrase boundaries:
   threshold 0.50, speech padding 250ms, minimum silence 550ms,
   minimum speech 180ms, 8s soft cap plus up to 1s extension.
@@ -110,6 +114,14 @@ adaptive_max_tokens = false
 retry_uncertain = false
 collect_token_scores = false
 ```
+
+The previous long-VOD seek crash (CUDA error 710) was reported from the VAD
+stage, but CUDA errors are asynchronous and the true originating kernel is
+not established. This branch isolates FireRedVAD on CPU, and avoids calling
+`torch.cuda.empty_cache()` during shutdown, which previously masked the first
+error. A sticky CUDA device assertion requires a fresh process; it cannot
+safely be recovered within the same Python process. If a crash recurs, set
+`CUDA_LAUNCH_BLOCKING=1` before launching to collect a more precise trace.
 
 The tests use fake output models or dependency injection; they do **not**
 establish CUDA runtime compatibility or Hololive ASR quality. For an accuracy

@@ -261,6 +261,10 @@ class Ingest:
 
         self._restart_at: float | None = None
         self._go = threading.Event()
+        # MPV alone enables the VOD audio lead cap. Live audio never parks.
+        self._vod_max_audio_lead_s = 0.0
+        self._playback_position_s = float(source.start_s)
+        self._vod_pacing_waiting_generation: int | None = None
 
     def _new_video_playlist(self, source_start_s: float) -> Path:
         """Create a new HLS event playlist while retaining prior session fragments."""
@@ -357,6 +361,8 @@ class Ingest:
             self._session += 1
 
             self._go.clear()
+            self._playback_position_s = float(start_s)
+            self._vod_pacing_waiting_generation = None
             self.first_pts = None
             self._restart_at = start_s
             self.first_pts_ready.clear()
@@ -370,6 +376,77 @@ class Ingest:
 
             self._terminate_locked(preserve_video=preserve_video_cache)
             return preserve_video_cache
+
+    def enable_vod_playback_pacing(self, lead_s: float) -> None:
+        """Bound background FFmpeg/ASR processing ahead of direct VOD playback.
+
+        FFmpeg remains unpaced to quickly replenish the buffer after seeks.
+        Throttling is inactive for live streams and local fMP4 video outputs.
+        """
+        if self.source.live or self.video_out is not None:
+            return
+        lead = max(0.0, float(lead_s))
+        with self._proc_lock:
+            self._vod_max_audio_lead_s = lead
+            self._playback_position_s = float(self.source.start_s)
+            self._vod_pacing_waiting_generation = None
+        if lead:
+            log.info(
+                "VOD audio read-ahead limited to %.0fs of MPV playback; "
+                "background inference yields when sufficiently buffered",
+                lead,
+            )
+
+    def set_playback_position(self, position_s: float) -> None:
+        """Update current MPV VOD time for the background PCM reader."""
+        with self._proc_lock:
+            if self._vod_max_audio_lead_s > 0:
+                self._playback_position_s = max(0.0, float(position_s))
+
+    def is_vod_audio_lead_limited(self) -> bool:
+        """True only while the CURRENT VOD PCM reader is intentionally parked.
+
+        The pipeline watchdog must not treat this deliberate queue starvation
+        as a failure. The flag clears on resume, seek and stop.
+        """
+        with self._proc_lock:
+            return (
+                not self._stopped
+                and self._vod_pacing_waiting_generation == self._generation
+                and self._vod_max_audio_lead_s > 0
+            )
+
+    def _wait_for_vod_lead(self, sample: int, generation: int) -> bool:
+        """Return False immediately when a stop/seek invalidates this read."""
+        waiting = False
+        while True:
+            with self._proc_lock:
+                if self._stopped or generation != self._generation:
+                    if self._vod_pacing_waiting_generation == generation:
+                        self._vod_pacing_waiting_generation = None
+                    return False
+                lead = self._vod_max_audio_lead_s
+                playback = self._playback_position_s
+                reached = lead > 0 and sample / SAMPLE_RATE > playback + lead
+                if reached:
+                    self._vod_pacing_waiting_generation = generation
+                elif self._vod_pacing_waiting_generation == generation:
+                    self._vod_pacing_waiting_generation = None
+            if not reached:
+                if waiting:
+                    log.debug(
+                        "VOD audio reader resumed: pcm_pos=%.1fs play_pos=%.1fs",
+                        sample / SAMPLE_RATE, playback,
+                    )
+                return True
+            if not waiting:
+                waiting = True
+                log.debug(
+                    "VOD audio reader yielding: pcm_pos=%.1fs play_pos=%.1fs "
+                    "max_ahead=%.1fs",
+                    sample / SAMPLE_RATE, playback, lead,
+                )
+            time.sleep(0.15)
 
     def go(self) -> None:
         self._go.set()
@@ -1079,8 +1156,18 @@ class Ingest:
                 )
 
             while True:
-                # Stop consuming this session as soon as a seek invalidates it.
-                if generation != self.generation:
+                # No unbounded 7-hour VOD ingestion while MPV is paused.
+                if worker:
+                    reader_sample = first + round(
+                        input_frames * SAMPLE_RATE / SEPARATION_INPUT_RATE
+                    )
+                elif deepfilter_worker:
+                    reader_sample = first + round(
+                        input_frames * SAMPLE_RATE / DEEPFILTER_INPUT_RATE
+                    )
+                else:
+                    reader_sample = sample
+                if not self._wait_for_vod_lead(reader_sample, generation):
                     break
 
                 if worker:

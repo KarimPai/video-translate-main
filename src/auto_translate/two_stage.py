@@ -1,6 +1,6 @@
 """Japanese-only Whisper ASR -> Japanese-to-English PLaMo translation.
 
-This is the active pipeline for the whisper-v3 branch. The original direct
+This is the active pipeline for the Anime Whisper branch. The original direct
 Whisper translation function is not called by run() in this configuration.
 All timestamps belong to the source audio and remain unchanged at both stages.
 """
@@ -19,7 +19,7 @@ import numpy as np
 from .context_memory import repair_near_repeated_word
 from .translation_integrity import nearby_japanese_fragments
 from .types import SAMPLE_RATE, AudioProgress, Subtitle, Transcript, Utterance
-from .whisper_v3 import WhisperLargeV3
+from .anime_whisper import AnimeWhisperASR
 from .session_cache import SessionSubtitleCache
 from .translate.base import Translator
 
@@ -36,7 +36,7 @@ def has_japanese_script(text: str) -> bool:
 
 
 def run_whisper_asr(
-    whisper: WhisperLargeV3,
+    whisper: AnimeWhisperASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
     out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
@@ -123,7 +123,7 @@ def run_whisper_asr(
             continue
         if getattr(cfg, "diagnostics", False):
             log.info(
-                "Whisper Japanese ASR: gen=%d %.2f-%.2fs %.3fs retry=%s "
+                "Anime Whisper Japanese ASR: gen=%d %.2f-%.2fs %.3fs retry=%s "
                 "avg_logprob=%s no_speech=%s discarded=%s JP=%r",
                 utt.generation, utt.start_s, utt.end_s,
                 utt.timings.asr_end - utt.timings.asr_start,

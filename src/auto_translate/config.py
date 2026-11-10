@@ -109,6 +109,7 @@ class WhisperConfig:
     # Official talent roster; only stream-relevant names are sent to Whisper.
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
+    verify_standalone_names: bool = True  # re-decode isolated name without text context
     hololive_detected_names: list[str] = field(default_factory=list)
     # Optional style prompt; independent of the two cleanup switches below.
     # Whisper is not instruction-tuned: a style prompt is only a hint.

@@ -33,6 +33,7 @@ class IngestConfig:
     ytdlp_format: str = "bestaudio/93/best"
     cookies_from_browser: str = ""
     pitch_semitones: float = 0.0
+    vod_max_audio_lead_s: float = 75.0  # MPV VOD only: limit idle audio read-ahead
 
 
 @dataclass

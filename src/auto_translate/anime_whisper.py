@@ -1,0 +1,159 @@
+"""Anime Whisper Japanese-only ASR adapter for the existing PLaMo pipeline.
+
+The developer explicitly warns that initial prompts cause hallucinations.
+Do not pass previous subtitles, initial_prompt, prompt_ids, or hotwords.
+All input clips are bounded, independently decoded 16-kHz mono speech.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any
+
+import numpy as np
+
+from .config import WhisperConfig
+from .types import SAMPLE_RATE
+from .whisper_v3 import WhisperDecode
+
+log = logging.getLogger(__name__)
+MODEL_ID = "litagin/anime-whisper"
+
+
+class AnimeWhisperASR:
+    """One local Hugging Face Transformers speech-to-text model per session."""
+
+    def __init__(
+        self,
+        cfg: WhisperConfig,
+        *,
+        model: Any | None = None,
+        processor: Any | None = None,
+    ) -> None:
+        self.cfg = cfg
+        if cfg.model != MODEL_ID:
+            raise ValueError(f"Anime Whisper experiment supports only {MODEL_ID}")
+        if cfg.language != "ja" or cfg.task != "transcribe":
+            raise ValueError("Anime Whisper must use Japanese transcription, not translation")
+        if cfg.device not in ("cuda", "cpu"):
+            raise ValueError("Anime Whisper device must be 'cuda' or 'cpu'")
+        if cfg.compute_type not in ("float16", "float32"):
+            raise ValueError("Anime Whisper compute_type must be float16 or float32")
+        if cfg.beam_size < 1:
+            raise ValueError("Anime Whisper beam_size must be >= 1")
+        if not 1 <= cfg.max_new_tokens <= 400:
+            raise ValueError("Anime Whisper max_new_tokens must be 1..400")
+        if (model is None) != (processor is None):
+            raise ValueError("Inject both model and processor, or neither")
+        self.device = cfg.device
+        if model is not None:
+            self._model = model
+            self._processor = processor
+            return
+
+        import torch
+        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+
+        if cfg.device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("Anime Whisper requires CUDA, but PyTorch CUDA is unavailable")
+        dtype = (
+            torch.float16 if cfg.device == "cuda" and cfg.compute_type == "float16"
+            else torch.float32
+        )
+        log.info("Loading %s via Transformers on %s (%s)", MODEL_ID, cfg.device, dtype)
+        try:
+            self._processor = AutoProcessor.from_pretrained(MODEL_ID)
+            self._model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                MODEL_ID, dtype=dtype,
+            ).to(cfg.device)
+            self._model.eval()
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed loading Anime Whisper (about 3 GB initial checkpoint download). "
+                "Check model access, compatible Transformers/PyTorch, and GPU VRAM: "
+                + str(exc)
+            ) from exc
+        log.info(
+            "Anime Whisper ready: Japanese ASR only; initial prompts/hotwords disabled"
+        )
+
+    def decode_audio(
+        self,
+        audio: np.ndarray,
+        *,
+        prompt: str | None = None,
+        hotwords: str | None = None,
+        temperature: float | None = None,
+    ) -> WhisperDecode:
+        """Transcribe bounded Japanese audio without any textual priming."""
+        import torch
+
+        pcm = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if pcm.size == 0:
+            return WhisperDecode("")
+        if not np.isfinite(pcm).all():
+            raise ValueError("Anime Whisper received non-finite audio samples")
+        if pcm.size > 30 * SAMPLE_RATE:
+            raise ValueError("Anime Whisper input must not exceed 30 seconds")
+        pcm = np.ascontiguousarray(np.clip(pcm, -1.0, 1.0))
+        if float(np.max(np.abs(pcm))) <= 1.0 / 32768:
+            return WhisperDecode("")
+        if prompt or hotwords:
+            log.debug("Ignoring ASR prompt/hotwords: Anime Whisper must remain unprimed")
+
+        t = self.cfg.temperature if temperature is None else float(temperature)
+        if not 0.0 <= t <= 1.0:
+            raise ValueError("Anime Whisper temperature must be 0..1")
+        start = time.monotonic()
+        inputs = self._processor(
+            pcm, sampling_rate=SAMPLE_RATE,
+            return_tensors="pt", return_attention_mask=True,
+        )
+        dtype = torch.float16 if (
+            self.device == "cuda" and self.cfg.compute_type == "float16"
+        ) else torch.float32
+        features = inputs["input_features"].to(device=self.device, dtype=dtype)
+        arguments = {
+            "input_features": features,
+            "language": "japanese",
+            "task": "transcribe",
+            "num_beams": self.cfg.beam_size,
+            "max_new_tokens": self.cfg.max_new_tokens,
+            "no_repeat_ngram_size": self.cfg.no_repeat_ngram_size,
+            "repetition_penalty": self.cfg.repetition_penalty,
+            "do_sample": t > 0.0,
+        }
+        if t > 0.0:
+            arguments["temperature"] = t
+        if "attention_mask" in inputs:
+            arguments["attention_mask"] = inputs["attention_mask"].to(self.device)
+        with torch.inference_mode():
+            predicted = self._model.generate(**arguments)
+        # Model outputs may be a tensor or GenerationOutput, depending on flags.
+        sequences = getattr(predicted, "sequences", predicted)
+        decoded = self._processor.batch_decode(
+            sequences, skip_special_tokens=True,
+        )
+        text = str(decoded[0] if decoded else "").strip()
+        return WhisperDecode(
+            text=text,
+            duration_s=time.monotonic() - start,
+            temperature=t,
+            decoded_segments=1 if text else 0,
+        )
+
+    def transcribe_audio(self, audio: np.ndarray) -> str:
+        return self.decode_audio(audio).text
+
+    def translate_audio(self, audio: np.ndarray) -> str:
+        """Compatibility method: output remains Japanese, never English."""
+        return self.transcribe_audio(audio)
+
+    def close(self) -> None:
+        self._model = None
+        self._processor = None
+        if self.device == "cuda":
+            import gc
+            import torch
+            gc.collect()
+            torch.cuda.empty_cache()

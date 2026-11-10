@@ -66,9 +66,11 @@ class SpeakerConfig:
 
 @dataclass
 class WhisperConfig:
-    """Whisper Large-v3 for Japanese transcription only; PLaMo translates later."""
+    """Kotoba-Whisper v2.2 (CTranslate2): Japanese ASR, PLaMo translates later."""
 
-    model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
+    # Community CTranslate2 conversion of kotoba-tech/kotoba-whisper-v2.2.
+    # Preserves the existing fast ASR decoder; no Python Transformers runtime.
+    model: str = "RoachLin/kotoba-whisper-v2.2-faster"
     device: str = "cuda"
     compute_type: str = "int8_float16"  # RTX 3070 8 GB
     download_root: str = ""  # empty uses the normal Hugging Face cache
@@ -135,7 +137,7 @@ class TranslateConfig:
     plamo_base_url: str = "http://127.0.0.1:8000/v1"
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-    plamo_context: int = 4096  # RTX 3070 headroom for Whisper INT8/FP16
+    plamo_context: int = 4096  # RTX 3070 headroom for Kotoba CT2 INT8/FP16
     plamo_gpu_layers: int = 16  # conservative RTX 3070 stability profile
     max_tokens: int = 120
     timeout_s: float = 20.0

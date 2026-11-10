@@ -1,4 +1,4 @@
-"""Whisper Large-v3 Japanese ASR -> PLaMo 3 Translate 2B -> MPV subtitles."""
+"""Anime Whisper Japanese ASR -> PLaMo 3 Translate 2B -> MPV subtitles."""
 
 import argparse
 import logging
@@ -50,10 +50,9 @@ def main() -> None:
     cuda_dlls.setup()
 
     from .config import load_config
-    from .hololive_names import select_hololive_hints
     from .glossary import Glossary
     from .translate import create_translator
-    from .whisper_v3 import WhisperLargeV3
+    from .anime_whisper import AnimeWhisperASR
     from .ingest import Ingest, resolve_source
     from .output.terminal import TerminalOutput
     from .output.web import WebOutput
@@ -85,7 +84,7 @@ def main() -> None:
     )
     log.info(
         "Audio processing: GTCRN=%s (CPU), Sherpa speaker segmentation=%s (CPU); "
-        "FireRedVAD (CUDA), Whisper Large-v3 Japanese ASR -> PLaMo 3 2B",
+        "FireRedVAD (CUDA), Anime Whisper Japanese ASR -> PLaMo 3 2B",
         "on" if cfg.gtcrn.enabled else "off",
         "on" if cfg.speaker.enabled else "off",
     )
@@ -93,20 +92,15 @@ def main() -> None:
         args.source, args.mode, args.start, args.fast, cfg.ingest,
     )
 
-    cfg.whisper.hololive_detected_names = select_hololive_hints(
-        source.timeline,
-        enabled=cfg.whisper.hololive_names_enabled,
-        limit=cfg.whisper.hololive_name_limit,
-    )
-    log.info(
-        "Hololive name hints: %s (from title/channel metadata)",
-        ", ".join(cfg.whisper.hololive_detected_names) or "none",
-    )
+    # Anime Whisper model developer warns initial prompts cause hallucinations.
+    # Never send ASR name hints or previous subtitle text to this model.
+    cfg.whisper.hololive_detected_names = []
+    log.info("Anime Whisper: ASR initial prompts/hotwords disabled")
 
     started = time.perf_counter()
-    whisper = WhisperLargeV3(cfg.whisper)
+    whisper = AnimeWhisperASR(cfg.whisper)
     log.info(
-        "Whisper Large-v3 Japanese ASR ready in %.1fs",
+        "Anime Whisper Japanese ASR ready in %.1fs",
         time.perf_counter() - started,
     )
     translator = None

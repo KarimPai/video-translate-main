@@ -121,7 +121,7 @@ class WhisperConfig:
     audio_context_max_gap_s: float = 2.0
     retry_uncertain: bool = True  # rerun only objectively suspicious cues
     retry_on_outro: bool = True
-    collect_token_scores: bool = True  # estimate average beam token log-prob
+    collect_token_scores: bool = True  # collect safe sequence-level beam scores (not token transitions)
     retry_beam_size: int = 8  # deterministic unprimed second pass
     retry_min_logprob_gain: float = 0.18
     retry_temperature: float = 0.2  # legacy fallback/test compatibility

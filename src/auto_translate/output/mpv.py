@@ -295,7 +295,7 @@ class MpvOutput:
         self._now: float | None = None
         self._shown = ""
         self._live_overlay_confirmed = False
-        self._lags: list[float] = []
+        self._lags: deque[float] = deque(maxlen=4096)  # bounded 7h VOD statistics
         self._session_start = ingest.source.start_s
         self._original_vod_start = ingest.source.start_s
         self._buffer_condition = threading.Condition()
@@ -351,9 +351,9 @@ class MpvOutput:
             # Keep a modest forward/backward demux cache for the direct
             # YouTube video stream.
             "--cache=yes",
-            "--demuxer-readahead-secs=120",
-            "--demuxer-max-bytes=1GiB",
-            "--demuxer-max-back-bytes=1GiB",
+            "--demuxer-readahead-secs=30",
+            "--demuxer-max-bytes=256MiB",
+            "--demuxer-max-back-bytes=64MiB",
             # Match the audio reader's live HLS edge and remove menu seeks.
             *(
                 ["--demuxer-lavf-o=live_start_index=-3", "--load-context-menu=no"]
@@ -503,8 +503,13 @@ class MpvOutput:
             return
 
         until = max(until, sub.end_s + SUBTITLE_LINGER_S)
-        with self._lock:
-            self._lines.append(_Line(sub, show_from, until))
+        if self._subtitle_cache is None:
+            # Live/non-cached only. VOD cues are already in the indexed
+            # SessionSubtitleCache (pipeline adds before calling show).
+            # Never double-store the complete seven-hour VOD in _lines:
+            # the old renderer scanned that list 10 times per second.
+            with self._lock:
+                self._lines.append(_Line(sub, show_from, until))
         self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
@@ -1295,17 +1300,10 @@ class MpvOutput:
         return found
 
     def _render(self, now: float) -> None:
-        with self._lock:
-            self._lines = [
-                ln for ln in self._lines if ln.show_until > now - 60
-            ]
-            active = [
-                ln for ln in self._lines
-                if ln.show_from <= now < ln.show_until and ln.sub.en
-            ]
-
-        # The per-video text cache survives seek resets and the rolling
-        # in-memory display list. Ask it for cues at the current timestamp.
+        # For VOD, the indexed cache is authoritative. Query only this
+        # second's cues, even after hours of unpaced audio ingestion.
+        # NEVER filter/scan _lines in the cached path: it may contain
+        # thousands of future captions from a long recording.
         cache = getattr(self, "_subtitle_cache", None)
         if cache is not None:
             active = [
@@ -1317,6 +1315,16 @@ class MpvOutput:
                 )
                 for sub in cache.active_at(now, include_linger=True)
             ]
+        else:
+            # Live-only rolling subtitles (no per-video cache).
+            with self._lock:
+                self._lines = [
+                    ln for ln in self._lines if ln.show_until > now - 60
+                ]
+                active = [
+                    ln for ln in self._lines
+                    if ln.show_from <= now < ln.show_until and ln.sub.en
+                ]
 
         # An interrupted speaker's previous subtitle must stop when the
         # new speaker's cue begins. Apply the same rule to live display and
@@ -1346,6 +1354,10 @@ class MpvOutput:
             if key in self._logged_displayed_subtitles:
                 continue
 
+            if len(self._logged_displayed_subtitles) >= 8192:
+                # First-visible diagnostics need only a recent window.
+                # Retaining every event over a multi-hour VOD is wasteful.
+                self._logged_displayed_subtitles.clear()
             self._logged_displayed_subtitles.add(key)
             delta = now - ln.show_from
             self._lags.append(delta)

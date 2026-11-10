@@ -169,3 +169,59 @@ def enforce_known_name_spellings(japanese: str, english: str, glossary) -> str:
         if (source, target) in glossary_hits:
             english = spelling.sub(target, english)
     return english
+
+
+def contextual_translation_hints(
+    japanese: str, *, recent_fragments: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Offer tightly scoped homophone interpretations to PLaMo, not ASR edits.
+
+    Only the CURRENT Japanese and timestamp-adjacent prior speech can justify
+    these suggestions. They must never change the original JP transcript,
+    invent a name or override clear evidence from the current sentence.
+    """
+    previous = " ".join(recent_fragments[-2:])
+    local = japanese + " " + previous
+    hints: list[str] = []
+
+    # In wireless mouse conversation "遊星に戻れない" is often 有線
+    # ('can't go back to a wired mouse'), not a reference to a planet.
+    if "遊星" in japanese and (
+        ("マウス" in japanese and ("戻" in japanese or "無線" in japanese))
+        or ("戻" in japanese and "無線マウス" in previous)
+    ):
+        hints.append(
+            "The CURRENT audio transcript contains 遊星 in a mouse discussion; "
+            "it may mean 有線 (a wired mouse), NOT a planet. "
+            "Use that reading only if the rest of the current line supports it."
+        )
+    if "無銭" in japanese and "マウス" in japanese:
+        hints.append(
+            "In CURRENT Japanese, 無銭のマウス may be the homophone 無線のマウス "
+            "(wireless mouse). Do not translate 無銭 as 'free of charge' here."
+        )
+
+    # Cars colliding in series: 玉突き事故, not ammunition or shooting.
+    if any(term in japanese for term in ("弾付き事故", "弾つき事故")) and (
+        any(term in local for term in ("車", "玉突き", "渋滞", "追突", "衝突"))
+        and not any(term in japanese for term in ("銃", "撃つ", "銃撃", "射撃"))
+    ):
+        hints.append(
+            "In CURRENT traffic context, 弾付き事故 / 弾つき事故 may be "
+            "ASR for 玉突き事故: a multi-car pile-up, not a bullet accident."
+        )
+
+    if "覡断車" in japanese and "観覧車" in local:
+        hints.append(
+            "The CURRENT line already mentions 観覧車 (Ferris wheel); "
+            "覡断車 likely repeats that word, not a distinct vehicle."
+        )
+    if "ハレムーン" in japanese and any(
+        token in local for token in ("結婚", "挙式", "式を", "新婚")
+    ):
+        hints.append(
+            "The CURRENT marriage/wedding context suggests ハレムーン "
+            "may be ハネムーン (honeymoon); avoid inventing another event."
+        )
+
+    return tuple(hints)

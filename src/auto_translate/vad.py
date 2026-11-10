@@ -1,10 +1,10 @@
-"""FireRed VAD segmenter: AudioChunk stream → Utterance on each pause (or at max length).
+"""FireRed VAD segmenter: AudioChunk stream to timestamped Haas utterances.
 
 Loads the FireRed streaming model from Hugging Face on first use and keeps its
 recurrent model state across calls so it works on a live stream.
 
-Audio rejected by VAD isn't necessarily discarded: every `fallback_s` it can send a
-"probe" utterance to Haas, helping retain speech mixed with loud music or singing.
+VAD-negative probes are disabled by default to avoid hallucinating speech
+from music, laughter and game sound effects. Optional probe mode is retained.
 """
 
 import logging
@@ -52,10 +52,10 @@ class StreamingFireRedVAD:
 
         config = FireRedStreamVadConfig(
             use_gpu=True,
-            smooth_window_size=1,
+            smooth_window_size=5,
             speech_threshold=speech_threshold,
-            pad_start_frame=1,
-            min_speech_frame=1,
+            pad_start_frame=5,
+            min_speech_frame=8,
             max_speech_frame=2000,
             min_silence_frame=1,
             chunk_max_frame=30000,
@@ -92,6 +92,62 @@ def _ms_to_frames(ms: float) -> int:
     return max(1, round(ms * SAMPLE_RATE / 1000 / FRAME))
 
 
+def _select_longform_cut(
+    frames: list[np.ndarray],
+    probs: list[float],
+    *,
+    search_frames: int,
+    pause_frames: int,
+    context_frames: int,
+    negative_threshold: float,
+    hard: bool,
+) -> int | None:
+    """Prefer sustained low-VAD/low-energy pauses; never discard or repeat PCM.
+
+    A long utterance may extend briefly beyond its soft cap to find a pause.
+    On the hard cap, choose the least energetic 70ms neighborhood instead.
+    The returned cut always leaves context on both sides in the source audio.
+    """
+    count = len(frames)
+    lo = max(context_frames, count - search_frames)
+    hi = count - context_frames
+    if lo >= hi:
+        # Even a tiny custom max_utterance_s must have a finite hard limit.
+        return max(1, count // 2) if hard and count >= 2 else None
+    rms = np.asarray([
+        float(np.sqrt(np.mean(frame * frame))) for frame in frames
+    ], dtype=np.float32)
+    baseline = float(np.percentile(rms[max(0, lo - 20):hi], 75))
+    if baseline > 1e-5:
+        quiet = ((np.asarray(probs, dtype=np.float32) < negative_threshold)
+                 & (rms <= max(0.0004, baseline * 0.42)))
+        runs: list[tuple[int, int]] = []
+        start = None
+        for i in range(lo, hi):
+            if quiet[i]:
+                if start is None:
+                    start = i
+            elif start is not None:
+                if i - start >= pause_frames:
+                    runs.append((start, i))
+                start = None
+        if start is not None and hi - start >= pause_frames:
+            runs.append((start, hi))
+        if runs:
+            first, last = max(runs, key=lambda run: run[1])
+            return (first + last) // 2
+    if not hard:
+        return None
+
+    # A full fallback is unavoidable if speech never pauses. Smooth across
+    # multiple frames so a single misleading VAD dip cannot cut a word.
+    smooth = np.convolve(rms, np.ones(7) / 7.0, mode="same")
+    scale = max(1e-5, float(np.percentile(smooth[lo:hi], 75)))
+    score = (np.asarray(probs[lo:hi], dtype=np.float32) * 0.5
+             + np.minimum(smooth[lo:hi] / scale, 2) * 0.5)
+    return lo + int(np.argmin(score))
+
+
 class Segmenter:
     """State machine over 10 ms frames: idle → speech → (pause | max length) → emit."""
 
@@ -100,7 +156,15 @@ class Segmenter:
         self.min_silence = _ms_to_frames(cfg.min_silence_ms)
         self.pad = _ms_to_frames(cfg.speech_pad_ms)
         self.min_speech = _ms_to_frames(cfg.min_speech_ms)
+        self.short_reply_frames = _ms_to_frames(cfg.short_reply_ms)
+        self.onset_frames = _ms_to_frames(cfg.onset_ms)
+        self.prob_smooth_frames = max(1, cfg.prob_smooth_frames)
         self.max_frames = _ms_to_frames(cfg.max_utterance_s * 1000)
+        self.hard_max_frames = self.max_frames + max(
+            0, round(cfg.max_split_extension_s * SAMPLE_RATE / FRAME)
+        )
+        self.split_pause_frames = _ms_to_frames(cfg.split_pause_min_ms)
+        self.split_context_frames = _ms_to_frames(cfg.split_context_ms)
         self.split_search = _ms_to_frames(2000)  # look this far back for a quiet split point
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
         self.fallback_min = _ms_to_frames(cfg.fallback_min_s * 1000)
@@ -116,7 +180,10 @@ class Segmenter:
         self.vad.reset()
         self._leftover = np.zeros(0, dtype=np.float32)  # samples not yet a whole frame
         self._next_frame_sample = next_sample  # sample index of the next frame to process
-        self._preroll: deque[np.ndarray] = deque(maxlen=self.pad)  # recent non-speech frames
+        self._preroll: deque[np.ndarray] = deque(maxlen=self.pad + self.onset_frames)  # recent audio, including onset
+        self._preroll_probs: deque[float] = deque(maxlen=self.pad + self.onset_frames)
+        self._prob_history: deque[float] = deque(maxlen=self.prob_smooth_frames)
+        self._onset_count = 0
         self._idle: list[np.ndarray] = []  # non-speech frames since the last utterance (fallback)
         self._idle_start = next_sample
         self._frames: list[np.ndarray] = []  # current utterance
@@ -188,21 +255,30 @@ class Segmenter:
 
     def _step(self, frame: np.ndarray, prob: float) -> None:
         cfg = self.cfg
+        # The upstream postprocessor's smoothed flags are not used by this
+        # project: smooth raw probabilities here before deciding on utterances.
+        self._prob_history.append(prob)
+        prob = sum(self._prob_history) / len(self._prob_history)
         if not self._in_speech:
-            if prob >= cfg.threshold:
-                # Idle audio before the preroll goes to Haas; the preroll joins the utterance.
-                self._emit_probe(len(self._idle) - len(self._preroll))
-                self._in_speech = True
-                self._frames = [*self._preroll, frame]
-                self._probs = [0.0] * len(self._preroll) + [prob]
-                self._start_sample = self._next_frame_sample - len(self._preroll) * FRAME
-                # Keep pre-roll in the ASR audio, but timestamp subtitles from
-                # the first frame that actually crossed the speech threshold.
-                self._speech_start_sample = self._next_frame_sample
-                self._silence = 0
-            else:
-                self._preroll.append(frame)
+            previous_preroll = len(self._preroll)
+            self._preroll.append(frame)
+            self._preroll_probs.append(prob)
+            self._onset_count = self._onset_count + 1 if prob >= cfg.threshold else 0
+            if self._onset_count < self.onset_frames:
                 self._add_idle(frame)
+                return
+            # Only sustained speech opens a segment. Keep the entire preroll
+            # and all its confidence values instead of clipping its first word.
+            self._emit_probe(len(self._idle) - previous_preroll)
+            self._in_speech = True
+            self._frames = list(self._preroll)
+            self._probs = list(self._preroll_probs)
+            self._start_sample = self._next_frame_sample - (len(self._frames) - 1) * FRAME
+            self._speech_start_sample = max(
+                self._start_sample,
+                self._next_frame_sample - (self.onset_frames - 1) * FRAME,
+            )
+            self._silence = 0
             return
 
         self._frames.append(frame)
@@ -214,10 +290,20 @@ class Segmenter:
             n = min(len(self._frames), len(self._frames) - self._silence + self.pad)
             self._emit(n, keep_rest=False)
         elif len(self._frames) >= self.max_frames:
-            # Too long: split at the quietest frame in the last ~2 s, keep the rest going.
-            lo = len(self._frames) - self.split_search
-            cut = lo + int(np.argmin(self._probs[lo:])) + 1
-            self._emit(cut, keep_rest=True)
+            # Prefer a real sustained pause; extend at most 1s before
+            # a smoothed-energy forced cut. Timestamped PCM remains contiguous.
+            hard = len(self._frames) >= self.hard_max_frames
+            if hard or len(self._frames) == self.max_frames or len(self._frames) % 5 == 0:
+                cut = _select_longform_cut(
+                    self._frames, self._probs,
+                    search_frames=self.split_search,
+                    pause_frames=self.split_pause_frames,
+                    context_frames=self.split_context_frames,
+                    negative_threshold=cfg.neg_threshold,
+                    hard=hard,
+                )
+                if cut is not None:
+                    self._emit(cut, keep_rest=True)
 
     def _emit(self, n: int, keep_rest: bool) -> None:
         frames, probs = self._frames[:n], self._probs[:n]
@@ -225,14 +311,25 @@ class Segmenter:
         start = self._start_sample
         end = start + n * FRAME
 
-        speech_frames = sum(p >= self.cfg.threshold for p in probs)
-        if speech_frames >= self.min_speech:
+        speech_probs = [p for p in probs if p >= self.cfg.threshold]
+        # Keep brief, sustained high-probability replies without opening
+        # the gate for isolated peaks or lowering the ordinary speech floor.
+        confident_run = 0
+        short_reply = False
+        if 0 < len(speech_probs) < self.min_speech:
+            for prob in probs:
+                confident_run = confident_run + 1 if prob >= self.cfg.short_reply_probability else 0
+                if confident_run >= self.short_reply_frames:
+                    short_reply = True
+                    break
+        if len(speech_probs) >= self.min_speech or short_reply:
             utt = Utterance(
                 start / SAMPLE_RATE,
                 end / SAMPLE_RATE,
                 np.concatenate(frames),
                 generation=self._generation,
                 speech_start_s=self._speech_start_sample / SAMPLE_RATE,
+                vad_confidence=sum(speech_probs) / len(speech_probs),
             )
             # Estimate when the utterance's last sample arrived: the current chunk's read time,
             # minus the audio processed after it (the trailing silence we waited for).
@@ -253,6 +350,9 @@ class Segmenter:
             self._frames, self._probs = [], []
             self._preroll.clear()
             self._preroll.extend(rest_frames)  # deque(maxlen) keeps only the last `pad`
+            self._preroll_probs.clear()
+            self._preroll_probs.extend(rest_probs)
+            self._onset_count = 0
             self._idle, self._idle_start = list(rest_frames), end
 
     def _add_idle(self, frame: np.ndarray) -> None:
@@ -268,7 +368,7 @@ class Segmenter:
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
-        """Send the first `n` idle frames to Haas as a probe (if long and loud enough)."""
+        """Send idle frames to Haas only when fallback_s is explicitly enabled."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME

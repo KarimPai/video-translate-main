@@ -115,7 +115,9 @@ class WhisperLargeV3:
             no_repeat_ngram_size=self.cfg.no_repeat_ngram_size,
             max_new_tokens=self.cfg.max_new_tokens,
             temperature=used_temperature,
-            condition_on_previous_text=self.cfg.condition_on_previous_text,
+            # Each FireRedVAD utterance is independent. Never allow an old
+            # config.toml to reintroduce hallucination feedback across windows.
+            condition_on_previous_text=False,
             vad_filter=False,
             no_speech_threshold=self.cfg.no_speech_threshold,
             log_prob_threshold=self.cfg.log_prob_threshold,
@@ -130,6 +132,7 @@ class WhisperLargeV3:
         scores: list[tuple[int, float]] = []
         ratios: list[float] = []
         nospeech: list[float] = []
+        rejected_nospeech: list[float] = []
         total = discarded = 0
         for segment in segments:
             text = segment.text.strip()
@@ -138,6 +141,11 @@ class WhisperLargeV3:
             total += 1
             if self.cfg.reject_low_confidence and self._unreliable(segment):
                 discarded += 1
+                # Retain the rejected segment's silence evidence; otherwise
+                # the empty decode looks like an ordinary ASR retry candidate.
+                rejected_prob = getattr(segment, "no_speech_prob", None)
+                if rejected_prob is not None and math.isfinite(float(rejected_prob)):
+                    rejected_nospeech.append(float(rejected_prob))
                 log.info(
                     "Discarded uncertain Whisper segment: no_speech=%s "
                     "avg_logprob=%s compression=%s text=%r",
@@ -170,7 +178,10 @@ class WhisperLargeV3:
                 ) else " ".join(texts)
             ).strip(),
             avg_logprob=avg,
-            no_speech_prob=max(nospeech) if nospeech else None,
+            no_speech_prob=(
+                max(nospeech) if nospeech else
+                max(rejected_nospeech) if rejected_nospeech else None
+            ),
             compression_ratio=max(ratios) if ratios else None,
             decoded_segments=total,
             discarded_segments=discarded,

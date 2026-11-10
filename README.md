@@ -131,6 +131,37 @@ The llama.cpp server writes to logs/plamo-server.log.
   suppress_repeated_japanese_outros = false
   ```
 
+## Whisper silence-hallucination protection
+
+FireRedVAD already gates audio **before** Whisper, with a 500 ms
+minimum silence split and 150 ms padding. VAD-negative noise probes are
+disabled, and Whisper receives independent short utterances: adding
+faster-whisper's built-in Silero `vad_filter=True` on top would double-gate
+speech and risk removing quiet Japanese responses. The Whisper decoder now
+**always** sets `condition_on_previous_text=False`, even if an older
+local `config.toml` requested otherwise.
+
+Whisper's `no_speech_prob` is **not** a standalone silence detector. The
+first pass's no-speech evidence is preserved even when every segment was
+rejected by the existing confidence checks. A fully rejected utterance
+with `no_speech_prob >= 0.85` does not get a warmer retry, which otherwise
+could invent words on silent/game-audio sections. Ambiguous quiet speech
+with lower no-speech scores **remains retryable**. To preserve more borderline
+soft voices, raise this threshold (do not lower the VAD threshold and all
+decoder thresholds at once):
+
+```toml
+[whisper]
+no_speech_retry_block_threshold = 0.95
+```
+
+This does not suppress all hallucinations, especially confident Japanese
+hallucinations after false-positive VAD triggers. Validate on representative
+30–60 second clips containing real quiet Japanese, laughter, music, silence,
+and speech after the gap. Inspect `diagnostics = true` for Whisper confidence
+and VAD timing before changing defaults. Do not use phrase blocklists:
+a genuine spoken thanks should not be discarded solely for its wording.
+
 ## Seven-hour VOD playback optimization
 
 The former MPV config allowed up to 1 GiB forward and 1 GiB backward demux

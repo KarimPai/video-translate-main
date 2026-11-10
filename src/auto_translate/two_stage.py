@@ -90,10 +90,29 @@ def run_whisper_asr(
         chosen = original
         retry = False
         cfg = whisper.cfg
+        # A fully rejected high-no-speech window is not a useful retry
+        # candidate: a warmer second pass can invent fluent Japanese from
+        # silence. Still retry low-confidence speech with acoustic evidence.
+        block_silent_retry = (
+            not original.text.strip()
+            and original.discarded_segments > 0
+            and original.no_speech_prob is not None
+            and original.no_speech_prob >= float(getattr(
+                cfg, "no_speech_retry_block_threshold", 0.85,
+            ))
+        )
+        if block_silent_retry:
+            log.debug(
+                "No Whisper retry after strong silence rejection "
+                "(generation=%d %.2f-%.2fs no_speech=%.3f)",
+                utt.generation, utt.start_s, utt.end_s,
+                original.no_speech_prob,
+            )
         if (
             original.suspicious
             and getattr(cfg, "retry_uncertain", True)
             and not utt.probe
+            and not block_silent_retry
         ):
             retry = True
             second = whisper.decode_audio(

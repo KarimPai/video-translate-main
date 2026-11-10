@@ -121,6 +121,9 @@ class WhisperConfig:
     suppress_repeated_japanese_outros: bool = True  # identical exact phrase only
     japanese_outro_cooldown_s: float = 120.0
     retry_uncertain: bool = True
+    # Do not re-decode a wholly rejected window when Whisper strongly
+    # predicts non-speech. Higher values preserve more faint speech retries.
+    no_speech_retry_block_threshold: float = 0.85
     retry_on_outro: bool = True
     retry_temperature: float = 0.2
     retry_max_audio_s: float = 12.0

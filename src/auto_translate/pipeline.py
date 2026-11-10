@@ -21,6 +21,7 @@ from .config import Config
 from .context import RecentSpeechContext
 from .subtitle_style import concise_english
 from .voiceping_ast import VoicePingAST
+from .voiceping_cleanup import concise_voiceping, normalized_cue
 
 if TYPE_CHECKING:
     from .whisper_v3 import WhisperLargeV3
@@ -358,6 +359,10 @@ def run_ast(
     """Single-pass direct Japanese-audio -> English subtitles via VoicePing."""
     cfg = ast.cfg
     empty_count = 0
+    last_key = ""
+    last_end = -float("inf")
+    last_generation = None
+    repeat_count = 0
     while True:
         item = in_q.get()
         if item is None:
@@ -365,7 +370,12 @@ def run_ast(
             return
         if get_generation is not None and item.generation != get_generation():
             continue
+        if item.generation != last_generation:
+            last_key, last_end, repeat_count = "", -float("inf"), 0
+            last_generation = item.generation
         if isinstance(item, AudioProgress):
+            if item.reset:
+                last_key, last_end, repeat_count = "", -float("inf"), 0
             out_q.put(item)
             continue
         utt = item
@@ -388,12 +398,11 @@ def run_ast(
         if _structural_issue(english, len(utt.audio) / SAMPLE_RATE) == "loop":
             log.warning("Discarded repetitive VoicePing AST output at %.2fs", utt.start_s)
             continue
-        if cfg.remove_fillers or cfg.collapse_repetitions:
-            english = concise_english(
-                english,
-                remove_fillers=cfg.remove_fillers,
-                collapse_repetitions=cfg.collapse_repetitions,
-            )
+        english = concise_voiceping(
+            english,
+            remove_fillers=cfg.remove_fillers,
+            collapse_repetitions=cfg.collapse_repetitions,
+        )
         if cfg.diagnostics:
             log.info(
                 "VoicePing AST: generation=%d speech=%.2f-%.2fs vad=%s inference=%.3fs output=%r",
@@ -409,6 +418,16 @@ def run_ast(
                 log.warning("VoicePing AST empty output: %d utterances", empty_count)
             continue
         empty_count = 0
+        key = normalized_cue(english)
+        if key and key == last_key and -0.2 <= utt.start_s - last_end <= 10.0:
+            repeat_count += 1
+        else:
+            repeat_count = 1
+        last_key, last_end = key, utt.end_s
+        if repeat_count > max(1, min(4, int(cfg.repeat_short_cue_limit))):
+            log.info("Suppressed repeated VoicePing cue: gen=%d count=%d text=%r",
+                     utt.generation, repeat_count, english[:100])
+            continue
         out_q.put(Subtitle(
             start_s=utt.start_s, end_s=utt.end_s, ja="", en=english,
             timings=utt.timings, generation=utt.generation,
@@ -441,7 +460,7 @@ class Stats:
             return "no Japanese-to-English subtitles yet"
         q = " ".join(f"{k}={v}" for k, v in self.max_q.items())
         return (
-            f"{self.lines} lines | Whisper AST avg {self.sum_s / self.lines:.2f}s "
+            f"{self.lines} lines | VoicePing AST avg {self.sum_s / self.lines:.2f}s "
             f"max {self.max_s:.2f}s | audio-to-English "
             f"avg {self.total_sum_s / self.lines:.2f}s "
             f"max {self.total_max_s:.2f}s | max queue {q}"

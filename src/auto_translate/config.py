@@ -63,11 +63,11 @@ class SpeakerConfig:
 
 @dataclass
 class WhisperConfig:
-    """Whisper Large-v3 for Japanese transcription only; PLaMo translates later."""
+    """Anime Whisper Japanese ASR (Whisper-derived); PLaMo translates later."""
 
-    model: str = "large-v3"  # not large-v3-turbo (Turbo is not trained for AST)
+    model: str = "litagin/anime-whisper"  # exact Japanese anime fine-tune
     device: str = "cuda"
-    compute_type: str = "int8_float16"  # RTX 3070 8 GB
+    compute_type: str = "float16"  # torch fp16, not CTranslate2 INT8
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
     task: str = "transcribe"  # Japanese ASR ONLY; PLaMo handles English
@@ -78,8 +78,8 @@ class WhisperConfig:
     compression_ratio_threshold: float = 2.4
     condition_on_previous_text: bool = False
     # Conservative safeguards for short, noisy VTuber/gaming utterances.
-    repetition_penalty: float = 1.05
-    no_repeat_ngram_size: int = 3
+    repetition_penalty: float = 1.0  # model card recommendation
+    no_repeat_ngram_size: int = 5  # model card anti-repetition example
     max_new_tokens: int = 160
     reject_low_confidence: bool = True
     min_avg_logprob: float = -1.20
@@ -99,13 +99,13 @@ class WhisperConfig:
     text_context_lines: int = 2
     text_context_chars: int = 120
     text_context_max_gap_s: float = 5.0
-    # Only exact, stream-relevant English names; no global Hololive glossary.
+    # These legacy fields are ignored by the Anime Whisper model adapter.
     hotwords: list[str] = field(default_factory=list)
     # Official talent roster; only stream-relevant names are sent to Whisper.
     hololive_names_enabled: bool = True
     hololive_name_limit: int = 6
     hololive_detected_names: list[str] = field(default_factory=list)
-    # Whisper is not instruction-tuned; this is a *hint*, not a command.
+    # DO NOT send ASR initial prompts to Anime Whisper (hallucination risk).
     concise_english: bool = True
     style_prompt: str = ""  # no instruction-style priming; concise output filter handles fillers
     remove_fillers: bool = True
@@ -114,12 +114,12 @@ class WhisperConfig:
     audio_context_enabled: bool = True
     audio_context_s: float = 1.2
     audio_context_max_gap_s: float = 2.0
-    retry_uncertain: bool = True
+    retry_uncertain: bool = False  # first compare raw Anime Whisper output
     retry_on_outro: bool = True
     retry_temperature: float = 0.2
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
-    diagnostics: bool = False
+    diagnostics: bool = True  # record performance and transcript anomalies
 
 
 @dataclass

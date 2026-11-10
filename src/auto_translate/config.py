@@ -55,14 +55,15 @@ class SeparationConfig:
 
 @dataclass
 class VadConfig:
-    threshold: float = 0.35
+    threshold: float = 0.45
     neg_threshold: float = 0.30
-    min_silence_ms: int = 400
-    speech_pad_ms: int = 80
-    min_speech_ms: int = 100
+    min_silence_ms: int = 500
+    speech_pad_ms: int = 200
+    min_speech_ms: int = 200
+    # Preserve high-confidence short Japanese responses with 120ms strong speech.
     short_reply_ms: int = 120
     short_reply_probability: float = 0.85
-    onset_ms: int = 80  # continuous speech required before opening a segment
+    onset_ms: int = 100  # continuous speech required before opening a segment
     prob_smooth_frames: int = 5  # smooth raw FireRed probabilities across 50 ms
     max_utterance_s: float = 11.0
     # At the soft limit, prefer a sustained natural pause.

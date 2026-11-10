@@ -68,6 +68,49 @@ class VoicePingASTTests(unittest.TestCase):
         self.assertEqual(context.count("Watame"), 1)
         self.assertNotIn("last subtitle", context)
 
+    def test_japanese_only_bias_does_not_change_english_output(self):
+        cfg = VoicePingAstConfig()
+        context = build_ast_context(cfg)
+        self.assertIn("Translate Japanese speech to English only", context)
+        self.assertIn("English-only speech", context)
+        self.assertIn("output nothing", context)
+
+        fake = MockVoicePing()
+        model = VoicePingAST(cfg, model=fake)
+        pcm = np.full(SAMPLE_RATE, .12, dtype=np.float32)
+        with patch.dict(sys.modules, {"torch": types.SimpleNamespace(
+                inference_mode=contextlib.nullcontext)}):
+            self.assertEqual(model.translate_audio(pcm), "There is one sheep.")
+        self.assertEqual(fake.calls[0][1], "English")
+
+    def test_japanese_only_bias_can_be_disabled_independently(self):
+        cfg = VoicePingAstConfig(japanese_source_only=False,
+                                 detected_names=["Watame"])
+        context = build_ast_context(cfg)
+        self.assertNotIn("English-only speech", context)
+        self.assertIn("Watame", context)
+        self.assertIn("concise", context)
+
+    def test_long_name_context_does_not_truncate_word(self):
+        cfg = VoicePingAstConfig(
+            detected_names=["Elizabeth Rose Bloodflame", "Watame", "Korone"],
+            name_hints=["Mori Calliope", "Takanashi Kiara", "Cecilia Immergreen",
+                        "Ninomae Ina'nis", "Shirakami Fubuki"],
+        )
+        context = build_ast_context(cfg)
+        self.assertLessEqual(len(context), 450)
+        self.assertTrue(context.endswith("."))
+        self.assertIn("Elizabeth Rose Bloodflame", context)
+
+    def test_japanese_only_bias_config_overrides(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text("[ast]\\njapanese_source_only = false\\n".replace("\\\\n", "\\n"),
+                            encoding="utf-8")
+            self.assertFalse(load_config(path).ast.japanese_source_only)
+
     def test_context_can_be_disabled_without_changing_ast(self):
         cfg = VoicePingAstConfig(context_enabled=False, name_hints=["Watame"])
         self.assertEqual(build_ast_context(cfg), "")

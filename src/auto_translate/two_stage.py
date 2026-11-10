@@ -10,13 +10,17 @@ import logging
 import queue
 import re
 import time
+from difflib import SequenceMatcher
 from collections import deque
 from dataclasses import replace
 from typing import Callable
 
 import numpy as np
 
-from .asr_quality import is_standalone_laughter, formulaic_japanese_outro_key
+from .asr_quality import (
+    is_standalone_laughter, formulaic_japanese_outro_key,
+    is_formulaic_japanese_outro,
+)
 from .translation_integrity import nearby_japanese_fragments
 from .types import SAMPLE_RATE, AudioProgress, Subtitle, Transcript, Utterance
 from .anime_whisper import AnimeWhisperASR
@@ -90,29 +94,70 @@ def run_whisper_asr(
         chosen = original
         retry = False
         cfg = whisper.cfg
-        if (
-            original.suspicious
-            and getattr(cfg, "retry_uncertain", True)
-            and not utt.probe
-        ):
+        is_outro = is_formulaic_japanese_outro(original.text)
+        retry_reason = (
+            "low-confidence" if original.suspicious
+            else "formulaic-outro" if (
+                is_outro and getattr(cfg, "retry_on_outro", True)
+            ) else ""
+        )
+        if retry_reason and getattr(cfg, "retry_uncertain", True) and not utt.probe:
             retry = True
-            second = whisper.decode_audio(
-                utt.audio, prompt=None, hotwords=None,
-                temperature=float(getattr(cfg, "retry_temperature", 0.2)),
+            if isinstance(whisper, AnimeWhisperASR):
+                # Re-run only the SAME audio, unprimed and deterministic,
+                # with a wider beam. No English history or extra speech.
+                second = whisper.decode_audio(
+                    utt.audio, prompt=None, hotwords=None,
+                    temperature=0.0,
+                    beam_size=int(getattr(cfg, "retry_beam_size", 8)),
+                )
+            else:
+                # Compatibility path for existing offline fake models.
+                second = whisper.decode_audio(
+                    utt.audio, prompt=None, hotwords=None,
+                    temperature=float(getattr(cfg, "retry_temperature", 0.2)),
+                )
+            original_logp = original.avg_logprob
+            second_logp = second.avg_logprob
+            similarity = SequenceMatcher(
+                None, original.text, second.text
+            ).ratio()
+            original_nums = re.findall(r"[0-9０-９]+", original.text)
+            retry_nums = re.findall(r"[0-9０-９]+", second.text)
+            # A high confidence score alone cannot prove the new transcription.
+            # Require corroboration by similarity, preserved numbers, and a
+            # meaningful log-probability gain. For a stock outro, permit the
+            # model to replace it with supported Japanese speech.
+            better = (
+                original_logp is not None and second_logp is not None
+                and second_logp - original_logp >= float(
+                    getattr(cfg, "retry_min_logprob_gain", 0.18)
+                )
             )
-            original_logp = (
-                original.avg_logprob if original.avg_logprob is not None
-                else -100.0
-            )
-            second_logp = (
-                second.avg_logprob if second.avg_logprob is not None
-                else -100.0
+            credible = (
+                similarity >= 0.40 or (
+                    is_outro and not is_formulaic_japanese_outro(second.text)
+                )
             )
             if (
-                second.text and not second.suspicious
-                and second_logp >= original_logp - 0.15
+                second.text and has_japanese_script(second.text)
+                and better and credible and not second.suspicious
+                and original_nums == retry_nums
             ):
                 chosen = second
+                log.info(
+                    "Anime Whisper retry accepted (%s, %.2fs-%.2fs, "
+                    "score %.3f -> %.3f, similarity=%.2f)",
+                    retry_reason, utt.start_s, utt.end_s,
+                    original_logp, second_logp, similarity,
+                )
+            else:
+                log.info(
+                    "Anime Whisper retry kept first hypothesis (%s, "
+                    "%.2fs-%.2fs, first=%s second=%s similarity=%.2f)",
+                    retry_reason, utt.start_s, utt.end_s,
+                    original_logp, second_logp, similarity,
+                )
         utt.timings.asr_end = time.monotonic()
         japanese = chosen.text.strip()
         if not japanese:

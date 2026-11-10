@@ -50,16 +50,20 @@ if "%NEED_SYNC%"=="1" (
 
 echo.
 echo Starting Whisper Japanese transcription + PLaMo English translation...
+echo Stability test: optional audio processors OFF, MPV software decoding,
+echo                  PLaMo limited GPU offload (16 layers).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --no-web --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --delay 10 --hwdec no --plamo-gpu-layers 16 --audio-profile baseline --no-web --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 if not "%EXIT_CODE%"=="0" (
     echo ERROR: Whisper + PLaMo translator exited with code %EXIT_CODE%.
-    echo Last diagnostic messages:
-    powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\run.log' -Encoding UTF8 -Tail 12 | ForEach-Object { if ($_.Length -gt 350) { $_.Substring(0,350) } else { $_ } }"
+    echo Last 45 lines of application log:
+    powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\run.log' -Encoding UTF8 -Tail 45"
+    echo Last 30 lines of MPV log:
+    if exist "logs\mpv.log" powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\mpv.log' -Encoding UTF8 -Tail 30"
 ) else (
     echo Whisper + PLaMo translator stopped.
 )

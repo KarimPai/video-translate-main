@@ -130,7 +130,7 @@ class TranslateConfig:
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
     plamo_context: int = 4096  # RTX 3070 headroom for Whisper INT8/FP16
-    plamo_gpu_layers: int = 99
+    plamo_gpu_layers: int = 16  # conservative RTX 3070 stability profile
     max_tokens: int = 120
     timeout_s: float = 20.0
     load_timeout_s: float = 300.0
@@ -160,7 +160,7 @@ class MpvConfig:
     delay_s: float = 8.0
     start_wait_s: float = 3.0
     port: int = 9137
-    hwdec: str = "auto-safe"
+    hwdec: str = "no"  # software decode leaves RTX 3070 VRAM for both models
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"

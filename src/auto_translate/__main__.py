@@ -24,6 +24,10 @@ def main() -> None:
                         help="print Japanese detection and English translation only")
     parser.add_argument("--mpv", action="store_true")
     parser.add_argument("--delay", type=float, metavar="SECONDS")
+    parser.add_argument("--hwdec", choices=("no", "auto-safe"),
+                        help="MPV video decoder (no saves GPU memory)")
+    parser.add_argument("--plamo-gpu-layers", type=int,
+                        help="PLaMo layers to offload to GPU; lower saves VRAM")
     parser.add_argument(
         "--audio-profile", choices=("baseline", "gtcrn", "speaker", "both"),
         default=None, help="ablate GTCRN and Sherpa without changing config.toml",
@@ -64,8 +68,21 @@ def main() -> None:
         cfg.whisper.diagnostics = True
     if args.delay is not None:
         cfg.mpv.delay_s = args.delay
+    if args.hwdec is not None:
+        cfg.mpv.hwdec = args.hwdec
+    if args.plamo_gpu_layers is not None:
+        if args.plamo_gpu_layers < 0:
+            parser.error("--plamo-gpu-layers must be >= 0")
+        cfg.translate.plamo_gpu_layers = args.plamo_gpu_layers
 
     log = logging.getLogger("auto_translate")
+    log.info(
+        "Stability profile: mpv.hwdec=%s, PLaMo GPU layers=%d, "
+        "PLaMo context=%d; if another llama-server is already running its "
+        "existing settings are reused",
+        cfg.mpv.hwdec, cfg.translate.plamo_gpu_layers,
+        cfg.translate.plamo_context,
+    )
     log.info(
         "Audio processing: GTCRN=%s (CPU), Sherpa speaker segmentation=%s (CPU); "
         "FireRedVAD (CUDA), Whisper Large-v3 Japanese ASR -> PLaMo 3 2B",

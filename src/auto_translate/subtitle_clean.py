@@ -1,6 +1,6 @@
 """Conservative cleanup for concise English-only subtitles.
 
-Whisper is not an instruction-following LLM. Remove only evident disfluencies,
+Preserve Haas/PLaMo meaning while removing only evident disfluencies,
 annotation-only laughs, and repeated interjections. Never rewrite substantive
 words, negate speech, hallucinate shorter paraphrases, or remove profanity.
 """
@@ -87,7 +87,7 @@ def normalized_cue(text: str) -> str:
 def has_generation_loop(text: str) -> bool:
     """Detect repeated 6–48-word phrases, including multi-sentence loops.
 
-    Prior checks only recognized 2–6-word spans, missing Qwen repetition of
+    Earlier checks only recognized 2–6-word spans, missing repetition of
     complete sentences. Three consecutive identical phrases are suspicious.
     Short shouted repeats ("go, go, go") are intentionally excluded.
     """
@@ -100,6 +100,22 @@ def has_generation_loop(text: str) -> bool:
                 return True
     return False
 
+
+
+def looks_like_prompt_echo(text: str) -> bool:
+    """Only reject unmistakable prompt/template leakage, not normal dialogue."""
+    phrase = " ".join(text.casefold().split())
+    markers = (
+        "recently mentioned glossary names/terms:",
+        "recent tentative term translations (use only if",
+        "earlier japanese for scene continuity",
+        "chat_template_kwargs",
+        "if the current japanese does not explicitly identify",
+        "japanese often omits the subject or possessor",
+        "for english-only speech, laughter or game sounds, output nothing",
+        "translate japanese speech to english only",
+    )
+    return any(marker in phrase for marker in markers)
 
 
 def clean_english_output(

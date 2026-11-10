@@ -29,6 +29,7 @@ dtype = "bfloat16"
 max_inference_batch_size = 1
 max_new_tokens = 192
 context_enabled = true
+japanese_source_only = true  # soft bias: ignore English-source speech
 concise_context = true
 hololive_names_enabled = true
 hololive_name_limit = 6
@@ -68,6 +69,27 @@ name_hints = ["Watame", "Jack"]
 Use only actual names relevant to that stream. Up to eight validated names are passed to the model, prioritizing up to six title/channel-grounded Hololive names. Names are **hints, not forced substitutions**, so incorrect names can still appear. This does not use a second translation model or any ASR/transcript history.
 
 Postprocessing removes filler-only utterances (including Unicode ellipsis such as "Um…"), conservatively drops *identical adjacent sentences*, and suppresses the third and later identical nearby cues in the same seek generation. Two repetitions remain to preserve possible genuine spoken emphasis. Negations, proper names and meaningful shorter repetitions are not rewritten. This can remove real repetition, and it cannot correct inaccurate or hallucinated but fluent translations.
+
+## Japanese-only source bias
+
+The fine-tuned VoicePing model's `language="English"` requests **English
+translation output**, not English audio recognition. Never change it to
+`language="Japanese"` to gate source speech: that reverses the translation
+direction.
+
+With `[ast].japanese_source_only = true` (default), the native Qwen context
+now asks it to translate **Japanese-source speech only**, return empty output
+for English-only speech, laughter and game audio, and retain English loanwords
+within Japanese sentences. This is a **prompt/context bias, not measured
+source-language classification**. VoicePing may ignore it or translate English
+audio anyway, and it may accidentally omit Japanese utterances. To return to
+the previous mode, set `japanese_source_only = false` in `config.toml`.
+`context_enabled = false` disables all context including this bias.
+
+The pipeline still emits **English-only subtitles** and does not add an
+ASR stage, extra translator or acoustic language-ID model. A reliable strict
+Japanese-source gate would need a separate language detector tested against
+short mixed-language speech and laughter.
 
 ## Standalone-name hallucination guard
 

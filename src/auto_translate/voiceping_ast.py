@@ -33,10 +33,9 @@ def build_ast_context(cfg: VoicePingAstConfig) -> str:
         # target output language. Context is an unverified source preference,
         # not an acoustic language-ID gate.
         parts.append(
-            "Source audio: Japanese speech only. Translate Japanese speech to "
-            "English. When the speaker is speaking English rather than Japanese, "
-            "output nothing. Ignore English-only speech, laughter and game sounds. "
-            "Keep an English word when it occurs within a Japanese utterance."
+            "Translate Japanese speech to English only. For English-only speech, "
+            "laughter or game sounds, output nothing. Keep English words "
+            "embedded in Japanese sentences."
         )
     if cfg.concise_context:
         parts.append(
@@ -57,8 +56,17 @@ def build_ast_context(cfg: VoicePingAstConfig) -> str:
         if len(names) >= 8:
             break
     if names:
-        parts.append("Relevant names (use only if audibly spoken): " + ", ".join(names) + ".")
-    return " ".join(parts)[:450]
+        prefix = "Relevant names (only when actually spoken): "
+        available = 450 - len(" ".join(parts)) - len(prefix) - 2
+        selected = []
+        for name in names:
+            candidate = ", ".join([*selected, name])
+            if len(candidate) > available:
+                break  # never truncate a name mid-word
+            selected.append(name)
+        if selected:
+            parts.append(prefix + ", ".join(selected) + ".")
+    return " ".join(parts)
 
 
 class VoicePingAST:

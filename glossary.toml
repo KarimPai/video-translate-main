@@ -32,7 +32,11 @@
 "メンバーシップ" = "membership"
 "待機所" = "waiting room"
 "マシュマロ" = "Marshmallow questions"
-"てぇてぇ" = "teetee"
+"てぇてぇ" = "tee-tee (wholesome affectionate interaction)"
+"てーてー" = "tee-tee (wholesome affectionate interaction)"
+"てえてえ" = "tee-tee (wholesome affectionate interaction)"
+"てぇてぇしてる" = "being adorably affectionate together"
+"てーてーしてる" = "being adorably affectionate together"
 "ガチ恋" = "romantic fan"
 "推し" = "oshi"
 "推し活" = "supporting your oshi"
@@ -204,6 +208,15 @@
 "セレスファウナ" = "Ceres Fauna"
 
 # Gaming vocabulary
+# Hololive/GTA context: translation only, no ASR prompting.
+"無線マウス" = "wireless mouse"
+"有線マウス" = "wired mouse"
+"玉突き事故" = "multi-car pile-up"
+"観覧車" = "Ferris wheel"
+"遊園地" = "amusement park"
+"ハネムーン" = "honeymoon"
+"ジェットコースター" = "roller coaster"
+"受注" = "accepting a job / order (context-specific)"
 "エイム" = "aim"
 "エイム力" = "aim skill"
 "ヘッドショット" = "headshot"

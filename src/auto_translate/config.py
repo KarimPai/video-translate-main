@@ -143,7 +143,15 @@ class VoicePingAstConfig:
     device: str = "cuda:0"
     dtype: str = "bfloat16"
     max_inference_batch_size: int = 1
-    max_new_tokens: int = 256
+    max_new_tokens: int = 192  # still ample for a 12-second English sentence
+    # Native Qwen3-ASR context (not Whisper prompts or a separate translator).
+    context_enabled: bool = True
+    concise_context: bool = True
+    hololive_names_enabled: bool = True
+    hololive_name_limit: int = 6
+    name_hints: list[str] = field(default_factory=list)
+    detected_names: list[str] = field(default_factory=list)  # filled from video metadata
+    repeat_short_cue_limit: int = 2  # keep two genuine repetitions, suppress more
     remove_fillers: bool = True
     collapse_repetitions: bool = True
     diagnostics: bool = False

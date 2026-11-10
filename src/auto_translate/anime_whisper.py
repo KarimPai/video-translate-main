@@ -84,6 +84,7 @@ class AnimeWhisperASR:
         prompt: str | None = None,
         hotwords: str | None = None,
         temperature: float | None = None,
+        beam_size: int | None = None,
     ) -> WhisperDecode:
         """Transcribe bounded Japanese audio without any textual priming."""
         import torch
@@ -102,6 +103,9 @@ class AnimeWhisperASR:
             log.debug("Ignoring ASR prompt/hotwords: Anime Whisper must remain unprimed")
 
         t = self.cfg.temperature if temperature is None else float(temperature)
+        beams = self.cfg.beam_size if beam_size is None else int(beam_size)
+        if not 1 <= beams <= 16:
+            raise ValueError("Anime Whisper beam_size must be 1..16")
         if not 0.0 <= t <= 1.0:
             raise ValueError("Anime Whisper temperature must be 0..1")
         start = time.monotonic()
@@ -125,12 +129,16 @@ class AnimeWhisperASR:
             "input_features": features,
             "language": "japanese",
             "task": "transcribe",
-            "num_beams": self.cfg.beam_size,
+            "num_beams": beams,
             "max_new_tokens": max_tokens,
             "no_repeat_ngram_size": self.cfg.no_repeat_ngram_size,
             "repetition_penalty": self.cfg.repetition_penalty,
             "do_sample": t > 0.0,
         }
+        collect_scores = bool(getattr(self.cfg, "collect_token_scores", True))
+        if collect_scores:
+            arguments["return_dict_in_generate"] = True
+            arguments["output_scores"] = True
         if t > 0.0:
             arguments["temperature"] = t
         if "attention_mask" in inputs:
@@ -139,12 +147,30 @@ class AnimeWhisperASR:
             predicted = self._model.generate(**arguments)
         # Model outputs may be a tensor or GenerationOutput, depending on flags.
         sequences = getattr(predicted, "sequences", predicted)
+        # Score only the tokens actually selected by the final beam path.
+        # This is a ranking heuristic, NOT a calibrated hallucination risk.
+        avg_logprob = None
+        score_steps = getattr(predicted, "scores", None)
+        if score_steps and hasattr(self._model, "compute_transition_scores"):
+            try:
+                transitions = self._model.compute_transition_scores(
+                    sequences, score_steps,
+                    beam_indices=getattr(predicted, "beam_indices", None),
+                    normalize_logits=True,
+                )
+                selected = transitions[0].detach().float()
+                selected = selected[torch.isfinite(selected) & (selected < 0)]
+                if selected.numel() >= 2:
+                    avg_logprob = float(selected.mean().item())
+            except (ValueError, RuntimeError, TypeError, AttributeError) as exc:
+                log.debug("Anime Whisper token score recovery unavailable: %s", exc)
         decoded = self._processor.batch_decode(
             sequences, skip_special_tokens=True,
         )
         text = str(decoded[0] if decoded else "").strip()
         return WhisperDecode(
             text=text,
+            avg_logprob=avg_logprob,
             duration_s=time.monotonic() - start,
             temperature=t,
             decoded_segments=1 if text else 0,

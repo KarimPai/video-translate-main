@@ -347,6 +347,8 @@ def find_mpv(configured: str) -> str:
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
+    LIVE_LATE_WINDOW_S = 15.0  # show slightly delayed translated live speech instead of silently dropping it
+    LIVE_LATE_DISPLAY_S = 2.0
     _seek_lead_target: float | None = None
 
     def __init__(
@@ -420,10 +422,11 @@ class MpvOutput:
             "--demuxer-readahead-secs=120",
             "--demuxer-max-bytes=1GiB",
             "--demuxer-max-back-bytes=1GiB",
-            # Start live HLS at its oldest available segment; VOD keeps
-            # MPV's normal full-playlist timeline.
+            # Match FFmpeg's default HLS live_start_index=-3, not index 0
+            # (oldest segment). Separate live readers otherwise begin several
+            # segments apart and timestamps never line up with subtitles.
             *(
-                ["--demuxer-lavf-o=live_start_index=0"]
+                ["--demuxer-lavf-o=live_start_index=-3"]
                 if ingest.source.live else []
             ),
             "--input-default-bindings=no",
@@ -603,20 +606,31 @@ class MpvOutput:
         show_from = speech_start
         until = sub.end_s
 
-        line = _Line(sub, show_from, until)
         now = self._now
 
         if now is not None and now > until:
-            log.warning(
-                "dropping expired subtitle instead of shifting it late: "
-                "generation=%d speech_end=%.3f mpv_clock=%.3f late=%.3fs",
-                sub.generation,
-                sub.end_s,
-                now,
-                now - sub.end_s,
-            )
-            return
+            late_by = now - until
+            if self.ingest.source.live and late_by <= self.LIVE_LATE_WINDOW_S:
+                # Live dialogue may finish ASR/MT after the player has passed
+                # its original timestamp. VOD remains precisely synchronized,
+                # but live should not silently lose otherwise valid captions.
+                log.warning(
+                    "displaying late live subtitle now: "
+                    "generation=%d speech_end=%.3f mpv_clock=%.3f late=%.3fs",
+                    sub.generation, sub.end_s, now, late_by,
+                )
+                show_from = now
+                until = now + self.LIVE_LATE_DISPLAY_S
+            else:
+                log.warning(
+                    "dropping expired subtitle: generation=%d "
+                    "speech_end=%.3f mpv_clock=%.3f late=%.3fs live=%s",
+                    sub.generation, sub.end_s, now, late_by,
+                    self.ingest.source.live,
+                )
+                return
 
+        line = _Line(sub, show_from, until)
         with self._lock:
             self._lines.append(line)
         self._subtitle_ready.set()
@@ -1110,6 +1124,14 @@ class MpvOutput:
         timeline; anchoring again on each audio restart accumulates drift
         after repeated seeks. Only the fMP4 fallback needs a relative clock.
         """
+        if self.ingest.source.live:
+            # MPV's live HLS time-pos is a playlist/media timestamp, while
+            # independent FFmpeg audio processing counts PCM seconds from zero.
+            # Both begin paused near the same HLS segment; use their relative
+            # progress rather than comparing raw MPV time-pos with PCM seconds.
+            if self._mpv_anchor is None:
+                return self._clock_source_anchor
+            return self._clock_source_anchor + mpv_pos - self._mpv_anchor
         if getattr(self, "_uses_original_timeline", False):
             return mpv_pos
         if self._mpv_anchor is None:

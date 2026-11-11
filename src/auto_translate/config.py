@@ -72,6 +72,11 @@ class VadConfig:
     max_split_extension_s: float = 2.0  # VOD hard cap: 16s
     live_max_utterance_s: float = 7.0  # fits around 9s live buffer
     live_max_split_extension_s: float = 1.0  # live hard cap: 8s
+    # Natural-pause splitting begins before the long-form hard cap.
+    adaptive_split: bool = True
+    adaptive_split_s: float = 9.0  # VOD: keep context unless a clear pause occurs
+    live_adaptive_split_s: float = 5.5  # live: leave room for ASR + translation
+    adaptive_pause_ms: int = 180  # avoid cutting at very brief VAD dips
     split_pause_min_ms: int = 120
     split_context_ms: int = 160
     fallback_s: float = 0.0  # do not ASR-decode VAD-negative music/game audio
@@ -85,6 +90,11 @@ class AsrConfig:
     haas_device: str = "Vulkan0"
     haas_decode_on_cpu: bool = False
     blocklist: list[str] = field(default_factory=list)
+    response_timeout_s: float = 30.0  # fail a stalled speech.cpp request promptly
+    retry_empty_speech: bool = True  # VOD only; no music-only speculative decoding
+    retry_min_confidence: float = 0.80
+    retry_min_duration_s: float = 0.6
+    retry_max_duration_s: float = 10.0
 
 
 @dataclass
@@ -110,6 +120,7 @@ class TranslateConfig:
     neutral_subjects: bool = True  # prefer unspecified/neutral speakers, no inferred gender
     retry_suspicious: bool = True  # only one additional PLaMo request for clear mismatches
     retry_timeout_s: float = 15.0  # upper bound for the optional second pass
+    fragment_context: bool = True  # Japanese-only previous cue for ambiguous fragments
 
 
 @dataclass
@@ -131,6 +142,7 @@ class MpvConfig:
     port: int = 9137
     hwdec: str = "auto-safe"
     rtx_vsr: bool = False  # optional RTX 480p NVIDIA enhancement (Windows/D3D11)
+    live_late_window_s: float = 7.0  # reject extremely stale spoken cues
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"
@@ -151,6 +163,7 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
     return replace(
         cfg,
         max_utterance_s=cfg.live_max_utterance_s,
+        adaptive_split_s=min(cfg.live_adaptive_split_s, cfg.live_max_utterance_s),
         max_split_extension_s=cfg.live_max_split_extension_s,
     )
 

@@ -164,6 +164,13 @@ class Segmenter:
             0, round(cfg.max_split_extension_s * SAMPLE_RATE / FRAME)
         )
         self.split_pause_frames = _ms_to_frames(cfg.split_pause_min_ms)
+        self.adaptive_frames = (
+            _ms_to_frames(cfg.adaptive_split_s * 1000)
+            if cfg.adaptive_split and cfg.adaptive_split_s > 0 else 0
+        )
+        self.adaptive_pause_frames = max(
+            self.split_pause_frames, _ms_to_frames(cfg.adaptive_pause_ms)
+        )
         self.split_context_frames = _ms_to_frames(cfg.split_context_ms)
         self.split_search = _ms_to_frames(2000)  # look this far back for a quiet split point
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
@@ -289,6 +296,12 @@ class Segmenter:
             # Pause found: keep `pad` frames of trailing silence, the rest becomes preroll.
             n = min(len(self._frames), len(self._frames) - self._silence + self.pad)
             self._emit(n, keep_rest=False)
+        elif (self.adaptive_frames and len(self._frames) >= self.adaptive_frames
+              and self._silence >= self.adaptive_pause_frames):
+            # A real quiet gap is preferable to delaying live subtitles until
+            # the maximum chunk length. Include its trailing silence once;
+            # no PCM is repeated or discarded across consecutive cues.
+            self._emit(len(self._frames), keep_rest=False)
         elif len(self._frames) >= self.max_frames:
             # Prefer a real sustained pause; extend at most 1s before
             # a smoothed-energy forced cut. Timestamped PCM remains contiguous.

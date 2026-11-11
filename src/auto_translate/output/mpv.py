@@ -283,6 +283,13 @@ def find_mpv(configured: str) -> str:
     )
 
 
+def _mpv_media_url(ingest: Ingest) -> str:
+    """Share media segments in live mode; preserve original VOD playback."""
+    if ingest.source.live and ingest.video_out:
+        return ingest.video_playlist_url
+    return ingest.source.location
+
+
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
@@ -386,7 +393,12 @@ class MpvOutput:
             *BOUNDED_DEMUX_CACHE_OPTIONS,
             # Match the audio reader's live HLS edge and remove menu seeks.
             *(
-                ["--demuxer-lavf-o=live_start_index=-3", "--load-context-menu=no"]
+                [
+                    "--demuxer-lavf-o=live_start_index=0"
+                    if ingest.video_out else
+                    "--demuxer-lavf-o=live_start_index=-3",
+                    "--load-context-menu=no",
+                ]
                 if ingest.source.live else []
             ),
             "--input-default-bindings=no",
@@ -751,12 +763,25 @@ class MpvOutput:
         self._session_start = self.ingest.source.start_s
 
         if not self._direct_video_loaded:
-            video_url = self.ingest.source.location
-            log.info(
-                "loading original source in MPV through its yt-dlp hook"
-                if not Path(video_url).exists()
-                else "loading local source in MPV"
+            shared_live_hls = bool(
+                self.ingest.source.live and self.ingest.video_out
             )
+            if shared_live_hls:
+                # The ingest worker starts the shared fMP4 writer. MPV must
+                # open its existing playlist, not a separately resolved YouTube
+                # live rendition that may begin at another HLS segment.
+                if not self.ingest.wait_video_ready():
+                    log.error("shared live HLS playlist unavailable; stopping")
+                    self.stop.set()
+                    return
+                log.info("MPV live: loading same local HLS playlist as ASR")
+            video_url = _mpv_media_url(self.ingest)
+            if not shared_live_hls:
+                log.info(
+                    "loading original source in MPV through its yt-dlp hook"
+                    if not Path(video_url).exists()
+                    else "loading local source in MPV"
+                )
             loaded = False
             try:
                 self.ipc.command("loadfile", video_url, "replace")
@@ -771,6 +796,14 @@ class MpvOutput:
                 log.exception(
                     "MPV rejected the original source; trying local fMP4 fallback"
                 )
+
+            if not loaded and shared_live_hls:
+                log.error(
+                    "MPV could not load shared live HLS; refusing an "
+                    "unsynchronized original-source fallback"
+                )
+                self.stop.set()
+                return
 
             if not loaded:
                 log.warning(
@@ -806,7 +839,7 @@ class MpvOutput:
             # Live HLS PTS may be large/rebased; only VOD has identity mapping.
             self._uses_original_timeline = loaded and not self.ingest.source.live
             self._direct_video_loaded = True
-            if self._session_start > 0:
+            if self._session_start > 0 and not self.ingest.source.live:
                 self.ipc.command("seek", self._session_start, "absolute+exact")
                 deadline = time.monotonic() + 10.0
                 while time.monotonic() < deadline:
@@ -1158,6 +1191,10 @@ class MpvOutput:
 
         self._pending_seek_offset = None
         self.ingest.request_restart(restart_at)
+        if self.ingest.source.live and self.ingest.video_out:
+            # Reopen the fresh shared playlist, never continue playing the
+            # disconnected HLS session while audio restarts independently.
+            self._direct_video_loaded = False
         self.reset_buffer(restart_at)
         self.ingest.go()
         self._clock_source_anchor = restart_at

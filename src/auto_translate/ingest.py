@@ -951,6 +951,25 @@ class Ingest:
 
         return audio_urls[0]
 
+    def _wait_for_shared_live_restart(self) -> None:
+        """Keep shared live MPV and PCM on the same HLS session after errors."""
+        with self._proc_lock:
+            if self._stopped or self._restart_at is not None:
+                return
+        log.warning(
+            "shared live HLS audio ended; requesting synchronized "
+            "MPV/video/audio session restart"
+        )
+        self._video_failed.set()
+        # MpvOutput responds by calling request_restart(), which replaces the
+        # playlist and audio generation together. Do not independently reopen
+        # an older rolling HLS segment while MPV continues the old stream.
+        while True:
+            with self._proc_lock:
+                if self._stopped or self._restart_at is not None:
+                    return
+            time.sleep(0.1)
+
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
         try:
@@ -958,7 +977,13 @@ class Ingest:
                 with self._proc_lock:
                     generation = self._generation
                     reuse_url = self._vod_audio_url is not None and not self.video_out
-                failed_to_open = self._read_session(out_q)
+                try:
+                    failed_to_open = self._read_session(out_q)
+                except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                    if not (self.source.live and self.video_out):
+                        raise
+                    log.warning("shared live HLS read failed: %s", exc)
+                    failed_to_open = True
                 with self._proc_lock:
                     refresh = (
                         reuse_url and failed_to_open and not self._stopped
@@ -969,6 +994,9 @@ class Ingest:
                 if refresh:
                     log.info("cached VOD audio failed to open; resolving again")
                     self._read_session(out_q)
+
+                if self.source.live and self.video_out:
+                    self._wait_for_shared_live_restart()
 
                 with self._proc_lock:
                     if self._stopped or self._restart_at is None:

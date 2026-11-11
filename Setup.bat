@@ -21,7 +21,8 @@ if not exist "%~dp0scripts\Setup-Windows.ps1" (
     exit /b 1
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Setup-Windows.ps1" -ProjectDir "%~dp0"
+rem Appending dot prevents a trailing backslash from escaping the closing quote.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Setup-Windows.ps1" -ProjectDir "%~dp0."
 set "SETUP_RESULT=%ERRORLEVEL%"
 echo.
 if "%SETUP_RESULT%"=="0" (

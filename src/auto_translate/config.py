@@ -94,6 +94,7 @@ class TranslateConfig:
     plamo_base_url: str = "http://127.0.0.1:8000/v1"
     plamo_model: str = "plamo-3-translate"
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
+    target_lang: str = "ms"  # direct Japanese -> Standard Malaysian Malay
     plamo_context: int = 4096  # smaller KV/context footprint on RTX 3070
     plamo_gpu_layers: int = 99
     max_tokens: int = 192  # prevent truncation of longer, complete JP utterances
@@ -102,12 +103,12 @@ class TranslateConfig:
     context_lines: int = 4  # shorter trusted dialogue history; avoid EN error carryover
     # Only Japanese scene history and verified glossary terms belong in memory.
     memory_lines: int = 8  # bounded scene context; no speculative EN term hints
-    glossary: str = "glossary.toml"
-    remove_fillers: bool = True
+    glossary: str = "glossary-ms.toml"
+    remove_fillers: bool = False  # English-only cleanup not suitable for Malay
     collapse_repetitions: bool = True
     suppress_runaway_loops: bool = True
     max_identical_cues: int = 2
-    neutral_subjects: bool = True  # prefer unspecified/neutral speakers, no inferred gender
+    neutral_subjects: bool = False  # English-only subject guard disabled for Malay
     retry_suspicious: bool = True  # only one additional PLaMo request for clear mismatches
     retry_timeout_s: float = 15.0  # upper bound for the optional second pass
 
@@ -117,7 +118,7 @@ class OutputConfig:
     terminal: bool = True
     web: bool = True
     web_host: str = "127.0.0.1"
-    web_port: int = 8765
+    web_port: int = 8766
 
 
 @dataclass
@@ -128,7 +129,7 @@ class MpvConfig:
     path: str = ""
     delay_s: float = 9.0
     start_wait_s: float = 3.0
-    port: int = 9137
+    port: int = 9138
     hwdec: str = "auto-safe"
     rtx_vsr: bool = False  # optional RTX 480p NVIDIA enhancement (Windows/D3D11)
     ytdlp_format: str = (

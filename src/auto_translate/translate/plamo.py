@@ -23,6 +23,7 @@ from ..subject_guard import (
     neutralize_unwarranted_possessives,
 )
 from ..translation_guard import suspicious_translation
+from ..malay_translation_guard import suspicious_malay_translation
 from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,15 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "Never infer pronouns from the video title, streamer identity, or past English subtitles. "
     "Preserve negation, speaker intent, factual details, names and uncertainty; "
     "do not invent unheard dialogue."
+)
+_MALAY_CONTEXT = (
+    "Terjemahkan transkrip audio bahasa Jepun SEMASA ke Bahasa Melayu standard Malaysia "
+    "(ms), bukan bahasa Indonesia atau dialek tempatan. "
+    "Gunakan gaya sari kata percakapan yang ringkas dan lancar. "
+    "Kekalkan makna, penafian, nombor, nama Hololive, konteks permainan dan keraguan. "
+    "Jangan teka penutur, jantina, subjek atau pemilik yang tidak dinyatakan dalam ayat Jepun. "
+    "Jangan tambah maklumat yang tidak didengar. Jangan tambah awalan MS atau komen. "
+    "Hasilkan terjemahan sahaja."
 )
 _STRICT_NEUTRAL_RETRY_CONTEXT = (
     "The previous translation assigned an unsupported speaker/person or gender. "
@@ -81,10 +91,28 @@ _HOLOGTA_TERMS = {
 }
 
 
-def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> list[tuple[str, str]]:
+_HOLOGTA_TERMS_MS = {
+    "ホロライブGTA": "Hololive GTA",
+    "ホロGTA": "HoloGTA",
+    "ホロスサントス": "Holo Santos",
+    "ミリモン": "Million Monsters",
+    "副署長": "timbalan ketua polis",
+    "署長": "ketua polis",
+    "救急隊": "pasukan paramedik",
+    "ギャング": "geng",
+    "警察": "polis",
+    "人質": "tebusan",
+    "パン屋": "kedai roti",
+}
+
+
+def _current_glossary_matches(
+    ja: str, vod_title: str, glossary: Glossary, *, target_lang: str = "en",
+) -> list[tuple[str, str]]:
     """Longest-first, non-overlapping current-source matches (never future guesses)."""
+    scene_terms = _HOLOGTA_TERMS_MS if target_lang == "ms" else _HOLOGTA_TERMS
     scene = (
-        [(source, target) for source, target in _HOLOGTA_TERMS.items() if source in ja]
+        [(source, target) for source, target in scene_terms.items() if source in ja]
         if _HOLOGTA_TITLE.search(vod_title) else []
     )
     candidates = sorted(scene + glossary.find(ja), key=lambda item: len(item[0]), reverse=True)
@@ -99,9 +127,9 @@ def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> li
     return selected
 
 
-def _translation_context(vod_title: str, *, neutral_retry: bool = False) -> str:
-    context = _NEUTRAL_SUBJECT_CONTEXT
-    if neutral_retry:
+def _translation_context(vod_title: str, *, neutral_retry: bool = False, target_lang: str = "en") -> str:
+    context = _MALAY_CONTEXT if target_lang == "ms" else _NEUTRAL_SUBJECT_CONTEXT
+    if neutral_retry and target_lang == "en":
         context += " " + _STRICT_NEUTRAL_RETRY_CONTEXT
     if vod_title:
         return f"Video title: {vod_title}\n{context}"
@@ -236,7 +264,7 @@ class PlamoTranslator:
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
-        if getattr(self, "memory_lines", 0):
+        if getattr(self, "memory_lines", 0) and self.cfg.target_lang == "en":
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
@@ -244,15 +272,16 @@ class PlamoTranslator:
 
         def normalized(raw: str) -> str:
             translated = correct_translation(ja, _clean(raw))
-            return neutralize_unsupported_subjects(ja, translated)
+            return neutralize_unsupported_subjects(ja, translated) if self.cfg.target_lang == "en" else translated
 
         english = normalized(self._chat(ja, history, timeout=self.cfg.timeout_s))
-        names = _current_glossary_matches(ja, self.vod_title, self.glossary)
+        names = _current_glossary_matches(ja, self.vod_title, self.glossary, target_lang=self.cfg.target_lang)
         pronoun_reason = (
             unsupported_person_reference(ja, english)
-            if self.cfg.neutral_subjects else None
+            if self.cfg.neutral_subjects and self.cfg.target_lang == "en" else None
         )
-        reason = pronoun_reason or suspicious_translation(ja, english, names=names)
+        guard = suspicious_malay_translation if self.cfg.target_lang == "ms" else suspicious_translation
+        reason = pronoun_reason or guard(ja, english, names=names)
         if reason and self.cfg.retry_suspicious:
             log.info("PLaMo suspicious translation (%s): JP=%r EN=%r; retry without prior chat",
                      reason, ja[:150], english[:160])
@@ -268,8 +297,8 @@ class PlamoTranslator:
             else:
                 retry_reason = (
                     unsupported_person_reference(ja, candidate)
-                    if self.cfg.neutral_subjects else None
-                ) or suspicious_translation(ja, candidate, names=names)
+                    if self.cfg.neutral_subjects and self.cfg.target_lang == "en" else None
+                ) or guard(ja, candidate, names=names)
                 if retry_reason is None:
                     english = candidate
                     log.info("PLaMo validation retry accepted (trigger=%s)", reason)
@@ -278,7 +307,7 @@ class PlamoTranslator:
                         "PLaMo retry still suspicious (%s); keeping first result with safe fallbacks",
                         retry_reason,
                     )
-        if self.cfg.neutral_subjects:
+        if self.cfg.neutral_subjects and self.cfg.target_lang == "en":
             # Prefer owner-free noun phrases BEFORE gender fallback converts
             # "his/her customer" into an invented "their customer".
             english = neutralize_unwarranted_possessives(ja, english)
@@ -303,7 +332,7 @@ class PlamoTranslator:
             # Prior inferred pronouns must not contaminate new translations.
             messages.append({
                 "role": "assistant",
-                "content": neutralize_unsupported_subjects(source, translation),
+                "content": neutralize_unsupported_subjects(source, translation) if self.cfg.target_lang == "en" else translation,
             })
         messages.append({"role": "user", "content": ja})
 
@@ -314,12 +343,12 @@ class PlamoTranslator:
         )
         options: dict = {
             "source_lang": "ja",
-            "target_lang": "en",
-            "context": _translation_context(self.vod_title, neutral_retry=neutral_retry) + (
+            "target_lang": self.cfg.target_lang,
+            "context": _translation_context(self.vod_title, neutral_retry=neutral_retry, target_lang=self.cfg.target_lang) + (
                 "\n" + memory if memory else ""
             ),
         }
-        if hits := _current_glossary_matches(ja, self.vod_title, self.glossary):
+        if hits := _current_glossary_matches(ja, self.vod_title, self.glossary, target_lang=self.cfg.target_lang):
             options["glossary"] = [
                 {"source": source, "target": target}
                 for source, target in hits
@@ -362,6 +391,6 @@ def _clean(text: str) -> str:
     if not lines:
         return ""
     line = lines[0]
-    if line.upper().startswith(("EN:", "ENGLISH:")):
+    if line.upper().startswith(("EN:", "ENGLISH:", "MS:", "BM:", "MALAY:", "BAHASA MELAYU:")):
         line = line.split(":", 1)[1].strip()
     return line.strip('"“”「」')

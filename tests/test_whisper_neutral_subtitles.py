@@ -12,7 +12,8 @@ from auto_translate.whisper_v3 import WhisperDecode
 class NeutralWhisperTests(unittest.TestCase):
     def test_only_selected_phrases_trigger_verification(self):
         for cue in ("Their first customer!", "Your first customer.",
-                    "Her customer arrived.", "He left.", "I don't know."):
+                    "Her customer arrived.", "He left.", "I don't know.",
+                    "But the police killed him!", "Those guys are here."):
             self.assertTrue(needs_reference_evidence(cue))
         for cue in ("Look out!", "The first customer arrived.",
                     "My friend is strong.", "We're ready!"):
@@ -46,6 +47,41 @@ class NeutralWhisperTests(unittest.TestCase):
         self.assertEqual(neutralize_with_japanese("She is here!", "来てるよ"), "Someone is here!")
         self.assertEqual(neutralize_with_japanese("She left.", "彼女は出た"), "She left.")
         self.assertEqual(neutralize_with_japanese("He told me.", "話をした"), "He told me.")
+
+    def test_gender_neutrality_also_covers_full_dialogue(self):
+        self.assertEqual(
+            neutralize_with_japanese("But the police killed him!", "でも警察に殺された"),
+            "But the police killed someone!",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("Those guys are here.", "あの人たちがいる"),
+            "Those people are here.",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("This guy is amazing.", "この人すごい"),
+            "This person is amazing.",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("And he arrived.", "それで来ました"),
+            "And someone arrived.",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("But he was killed.", "彼は殺された"),
+            "But he was killed.",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("She met him.", "彼女は彼に会った"),
+            "She met him.",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("This guy is here.", ""),
+            "This guy is here.",
+        )
+        # Neither gender nor ownership is inferred for explicit Japanese names.
+        self.assertEqual(
+            neutralize_with_japanese("He arrived.", "みこさんが来た"),
+            "He arrived.",
+        )
 
     def test_omitted_first_person_short_reactions(self):
         self.assertEqual(neutralize_with_japanese("I don't know.", "分からない"), "Not sure.")
@@ -84,6 +120,11 @@ class NeutralWhisperTests(unittest.TestCase):
         while (result := outside.get_nowait()) is not None:
             found.append(result)
         return fake, found
+
+    def test_pipeline_full_sentence_gender_neutral_pass(self):
+        model, subs = self.run_case("But the police killed him!", "でも警察に殺された")
+        self.assertEqual([x.en for x in subs], ["But the police killed someone!"])
+        self.assertEqual((model.ast_calls, model.ja_calls), (1, 1))
 
     def test_pipeline_targeted_audio_pass(self):
         model, subs = self.run_case("Their first customer!", "最初のお客さん")

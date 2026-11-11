@@ -17,10 +17,25 @@ _QUAL = r"(?:(?:very|first|second|third|next|last|new|only|regular|loyal|best|fa
 _OWNED_ROLE = re.compile(
     rf"\b(?P<owner>my|our|your|their|his|her)\s+(?P<role>{_QUAL}{_ROLE})\b", re.I
 )
-_SIMPLE_GENDERED = re.compile(
-    r"^(?:he|she)\s+(?P<act>left|arrived|came back|went away|"
-    r"is here|was here|is gone|went home)(?P<end>[.!?]?)$", re.I
+# Detect gender attribution in *any* clause, not just the handful of
+# one-sentence templates in the original neutral-subtitle implementation.
+# Never rewrite contractions (he's/she'd): their tense is ambiguous.
+_GENDER_SUBJECT = re.compile(r"\b(?:he|she)\b(?!['’])", re.I)
+_GENDER_OBJECT = re.compile(
+    r"\b(?P<prefix>killed?|shot|saved?|saw|seen|see|met|meet|"
+    r"followed?|chased?|helped?|heard?|called?|hit|hurt|found|"
+    r"told|asked?|watched?|talked to|looked at)\s+"
+    r"(?P<object>him|her)\b(?!['’])", re.I
 )
+_GENDER_PREP = re.compile(
+    r"\b(?P<prefix>to|with|for|at|from|about)\s+"
+    r"(?P<object>him|her)\b(?!['’])", re.I
+)
+_GENDER_PEOPLE = re.compile(
+    r"\b(?P<det>these|those|this|that|the|some)\s+"
+    r"(?P<noun>guys?|dudes?)\b", re.I
+)
+_GENDER_ROLE = re.compile(r"\b(?:he|she|him|her|his|hers|guys?|dudes?)\b", re.I)
 _SIMPLE_FIRST = re.compile(
     r"^(?:I (?:don't|do not) know|I'm not sure|I found it|"
     r"I(?:'ve| have)? finished(?: it)?|I'm done|"
@@ -36,7 +51,8 @@ _JA_OWNER = re.compile(
 )
 _JA_GENDER = re.compile(
     r"彼(?!女)|彼女|男性|女性|男の人|女の人|男の子|女の子|"
-    r"父|母|パパ|ママ|兄|姉|弟|妹|息子|娘|夫|妻"
+    r"父|母|パパ|ママ|兄|姉|弟|妹|息子|娘|夫|妻|"
+    r"男性|女性|男たち|男の|女たち|女の|男の人|女の人"
 )
 _JA_FIRST = re.compile(
     r"私|わたし|ワタシ|俺|おれ|オレ|僕|ぼく|ボク|"
@@ -53,7 +69,7 @@ def needs_reference_evidence(english: str) -> bool:
     """Avoid additional inference on normal subtitles."""
     phrase = english.strip()
     return bool(_OWNED_ROLE.search(phrase)
-                or _SIMPLE_GENDERED.fullmatch(phrase)
+                or _GENDER_ROLE.search(phrase)
                 or _SIMPLE_FIRST.fullmatch(phrase))
 
 
@@ -74,10 +90,26 @@ def neutralize_with_japanese(english: str, japanese: str) -> str:
             return ("The " if match.group(0)[0].isupper() else "the ") + role
         result = _OWNED_ROLE.sub(drop_owner, result)
 
-    if not _JA_GENDER.search(jp):
-        gendered = _SIMPLE_GENDERED.fullmatch(result.strip())
-        if gendered:
-            result = "Someone " + gendered.group("act") + gendered.group("end")
+    if not _JA_GENDER.search(jp) and not _JA_OWNER.search(jp):
+        # Preserve verb tense: "he killed" -> "someone killed".
+        # A person already specified in the Japanese (including their name)
+        # must not be stripped based on English alone.
+        def rewrite_subject(match: re.Match[str]) -> str:
+            return "Someone" if match.group()[0].isupper() else "someone"
+
+        def rewrite_object(match: re.Match[str]) -> str:
+            return match.group("prefix") + " someone"
+
+        def rewrite_people(match: re.Match[str]) -> str:
+            noun = match.group("noun")
+            singular = noun.casefold().endswith(("guy", "dude"))
+            replacement = "person" if singular else "people"
+            return match.group("det") + " " + replacement
+
+        result = _GENDER_SUBJECT.sub(rewrite_subject, result)
+        result = _GENDER_OBJECT.sub(rewrite_object, result)
+        result = _GENDER_PREP.sub(rewrite_object, result)
+        result = _GENDER_PEOPLE.sub(rewrite_people, result)
 
     if not (_JA_FIRST.search(jp) or _JA_IMPLIED_FIRST.search(jp)):
         short = result.strip()

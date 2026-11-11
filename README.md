@@ -25,12 +25,12 @@ The launcher passes original 16 kHz mono PCM to FireRedVAD and Whisper. It uses 
 
 Whisper already produces English without a Japanese transcript. A blanket `their → your` or `he → they` replacement would invent facts or break English grammar, so this feature does **not** port the Haas/PLaMo prompt or pretend an LLM is available.
 
-With `[whisper] neutral_subtitles = true` (default), the pipeline detects a small set of suspicious cues (ordinary role noun phrases with possessive pronouns, simple gendered subject clauses and certain standalone first-person reactions). For these cues only, it can run **one unprompted Japanese transcription pass** on the same utterance using the existing Whisper model, if its audio is at most `neutral_verify_max_audio_s = 8.0` seconds.
+With `[whisper] neutral_subtitles = true` (default), the pipeline detects English claims about roles/ownership, gendered pronouns and generic "guys/dudes", plus certain isolated first-person reactions. For these cues only, it can run **one unprompted Japanese transcription pass** on the same utterance using the existing Whisper model, up to `neutral_verify_max_audio_s = 14.0` seconds. This covers complete VOD clauses instead of only very short sentences, but increases latency when triggered.
 
 - Japanese `最初のお客さん` with English `Their first customer!` becomes **`First customer!`**.
 - For a complete sentence, `Their first customer arrived.` becomes **`The first customer arrived.`**.
 - Japanese explicitly stating `お前の`, `俺の`, `彼女の` or a named person's ownership preserves the corresponding English possessor. Never replace `their` with `your` without evidence.
-- A narrow simple clause such as `He left.` may become `Someone left.` if Japanese contains no gender marker; longer/more complex sentences remain unchanged.
+- Sentences like `But the police killed him!` may become `But the police killed someone!`; `Those guys` becomes `Those people` where Japanese provides no gender or named owner. Explicitly gendered source words and named owners remain untouched. Ambiguous contractions and unrecognized object constructions are left alone rather than breaking grammar.
 - `分からない` / `見つけた` / `終わった` may lead to `Not sure.` / `Found it.` / `Finished.` only when Japanese evidence supports the concise wording. Explicit or strongly implied first person is retained.
 - Missing or failed Japanese verification leaves English **unchanged**. The Japanese pass is still Whisper (not independent proof), and latency increases only on the selected cues.
 

@@ -161,7 +161,7 @@ class WhisperConfig:
     # Apply a tiny set of neutral English rewrites only when a Japanese
     # transcription of the same audio supports them. No new model/LLM.
     neutral_subtitles: bool = True
-    neutral_verify_max_audio_s: float = 8.0
+    neutral_verify_max_audio_s: float = 14.0  # allow full VOD clauses; costs an extra decode
 
 
 @dataclass

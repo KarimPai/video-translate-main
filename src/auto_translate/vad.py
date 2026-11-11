@@ -366,10 +366,16 @@ class Segmenter:
         self._idle.append(frame)
         self._idle_probs.append(prob)
         if len(self._idle) >= self.fallback_frames:
-            # Cut at the quietest frame in the last ~2 s, so a word is less likely to be split.
-            lo = max(self.fallback_min, len(self._idle) - self.split_search)
-            rms = [float(np.sqrt(np.mean(f * f))) for f in self._idle[lo:]]
-            self._emit_probe(lo + int(np.argmin(rms)) + 1)
+            if self.cfg.background_probe_min_prob > 0:
+                # Background-candidate windows are already bounded (VOD: 4s).
+                # Energy minima can be dominated by music and split a quiet
+                # Japanese sentence halfway. Keep the full bounded window.
+                self._emit_probe(len(self._idle))
+            else:
+                # Legacy opt-in probe behavior: split near low energy.
+                lo = max(self.fallback_min, len(self._idle) - self.split_search)
+                rms = [float(np.sqrt(np.mean(f * f))) for f in self._idle[lo:]]
+                self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
         """Send the first `n` idle frames to Whisper Large-v3 as a probe (if long and loud enough)."""

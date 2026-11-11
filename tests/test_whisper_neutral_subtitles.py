@@ -46,7 +46,7 @@ class NeutralWhisperTests(unittest.TestCase):
         self.assertEqual(neutralize_with_japanese("He left.", "もう行った"), "Someone left.")
         self.assertEqual(neutralize_with_japanese("She is here!", "来てるよ"), "Someone is here!")
         self.assertEqual(neutralize_with_japanese("She left.", "彼女は出た"), "She left.")
-        self.assertEqual(neutralize_with_japanese("He told me.", "話をした"), "He told me.")
+        self.assertEqual(neutralize_with_japanese("He told me.", "話をした"), "Someone told me.")
 
     def test_gender_neutrality_also_covers_full_dialogue(self):
         self.assertEqual(

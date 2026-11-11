@@ -35,6 +35,10 @@ class BackgroundProbeTests(unittest.TestCase):
         self.assertTrue(probes)
         self.assertTrue(all(u.vad_confidence >= .20 for u in probes))
         self.assertTrue(all(u.start_s < u.end_s for u in probes))
+        self.assertLessEqual(len(probes), 2)
+        # The full 4-second low-VAD window is kept, not cut in the middle
+        # of the background sentence by unrelated game-audio RMS minima.
+        self.assertAlmostEqual(probes[0].end_s - probes[0].start_s, 4.0, delta=.02)
 
     def test_spike_and_music_like_silence_do_not_emit_probe(self):
         p = np.full(600, .02, dtype=np.float32)

@@ -354,7 +354,7 @@ def _mpv_media_url(ingest: Ingest) -> str:
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
-    LIVE_LATE_WINDOW_S = 15.0  # avoid silently losing slightly late live speech
+    LIVE_LATE_WINDOW_S = 7.0  # don't stack very old lines after a pipeline stall
     LIVE_LATE_DISPLAY_S = 2.0
     _seek_lead_target: float | None = None
 
@@ -621,7 +621,8 @@ class MpvOutput:
         now = self._now
         if now is not None and now > until:
             late_by = now - until
-            if self.ingest.source.live and late_by <= self.LIVE_LATE_WINDOW_S:
+            allowed_late = max(0.0, getattr(getattr(self, "cfg", None), "live_late_window_s", self.LIVE_LATE_WINDOW_S))
+            if self.ingest.source.live and late_by <= allowed_late:
                 log.warning(
                     "displaying late live subtitle now: "
                     "generation=%d speech_end=%.3f mpv_clock=%.3f late=%.3fs",

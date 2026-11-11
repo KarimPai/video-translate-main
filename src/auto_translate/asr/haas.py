@@ -1,6 +1,8 @@
 import base64
 import json
 import logging
+import queue
+import threading
 import shutil
 import subprocess
 
@@ -40,14 +42,14 @@ class HaasASR:
         except OSError as exc:
             raise RuntimeError(f"Could not start speech.cpp worker: {exc}") from exc
 
-        response = self.process.stdout.readline()
-        if not response:
-            code = self.process.poll()
-            raise RuntimeError(
-                f"speech.cpp worker exited during startup (exit code {code}). "
-                "Run speech info haas-ja-v1.0 and speech devices in CMD "
-                "to check the model and Vulkan device."
-            )
+        self._responses: queue.Queue[str | None] = queue.Queue()
+        # Avoid an unbounded Windows PIPE.readline() during a hung inference.
+        self._reader = threading.Thread(
+            target=self._pump_output, args=(self.process.stdout,),
+            name="haas-stdout", daemon=True,
+        )
+        self._reader.start()
+        response = self._read_response()
 
         try:
             status = json.loads(response)
@@ -66,8 +68,43 @@ class HaasASR:
             cfg.haas_model, cfg.haas_device, status.get("version", "unknown version"),
         )
 
+    def _pump_output(self, stdout) -> None:
+        try:
+            for line in stdout:
+                self._responses.put(line)
+        finally:
+            self._responses.put(None)
+
+    def _read_response(self) -> str:
+        try:
+            response = self._responses.get(timeout=max(0.5, self.cfg.response_timeout_s))
+        except queue.Empty as exc:
+            raise TimeoutError(
+                f"Haas speech.cpp worker unresponsive for {self.cfg.response_timeout_s:.1f}s"
+            ) from exc
+        if response is None:
+            code = self.process.poll() if self.process is not None else None
+            raise RuntimeError(f"Haas speech.cpp worker closed stdout (exit code {code})")
+        return response
+
+    def close(self) -> None:
+        process = getattr(self, "process", None)
+        if process is None:
+            return
+        self.process = None
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3.0)
+        for stream in (process.stdin, process.stdout):
+            if stream is not None:
+                stream.close()
+
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
-        if self.process.poll() is not None:
+        if self.process is None or self.process.poll() is not None:
             raise RuntimeError("Haas ASR worker is no longer running.")
 
         audio = np.ascontiguousarray(audio, dtype=np.float32)
@@ -85,9 +122,7 @@ class HaasASR:
         self.process.stdin.flush()
 
         while True:
-            response = self.process.stdout.readline()
-            if not response:
-                raise RuntimeError("Haas ASR worker stopped responding.")
+            response = self._read_response()
             result = json.loads(response)
             if result.get("id") != request_id:
                 continue

@@ -17,7 +17,7 @@ from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
 from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
-from .config import Config, vad_for_source
+from .config import AsrConfig, Config, vad_for_source
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -80,8 +80,10 @@ def run_asr(
     captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
+    asr_cfg: AsrConfig | None = None,
+    live: bool = False,
 ) -> None:
-    """Transcribe utterances, optionally using aligned captions as a fallback."""
+    """Transcribe utterances; retry only convincing VOD speech omissions."""
     while True:
         item = in_q.get()
 
@@ -122,6 +124,24 @@ def run_asr(
 
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
+        # Do not re-decode music, low-confidence noise or live audio.
+        # Edge silence sometimes helps Haas terminate an omitted short cue.
+        duration = utt.end_s - utt.start_s
+        if (not live and asr_cfg is not None and asr_cfg.retry_empty_speech
+                and not utt.probe and not is_usable_transcript(text)
+                and utt.vad_confidence is not None
+                and utt.vad_confidence >= asr_cfg.retry_min_confidence
+                and asr_cfg.retry_min_duration_s <= duration <= asr_cfg.retry_max_duration_s):
+            import numpy as np
+            pad = int(0.2 * SAMPLE_RATE)
+            candidate = asr.transcribe(np.pad(utt.audio, (pad, pad)), False)
+            if is_usable_transcript(candidate):
+                text = candidate
+                log.info("Recovered VAD-positive silent Haas result at %.2f-%.2fs",
+                         utt.start_s, utt.end_s)
+            else:
+                log.debug("VAD-positive Haas retry produced no usable speech at %.2fs",
+                          utt.start_s)
         utt.timings.asr_end = time.monotonic()
 
         caption_match = (
@@ -318,8 +338,10 @@ class Stats:
     mt_max_s: float = 0.0
     total_max_s: float = 0.0
     max_q: dict[str, int] = field(default_factory=dict)
+    recent_lag_s: deque[float] = field(default_factory=lambda: deque(maxlen=512))
+    deadline_misses: int = 0
 
-    def add(self, sub: Subtitle) -> None:
+    def add(self, sub: Subtitle, deadline_s: float | None = None) -> None:
         tm = sub.timings
         asr_s = max(0.0, tm.asr_end - tm.asr_start)
         mt_s = max(0.0, tm.mt_end - tm.mt_start)
@@ -328,6 +350,9 @@ class Stats:
         self.asr_sum_s += asr_s
         self.mt_sum_s += mt_s
         self.total_sum_s += total_s
+        self.recent_lag_s.append(total_s)
+        if deadline_s is not None and total_s > deadline_s:
+            self.deadline_misses += 1
         self.asr_max_s = max(self.asr_max_s, asr_s)
         self.mt_max_s = max(self.mt_max_s, mt_s)
         self.total_max_s = max(self.total_max_s, total_s)
@@ -346,8 +371,11 @@ class Stats:
             f"{k}={v}" for k, v in self.max_q.items()
         )
 
+        sorted_lag = sorted(self.recent_lag_s)
+        p95 = sorted_lag[min(len(sorted_lag) - 1, int(len(sorted_lag) * 0.95))]
         return (
             f"{self.lines} lines | "
+            f"pipeline p95 {p95:.2f}s, deadline misses {self.deadline_misses} | "
             f"{fmt('asr', self.asr_sum_s, self.asr_max_s)} | "
             f"{fmt('mt', self.mt_sum_s, self.mt_max_s)} | "
             f"{fmt('latency', self.total_sum_s, self.total_max_s)} | "
@@ -423,6 +451,8 @@ def run(
                 captions,
                 vod_title,
                 session_cache,
+                cfg.asr,
+                bool(ingest.source.live),
             ),
             name="asr",
             daemon=True,
@@ -532,7 +562,7 @@ def run(
                              item.generation, identical_count, item.en[:110])
                     continue
 
-                stats.add(item)
+                stats.add(item, deadline_s=cfg.mpv.delay_s if ingest.source.live else None)
 
                 if session_cache is not None:
                     session_cache.add(item)
@@ -599,10 +629,22 @@ def run(
         log.info("stopping (Ctrl+C)")
 
     finally:
-        # Close MPV before deleting its temporary fMP4 cache files. On Windows,
-        # MPV may still hold segment files open until its process has exited.
-        for out in outputs:
-            out.close()
-
-        ingest.stop()
+        # Always release ASR, PLaMo and MPV, including after a worker timeout.
+        try:
+            for out in outputs:
+                try:
+                    out.close()
+                except Exception:
+                    log.exception("output shutdown failed")
+        finally:
+            try:
+                ingest.stop()
+            finally:
+                for label, worker in (("Haas", asr), ("PLaMo", translator)):
+                    close = getattr(worker, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            log.exception("%s shutdown failed", label)
         log.info("done: %s", stats.summary())

@@ -137,7 +137,7 @@ def neutralize_unsupported_subjects(japanese: str, english: str) -> str:
 # the streamer's identity, previous English, or an unmarked Japanese subject.
 # Japanese can also strongly imply first person through 思う / たい / つもり.
 _FIRST_PERSON_IMPLIED = re.compile(
-    r"と思(?:う|います|って|った)|考えて(?:いる|ます)|"
+    r"思(?:う|います|って|った)|考えて(?:いる|ます)|"
     r"(?:(?:し|やり|行き|食べ|見|帰り|戻り|遊び|買い|使い|会い|寝)たい)"
     r"|つもり|行ってきます|いただきます"
 )

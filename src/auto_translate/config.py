@@ -121,6 +121,7 @@ class MpvConfig:
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"
+    rtx_vsr: bool = False  # optional RTX 480p NVIDIA enhancement (Windows/D3D11)
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"

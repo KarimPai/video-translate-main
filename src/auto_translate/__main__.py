@@ -33,6 +33,8 @@ def main() -> None:
                         help="YouTube maximum playback height; lower-quality fallback")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV hardware decode mode")
+    parser.add_argument("--rtx-vsr", action="store_true",
+                        help="request NVIDIA RTX VSR for <=480p source video; enable High in NVIDIA App")
     parser.add_argument("--diagnostics", action="store_true",
                         help="log additional pipeline metrics")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -71,6 +73,8 @@ def main() -> None:
         cfg.mpv.delay_s = args.delay
     if args.hwdec is not None:
         cfg.mpv.hwdec = args.hwdec
+    if args.rtx_vsr:
+        cfg.mpv.rtx_vsr = True
 
     log = logging.getLogger("auto_translate")
     source = resolve_source(

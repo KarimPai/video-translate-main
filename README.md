@@ -23,6 +23,15 @@ cd /d C:\Games && git clone -b feature/haas-plamo-retest-20261111 --single-branc
 
 Choose video quality **1=360p, 2=480p, 3=720p (default), 4=1080p**. VODs prefer direct HTTPS/DASH sources with lower-quality fallback; live sources prefer HLS.
 
+### Optional 480p RTX Video Super Resolution (experimental)
+
+When selecting **2 (480p)** in `Start translate.bat`, answer **Y** to try NVIDIA RTX VSR 3x enhancement (~1440p output). It is **off by default**; other quality choices use unchanged MPV playback. Enable **Video Super Resolution** and manually choose **High** under **NVIDIA App > System > Video**; MPV cannot change NVIDIA's quality tier.
+
+CLI: `--mpv --video-quality 480 --hwdec auto-safe --rtx-vsr`, or opt in through `[mpv] rtx_vsr = true` in your local config. Windows and MPV D3D11 hardware decoding are required. The filter is applied only after MPV confirms an input video height of 480p or less. It is removed if unavailable, hardware decoding falls back to software, or 30-second health samples find at least 15 dropped or 30 delayed frames. Manual/cache pauses are excluded from performance alerts. The underlying MPV session, native seeking, FireRedVAD, Haas ASR, PLaMo translation, and English subtitles remain unchanged.
+
+**Verify in practice:** MPV accepting the filter does not prove NVIDIA AI enhancement is running. Check the NVIDIA App RTX Video indicator, `logs\\mpv.log`, and `logs\\run.log` for `RTX VSR playback check` or `RTX VSR disabled`. Compare the same 480p VOD at 30/60 fps with VSR on and off, and monitor VRAM via `nvidia-smi`; performance and activation are unverified until tested on your RTX 3070. For CPU-only tests run `uv run --no-sync python -m unittest discover -s tests -p "test_rtx_vsr.py" -v`.
+
+
 ## New FireRedVAD defaults
 
 ```toml

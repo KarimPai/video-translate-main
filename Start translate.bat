@@ -42,6 +42,20 @@ if not defined VIDEO_QUALITY (
 )
 echo YouTube video quality: up to %VIDEO_QUALITY%p (lower if unavailable)
 
+set "RTX_VSR_ARG="
+if not "%VIDEO_QUALITY%"=="480" goto vsr_choice_complete
+echo.
+echo NVIDIA App ^> System ^> Video: enable RTX Video Super Resolution and select High quality.
+set "RTX_VSR_CHOICE="
+set /p "RTX_VSR_CHOICE=Enable optional RTX VSR 480p-to-1440p enhancement? [y/N]: "
+if /I "%RTX_VSR_CHOICE%"=="Y" set "RTX_VSR_ARG=--rtx-vsr"
+:vsr_choice_complete
+if defined RTX_VSR_ARG (
+    echo RTX VSR requested: 3x scaling; NVIDIA App controls enhancement quality.
+) else (
+    echo RTX VSR off ^(standard MPV playback^).
+)
+
 if not exist "logs" mkdir "logs"
 if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
@@ -63,7 +77,7 @@ echo Starting direct Japanese ASR with PLaMo 3 Translate 2B...
 echo Original 16 kHz audio, FireRedVAD CUDA, Haas Vulkan, PLaMo llama.cpp.
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%EXIT_CODE%"=="0" (

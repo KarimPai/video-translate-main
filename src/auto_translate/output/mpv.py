@@ -26,6 +26,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config import MpvConfig
+from .rtx_vsr import (
+    VSR_FILTER, VSR_LABEL, VsrPerformanceGuard,
+    filter_present, launch_options, source_eligible,
+)
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
 from ..session_cache import SessionSubtitleCache
@@ -380,6 +384,16 @@ class MpvOutput:
         self._last_direct_pos: float | None = None
         self._last_direct_sample_at = 0.0
         self._manually_paused = False
+        self._vsr_launch_args = launch_options(cfg.rtx_vsr, cfg.hwdec, sys.platform)
+        self._vsr_requested = bool(self._vsr_launch_args)
+        self._vsr_active = False
+        self._vsr_guard = VsrPerformanceGuard()
+        self._vsr_next_health_at = 0.0
+        if cfg.rtx_vsr and not self._vsr_requested:
+            log.warning(
+                "RTX VSR skipped: requires Windows and --hwdec=auto-safe; "
+                "keeping standard MPV playback"
+            )
         if not ingest.source.live:
             ingest.enable_vod_playback_pacing(
                 getattr(ingest.cfg, "vod_max_audio_lead_s", 75.0)
@@ -431,6 +445,7 @@ class MpvOutput:
 
             # Hardware video decoding.
             f"--hwdec={cfg.hwdec}",
+            *self._vsr_launch_args,
 
             f"--log-file={mpv_log}",
             "--msg-level=all=warn",
@@ -486,6 +501,76 @@ class MpvOutput:
             daemon=True,
         )
         self._thread.start()
+
+    def _enable_vsr_if_eligible(self) -> None:
+        """Add NVIDIA scaling only after MPV confirms a <=480p video source."""
+        video_params = self.ipc.get("video-params")
+        if not source_eligible(video_params):
+            log.warning(
+                "RTX VSR skipped: source height not confirmed <=480p (%r); "
+                "standard MPV scaling remains active", video_params,
+            )
+            self._vsr_requested = False
+            return
+
+        try:
+            self.ipc.command("vf", "add", VSR_FILTER)
+            if not filter_present(self.ipc.get("vf")):
+                raise MpvError("MPV did not retain the NVIDIA video filter")
+        except (MpvError, ConnectionError, OSError) as exc:
+            self._disable_vsr(f"filter unavailable: {exc}")
+            return
+
+        self._vsr_active = True
+        self._vsr_next_health_at = time.monotonic() + 30.0
+        log.info(
+            "RTX VSR filter requested for %sp source: 3x NVIDIA D3D11 scaling. "
+            "NVIDIA App must enable RTX VSR and set High; MPV filter acceptance "
+            "alone does not confirm AI enhancement.", video_params["h"],
+        )
+
+    def _disable_vsr(self, reason: str) -> None:
+        """Remove only the enhancement filter, preserving playback and translation."""
+        self._vsr_active = False
+        self._vsr_requested = False
+        try:
+            self.ipc.command("vf", "remove", VSR_LABEL)
+        except (MpvError, ConnectionError, OSError) as exc:
+            log.warning("RTX VSR filter removal not confirmed: %s", exc)
+        log.warning(
+            "RTX VSR disabled (%s); returning to ordinary MPV scaling. "
+            "Haas, PLaMo, subtitles, and seeking remain unchanged.", reason,
+        )
+
+    def _check_vsr_health(self) -> None:
+        """Disable the optional filter if 30-second playback checks fail."""
+        if not self._vsr_active or not self._direct_video_loaded:
+            return
+        now = time.monotonic()
+        if now < self._vsr_next_health_at:
+            return
+        self._vsr_next_health_at = now + 30.0
+
+        if not filter_present(self.ipc.get("vf")):
+            self._disable_vsr("MPV no longer reports the NVIDIA filter")
+            return
+
+        hwdec = self.ipc.get("hwdec-current")
+        dropped = self.ipc.get("frame-drop-count")
+        delayed = self.ipc.get("vo-delayed-frame-count")
+        paused = bool(self.ipc.get("pause"))
+        caching = bool(self.ipc.get("paused-for-cache"))
+        reason = self._vsr_guard.sample(
+            now=now, frame_drops=dropped, delayed_frames=delayed,
+            hwdec=hwdec, paused=paused, caching=caching,
+        )
+        log.info(
+            "RTX VSR playback check: hwdec=%s dropped=%s delayed=%s "
+            "manual_or_buffer_pause=%s cache_pause=%s",
+            hwdec, dropped, delayed, paused, caching,
+        )
+        if reason:
+            self._disable_vsr(reason)
 
     # ---- Output interface ----
 
@@ -734,6 +819,11 @@ class MpvOutput:
                     "the currently cached video"
                 )
 
+            # Apply only after file-loaded; never interfere with native seek or
+            # fail the source load when NVIDIA scaling is unavailable.
+            if self._vsr_requested:
+                self._enable_vsr_if_eligible()
+
             self._uses_original_timeline = loaded
             self._direct_video_loaded = True
             if self._session_start > 0:
@@ -906,6 +996,8 @@ class MpvOutput:
 
             if (delta := self._jump_request()) and self._jump(delta):
                 return
+
+            self._check_vsr_health()
 
             # Wake for newly translated text or the next queued cue boundary.
             wait_s = 0.1

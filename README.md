@@ -108,6 +108,8 @@ To validate without model downloads:
 uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
+Gender-neutral fallback does not erase an explicit gender reference in Japanese if a retry still disagrees; such cases remain flagged in logs for review. Common short subjectless reactions can also be phrased as `Finished.`, `Found it.`, `Got it.`, or `Not sure.` when the Japanese supports that wording.
+
 The correction vocabulary is intentionally small to minimize false positive name substitutions. The heuristic retry can still fail or worsen a result; check your actual HoloGTA transcript, negations, names, peak VRAM, and subtitle latency against the pre-optimization commit. Long-sentence boundary joining is deliberately not automatic because it can shift subtitle timestamps, especially during live viewing.
 
 ## Playback and reliability

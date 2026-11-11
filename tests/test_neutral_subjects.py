@@ -67,6 +67,14 @@ class NeutralSubjectTests(unittest.TestCase):
             neutralize_unwarranted_gender("分からない", "She's gone."),
             "She's gone.",
         )
+        self.assertEqual(
+            neutralize_unwarranted_gender("ドア", "It's his."),
+            "It's theirs.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_gender("彼女が来た", "He came."),
+            "He came.",  # unresolved, rather than silently erase explicit feminine evidence
+        )
 
     def test_safe_first_person_fallback_preserves_meaning(self):
         self.assertEqual(
@@ -88,6 +96,18 @@ class NeutralSubjectTests(unittest.TestCase):
         self.assertEqual(
             neutralize_unwarranted_first_person("明日行く", "I will go tomorrow."),
             "I will go tomorrow.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_first_person("もう終わった", "I finished it."),
+            "Finished.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_first_person("見つけた", "I found it!"),
+            "Found it.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_first_person("分かった", "I got it."),
+            "Got it.",
         )
 
     @staticmethod

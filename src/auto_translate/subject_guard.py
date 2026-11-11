@@ -153,6 +153,9 @@ _FEMALE_EN = re.compile(r"\b(?:she|her|hers|herself|she's|she'd|she'll)\b", re.I
 # assert gender and English often needs an addressee despite omitted Japanese.
 _FIRST_SUBJECT_HEDGE = re.compile(r"^I (?:think|guess|suppose)(?: that)?\s+", re.I)
 _NOT_SURE = re.compile(r"^(?:I (?:don't|do not) know|I'm not sure)[.!?]*$", re.I)
+_SHORT_DONE = re.compile(r"^(?:I(?:'ve| have)? finished|I'm done|I finished(?: it)?)[.!?]*$", re.I)
+_SHORT_FOUND = re.compile(r"^I found it[.!?]*$", re.I)
+_SHORT_GOT_IT = re.compile(r"^I(?:'ve| have)? got it[.!?]*$", re.I)
 
 
 def unsupported_person_reference(japanese: str, english: str) -> str | None:
@@ -204,14 +207,25 @@ def neutralize_unwarranted_gender(japanese: str, english: str) -> str:
     if not english:
         return english
     result = english
+    # If source explicitly states a male/female character, retain its gender
+    # reference for the model to translate; do not rewrite it to "that person"
+    # simply because the *other* gendered pronoun was mistakenly emitted.
+    if _MALE_JA.search(japanese) or _FEMALE_JA.search(japanese):
+        return english
     if not _MALE_JA.search(japanese):
         result = _GENDERED_REFLEXIVE.sub(
             lambda m: _case_like(m.group(), "themselves") if m.group().lower() == "himself"
             else m.group(), result)
         result = re.sub(r"\bhim\b", lambda m: _case_like(m.group(), "them"), result, flags=re.I)
-        result = _GENDERED_POSSESSIVE.sub(
-            lambda m: _case_like(m.group(), "their") if m.group().lower() == "his"
-            else m.group(), result)
+        def rewrite_his(match: re.Match[str]) -> str:
+            if match.group().lower() != "his":
+                return match.group()
+            remaining = result[match.end():].strip()
+            # "It's his." -> "It's theirs.", but "his car" -> "their car".
+            target = "theirs" if not remaining or remaining[0] in ".,!?;:" else "their"
+            return _case_like(match.group(), target)
+
+        result = _GENDERED_POSSESSIVE.sub(rewrite_his, result)
         result = re.sub(r"\bhe\b(?!['’])", lambda m: _case_like(m.group(), "that person"), result, flags=re.I)
     if not _FEMALE_JA.search(japanese):
         result = re.sub(r"\bherself\b", lambda m: _case_like(m.group(), "themselves"), result, flags=re.I)
@@ -228,6 +242,13 @@ def neutralize_unwarranted_first_person(japanese: str, english: str) -> str:
         return english
     if _NOT_SURE.fullmatch(english.strip()) and re.search(r"分からな|わからな|知らな", japanese):
         return "Not sure."
+    if len(japanese) <= 20:
+        if re.search(r"終わった|おわった|完了|終了", japanese) and _SHORT_DONE.fullmatch(english.strip()):
+            return "Finished."
+        if "見つけた" in japanese and _SHORT_FOUND.fullmatch(english.strip()):
+            return "Found it."
+        if re.search(r"分かった|わかった|了解", japanese) and _SHORT_GOT_IT.fullmatch(english.strip()):
+            return "Got it."
     # Unsupported 'I think' from a simple utterance like すごいね can be
     # removed safely unless Japanese actually states 思う / 考える.
     if _FIRST_SUBJECT_HEDGE.match(english) and len(japanese) <= 24:

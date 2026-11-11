@@ -1,3 +1,35 @@
+# Japanese -> Standard Malay subtitles (Haas + PLaMo 3 Translate 2B)
+
+**Feature branch:** `feature/haas-plamo-standard-malay-20261111`; based on `feature/haas-plamo-retest-20261111`. The existing English version and `main` are unchanged.
+
+The pipeline stays **FireRedVAD (CUDA) -> Haas-ja-v1.0 (Vulkan) -> PLaMo 3 Translate 2B Q4_K_M (llama.cpp)**.
+PLaMo now translates Japanese **directly into Standard Malaysian Malay**, not via English (`source_lang=ja`, `target_lang=ms`).
+MPV displays Malay-only subtitles; the terminal shows `JP:` and `MS:`.
+
+## Clone into a separate Windows folder
+
+Run in Windows CMD after Git/GitHub authentication and prerequisites from your existing Haas/PLaMo setup:
+
+```bat
+cd /d C:\Games && git clone --branch feature/haas-plamo-standard-malay-20261111 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-malay && cd /d C:\Games\video-translate-malay && uv sync && uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v && "Start translate.bat"
+```
+
+Or run `Setup.bat` inside the new directory if the prerequisites are missing. Models are not stored in the GitHub repository; pre-existing model caches may be reused automatically.
+
+Differences from the English retest:
+- `target_lang = "ms"` and `glossary-ms.toml` are defaults.
+- The Malay glossary preserves proper names and Malay-specific terms, without pushing English gameplay descriptions into Malay output.
+- English-specific subject and filler cleanup are disabled for Malay; a conservative Malay validator checks numbers, negation and important names.
+- Source audio, optional YouTube captions, MPV seeking, quality menu (1/2/3/4), VAD, Haas, PLaMo weights and RTX VSR option are preserved.
+- The web viewer uses port 8766 and MPV control port 9138 (separate from the English branch); both installations still use llama-server port 8000. **Avoid running both simultaneously** on an RTX 3070 8GB due to VRAM/port contention.
+- The legacy internal `Subtitle.en` field contains Malay output on this branch for MPV and browser-event compatibility.
+
+This is a code change, not a validated Malay quality benchmark. Test the actual translation quality on Japanese live/VOD speech. If copying a local `config.toml` from the English folder, clear old `[translate]` target and glossary overrides.
+
+---
+
+## Historical English retest documentation (from parent branch)
+
 # Haas Japanese ASR + PLaMo 3 Translate 2B — 2026-11-11 Retest
 
 **Experimental branch:** `feature/haas-plamo-retest-20261111`, forked from the latest Haas/PLaMo `main` baseline. This is not the VoicePing/Whisper AST pipeline. `main` is unchanged.

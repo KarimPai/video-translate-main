@@ -162,7 +162,7 @@ class NeutralSubjectTests(unittest.TestCase):
     @staticmethod
     def fake_translator(outputs):
         obj = object.__new__(PlamoTranslator)
-        obj.cfg = TranslateConfig()
+        obj.cfg = TranslateConfig(target_lang="en", neutral_subjects=True)
         obj.glossary = Glossary({})
         obj.vod_title = "ホロGTA"
         obj.memory_lines = 0

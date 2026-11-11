@@ -93,7 +93,7 @@ class QualityOptimizationsTests(unittest.TestCase):
     @staticmethod
     def translator(responses, title="ホロGTA 1日目"):
         obj = object.__new__(PlamoTranslator)
-        obj.cfg = TranslateConfig()
+        obj.cfg = TranslateConfig(target_lang="en", neutral_subjects=True)
         obj.glossary = Glossary({"ホロライブ": "Hololive"})
         obj.vod_title = title
         obj.memory_lines = 0

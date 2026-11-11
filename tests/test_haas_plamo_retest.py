@@ -12,7 +12,7 @@ from auto_translate.config import (
 )
 from auto_translate.pipeline import run_translate
 from auto_translate.subtitle_clean import (
-    clean_english_output, has_generation_loop, looks_like_prompt_echo,
+    clean_english_output, clean_malay_output, has_generation_loop, looks_like_prompt_echo,
 )
 from auto_translate.types import Transcript
 
@@ -64,7 +64,8 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertEqual((cfg.translate.context_lines,
                           cfg.translate.memory_lines,
                           cfg.translate.plamo_context), (4, 8, 4096))
-        self.assertEqual(cfg.translate.glossary, "glossary.toml")
+        self.assertEqual(cfg.translate.glossary, "glossary-ms.toml")
+        self.assertEqual(cfg.translate.target_lang, "ms")
         self.assertEqual(cfg.translate.max_tokens, 192)
         self.assertEqual(cfg.translate.timeout_s, 30.0)
         self.assertTrue(cfg.translate.retry_suspicious)
@@ -77,16 +78,16 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertIn("protocol=https", mpv_youtube_format(720, live=False))
         self.assertIn("protocol^=m3u8", mpv_youtube_format(720, live=True))
 
-    def test_plain_japanese_translates_into_english(self):
-        subs, model = self._translate("I can drive the car.")
-        self.assertEqual([s.en for s in subs], ["I can drive the car."])
+    def test_plain_japanese_translates_into_malay(self):
+        subs, model = self._translate("Saya boleh memandu kereta.")
+        self.assertEqual([s.en for s in subs], ["Saya boleh memandu kereta."])
         self.assertEqual(model.calls[0][0], "これで大丈夫")
 
     def test_preserve_negation_and_hololive_names(self):
-        en = "Watame isn't Watanabe. I don't want to go."
-        self.assertEqual(clean_english_output(en), en)
-        result, _ = self._translate(en)
-        self.assertEqual(result[0].en, en)
+        ms = "Watame bukan Watanabe. Saya tak mahu pergi."
+        self.assertEqual(clean_malay_output(ms), ms)
+        result, _ = self._translate(ms)
+        self.assertEqual(result[0].en, ms)
 
     def test_nonverbal_and_filler_cleanup(self):
         self.assertEqual(clean_english_output("Um…"), "")
@@ -94,7 +95,7 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertEqual(clean_english_output("Um, I don't know."), "I don't know.")
         self.assertEqual(clean_english_output("No, no, no!"), "No, no, no!")
 
-    def test_runaway_english_loop_is_not_subtitled_or_added_to_memory(self):
+    def test_runaway_loop_is_not_subtitled_or_added_to_memory(self):
         repeated = "Ah, it's a little weak. It's not very strong. But it's okay. "
         self.assertTrue(has_generation_loop(repeated * 7))
         subs, model = self._translate(repeated * 7)

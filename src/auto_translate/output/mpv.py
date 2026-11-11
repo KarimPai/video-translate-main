@@ -1235,6 +1235,15 @@ class MpvOutput:
         timeline; anchoring again on each audio restart accumulates drift
         after repeated seeks. Only the fMP4 fallback needs a relative clock.
         """
+        if self.ingest.source.live:
+            # Live uses decoded-PCM elapsed time in _play_session. MPV's HLS
+            # time-pos can be multi-hour, discontinuous, or temporarily zero.
+            # Never let that transport timestamp replace our live cue clock.
+            return (
+                self._now
+                if self._now is not None
+                else self._clock_source_anchor
+            )
         if getattr(self, "_uses_original_timeline", False):
             return mpv_pos
         if self._mpv_anchor is None:

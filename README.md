@@ -13,6 +13,19 @@
 - No VoicePing, Whisper, separate LLM beyond PLaMo, Sherpa diarization, forced aligner or new audio classifier.
 - Vocal separation and DeepFilterNet are disabled by default; the original speech signal is used.
 
+## Shareable Windows ZIP installation
+
+If you received the code-only ZIP (no models), extract the **entire archive** and double-click **`Setup.bat`** in the extracted project folder. Keep **`scripts/Setup-Windows.ps1`** with it. The setup script:
+
+- Requires Windows x64, an NVIDIA CUDA-capable GPU with a working Vulkan driver, internet access, and Windows Package Manager (`winget`).
+- Uses WinGet to install **uv, yt-dlp, FFmpeg, and mpv** when missing.
+- Installs Python 3.12 and the project dependencies using `uv sync --locked`.
+- Installs the official `speech.cpp` Windows Vulkan build when missing and downloads **Haas-ja-v1.0**.
+- Downloads the official **llama.cpp Windows CUDA 12.4** executable and matching runtime into `%LOCALAPPDATA%\\HaasPLaMo`. GitHub-provided SHA256 digests are checked when available.
+- Leaves **PLaMo 3 Translate 2B Q4_K_M** (~1.81 GB) to auto-download on first launch, when `Start translate.bat` starts its own local llama.cpp server.
+
+After successful setup, double-click **`Start translate.bat`**. If any installer requests UAC permission, follow Windows prompts. Rerunning `Setup.bat` is safe; installed packages/models are reused. Setup has not been run on another Windows PC, so version-specific installer issues may still need adjustment. Driver installation and hardware compatibility are not automated.
+
 ## First-time Windows setup (separate from main and VoicePing)
 
 Requires Python 3.12+, uv, FFmpeg, yt-dlp, mpv, a working Vulkan `speech` CLI from speech.cpp, Haas-ja-v1.0 model, and a GPU-enabled `llama-server` for PLaMo.

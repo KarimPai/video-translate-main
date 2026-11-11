@@ -158,10 +158,67 @@ _SHORT_FOUND = re.compile(r"^I found it[.!?]*$", re.I)
 _SHORT_GOT_IT = re.compile(r"^I(?:'ve| have)? got it[.!?]*$", re.I)
 
 
+# Only neutralize ownership on ordinary role/object noun phrases. We cannot
+# safely erase every English possessive (e.g. "their own", "their way") without
+# rewriting the rest of the sentence or changing the meaning.
+_ROLE_POSSESSIVE = re.compile(
+    r"\b(?P<owner>my|our|your|their|his|her)\s+"
+    r"(?P<role>(?:(?:very|first|second|third|next|last|new|only|"
+    r"regular|loyal|best|favorite|favourite)\s+){0,2}"
+    r"(?:customers?|clients?|guests?|visitors?|patients?|"
+    r"employees?|shops?|stores?|business(?:es)?|teams?|cars?|"
+    r"vehicles?|homes?|houses?|jobs?|articles?|reports?|streams?|"
+    r"friends?|characters?|orders?|purchases?|sales?|deliver(?:y|ies)))\b",
+    re.IGNORECASE,
+)
+# Distinguish actual ownership from Japanese "最初のお客さん": the latter
+# has an attributive の but names no owner. An English "your" must never be
+# inferred merely from speaking to a customer/shopkeeper.
+_STATED_OWNER = re.compile(
+    r"(?:私|わたし|ワタシ|俺|おれ|オレ|僕|ぼく|ボク|"
+    r"あたし|アタシ|うち|自分|私たち|俺ら|僕ら|"
+    r"あなた|アナタ|あんた|アンタ|お前|おまえ|オマエ|"
+    r"君|きみ|キミ|彼|彼女|彼ら|あの人|その人|みんな|皆|"
+    r"[一-龯ぁ-んァ-ヶー]{1,12}(?:さん|ちゃん|くん|君))の"
+)
+
+
+def _unsupported_role_ownership(japanese: str, english: str) -> bool:
+    return bool(
+        _ROLE_POSSESSIVE.search(english)
+        and not _STATED_OWNER.search(japanese)
+    )
+
+
+def neutralize_unwarranted_possessives(japanese: str, english: str) -> str:
+    """Prefer "first customer" over guessed "their/your first customer".
+
+    For an isolated subtitle remove the possessor entirely; within a longer
+    sentence supply a grammatical definite article instead. Preserve any
+    explicitly sourced owner. Never synthesize "your" from "their".
+    """
+    if not japanese or not english or not _unsupported_role_ownership(japanese, english):
+        return english
+
+    def replace_owner(match: re.Match[str]) -> str:
+        role = match.group("role")
+        prefix = english[:match.start()]
+        suffix = english[match.end():]
+        standalone = not prefix.strip() and not suffix.strip(" \t\r\n.!?…、。，:;")
+        if standalone:
+            return role[:1].upper() + role[1:] if match.group(0)[:1].isupper() else role
+        article = "The" if match.group(0)[:1].isupper() else "the"
+        return f"{article} {role}"
+
+    return _ROLE_POSSESSIVE.sub(replace_owner, english)
+
+
 def unsupported_person_reference(japanese: str, english: str) -> str | None:
-    """Flag unsupported person/gender choices; not a semantic correctness score."""
+    """Flag unsupported person/gender/ownership; not a semantic accuracy score."""
     if not japanese or not english:
         return None
+    if _unsupported_role_ownership(japanese, english):
+        return "unsupported_possessive_reference"
     if _MALE_EN.search(english) and not _MALE_JA.search(japanese):
         return "unsupported_male_reference"
     if _FEMALE_EN.search(english) and not _FEMALE_JA.search(japanese):

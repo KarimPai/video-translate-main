@@ -20,6 +20,7 @@ from ..subject_guard import (
     unsupported_person_reference,
     neutralize_unwarranted_gender,
     neutralize_unwarranted_first_person,
+    neutralize_unwarranted_possessives,
 )
 from ..translation_guard import suspicious_translation
 from ..watame import correct_translation
@@ -37,7 +38,12 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "事故だ -> 'There's been an accident'). "
     "Do NOT automatically assume the streamer is speaking as 'I', or that another player "
     "is 'he' or 'she'. If the Japanese clearly indicates a third person but not their gender, "
-    "use singular 'they/them/their' or a role/name stated in the Japanese. "
+    "prefer the stated role/name; use 'they/them' only if a third-person referent is needed. "
+    "Do not insert 'their', 'his', 'her', 'my', 'our', or 'your' before a noun "
+    "unless the Japanese really identifies whose thing/person it is. "
+    "For example, 最初のお客さん -> 'First customer!' (NOT 'Their first customer' "
+    "or 'Your first customer'); お前の最初のお客さん -> 'Your first customer'. "
+    "In full sentences without an owner, use 'the' or 'a' rather than an invented possessor. "
     "Preserve explicit or strongly implied first-person agency (私, 俺, 僕, ～と思う, ～したい), "
     "explicit gendered references (彼, 彼女), addresses and imperatives. "
     "Do not shift first person to third person when the source is first person. "
@@ -50,7 +56,10 @@ _STRICT_NEUTRAL_RETRY_CONTEXT = (
     "Rewrite ONLY the current Japanese as natural English without unsupported I/he/she/him/her, "
     "without inventing a new actor, and without changing viewpoint or polarity. "
     "Prefer subjectless statements or the stated name/role; use singular they only when a "
-    "third-person human is supported by the Japanese. Output only the translation."
+    "third-person human is supported by the Japanese. "
+    "Avoid assumed possession: say 'First customer' or 'the first customer', "
+    "not 'their first customer' or 'your first customer' without source ownership. "
+    "Output only the translation."
 )
 
 
@@ -270,7 +279,10 @@ class PlamoTranslator:
                         retry_reason,
                     )
         if self.cfg.neutral_subjects:
-            # Restrict deterministic fallbacks to grammar-safe forms. A source
+            # Prefer owner-free noun phrases BEFORE gender fallback converts
+            # "his/her customer" into an invented "their customer".
+            english = neutralize_unwarranted_possessives(ja, english)
+            # Restrict remaining fallbacks to grammar-safe forms. A source
             # that explicitly states a person/gender retains that information.
             english = neutralize_unwarranted_gender(ja, english)
             english = neutralize_unwarranted_first_person(ja, english)

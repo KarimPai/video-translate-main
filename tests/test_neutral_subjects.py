@@ -7,6 +7,7 @@ from auto_translate.subject_guard import (
     unsupported_person_reference,
     neutralize_unwarranted_gender,
     neutralize_unwarranted_first_person,
+    neutralize_unwarranted_possessives,
 )
 from auto_translate.translate.plamo import PlamoTranslator, _translation_context
 
@@ -76,6 +77,54 @@ class NeutralSubjectTests(unittest.TestCase):
             "He came.",  # unresolved, rather than silently erase explicit feminine evidence
         )
 
+    def test_unstated_possessives_prefer_noun_phrase_not_their(self):
+        self.assertEqual(
+            neutralize_unwarranted_possessives("初めてのお客さん！", "Their first customer!"),
+            "First customer!",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_possessives("最初のお客さん", "Your first customer."),
+            "First customer.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_possessives("初めてのお客さんが来た", "Their first customer arrived."),
+            "The first customer arrived.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_possessives("最初のお客さんだ", "It's their first customer."),
+            "It's the first customer.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_possessives("お客さんが来た", "Her customer arrived."),
+            "The customer arrived.",
+        )
+        self.assertEqual(
+            neutralize_unwarranted_possessives("店が開いた", "Their shop is open."),
+            "The shop is open.",
+        )
+
+    def test_explicit_ownership_is_preserved_without_assuming_addressee(self):
+        explicit = (
+            ("あなたの最初のお客さん", "Your first customer."),
+            ("お前の初めてのお客さん", "Your first customer."),
+            ("俺の最初のお客さん", "My first customer."),
+            ("彼女の初めてのお客さん", "Her first customer."),
+            ("あの人の初めてのお客さん", "Their first customer."),
+            ("ポルカさんの初めてのお客さん", "Their first customer."),
+        )
+        for ja, en in explicit:
+            with self.subTest(japanese=ja):
+                self.assertEqual(neutralize_unwarranted_possessives(ja, en), en)
+                self.assertIsNone(unsupported_person_reference(ja, en))
+        self.assertEqual(
+            unsupported_person_reference("最初のお客さん", "Their first customer."),
+            "unsupported_possessive_reference",
+        )
+        self.assertEqual(
+            unsupported_person_reference("最初のお客さん", "Your first customer."),
+            "unsupported_possessive_reference",
+        )
+
     def test_safe_first_person_fallback_preserves_meaning(self):
         self.assertEqual(
             neutralize_unwarranted_first_person("分からない", "I don't know."),
@@ -139,6 +188,27 @@ class NeutralSubjectTests(unittest.TestCase):
         translator, calls = self.fake_translator(["He left.", "He went away."])
         self.assertEqual(translator.translate("もう出た", []), "That person left.")
         self.assertEqual(len(calls), 2)
+
+    def test_translation_retry_cleans_guessed_possessive(self):
+        translator, calls = self.fake_translator([
+            "Their first customer!", "First customer!",
+        ])
+        self.assertEqual(translator.translate("最初のお客さん！", []), "First customer!")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[-1]["neutral_retry"])
+
+    def test_translation_fallback_cleans_guessed_possessive(self):
+        translator, calls = self.fake_translator([
+            "Their first customer!", "Their first customer!",
+        ])
+        self.assertEqual(translator.translate("最初のお客さん！", []), "First customer!")
+        self.assertEqual(len(calls), 2)
+        translator2, calls2 = self.fake_translator(["Your first customer!"])
+        self.assertEqual(
+            translator2.translate("お前の最初のお客さん！", []),
+            "Your first customer!",
+        )
+        self.assertEqual(len(calls2), 1)
 
     def test_first_person_implicit_retries_without_changing_explicit_i(self):
         translator, calls = self.fake_translator(["I finished already.", "Already finished."])

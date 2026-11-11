@@ -15,7 +15,7 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
 ## Update and start (Windows)
 
     cd /d C:\Games\video-translate-whisper
-    git fetch origin && git switch feature/whisper-anti-hallucination && git pull --ff-only origin feature/whisper-anti-hallucination
+    git fetch origin && git switch -c feature/whisper-rtx-vsr-480p --track origin/feature/whisper-rtx-vsr-480p && git pull --ff-only
     uv sync
     "Start translate.bat"
 
@@ -112,3 +112,19 @@ To inspect unexpected exits:
     powershell -NoProfile -Command "Get-Content 'logs\run.log' -Tail 60"
     powershell -NoProfile -Command "Get-Content 'logs\mpv.log' -Tail 40"
     nvidia-smi
+
+## Optional RTX VSR 480p playback experiment
+
+In `Start translate.bat`, select **2 (480p)**, then answer **Y** to enable RTX Video Super Resolution. The default is **N** (off). Other numbered quality choices keep ordinary MPV playback. CLI users can opt in with `--video-quality 480 --rtx-vsr --mpv --hwdec auto-safe`, or set `[mpv] rtx_vsr = true` in a local config. The runtime still refuses to apply RTX VSR unless the decoded source is at most 480p.
+
+**Set quality yourself:** In **NVIDIA App > System > Video**, enable **Video Super Resolution** and choose **Manual / High (highest available quality)**. The MPV `d3d11vpp` filter cannot set NVIDIA's quality tier. When enabled on Windows, the player requests Direct3D 11 with `--vo=gpu-next --gpu-api=d3d11 --gpu-context=d3d11`, preserving the existing `--hwdec=auto-safe`. After `file-loaded`, it adds the labeled `d3d11vpp=scale=3:scaling-mode=nvidia` filter (480p to approximately 1440p). It does not change MPV seeking, English subtitles, FireRedVAD, Whisper decoding or audio ingestion.
+
+**Safety/fallback:** RTX VSR is disabled by default and skipped on non-Windows systems, with software-only MPV decoding, unknown video height or videos above 480p. The player removes only its own labeled filter if MPV rejects it, it disappears, the decoder switches to software or the 30-second frame-delivery checks detect at least 15 dropped frames or 30 delayed frames. It ignores manual and cache pauses, and preserves the current video session rather than restarting MPV. When disabled, the D3D11 renderer remains but normal non-AI scaling resumes; the next launch with VSR off uses the original MPV options.
+
+**Verify on your machine:** MPV accepting a filter **does not prove NVIDIA actually ran AI enhancement**. Check NVIDIA App's RTX Video active indicator and `logs/mpv.log`. Compare the same 480p 30/60 fps VOD for several minutes with VSR off and on, then try live content. Inspect `logs/run.log` entries `RTX VSR playback check`, `RTX VSR disabled`, and `VOD playback health`, specifically `hwdec_active`, drop counts, VO delay, GPU memory and translation lead. Prefer turning VSR off if the RTX 3070 struggles with simultaneous Whisper inference.
+
+CPU-only checks (mocked counts and capability checks):
+
+    uv run --no-sync python -m unittest discover -s tests -p "test_rtx_vsr.py" -v
+
+No local RTX/Windows performance or NVIDIA quality setting can be validated by these unit tests.

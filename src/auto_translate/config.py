@@ -155,6 +155,7 @@ class MpvConfig:
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"  # prefer hardware decode; fall back safely to software
+    rtx_vsr: bool = False  # opt-in 480p NVIDIA RTX Video Super Resolution
     # Live source: retain the existing HLS-based live-edge handling.
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"

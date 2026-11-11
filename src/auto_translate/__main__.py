@@ -31,6 +31,8 @@ def main() -> None:
                         help="Whisper CUDA precision; FP16 OOM falls back to int8_float16")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV video decoder (no saves GPU memory)")
+    parser.add_argument("--rtx-vsr", action="store_true",
+                        help="request NVIDIA RTX VSR for video up to 480p; set quality in NVIDIA App")
     parser.add_argument("--diagnostics", action="store_true",
                         help="log each utterance's decoding and audio quality stats")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -69,6 +71,8 @@ def main() -> None:
         cfg.mpv.delay_s = args.delay
     if args.hwdec is not None:
         cfg.mpv.hwdec = args.hwdec
+    if args.rtx_vsr:
+        cfg.mpv.rtx_vsr = True
     log = logging.getLogger("auto_translate")
     source = resolve_source(
         args.source, args.mode, args.start, args.fast, cfg.ingest,

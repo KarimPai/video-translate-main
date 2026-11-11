@@ -25,6 +25,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.split_context_ms, 160)
         self.assertEqual(cfg.fallback_s, 0.0)
         self.assertEqual(cfg.fallback_min_db, -50.0)
+        self.assertEqual(cfg.background_probe_min_prob, 0.0)
 
     def test_partial_override_preserves_other_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -49,6 +50,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual((live.max_utterance_s, live.max_split_extension_s), (6.5, 1.0))
         self.assertEqual((live.threshold, live.speech_pad_ms), (0.37, 90))
         self.assertEqual(cfg.max_utterance_s, 12.0)
+        self.assertEqual(cfg.background_probe_min_prob, 0.0)
 
     def test_shadow_probe_can_be_disabled_without_affecting_main_vad(self):
         cfg = VadConfig(background_probe_s=0.0)
@@ -59,7 +61,18 @@ class VadConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text("[vad]\nfallback_s = 5.0\n", encoding="utf-8")
-            self.assertEqual(load_config(path).vad.fallback_s, 5.0)
+            configured = load_config(path).vad
+            self.assertEqual(configured.fallback_s, 5.0)
+            # Direct manual probes retain the old ungated behavior.
+            self.assertEqual(configured.background_probe_min_prob, 0.0)
+            self.assertIs(vad_for_source(configured, live=False), configured)
+
+    def test_vod_probe_threshold_can_be_explicitly_overridden(self):
+        configured = VadConfig(background_probe_min_prob=0.32)
+        vod = vad_for_source(configured, live=False)
+        self.assertEqual(vod.background_probe_min_prob, 0.32)
+        self.assertEqual(vod.fallback_s, 4.0)
+        self.assertEqual(configured.background_probe_min_prob, 0.32)
 
     def test_local_overrides_take_precedence(self):
         with tempfile.TemporaryDirectory() as directory:

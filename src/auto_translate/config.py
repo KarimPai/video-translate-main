@@ -78,7 +78,9 @@ class VadConfig:
     # VOD-only low-probability "shadow" probes. They are screened twice
     # against the same Whisper model before any cue can be published.
     background_probe_s: float = 4.0
-    background_probe_min_prob: float = 0.20
+    # Zero preserves legacy explicit fallback_s probes, including VAD-zero
+    # audio; VOD auto-probes receive the 0.20 gate in vad_for_source().
+    background_probe_min_prob: float = 0.0
     background_probe_min_run_ms: int = 150
 
 
@@ -94,7 +96,10 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
         if cfg.fallback_s == 0 and cfg.background_probe_s > 0:
             return replace(
                 cfg, fallback_s=cfg.background_probe_s,
-                background_probe_min_prob=cfg.background_probe_min_prob,
+                background_probe_min_prob=(
+                    cfg.background_probe_min_prob
+                    if cfg.background_probe_min_prob > 0 else 0.20
+                ),
             )
         return cfg
     return replace(

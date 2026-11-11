@@ -131,6 +131,8 @@ class PLaMoQualityTests(unittest.TestCase):
         player = object.__new__(MpvOutput)
         player.cfg = MpvConfig(live_late_window_s=7.0)
         player.ingest = SimpleNamespace(source=SimpleNamespace(live=True))
+        # The production constructor initializes this; __new__ bypasses it.
+        player._session_start = 0.0
         player._now = 17.0
         player._lines = []
         player._lock = threading.Lock()

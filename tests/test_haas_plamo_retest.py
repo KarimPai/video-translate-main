@@ -79,9 +79,9 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertIn("protocol^=m3u8", mpv_youtube_format(720, live=True))
 
     def test_plain_japanese_translates_into_malay(self):
-        subs, model = self._translate("Saya boleh memandu kereta.")
+        subs, model = self._translate("Saya boleh memandu kereta.", japanese="車を運転できる")
         self.assertEqual([s.en for s in subs], ["Saya boleh memandu kereta."])
-        self.assertEqual(model.calls[0][0], "これで大丈夫")
+        self.assertEqual(model.calls[0][0], "車を運転できる")
 
     def test_preserve_negation_and_hololive_names(self):
         ms = "Watame bukan Watanabe. Saya tak mahu pergi."

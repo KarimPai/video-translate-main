@@ -385,6 +385,8 @@ class MpvOutput:
         self._uses_original_timeline = False
         self._last_direct_pos: float | None = None
         self._last_direct_sample_at = 0.0
+        self._last_live_mpv_pos: float | None = None
+        self._last_live_sample_at: float | None = None
         self._manually_paused = False
         self._vsr_launch_args = launch_options(cfg.rtx_vsr, cfg.hwdec, sys.platform)
         self._vsr_requested = bool(self._vsr_launch_args)
@@ -864,8 +866,13 @@ class MpvOutput:
         self._mpv_anchor = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
+        self._last_live_mpv_pos = None
+        self._last_live_sample_at = None
         current_pos = self.ipc.get("time-pos")
-        if current_pos is not None:
+        # An HLS live clock may initially report 0 (or a placeholder) and
+        # jump to the playlist's multi-hour media PTS after file-loaded.
+        # Do not anchor live captions to that unstable startup sample.
+        if current_pos is not None and not self.ingest.source.live:
             self._mpv_anchor = float(current_pos)
         self._last_direct_pos = (
             float(current_pos) if current_pos is not None else None
@@ -946,6 +953,8 @@ class MpvOutput:
                 not paused and self.ipc.get("pause") is True
             )
             if (pos := self.ipc.get("time-pos")) is not None:
+                if self.ingest.source.live:
+                    self._sample_live_clock(float(pos), time.monotonic())
                 if self._direct_video_loaded and not self.ingest.source.live:
                     sampled_at = time.monotonic()
                     if self._last_direct_pos is not None:
@@ -1116,6 +1125,36 @@ class MpvOutput:
             # False keeps the current scheduler alive; True restarts it.
             return False
         return self._restart_audio_at(target, seek_video=True)
+
+    def _sample_live_clock(self, mpv_pos: float, sampled_at: float) -> None:
+        """Keep PCM-relative live subtitle time continuous across HLS PTS jumps.
+
+        Some YouTube HLS streams initially expose time-pos=0 in MPV and then
+        switch to a multi-hour media timestamp. Rebase on that discontinuity
+        rather than treating new subtitles as hours late. Ordinary realtime
+        advancement, including long scheduler stalls, must not trigger rebasing.
+        """
+        previous_pos = self._last_live_mpv_pos
+        previous_at = self._last_live_sample_at
+        if previous_pos is not None and previous_at is not None:
+            elapsed = max(0.0, sampled_at - previous_at)
+            raw_step = mpv_pos - previous_pos
+            if raw_step < -5.0 or raw_step > elapsed + 5.0:
+                source_now = (
+                    self._now
+                    if self._now is not None
+                    else self._clock_source_anchor
+                )
+                self._mpv_anchor = (
+                    mpv_pos - (source_now - self._clock_source_anchor)
+                )
+                log.warning(
+                    "MPV live clock discontinuity: %.3f -> %.3f "
+                    "(elapsed=%.3fs); reanchored subtitles at %.3fs",
+                    previous_pos, mpv_pos, elapsed, source_now,
+                )
+        self._last_live_mpv_pos = mpv_pos
+        self._last_live_sample_at = sampled_at
 
     def _source_time_from_mpv(self, mpv_pos: float) -> float:
         """Map MPV clock to absolute audio/subtitle timestamp.

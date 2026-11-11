@@ -67,9 +67,14 @@ class HaasRecoveryTests(unittest.TestCase):
         in_q.put(utt)
         in_q.put(None)
         run_asr(asr, in_q, out_q, asr_cfg=AsrConfig(), live=live)
-        transcript, sentinel = out_q.get(), out_q.get()
-        self.assertIsNone(sentinel)
-        return asr.calls, transcript
+        received = []
+        while True:
+            item = out_q.get_nowait()
+            if item is None:
+                break
+            received.append(item)
+        self.assertLessEqual(len(received), 1)
+        return asr.calls, received[0] if received else None
 
     def test_vod_high_confidence_empty_uses_one_padded_retry(self):
         calls, transcript = self._read(["", "確認した"])
@@ -83,9 +88,9 @@ class HaasRecoveryTests(unittest.TestCase):
         self.assertEqual(transcript.ja, "確認した")
 
     def test_no_low_confidence_retry(self):
-        calls, transcript = self._read(["聞こえる"], vad_confidence=.2)
+        calls, transcript = self._read([""], vad_confidence=.2)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(transcript.ja, "聞こえる")
+        self.assertIsNone(transcript)
 
     def test_hung_worker_stdout_returns_error_not_hang(self):
         asr = object.__new__(HaasASR)

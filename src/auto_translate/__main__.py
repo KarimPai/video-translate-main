@@ -143,9 +143,15 @@ def main() -> None:
 
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
-    translator = create_translator(
-        cfg.translate, glossary, vod_title=vod_context,
-    )
+    try:
+        translator = create_translator(
+            cfg.translate, glossary, vod_title=vod_context,
+        )
+    except BaseException:
+        close = getattr(asr, "close", None)
+        if callable(close):
+            close()
+        raise
     log.info(
         "PLaMo 3 Translate 2B ready (%d glossary terms) in %.1fs",
         len(glossary.terms),
@@ -193,7 +199,13 @@ def main() -> None:
 
     if use_mpv:
         from .output.mpv import MpvOutput
-        outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
+        try:
+            outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
+        except BaseException:
+            ingest.stop()
+            asr.close()
+            translator.close()
+            raise
 
     run(
         ingest,

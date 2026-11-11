@@ -131,3 +131,106 @@ def neutralize_unsupported_subjects(japanese: str, english: str) -> str:
         return "There was a collision" if sentence_start else "there was a collision"
 
     return _UNSUPPORTED_COLLISION_CLAUSE.sub(replace_collision, english)
+
+
+# A personal pronoun in English should not be inferred from a video title,
+# the streamer's identity, previous English, or an unmarked Japanese subject.
+# Japanese can also strongly imply first person through 思う / たい / つもり.
+_FIRST_PERSON_IMPLIED = re.compile(
+    r"と思(?:う|います|って|った)|考えて(?:いる|ます)|"
+    r"(?:(?:し|やり|行き|食べ|見|帰り|戻り|遊び|買い|使い|会い|寝)たい)"
+    r"|つもり|行ってきます|いただきます"
+)
+_FIRST_EN = re.compile(
+    r"\b(?:I|I'm|I've|I'd|I'll|me|my|mine|myself|we|we're|we've|"
+    r"we'll|we'd|us|our|ours|ourselves)\b", re.I
+)
+_MALE_JA = re.compile(r"彼(?!女)|男性|男の人|男の子|父|お父|パパ|兄|弟|息子|夫")
+_FEMALE_JA = re.compile(r"彼女|女性|女の人|女の子|母|お母|ママ|姉|妹|娘|妻")
+_MALE_EN = re.compile(r"\b(?:he|him|his|himself|he's|he'd|he'll)\b", re.I)
+_FEMALE_EN = re.compile(r"\b(?:she|her|hers|herself|she's|she'd|she'll)\b", re.I)
+# Preserve "you" where idiomatic, especially requests/commands: it does not
+# assert gender and English often needs an addressee despite omitted Japanese.
+_FIRST_SUBJECT_HEDGE = re.compile(r"^I (?:think|guess|suppose)(?: that)?\s+", re.I)
+_NOT_SURE = re.compile(r"^(?:I (?:don't|do not) know|I'm not sure)[.!?]*$", re.I)
+
+
+def unsupported_person_reference(japanese: str, english: str) -> str | None:
+    """Flag unsupported person/gender choices; not a semantic correctness score."""
+    if not japanese or not english:
+        return None
+    if _MALE_EN.search(english) and not _MALE_JA.search(japanese):
+        return "unsupported_male_reference"
+    if _FEMALE_EN.search(english) and not _FEMALE_JA.search(japanese):
+        return "unsupported_female_reference"
+    if (_FIRST_EN.search(english)
+            and not _FIRST_PERSON.search(japanese)
+            and not _FIRST_PERSON_IMPLIED.search(japanese)):
+        return "unsupported_first_person_reference"
+    return None
+
+
+# Common forms are adjusted *after* the PLaMo retry, not before. "That person"
+# is grammatically singular regardless of the verb ("He runs" -> "That person
+# runs"); naive he -> they would give "They runs". The model should normally
+# produce a more natural non-personal rewrite; these are conservative fallbacks.
+_GENDERED_SUBJECT = re.compile(r"\b(?:he|she)\b", re.I)
+_GENDERED_OBJECT = re.compile(r"\b(?:him|her)\b", re.I)
+_GENDERED_POSSESSIVE = re.compile(r"\b(?:his|hers)\b", re.I)
+_GENDERED_REFLEXIVE = re.compile(r"\b(?:himself|herself)\b", re.I)
+_HER_POSSESSIVE = re.compile(
+    r"\bher(?=\s+(?:car|vehicle|name|friend|family|house|home|"
+    r"phone|money|job|work|team|voice|role|place|turn|life|"
+    r"stream|character|hands?|eyes?|head|things?|stuff|parents?|"
+    r"brother|sister|mother|father|hat|clothes|gun|weapon|bag)\b)", re.I
+)
+
+
+def _case_like(word: str, replacement: str) -> str:
+    if word.isupper():
+        return replacement.upper()
+    if word[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def neutralize_unwarranted_gender(japanese: str, english: str) -> str:
+    """Limited gender-neutral fallback after model retry; preserve source cues.
+
+    Avoid editing contractions (he's/he'd/she's/she'd) because their verb
+    tense is ambiguous: a forced change may invert the meaning. They must be
+    handled by the translator retry or retained as an unresolved warning.
+    """
+    if not english:
+        return english
+    result = english
+    if not _MALE_JA.search(japanese):
+        result = _GENDERED_REFLEXIVE.sub(
+            lambda m: _case_like(m.group(), "themselves") if m.group().lower() == "himself"
+            else m.group(), result)
+        result = re.sub(r"\bhim\b", lambda m: _case_like(m.group(), "them"), result, flags=re.I)
+        result = _GENDERED_POSSESSIVE.sub(
+            lambda m: _case_like(m.group(), "their") if m.group().lower() == "his"
+            else m.group(), result)
+        result = re.sub(r"\bhe\b(?!['’])", lambda m: _case_like(m.group(), "that person"), result, flags=re.I)
+    if not _FEMALE_JA.search(japanese):
+        result = re.sub(r"\bherself\b", lambda m: _case_like(m.group(), "themselves"), result, flags=re.I)
+        result = re.sub(r"\bhers\b", lambda m: _case_like(m.group(), "theirs"), result, flags=re.I)
+        result = _HER_POSSESSIVE.sub(lambda m: _case_like(m.group(), "their"), result)
+        result = re.sub(r"\bher\b", lambda m: _case_like(m.group(), "them"), result, flags=re.I)
+        result = re.sub(r"\bshe\b(?!['’])", lambda m: _case_like(m.group(), "that person"), result, flags=re.I)
+    return result
+
+
+def neutralize_unwarranted_first_person(japanese: str, english: str) -> str:
+    """Only rewrite idioms safely impersonal in this brief-subtitle setting."""
+    if not english or _FIRST_PERSON.search(japanese) or _FIRST_PERSON_IMPLIED.search(japanese):
+        return english
+    if _NOT_SURE.fullmatch(english.strip()) and re.search(r"分からな|わからな|知らな", japanese):
+        return "Not sure."
+    # Unsupported 'I think' from a simple utterance like すごいね can be
+    # removed safely unless Japanese actually states 思う / 考える.
+    if _FIRST_SUBJECT_HEDGE.match(english) and len(japanese) <= 24:
+        tail = _FIRST_SUBJECT_HEDGE.sub("", english, count=1)
+        return tail[:1].upper() + tail[1:] if tail else english
+    return english

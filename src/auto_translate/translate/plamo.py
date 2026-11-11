@@ -15,7 +15,12 @@ from pathlib import Path
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term
 from ..glossary import Glossary
-from ..subject_guard import neutralize_unsupported_subjects
+from ..subject_guard import (
+    neutralize_unsupported_subjects,
+    unsupported_person_reference,
+    neutralize_unwarranted_gender,
+    neutralize_unwarranted_first_person,
+)
 from ..translation_guard import suspicious_translation
 from ..watame import correct_translation
 
@@ -25,20 +30,27 @@ log = logging.getLogger(__name__)
 # PLaMo 3 GGUF ignores system messages; reference guidance belongs in
 # chat_template_kwargs["context"], alongside the video title.
 _NEUTRAL_SUBJECT_CONTEXT = (
-    "Informal Japanese livestream and gaming conversation. "
-    "Japanese often omits the subject or possessor. "
-    "If the current Japanese does not explicitly identify who is acting "
-    "or who owns something, prefer natural, subject-neutral English "
-    "instead of guessing I, you, my, your, we, our, he, she, his, or her. "
-    "For example, 運転下手だね means 'The driving is bad', not "
-    "'My driving is bad' or 'Your driving is bad'. "
-    "Preserve people and possessives explicitly stated in the Japanese. "
-    "A video title or previous English translation is not proof of "
-    "an omitted subject's identity. "
-    "If a driver is not explicitly named, say The driving was bad, "
-    "not My driving was bad or Your driving was bad. "
-    "If the source only describes a crash, say There was a collision, "
-    "not I crashed or You crashed."
+    "Translate the CURRENT Japanese audio transcript faithfully into concise, natural English subtitles. "
+    "Japanese often omits subjects, gender and possessors; do not invent them. "
+    "When the source leaves the actor unspecified, prefer a natural impersonal or subjectless "
+    "sentence (e.g. 運転が下手 -> 'The driving is bad'; 分からない -> 'Not sure'; "
+    "事故だ -> 'There's been an accident'). "
+    "Do NOT automatically assume the streamer is speaking as 'I', or that another player "
+    "is 'he' or 'she'. If the Japanese clearly indicates a third person but not their gender, "
+    "use singular 'they/them/their' or a role/name stated in the Japanese. "
+    "Preserve explicit or strongly implied first-person agency (私, 俺, 僕, ～と思う, ～したい), "
+    "explicit gendered references (彼, 彼女), addresses and imperatives. "
+    "Do not shift first person to third person when the source is first person. "
+    "Never infer pronouns from the video title, streamer identity, or past English subtitles. "
+    "Preserve negation, speaker intent, factual details, names and uncertainty; "
+    "do not invent unheard dialogue."
+)
+_STRICT_NEUTRAL_RETRY_CONTEXT = (
+    "The previous translation assigned an unsupported speaker/person or gender. "
+    "Rewrite ONLY the current Japanese as natural English without unsupported I/he/she/him/her, "
+    "without inventing a new actor, and without changing viewpoint or polarity. "
+    "Prefer subjectless statements or the stated name/role; use singular they only when a "
+    "third-person human is supported by the Japanese. Output only the translation."
 )
 
 
@@ -78,10 +90,13 @@ def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> li
     return selected
 
 
-def _translation_context(vod_title: str) -> str:
+def _translation_context(vod_title: str, *, neutral_retry: bool = False) -> str:
+    context = _NEUTRAL_SUBJECT_CONTEXT
+    if neutral_retry:
+        context += " " + _STRICT_NEUTRAL_RETRY_CONTEXT
     if vod_title:
-        return f"Video title: {vod_title}\n{_NEUTRAL_SUBJECT_CONTEXT}"
-    return _NEUTRAL_SUBJECT_CONTEXT
+        return f"Video title: {vod_title}\n{context}"
+    return context
 
 
 class PlamoTranslator:
@@ -224,26 +239,41 @@ class PlamoTranslator:
 
         english = normalized(self._chat(ja, history, timeout=self.cfg.timeout_s))
         names = _current_glossary_matches(ja, self.vod_title, self.glossary)
-        reason = suspicious_translation(ja, english, names=names)
+        pronoun_reason = (
+            unsupported_person_reference(ja, english)
+            if self.cfg.neutral_subjects else None
+        )
+        reason = pronoun_reason or suspicious_translation(ja, english, names=names)
         if reason and self.cfg.retry_suspicious:
             log.info("PLaMo suspicious translation (%s): JP=%r EN=%r; retry without prior chat",
                      reason, ja[:150], english[:160])
             try:
+                # Extra neutral instruction only when the first pass introduced
+                # unsupported person/gender references. No new model is loaded.
                 candidate = normalized(self._chat(
                     ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
+                    neutral_retry=bool(pronoun_reason),
                 ))
             except Exception as exc:
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
-                retry_reason = suspicious_translation(ja, candidate, names=names)
+                retry_reason = (
+                    unsupported_person_reference(ja, candidate)
+                    if self.cfg.neutral_subjects else None
+                ) or suspicious_translation(ja, candidate, names=names)
                 if retry_reason is None:
                     english = candidate
                     log.info("PLaMo validation retry accepted (trigger=%s)", reason)
                 else:
                     log.warning(
-                        "PLaMo retry still suspicious (%s); leaving first result unchanged",
+                        "PLaMo retry still suspicious (%s); keeping first result with safe fallbacks",
                         retry_reason,
                     )
+        if self.cfg.neutral_subjects:
+            # Restrict deterministic fallbacks to grammar-safe forms. A source
+            # that explicitly states a person/gender retains that information.
+            english = neutralize_unwarranted_gender(ja, english)
+            english = neutralize_unwarranted_first_person(ja, english)
         return english
 
     def _chat(
@@ -251,6 +281,8 @@ class PlamoTranslator:
         ja: str,
         history: list[tuple[str, str]],
         timeout: float,
+        *,
+        neutral_retry: bool = False,
     ) -> str:
         messages: list[dict[str, str]] = []
         dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
@@ -271,7 +303,7 @@ class PlamoTranslator:
         options: dict = {
             "source_lang": "ja",
             "target_lang": "en",
-            "context": _translation_context(self.vod_title) + (
+            "context": _translation_context(self.vod_title, neutral_retry=neutral_retry) + (
                 "\n" + memory if memory else ""
             ),
         }

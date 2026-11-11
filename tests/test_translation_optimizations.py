@@ -100,7 +100,7 @@ class QualityOptimizationsTests(unittest.TestCase):
         calls = []
         responses = iter(responses)
 
-        def fake_chat(ja, history, timeout):
+        def fake_chat(ja, history, timeout, *, neutral_retry=False):
             calls.append((ja, list(history), timeout))
             return next(responses)
 

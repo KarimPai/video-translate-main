@@ -107,6 +107,7 @@ class TranslateConfig:
     collapse_repetitions: bool = True
     suppress_runaway_loops: bool = True
     max_identical_cues: int = 2
+    neutral_subjects: bool = True  # prefer unspecified/neutral speakers, no inferred gender
     retry_suspicious: bool = True  # only one additional PLaMo request for clear mismatches
     retry_timeout_s: float = 15.0  # upper bound for the optional second pass
 

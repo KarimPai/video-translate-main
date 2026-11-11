@@ -528,7 +528,12 @@ class MpvOutput:
 
     def _check_vsr_health(self) -> None:
         """Check live/VOD frame delivery every 30s and revert a bad filter."""
-        if not self._vsr_active or not self._playback_started:
+        # Test adapters and early shutdown can reach this path before all
+        # optional RTX VSR fields have been created. In that case the feature
+        # is inactive and the health check should be a harmless no-op.
+        if not getattr(self, "_vsr_active", False) or not getattr(
+            self, "_playback_started", False
+        ):
             return
         now = time.monotonic()
         if now < self._vsr_next_health_at:

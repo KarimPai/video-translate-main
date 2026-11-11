@@ -290,6 +290,17 @@ class TranslationBufferTests(unittest.TestCase):
         self.assertEqual(out._source_time_from_mpv(5403.5), 3.5)
         self.assertEqual(out._mpv_time_from_source(3.5), 5403.5)
 
+    def test_vsr_health_is_noop_before_optional_state_initialized(self):
+        # MPV may be partially initialized in tests or during teardown.
+        # Missing optional VSR state must not crash playback/session control.
+        out = object.__new__(MpvOutput)
+        out._check_vsr_health()
+        out._vsr_active = False
+        out._check_vsr_health()
+        out._vsr_active = True
+        out._playback_started = False
+        out._check_vsr_health()
+
     def test_manual_play_bypasses_prebuffer_without_forced_pause(self):
         out = object.__new__(MpvOutput)
         out.stop = threading.Event()

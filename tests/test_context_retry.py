@@ -168,14 +168,54 @@ class RetryTests(unittest.TestCase):
             self.assertEqual([c.en for c in run_once(model, [audio])], expected)
 
     def test_retry_audio_limit(self):
+        # Accuracy mode raised the uncertainty-retry ceiling from 12 to 15s.
+        # A 16s VOD cue must still avoid a second decode.
         model = FakeDecoder([WhisperDecode("Watame!", avg_logprob=-.9)])
-        self.assertEqual(run_once(model, [utt(0, 13)])[0].en, "Watame!")
+        self.assertEqual(run_once(model, [utt(0, 16)])[0].en, "Watame!")
         self.assertEqual(len(model.calls), 1)
 
+        # A 13s cue is now eligible for a conservative corroborating pass.
+        model = FakeDecoder([
+            WhisperDecode("Watame!", avg_logprob=-.9),
+            WhisperDecode("Watame!", avg_logprob=-.2),
+        ])
+        self.assertEqual(run_once(model, [utt(0, 13)])[0].en, "Watame!")
+        self.assertEqual(len(model.calls), 2)
+
     def test_short_interjections_and_genuine_signoffs(self):
-        for text in ("Hmm!", "No!", "Thank you for watching.", "Haha, Watame!"):
-            model = FakeDecoder([WhisperDecode(text, avg_logprob=-.2)])
-            self.assertEqual(run_once(model, [utt()])[0].en, text)
+        for source, expected in (
+            ("No!", "No!"),
+            ("Yes!", "Yes!"),
+            ("Thank you!", "Thank you!"),
+            ("Haha, Watame!", "Watame!"),  # introductory laugh removed
+        ):
+            with self.subTest(source=source):
+                model = FakeDecoder([WhisperDecode(source, avg_logprob=-.2)])
+                self.assertEqual(
+                    [cue.en for cue in run_once(model, [utt()])], [expected],
+                )
+
+        # Pure filler is intentionally omitted rather than subtitled.
+        filler = FakeDecoder([WhisperDecode("Hmm!", avg_logprob=-.2)])
+        self.assertEqual(run_once(filler, [utt()]), [])
+
+        # A full stock signoff needs Japanese audio evidence, not a bare
+        # English decode. The dedicated outro guard must remain enabled.
+        signoff = FakeDecoder([
+            WhisperDecode("Thank you for watching.", avg_logprob=-.2),
+        ])
+        self.assertEqual(run_once(signoff, [utt()]), [])
+        signoff_verified = FakeDecoder([
+            WhisperDecode("Thank you for watching.", avg_logprob=-.2),
+        ])
+        signoff_verified.transcribe_japanese_evidence = (
+            lambda audio: "ご視聴ありがとうございました"
+        )
+        self.assertEqual(
+            [cue.en for cue in run_once(signoff_verified, [utt()])],
+            ["Thank you for watching."],
+        )
+        self.assertEqual(len(signoff_verified.calls), 1)
 
     def test_confident_audio_does_not_retry(self):
         decoder = FakeDecoder([WhisperDecode("Let's go!", avg_logprob=-.2)])

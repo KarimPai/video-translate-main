@@ -16,7 +16,7 @@ from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
 from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
-from .config import Config
+from .config import Config, vad_for_source
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -358,6 +358,19 @@ def run(
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
 
+    vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
+    log.info(
+        "FireRedVAD accuracy-first (%s): threshold=%.2f, min_speech=%dms, "
+        "min_silence=%dms, pad=%dms, onset=%dms, soft_cap=%.1fs, hard_cap=%.1fs, "
+        "VAD-negative probing=%s",
+        "live" if ingest.source.live else "VOD",
+        vad_cfg.threshold, vad_cfg.min_speech_ms, vad_cfg.min_silence_ms,
+        vad_cfg.speech_pad_ms, vad_cfg.onset_ms,
+        vad_cfg.max_utterance_s,
+        vad_cfg.max_utterance_s + vad_cfg.max_split_extension_s,
+        "on" if vad_cfg.fallback_s > 0 else "off",
+    )
+
     # Bounded queues cap queued audio/work during slow ASR or translation.
     # Blocking puts apply backpressure upstream instead of
     # allowing memory use and subtitle age to grow without limit.
@@ -385,7 +398,7 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("vad", run_segmenter, failures, cfg.vad, audio_q, utt_q,
+            args=("vad", run_segmenter, failures, vad_cfg, audio_q, utt_q,
                   lambda: ingest.generation),
             name="vad",
             daemon=True,

@@ -97,6 +97,19 @@ class LongformBoundaryTests(unittest.TestCase):
         self.assertEqual(sum(len(u.audio) for u in result), len(pcm))
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in result]), pcm))
 
+    def test_accuracy_first_vod_hard_cap_does_not_lose_pcm(self):
+        # A 17-second uninterrupted utterance is segmented by the 16s cap,
+        # without audio gaps or double-processing at the boundary.
+        frames = 1700
+        pcm = np.full(frames * FRAME, 0.3, dtype=np.float32)
+        probs = np.full(frames, 0.95, dtype=np.float32)
+        result = self._process(pcm, probs)
+        self.assertEqual(len(result), 2)
+        self.assertGreater(result[0].end_s, 12.0)
+        self.assertLessEqual(result[0].end_s, 16.0)
+        self.assertAlmostEqual(result[0].end_s, result[1].start_s, places=6)
+        self.assertTrue(np.array_equal(np.concatenate([u.audio for u in result]), pcm))
+
     def test_one_frame_dip_does_not_count_as_a_real_pause(self):
         frames = [np.full(FRAME, .3, dtype=np.float32) for _ in range(600)]
         probs = [.9] * 600

@@ -48,11 +48,11 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertEqual(
             (vad.threshold, vad.min_speech_ms, vad.min_silence_ms,
              vad.speech_pad_ms, vad.onset_ms),
-            (0.45, 200, 500, 200, 100),
+            (0.38, 200, 550, 320, 70),
         )
         self.assertEqual(vad.short_reply_ms, 120)
         self.assertEqual(vad.short_reply_probability, 0.85)
-        self.assertEqual(vad.max_utterance_s + vad.max_split_extension_s, 12.0)
+        self.assertEqual(vad.max_utterance_s + vad.max_split_extension_s, 16.0)
         self.assertEqual(vad.fallback_s, 0.0)
 
     def test_glossary_and_haas_and_plamo_preserved(self):
@@ -65,6 +65,8 @@ class HaasPlamoRetestTests(unittest.TestCase):
                           cfg.translate.memory_lines,
                           cfg.translate.plamo_context), (6, 12, 4096))
         self.assertEqual(cfg.translate.glossary, "glossary.toml")
+        self.assertEqual(cfg.translate.max_tokens, 192)
+        self.assertEqual(cfg.translate.timeout_s, 30.0)
 
     def test_selected_resolution_keeps_lower_fallback(self):
         for quality in (360, 480, 720, 1080):
@@ -114,7 +116,7 @@ class HaasPlamoRetestTests(unittest.TestCase):
             cfg = load_config(path)
         self.assertEqual(cfg.vad.threshold, 0.35)
         self.assertEqual(cfg.vad.min_speech_ms, 100)
-        self.assertEqual(cfg.vad.min_silence_ms, 500)
+        self.assertEqual(cfg.vad.min_silence_ms, 550)
 
 
 if __name__ == "__main__":

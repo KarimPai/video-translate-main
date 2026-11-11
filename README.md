@@ -32,27 +32,38 @@ CLI: `--mpv --video-quality 480 --hwdec auto-safe --rtx-vsr`, or opt in through 
 **Verify in practice:** MPV accepting the filter does not prove NVIDIA AI enhancement is running. Check the NVIDIA App RTX Video indicator, `logs\\mpv.log`, and `logs\\run.log` for `RTX VSR playback check` or `RTX VSR disabled`. Compare the same 480p VOD at 30/60 fps with VSR on and off, and monitor VRAM via `nvidia-smi`; performance and activation are unverified until tested on your RTX 3070. For CPU-only tests run `uv run --no-sync python -m unittest discover -s tests -p "test_rtx_vsr.py" -v`.
 
 
-## New FireRedVAD defaults
+## Accuracy-first FireRedVAD defaults (experimental)
+
+The retest branch now prioritizes **retaining audible Japanese speech over minimum subtitle latency**. No new model is installed: Haas-ja-v1.0 (speech.cpp Vulkan) and PLaMo 3 Translate 2B are unchanged. The VAD receives the original 16-kHz mono audio, without GTCRN, DeepFilterNet, or diarization.
 
 ```toml
 [vad]
-threshold = 0.45
-neg_threshold = 0.30
+threshold = 0.38
+neg_threshold = 0.25
 min_speech_ms = 200
-min_silence_ms = 500
-speech_pad_ms = 200
-onset_ms = 100
+min_silence_ms = 550
+speech_pad_ms = 320
+onset_ms = 70
 prob_smooth_frames = 5
 short_reply_ms = 120
 short_reply_probability = 0.85
-max_utterance_s = 11.0
-max_split_extension_s = 1.0
-split_pause_min_ms = 80
-split_context_ms = 120
+max_utterance_s = 14.0
+max_split_extension_s = 2.0
+live_max_utterance_s = 7.0
+live_max_split_extension_s = 1.0
+split_pause_min_ms = 120
+split_context_ms = 160
 fallback_s = 0.0
 ```
 
-The VAD uses smoothed probability, sustained speech onset, a confidence-gated short-reply exception, and phrase splitting near natural pauses with a 12-second hard cap. VAD-negative probes are **off** to reduce hallucinations over game music/effects. These experimental thresholds may miss soft-spoken Japanese and delay subtitles by hundreds of milliseconds; compare against the old 0.35/100/400/80ms baseline.
+- **Speech sensitivity:** 0.45→0.38 threshold and 100→70 ms onset gate aim to recover quieter words and rapid reactions; the 200 ms sustained-speech requirement remains, with the existing high-confidence short-reply exception.
+- **Sentence completeness:** 200→320 ms speech padding, 500→550 ms end silence, and a longer quiet-point split search aim to avoid clipping beginnings/endings and splitting sentences early.
+- **VOD:** 14 s soft utterance cap / 16 s hard cap instead of 11 s / 12 s. Haas has full-context attention, but very long chunks can still lose words, so the hard cap remains bounded.
+- **Live:** 7 s soft / 8 s hard cap for the existing 9-second playback delay. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
+- **Anti-hallucination:** VAD-negative fallback probing stays **off**. Avoided enabling speculative extra decoding on music, and kept translation repeat/prompt-leak rejection.
+- **Overrides:** Your local `config.toml` continues to override these defaults. Check effective values in `logs\\run.log` under `FireRedVAD accuracy-first`.
+
+This favors recall and context; it can also pass more game audio to Haas and may create false positives. Validate on identical HoloGTA material, especially short reactions, proper names, negations and music-only portions. No measured recognition improvement is claimed until comparison.
 
 ## PLaMo context and safeguards
 
@@ -61,7 +72,7 @@ The VAD uses smoothed probability, sustained speech onset, a confidence-gated sh
 plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
 plamo_context = 4096
 plamo_gpu_layers = 99
-max_tokens = 120
+max_tokens = 192
 context_lines = 6
 memory_lines = 12
 glossary = "glossary.toml"
@@ -70,6 +81,8 @@ collapse_repetitions = true
 suppress_runaway_loops = true
 max_identical_cues = 2
 ```
+
+PLaMo's timeout is now 30 s (previously 20 s) to tolerate rare long completions; this is a failure timeout, **not** an intentional subtitle delay. Its output allowance is 192 tokens (previously 120), reducing truncation risk with longer VOD chunks. Context remains at 4096, with 6 dialogue lines and 12 memory lines to limit inaccurate context carryover and VRAM use.
 
 PLaMo's dedicated translation template still uses the Japanese transcript, relevant glossary matches, video metadata, and short recent JP/EN pairs. Unlike VoicePing ASR, PLaMo is the **translation** model; its existing translation template is retained. Memory has been bounded from 24 to 12 and dialogue from 8 to 6 to reduce prompt feedback and latency.
 
@@ -88,7 +101,9 @@ New post-processing filters obvious filler/laughter-only English, long repeated 
 
 This is a **port of compatible VoicePing/Whisper project findings**, not a model swap. Haas has no Whisper-style `no_speech_prob` or comparable decoder metrics, so Whisper retry thresholds were not copied. Qwen-specific natural-language prompts were not copied because they were emitted as subtitles in a prior VoicePing test. The optional language/audio-event detector ideas have not been integrated: FireRedVAD identifies speech but does not verify Japanese source language.
 
-The strict VAD, 12-second segments and memory reductions are **new experiments**, not yet measured for Haas accuracy or latency. Existing local untracked `config.toml` overrides these defaults, so first retest with a clean checkout or inspect local overrides. Live testing and native Windows GPU/Vulkan testing are still required.
+The more permissive VAD and 16-second VOD segments are **experiments**, not yet measured for Haas accuracy or latency. Speech.cpp's Haas implementation uses greedy TDT decoding, not a switchable beam search, and its published F16 versus Q8_0 CER is almost identical; no unverified decoding/model replacement was applied. Existing local untracked `config.toml` overrides these defaults, so first retest with a clean checkout or inspect local overrides. Live testing and native Windows GPU/Vulkan testing are still required.
+
+**Trade-off:** A 16-second uninterrupted VOD utterance cannot be completed before its final audio arrives, so some subtitles may arrive later than your preferred 5–10 seconds. Live uses the shorter cap to reduce that risk. You can tune these values in `config.toml` without changing the code.
 
 Run offline regression tests:
 

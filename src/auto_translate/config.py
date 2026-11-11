@@ -1,7 +1,7 @@
 """Load config.toml into typed dataclasses (missing keys fall back to defaults)."""
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -53,21 +53,27 @@ class DeepFilterConfig:
 
 @dataclass
 class VadConfig:
-    """FireRedVAD: stricter false-speech suppression for noisy gaming streams."""
+    """FireRedVAD: accuracy-first segmentation with conservative noise gating.
 
-    threshold: float = 0.45
-    neg_threshold: float = 0.30
-    min_silence_ms: int = 500
-    speech_pad_ms: int = 200
-    min_speech_ms: int = 200
+    Retain more quiet/initial speech, avoid word clipping, and allow longer
+    complete utterances for VOD. Live has a shorter cap for subtitle timing.
+    """
+
+    threshold: float = 0.38  # less aggressive than 0.45: recover quieter speech
+    neg_threshold: float = 0.25
+    min_silence_ms: int = 550  # wait for genuine phrase-ending silence
+    speech_pad_ms: int = 320  # preserve consonants/word starts and tails
+    min_speech_ms: int = 200  # keep the game-sfx false-positive guard
     short_reply_ms: int = 120
     short_reply_probability: float = 0.85
-    onset_ms: int = 100
+    onset_ms: int = 70  # respond sooner to soft/sudden speech
     prob_smooth_frames: int = 5
-    max_utterance_s: float = 11.0
-    max_split_extension_s: float = 1.0
-    split_pause_min_ms: int = 80
-    split_context_ms: int = 120
+    max_utterance_s: float = 14.0  # VOD soft cap: more sentence context
+    max_split_extension_s: float = 2.0  # VOD hard cap: 16s
+    live_max_utterance_s: float = 7.0  # fits around 9s live buffer
+    live_max_split_extension_s: float = 1.0  # live hard cap: 8s
+    split_pause_min_ms: int = 120
+    split_context_ms: int = 160
     fallback_s: float = 0.0  # do not ASR-decode VAD-negative music/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
@@ -90,8 +96,8 @@ class TranslateConfig:
     plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
     plamo_context: int = 4096  # smaller KV/context footprint on RTX 3070
     plamo_gpu_layers: int = 99
-    max_tokens: int = 120
-    timeout_s: float = 20.0
+    max_tokens: int = 192  # prevent truncation of longer, complete JP utterances
+    timeout_s: float = 30.0  # more time for full translation, not a delay target
     load_timeout_s: float = 300.0
     context_lines: int = 6  # reduced prompt carryover and translation latency
     # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
@@ -129,6 +135,21 @@ class MpvConfig:
     en_size: int = 28
     ja_size: int = 0
     max_subtitle_rows: int = 3
+
+
+def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
+    """Use long, context-rich VOD chunks; bound live chunks for subtitle sync.
+
+    This returns a separate dataclass, preserving all local configuration and
+    leaving the caller's original VAD settings unchanged.
+    """
+    if not live:
+        return cfg
+    return replace(
+        cfg,
+        max_utterance_s=cfg.live_max_utterance_s,
+        max_split_extension_s=cfg.live_max_split_extension_s,
+    )
 
 
 @dataclass

@@ -88,7 +88,7 @@ class AccuracyRecallTests(unittest.TestCase):
 
     def test_empty_strong_vad_japanese_evidence_rescues_good_translation(self):
         model, subs = self.run_case([
-            WhisperDecode("", decoded_segments=0, no_speech_prob=.1),
+            WhisperDecode("", decoded_segments=0, no_speech_prob=None),
             WhisperDecode("I'm not going.", decoded_segments=1, avg_logprob=-.2,
                           no_speech_prob=.12, compression_ratio=1.1),
         ])
@@ -96,6 +96,17 @@ class AccuracyRecallTests(unittest.TestCase):
         self.assertEqual(len(model.decode_calls), 2)
         self.assertEqual(model.decode_calls[1], (None, None, .2))
         self.assertEqual(model.ja_calls, 1)
+
+    def test_empty_zero_segment_has_no_silence_metric(self):
+        # WhisperDecode created from an actual zero-segment Whisper result
+        # has no no_speech_prob at all; the recovery must not be dead code.
+        model, subs = self.run_case([
+            WhisperDecode(""),
+            WhisperDecode("Yes!", decoded_segments=1, avg_logprob=-.20,
+                          no_speech_prob=.15, compression_ratio=1.1),
+        ], japanese="はい")
+        self.assertEqual([s.en for s in subs], ["Yes!"])
+        self.assertEqual((len(model.decode_calls), model.ja_calls), (2, 1))
 
     def test_empty_without_japanese_evidence_is_not_rescued(self):
         model, subs = self.run_case(

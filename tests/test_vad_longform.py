@@ -35,7 +35,7 @@ class LongformBoundaryTests(unittest.TestCase):
         frames = 300
         pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
         probs = np.full(frames, 0.01, dtype=np.float32)
-        probs[120:134] = 0.98  # 140ms, should not meet 250ms voiced minimum
+        probs[120:130] = 0.98  # 100ms, under the 120ms strong-reply exception
         self.assertEqual(self._process(pcm, probs), [])
 
     def test_sustained_speech_survives_onset_filter(self):

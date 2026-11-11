@@ -342,9 +342,12 @@ def run_whisper(
                 and utt.vad_confidence is not None
                 and utt.vad_confidence >= float(getattr(
                     cfg, "recover_min_vad_confidence", 0.88))
-                and original.no_speech_prob is not None
-                and original.no_speech_prob <= float(getattr(
-                    cfg, "recover_max_no_speech_prob", 0.45))
+                # A truly zero-segment decode usually has NO silence score.
+                # Permit that absent metric only after very strong VAD, a
+                # nonempty Japanese check and a high-confidence English retry.
+                and (original.no_speech_prob is None
+                     or original.no_speech_prob <= float(getattr(
+                         cfg, "recover_max_no_speech_prob", 0.45)))
                 and 0.45 <= seconds <= float(getattr(
                     cfg, "recover_max_audio_s", 8.0))
                 and (get_generation is None or utt.generation == get_generation())

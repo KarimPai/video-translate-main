@@ -226,7 +226,9 @@ class NeutralSubjectTests(unittest.TestCase):
 
     def test_prompt_clearly_preserves_explicit_person_and_neutrality(self):
         context = _translation_context("ホロGTA", neutral_retry=True)
-        self.assertIn("they/them/their", context)
+        self.assertIn("'they/them'", context)
+        self.assertIn("Do not insert 'their'", context)
+        self.assertIn("First customer", context)
         self.assertIn("Preserve explicit or strongly implied first-person", context)
         self.assertIn("previous translation", context.lower())
         self.assertIn("video title", context.lower())

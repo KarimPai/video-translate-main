@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
+from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
@@ -155,6 +156,15 @@ def run_asr(
         if corrected != text:
             log.debug("Watame ASR name correction: %s -> %s", text, corrected)
             text = corrected
+
+        repaired = correct_known_asr_terms(
+            text,
+            video_context=vod_title,
+            caption=caption_match.text if caption_match and caption_match.reliable else "",
+        )
+        if repaired != text:
+            log.info("Verified context ASR term: %r -> %r", text, repaired)
+            text = repaired
 
         if get_generation is not None and utt.generation != get_generation():
             continue

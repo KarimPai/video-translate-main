@@ -3,6 +3,7 @@
 import atexit
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -15,6 +16,7 @@ from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term
 from ..glossary import Glossary
 from ..subject_guard import neutralize_unsupported_subjects
+from ..translation_guard import suspicious_translation
 from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
@@ -38,6 +40,42 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "If the source only describes a crash, say There was a collision, "
     "not I crashed or You crashed."
 )
+
+
+# Scene-specific terms are supplied only when the video metadata identifies
+# HoloGTA, and only if that term appears in the *current* Japanese utterance.
+_HOLOGTA_TITLE = re.compile(r"ホロ(?:ライブ)?GTA|ホロスサントス|holo.?gta", re.I)
+_HOLOGTA_TERMS = {
+    "ホロライブGTA": "Hololive GTA",
+    "ホロGTA": "HoloGTA",
+    "ホロスサントス": "Holo Santos",
+    "ミリモン": "Million Monsters",
+    "副署長": "Deputy Police Chief",
+    "署長": "Police Chief",
+    "救急隊": "EMS",
+    "ギャング": "gang",
+    "警察": "police",
+    "人質": "hostage",
+    "パン屋": "bakery",
+}
+
+
+def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> list[tuple[str, str]]:
+    """Longest-first, non-overlapping current-source matches (never future guesses)."""
+    scene = (
+        [(source, target) for source, target in _HOLOGTA_TERMS.items() if source in ja]
+        if _HOLOGTA_TITLE.search(vod_title) else []
+    )
+    candidates = sorted(scene + glossary.find(ja), key=lambda item: len(item[0]), reverse=True)
+    remaining = ja
+    selected: list[tuple[str, str]] = []
+    for source, target in candidates:
+        if source in remaining:
+            selected.append((source, target))
+            remaining = remaining.replace(source, "\0")
+        if len(selected) >= 16:
+            break
+    return selected
 
 
 def _translation_context(vod_title: str) -> str:
@@ -179,12 +217,34 @@ class PlamoTranslator:
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 return reused
-        english = _clean(self._chat(ja, history, timeout=self.cfg.timeout_s))
-        english = correct_translation(ja, english)
-        corrected = neutralize_unsupported_subjects(ja, english)
-        if corrected != english:
-            log.debug("Neutralized unsupported subject: JP=%r EN=%r -> %r", ja, english, corrected)
-        return corrected
+
+        def normalized(raw: str) -> str:
+            translated = correct_translation(ja, _clean(raw))
+            return neutralize_unsupported_subjects(ja, translated)
+
+        english = normalized(self._chat(ja, history, timeout=self.cfg.timeout_s))
+        names = _current_glossary_matches(ja, self.vod_title, self.glossary)
+        reason = suspicious_translation(ja, english, names=names)
+        if reason and self.cfg.retry_suspicious:
+            log.info("PLaMo suspicious translation (%s): JP=%r EN=%r; retry without prior chat",
+                     reason, ja[:150], english[:160])
+            try:
+                candidate = normalized(self._chat(
+                    ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
+                ))
+            except Exception as exc:
+                log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
+            else:
+                retry_reason = suspicious_translation(ja, candidate, names=names)
+                if retry_reason is None:
+                    english = candidate
+                    log.info("PLaMo validation retry accepted (trigger=%s)", reason)
+                else:
+                    log.warning(
+                        "PLaMo retry still suspicious (%s); leaving first result unchanged",
+                        retry_reason,
+                    )
+        return english
 
     def _chat(
         self,
@@ -215,7 +275,7 @@ class PlamoTranslator:
                 "\n" + memory if memory else ""
             ),
         }
-        if hits := self.glossary.find(ja):
+        if hits := _current_glossary_matches(ja, self.vod_title, self.glossary):
             options["glossary"] = [
                 {"source": source, "target": target}
                 for source, target in hits

@@ -63,10 +63,12 @@ class HaasPlamoRetestTests(unittest.TestCase):
                          "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M")
         self.assertEqual((cfg.translate.context_lines,
                           cfg.translate.memory_lines,
-                          cfg.translate.plamo_context), (6, 12, 4096))
+                          cfg.translate.plamo_context), (4, 8, 4096))
         self.assertEqual(cfg.translate.glossary, "glossary.toml")
         self.assertEqual(cfg.translate.max_tokens, 192)
         self.assertEqual(cfg.translate.timeout_s, 30.0)
+        self.assertTrue(cfg.translate.retry_suspicious)
+        self.assertEqual(cfg.translate.retry_timeout_s, 15.0)
 
     def test_selected_resolution_keeps_lower_fallback(self):
         for quality in (360, 480, 720, 1080):

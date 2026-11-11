@@ -121,14 +121,14 @@ def main() -> None:
         )
         caption_thread.start()
 
-    # Include the channel for proper-name disambiguation on streams whose
-    # titles omit the talent's name (e.g. many Watame gaming VODs).
+    # Video metadata is useful for proper names and scene terms on live AND
+    # VOD. It is context, not proof of who spoke the current utterance.
     vod_context = " - ".join(
         part for part in (
             (source.timeline or {}).get("title", ""),
             (source.timeline or {}).get("channel", ""),
         ) if part
-    ) if not source.live else ""
+    )
 
     # Load models before starting ingest.
     t0 = time.perf_counter()

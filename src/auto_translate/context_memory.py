@@ -192,32 +192,12 @@ def build_recent_context(
     if found:
         lines.append("Recently mentioned glossary names/terms: " + "; ".join(found))
 
-    # Only pass previous short isolated words as POSSIBLE translation hints:
-    # past model output may itself be incorrect and must not become a rule.
-    hints: list[str] = []
-    seen.clear()
-    for ja, en in reversed(recent[-10:]):
-        source = _word(ja)
-        target = en.strip(_TRIM).strip("'\"“”")
-        if (
-            not _KATAKANA_TERM.fullmatch(source)
-            or source in seen
-            or not _EN_TERM.fullmatch(target)
-            or len(target.split()) > 2
-            or target.casefold() in _IGNORE_EN
-        ):
-            continue
-        seen.add(source)
-        hints.append(f"{source} ~ {target}")
-        if len(hints) == 4:
-            break
-    if hints:
-        lines.append("Recent tentative term translations (use only if the current Japanese supports them): " + "; ".join(hints))
-
+    # Do not repeat the model's prior English translations as new hints:
+    # a mistaken name or pronoun must not gain authority on later turns.
     # Older JP provides scene continuity, without reinforcing mistranslated
     # English pronouns. Keep it short to minimize tokens and latency.
     older = recent[:-context_lines] if context_lines > 0 else recent
-    older_ja = [ja.strip()[:64] for ja, _ in older[-5:] if ja.strip()]
+    older_ja = [ja.strip()[:64] for ja, _ in older[-3:] if ja.strip()]
     if older_ja:
         lines.append("Earlier Japanese for scene continuity (do not translate): " + " / ".join(older_ja)[:195])
     return "\n".join(lines)

@@ -99,14 +99,16 @@ class TranslateConfig:
     max_tokens: int = 192  # prevent truncation of longer, complete JP utterances
     timeout_s: float = 30.0  # more time for full translation, not a delay target
     load_timeout_s: float = 300.0
-    context_lines: int = 6  # reduced prompt carryover and translation latency
-    # Maximum recent subtitle pairs used for lightweight terminology and scene memory.
-    memory_lines: int = 12  # limit speculative previous-translation hints
+    context_lines: int = 4  # shorter trusted dialogue history; avoid EN error carryover
+    # Only Japanese scene history and verified glossary terms belong in memory.
+    memory_lines: int = 8  # bounded scene context; no speculative EN term hints
     glossary: str = "glossary.toml"
     remove_fillers: bool = True
     collapse_repetitions: bool = True
     suppress_runaway_loops: bool = True
     max_identical_cues: int = 2
+    retry_suspicious: bool = True  # only one additional PLaMo request for clear mismatches
+    retry_timeout_s: float = 15.0  # upper bound for the optional second pass
 
 
 @dataclass

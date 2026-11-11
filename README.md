@@ -21,6 +21,23 @@ Direct AST cannot also supply a verbatim Japanese transcript without a second mo
 
 The launcher passes original 16 kHz mono PCM to FireRedVAD and Whisper. It uses MPV safe hardware decoding, a 10-second playback delay and CUDA int8_float16. Obsolete speaker and enhancement config sections are ignored.
 
+## Gender-neutral and no-assumed-owner subtitles (direct Whisper AST)
+
+Whisper already produces English without a Japanese transcript. A blanket `their → your` or `he → they` replacement would invent facts or break English grammar, so this feature does **not** port the Haas/PLaMo prompt or pretend an LLM is available.
+
+With `[whisper] neutral_subtitles = true` (default), the pipeline detects a small set of suspicious cues (ordinary role noun phrases with possessive pronouns, simple gendered subject clauses and certain standalone first-person reactions). For these cues only, it can run **one unprompted Japanese transcription pass** on the same utterance using the existing Whisper model, if its audio is at most `neutral_verify_max_audio_s = 8.0` seconds.
+
+- Japanese `最初のお客さん` with English `Their first customer!` becomes **`First customer!`**.
+- For a complete sentence, `Their first customer arrived.` becomes **`The first customer arrived.`**.
+- Japanese explicitly stating `お前の`, `俺の`, `彼女の` or a named person's ownership preserves the corresponding English possessor. Never replace `their` with `your` without evidence.
+- A narrow simple clause such as `He left.` may become `Someone left.` if Japanese contains no gender marker; longer/more complex sentences remain unchanged.
+- `分からない` / `見つけた` / `終わった` may lead to `Not sure.` / `Found it.` / `Finished.` only when Japanese evidence supports the concise wording. Explicit or strongly implied first person is retained.
+- Missing or failed Japanese verification leaves English **unchanged**. The Japanese pass is still Whisper (not independent proof), and latency increases only on the selected cues.
+
+This does not load PLaMo or a second model, change FireRedVAD, touch the anti-hallucination guards, alter MPV/seek sync, or disable optional RTX VSR. `neutral_subtitles = false` in your local `config.toml` disables it.
+
+Focused offline test: `uv run --no-sync python -m unittest discover -s tests -p "test_whisper_neutral_subtitles.py" -v`.
+
 ## YouTube quality selector
 
 `Start translate.bat` now displays a numbered video-quality menu after the URL: **1 = 360p, 2 = 480p, 3 = 720p, 4 = 1080p**. Enter **3**, or press Enter to use the default **720p**. The choice is applied before MPV opens the video, and yt-dlp chooses the best available stream **not exceeding** that height (for example, 480p if 720p is unavailable). A mid-playback quality change is intentionally not offered because reloading the source may disturb native seeking and subtitle timing.

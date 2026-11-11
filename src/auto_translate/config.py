@@ -135,6 +135,10 @@ class WhisperConfig:
     retry_max_audio_s: float = 12.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = False
+    # Apply a tiny set of neutral English rewrites only when a Japanese
+    # transcription of the same audio supports them. No new model/LLM.
+    neutral_subtitles: bool = True
+    neutral_verify_max_audio_s: float = 8.0
 
 
 @dataclass

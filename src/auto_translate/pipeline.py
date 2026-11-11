@@ -20,6 +20,7 @@ import numpy as np
 from .config import Config
 from .context import RecentSpeechContext
 from .subtitle_style import concise_english
+from .neutral_subtitles import needs_reference_evidence, neutralize_with_japanese
 from .whisper_v3 import WhisperLargeV3
 from .ingest import Ingest
 from .output.base import Output
@@ -373,6 +374,28 @@ def run_whisper(
         else:
             # Existing test doubles and older API-compatible adapters.
             english = whisper.translate_audio(utt.audio)
+
+        # Whisper's normal AST response supplies English only. An additional
+        # Japanese decode, when warranted, checks whether the audio actually
+        # named an owner or a gender; no blind pronoun substitution.
+        if (english and getattr(cfg, "neutral_subtitles", True)
+                and needs_reference_evidence(english)
+                and len(utt.audio) / SAMPLE_RATE <= float(
+                    getattr(cfg, "neutral_verify_max_audio_s", 8.0))
+                and (get_generation is None or utt.generation == get_generation())):
+            verifier = getattr(whisper, "transcribe_japanese_evidence", None)
+            if callable(verifier):
+                try:
+                    japanese_evidence = verifier(utt.audio)
+                    revised = neutralize_with_japanese(english, japanese_evidence)
+                    if revised != english:
+                        log.info(
+                            "Whisper neutral subtitle: %r -> %r (ja=%r)",
+                            english[:120], revised[:120], japanese_evidence[:100],
+                        )
+                        english = revised
+                except Exception as exc:
+                    log.warning("Whisper neutral-language check failed: %s", exc)
 
         utt.timings.asr_end = time.monotonic()
         raw_english = english

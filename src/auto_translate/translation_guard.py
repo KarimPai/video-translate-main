@@ -51,7 +51,8 @@ def suspicious_translation(
 
     jp = unicodedata.normalize("NFKC", japanese).strip()
     if len(jp) <= 24:
-        if _SHORT_POSITIVE_JA.fullmatch(jp) and _NEGATIVE_EN.search(en):
+        if (_SHORT_POSITIVE_JA.fullmatch(jp) and _NEGATIVE_EN.search(en)
+                and not re.search(r"\bnot\s+bad\b", en, re.I)):
             return "positive_reaction_reversed"
         if _NEGATIVE_JA.search(jp) and not _NEGATIVE_EN_MEANING.search(en):
             return "possible_negation_loss"

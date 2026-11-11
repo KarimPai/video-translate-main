@@ -16,7 +16,7 @@ class QualityOptimizationsTests(unittest.TestCase):
         title = "【ホロGTA】1日目まとめ - さくらみこ"
         self.assertEqual(
             correct_known_asr_terms("コロナイブgta", video_context=title),
-            "ホロライブgta",
+            "ホロライブGTA",
         )
         self.assertEqual(
             correct_known_asr_terms("50人弱のフォロメンが。", video_context=title),
@@ -70,6 +70,7 @@ class QualityOptimizationsTests(unittest.TestCase):
         self.assertEqual(
             suspicious_translation("すごい!", "That's bad!"), "positive_reaction_reversed")
         self.assertIsNone(suspicious_translation("すごい!", "That's amazing!"))
+        self.assertIsNone(suspicious_translation("すごい!", "Not bad!"))
         self.assertEqual(
             suspicious_translation("できないよ", "I can do it."), "possible_negation_loss")
         self.assertIsNone(suspicious_translation("できないよ", "I can't do it."))

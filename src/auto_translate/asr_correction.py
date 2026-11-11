@@ -7,7 +7,7 @@ import re
 
 _HOLO = re.compile(r"ホロ|holo", re.IGNORECASE)
 _GTA_ALIASES = re.compile(
-    r"(?:コロナイブ|コロライブ|ホロライフ)(?=\s*(?:ＧＴＡ|GTA))",
+    r"(?:コロナイブ|コロライブ|ホロライフ)\s*(?:ＧＴＡ|GTA)",
     re.IGNORECASE,
 )
 _HOLOMEM_ALIAS = re.compile(r"フォロメン")
@@ -25,7 +25,7 @@ def correct_known_asr_terms(
         return japanese
     updated = japanese
     if not _GTA_ALIASES.search(caption):
-        updated = _GTA_ALIASES.sub("ホロライブ", updated)
+        updated = _GTA_ALIASES.sub("ホロライブGTA", updated)
     if "フォロメン" not in caption:
         updated = _HOLOMEM_ALIAS.sub("ホロメン", updated)
     return updated

@@ -84,7 +84,7 @@ retry_suspicious = true
 retry_timeout_s = 15.0
 ```
 
-PLaMo's timeout is now 30 s (previously 20 s) to tolerate rare long completions; this is a failure timeout, **not** an intentional subtitle delay. Its output allowance is 192 tokens (previously 120), reducing truncation risk with longer VOD chunks. Context remains at 4096, with 6 dialogue lines and 12 memory lines to limit inaccurate context carryover and VRAM use.
+PLaMo's timeout is now 30 s (previously 20 s) to tolerate rare long completions; this is a failure timeout, **not** an intentional subtitle delay. Its output allowance is 192 tokens (previously 120), reducing truncation risk with longer VOD chunks. Context remains at 4096, with 4 dialogue lines and 8 memory lines to limit inaccurate context carryover and VRAM use.
 
 PLaMo's dedicated translation template still uses the Japanese transcript, relevant glossary matches, video metadata, and short recent JP/EN pairs. Unlike VoicePing ASR, PLaMo is the **translation** model; its existing translation template is retained. Dialogue is now limited to 4 recent pairs and Japanese-only scene memory to 8 lines to minimize unreliable prior English context.
 
@@ -94,7 +94,7 @@ New post-processing filters obvious filler/laughter-only English, long repeated 
 
 This experiment **keeps Haas-ja-v1.0 and PLaMo 3 Translate 2B Q4_K_M**. No additional LLM, diarization model or ASR is loaded. The default temperature remains 0 and the PLaMo context window remains 4096.
 
-- **Verified ASR terminology:** In Holo-tagged videos only, a small exact correction map fixes recognized variants such as `コロナイブGTA` → `ホロライブGTA` and `フォロメン` → `ホロメン`. Never fuzzy-replace other dialogue or modify negation/numbers, and never override a reliable aligned caption that explicitly contains the original variant.
+- **Context-supported ASR terminology:** In Holo-tagged videos only, a small exact correction map fixes recognized variants such as `コロナイブGTA` → `ホロライブGTA` and `フォロメン` → `ホロメン`. Never fuzzy-replace other dialogue or modify negation/numbers, and never override a reliable aligned caption that explicitly contains the original variant.
 - **Dynamic scene glossary:** HoloGTA titles enable a limited selection of police, gang, hospital and bakery terms; each is sent only when its Japanese phrase occurs in the current transcript. Longest matches win. Normal static `glossary.toml` remains active everywhere.
 - **Shorter, less contaminating memory:** `context_lines = 4`, `memory_lines = 8`. Past PLaMo English terms are no longer fed back as tentative facts. Recent Japanese and terms from the verified fixed glossary are still available; history still resets on seeks.
 - **Selective validation:** Detect obvious short positive-reaction reversals, missing negation on selected short Japanese patterns, numerals disagreeing when both source and English use digits, selected proper-name omissions, and prompt/loop leakage. Suspicious results get **one** context-reduced PLaMo retry. A second suspicious output does not replace the first; pre-existing output filters still apply. This is heuristic detection, not proof that other translations are correct.

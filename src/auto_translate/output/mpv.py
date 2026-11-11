@@ -584,7 +584,7 @@ class MpvOutput:
 
         if not sub.en.strip():
             log.error(
-                "subtitle not queued because English translation is empty "
+                "subtitle not queued because Malay translation is empty "
                 "(generation=%d, %.2f-%.2fs, Japanese=%r)",
                 sub.generation,
                 sub.start_s,
@@ -1288,8 +1288,8 @@ class MpvOutput:
 
         for ln in reversed(active):
             # The limit counts subtitle entries, not individual language rows.
-            # Each entry may contain Japanese above its English translation.
-            # Each visible utterance occupies one English-only row.
+            # Each entry may contain Japanese above its Malay translation.
+            # Each visible utterance occupies one Malay-only row.
             row_count = int(bool(ln.sub.en))
 
             if (

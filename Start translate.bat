@@ -8,7 +8,7 @@ if exist "%LLAMA_PATH_FILE%" (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
     )
 )
-title Haas + PLaMo 3 Translate 2B Retest
+title Haas + PLaMo 3 - Standard Malay
 cd /d "%~dp0"
 if errorlevel 1 (
     echo ERROR: Cannot enter the project directory.
@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 echo.
 echo ========================================
-echo   Haas Japanese ASR + PLaMo 3 Translate
+echo   Haas Japanese ASR + PLaMo 3 - Standard Malay
 echo ========================================
 echo.
 set "VIDEO_URL="
@@ -80,7 +80,7 @@ if errorlevel 1 (
     )
 )
 echo.
-echo Starting direct Japanese ASR with PLaMo 3 Translate 2B...
+echo Starting Japanese-to-Standard-Malay subtitles with PLaMo 3 Translate 2B...
 echo Original 16 kHz audio, FireRedVAD CUDA, Haas Vulkan, PLaMo llama.cpp.
 echo.
 

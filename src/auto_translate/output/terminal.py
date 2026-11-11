@@ -9,8 +9,9 @@ def fmt_ts(seconds: float) -> str:
 
 
 class TerminalOutput:
-    def __init__(self, *, simple: bool = False) -> None:
+    def __init__(self, *, simple: bool = False, target_lang: str = "ms") -> None:
         self.simple = simple
+        self.target_lang = target_lang.upper()
 
     def show(self, sub: Subtitle) -> None:
         if self.simple:
@@ -20,7 +21,7 @@ class TerminalOutput:
             if sub.ja:
                 lines.append(f"JP: {sub.ja}")
             if sub.en:
-                lines.append(f"EN: {sub.en}")
+                lines.append(f"{self.target_lang}: {sub.en}")
             if lines:
                 print("\n".join(lines), flush=True)
         else:

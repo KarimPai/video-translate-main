@@ -66,7 +66,7 @@ class Subtitle:
     start_s: float
     end_s: float
     ja: str
-    en: str  # "" when translation is off
+    en: str  # target-language text; legacy field name retained for MPV/SSE compatibility
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None

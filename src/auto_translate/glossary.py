@@ -1,4 +1,4 @@
-"""JA → EN fixed terms from glossary.toml."""
+"""JA -> target language fixed terms from the configured glossary."""
 
 import tomllib
 from functools import lru_cache

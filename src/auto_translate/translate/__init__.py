@@ -1,4 +1,4 @@
-"""PLaMo 3 Translate 2B is the only Japanese-to-English translation engine."""
+"""PLaMo 3 Translate 2B translates Japanese into Standard Malay by default."""
 
 from ..config import TranslateConfig
 from ..glossary import Glossary

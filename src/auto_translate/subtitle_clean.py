@@ -154,3 +154,13 @@ def clean_english_output(
                 previous = key
             value = " ".join(kept)
     return value.strip()
+
+
+def clean_malay_output(text: str) -> str:
+    """Normalize whitespace, but never run English-only filler/subject rules.
+
+    Conversational Malay often repeats negations and short interjections.
+    Runaway generation loops are rejected by has_generation_loop() separately.
+    """
+    value = " ".join(text.split()).strip()
+    return value.strip(' "“”')

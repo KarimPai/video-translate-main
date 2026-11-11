@@ -24,7 +24,7 @@ def main() -> None:
                         help="vod: process as fast as possible instead of at 1x speed")
     parser.add_argument("--no-web", action="store_true", help="don't start the browser viewer")
     parser.add_argument("--simple-terminal", action="store_true",
-                        help="print only JP/EN transcript lines (no timing columns)")
+                        help="print only JP/MS transcript lines (no timing columns)")
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
@@ -147,7 +147,8 @@ def main() -> None:
         cfg.translate, glossary, vod_title=vod_context,
     )
     log.info(
-        "PLaMo 3 Translate 2B ready (%d glossary terms) in %.1fs",
+        "PLaMo 3 Translate 2B (JA->%s) ready (%d glossary terms) in %.1fs",
+        cfg.translate.target_lang,
         len(glossary.terms),
         time.perf_counter() - t0,
     )
@@ -175,7 +176,7 @@ def main() -> None:
     subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
 
     if cfg.output.terminal:
-        outputs.append(TerminalOutput(simple=args.simple_terminal))
+        outputs.append(TerminalOutput(simple=args.simple_terminal, target_lang=cfg.translate.target_lang))
 
     if cfg.output.web and not args.no_web:
         outputs.append(

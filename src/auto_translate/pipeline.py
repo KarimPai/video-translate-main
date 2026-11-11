@@ -16,7 +16,7 @@ from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
-from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
+from .subtitle_clean import clean_english_output, clean_malay_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
 from .config import Config, vad_for_source
 from .ingest import Ingest
 from .output.base import Output
@@ -267,11 +267,14 @@ def run_translate(
                     )
                     en, suppressed = "", True
                 else:
-                    en = clean_english_output(
-                        en,
-                        remove_fillers=getattr(tcfg, "remove_fillers", True),
-                        collapse_repetitions=getattr(tcfg, "collapse_repetitions", True),
-                    )
+                    if getattr(tcfg, "target_lang", "en") == "ms":
+                        en = clean_malay_output(en)
+                    else:
+                        en = clean_english_output(
+                            en,
+                            remove_fillers=getattr(tcfg, "remove_fillers", True),
+                            collapse_repetitions=getattr(tcfg, "collapse_repetitions", True),
+                        )
                     if not en:
                         suppressed = True
 
@@ -280,7 +283,7 @@ def run_translate(
 
             if not en.strip() and not suppressed:
                 log.error(
-                    "translator returned an empty English result "
+                    "translator returned an empty translation result "
                     "(generation=%d, %.2f-%.2fs, Japanese=%r)",
                     tr.generation,
                     tr.start_s,

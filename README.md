@@ -150,3 +150,17 @@ uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 Check `logs\run.log` for application errors and `logs\mpv.log` for player warnings. Benchmark with the same VOD/time ranges as the earlier Haas/PLaMo baseline to compare recognition completeness, laughter hallucinations, names, negation, lead after seeks, 95th-percentile subtitle latency, and peak VRAM.
+
+
+## Quality and reliability pass (2026-11-12)
+
+- **Adaptive FireRedVAD:** 9s VOD / 5.5s live natural-pause targets, requiring a sustained 180ms low-confidence gap. The existing 14/16s VOD and 7/8s live maximum chunk rules still apply. Override `adaptive_split = false` in `[vad]` for an A/B comparison.
+- **Live cues:** playback uses the shared HLS source; stale completed cues more than 7s behind the mapped MPV clock are dropped rather than resurfaced out of context. Override `live_late_window_s` in `[mpv]`.
+- **PLaMo fragments:** short context-dependent Japanese utterances receive the immediately preceding Japanese cue as reference-only context. Existing translation history remains bounded; disable with `fragment_context = false` in `[translate]`.
+- **Missed VOD speech:** an empty unusable Haas result is retried once with an additional 200ms edge silence *only* when FireRedVAD confidence is at least .80 and duration is 0.6-10s. This does not add new speech or force hallucination-prone probing. No extra live retries; toggle `retry_empty_speech = false` in `[asr]`.
+- **Review counters:** PLaMo logs which heuristics triggered a retry and whether the candidate was accepted; runtime logs the recent pipeline p95 latency and live processing-budget misses. These are not validated quality scores.
+- **Reliability:** bounded Haas speech.cpp response wait (30s), explicit Haas and owned llama.cpp cleanup, offline unit tests and a CSV benchmark tool.
+
+Measure Japanese CER from aligned manually reviewed reference clips with `python scripts/benchmark_quality.py YOUR_ALIGNED_REFERENCE.csv`. The CSV columns are `reference_ja,output_ja,reference_en,output_en`. Human review of English meaning, proper names, negation and subtitle synchronization remains necessary. Do not interpret the English guard-flag count as translation accuracy.
+
+CPU-only verification: `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`. For full validation, test long HoloGTA VOD clips, 30+ minute live HLS playback, pausing, backward/forward seeking, and process exit on the actual Windows/Vulkan/CUDA machine before relying on the new settings.

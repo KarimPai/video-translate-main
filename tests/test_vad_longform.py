@@ -57,7 +57,8 @@ class LongformBoundaryTests(unittest.TestCase):
         probs = np.full(frames, .9, dtype=np.float32)
         pcm[690 * FRAME:710 * FRAME] = 0.0
         probs[690:710] = 0.05
-        result = self._process(pcm, probs)
+        result = self._process(
+            pcm, probs, VadConfig(max_utterance_s=7.0, max_split_extension_s=1.0))
         self.assertEqual(len(result), 2)
         self.assertGreater(result[0].end_s, 6.85)
         self.assertLess(result[0].end_s, 7.15)
@@ -71,7 +72,8 @@ class LongformBoundaryTests(unittest.TestCase):
         frames = 900
         pcm = np.full(frames * FRAME, .3, dtype=np.float32)
         probs = np.full(frames, .9, dtype=np.float32)
-        result = self._process(pcm, probs)
+        result = self._process(
+            pcm, probs, VadConfig(max_utterance_s=7.0, max_split_extension_s=1.0))
         self.assertEqual(len(result), 2)
         self.assertGreater(result[0].end_s, 5.5)
         self.assertLess(result[0].end_s, 8.0)

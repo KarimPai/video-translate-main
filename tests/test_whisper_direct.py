@@ -36,7 +36,7 @@ class WhisperDirectTests(unittest.TestCase):
         decoder.translate_audio(np.ones(16000, dtype=np.float32))
         self.assertEqual(fake.kwargs["no_repeat_ngram_size"], 3)
         self.assertAlmostEqual(fake.kwargs["repetition_penalty"], 1.05)
-        self.assertEqual(fake.kwargs["max_new_tokens"], 160)
+        self.assertEqual(fake.kwargs["max_new_tokens"], 192)
 
     def test_final_low_confidence_is_rejected(self):
         class ScoredModel:
@@ -77,7 +77,7 @@ class WhisperDirectTests(unittest.TestCase):
         self.assertEqual((cfg.model, cfg.device, cfg.compute_type),
                          ("large-v3", "cuda", "int8_float16"))
         self.assertEqual((cfg.language, cfg.task, cfg.beam_size),
-                         ("ja", "translate", 5))
+                         ("ja", "translate", 6))
 
     def test_source_language_and_task_forced(self):
         fake = FakeModel(("Get in the car!", "Watch out!"))
@@ -88,7 +88,7 @@ class WhisperDirectTests(unittest.TestCase):
         self.assertEqual(fake.audio.dtype, np.float32)
         self.assertEqual(fake.kwargs["language"], "ja")
         self.assertEqual(fake.kwargs["task"], "translate")
-        self.assertEqual(fake.kwargs["beam_size"], 5)
+        self.assertEqual(fake.kwargs["beam_size"], 6)
         self.assertEqual(fake.kwargs["temperature"], 0.0)
         self.assertFalse(fake.kwargs["condition_on_previous_text"])
         self.assertFalse(fake.kwargs["vad_filter"])

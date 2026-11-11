@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from .config import Config
+from .config import Config, vad_for_source
 from .context import RecentSpeechContext
 from .subtitle_style import concise_english
 from .neutral_subtitles import needs_reference_evidence, neutralize_with_japanese
@@ -272,6 +272,7 @@ def run_whisper(
         retried = False
         retry_reason = ""
         selected = None
+        japanese_evidence = ""
         if hasattr(whisper, "decode_audio"):
             original = whisper.decode_audio(
                 utt.audio, prompt=combined_prompt,
@@ -327,6 +328,72 @@ def run_whisper(
                     english = _stable_weak_speech(original, second, utt.vad_confidence, cfg)
             if (issue or weak_speech) and not verified:
                 english = ""
+
+            # Accuracy-first, EMPTY-only recovery. Whisper sometimes returns
+            # zero segments for short but genuine Japanese speech. Do not
+            # retry a rejected high-no-speech segment or any other uncertain
+            # non-speech audio. At most 3 model passes: AST / JP / AST.
+            should_recover_empty = (
+                not english and not original.text
+                and original.decoded_segments == 0
+                and original.discarded_segments == 0
+                and getattr(cfg, "recover_empty_speech", True)
+                and getattr(cfg, "retry_uncertain", True)
+                and utt.vad_confidence is not None
+                and utt.vad_confidence >= float(getattr(
+                    cfg, "recover_min_vad_confidence", 0.88))
+                and original.no_speech_prob is not None
+                and original.no_speech_prob <= float(getattr(
+                    cfg, "recover_max_no_speech_prob", 0.45))
+                and 0.45 <= seconds <= float(getattr(
+                    cfg, "recover_max_audio_s", 8.0))
+                and (get_generation is None or utt.generation == get_generation())
+            )
+            if should_recover_empty:
+                verifier = getattr(whisper, "transcribe_japanese_evidence", None)
+                if callable(verifier):
+                    try:
+                        japanese_evidence = verifier(utt.audio)
+                        # A single model doing two tasks is not independent
+                        # ground truth, so require specific Japanese text,
+                        # strong VAD, and confident non-looping EN retry.
+                        jp_supported = bool(re.search(
+                            r"[぀-ヿ㐀-鿿]{2,}",
+                            japanese_evidence,
+                        ))
+                        if jp_supported:
+                            retried = True
+                            retry_reason = "empty_ast_with_japanese_evidence"
+                            rescue = whisper.decode_audio(
+                                utt.audio, prompt=None, hotwords=None,
+                                temperature=float(getattr(cfg, "retry_temperature", 0.2)),
+                            )
+                            candidate = rescue.text.strip()
+                            confident = (
+                                bool(candidate)
+                                and not rescue.suspicious
+                                and rescue.avg_logprob is not None
+                                and rescue.avg_logprob >= -0.45
+                                and rescue.no_speech_prob is not None
+                                and rescue.no_speech_prob <= 0.35
+                                and (rescue.compression_ratio is None
+                                     or rescue.compression_ratio <= 2.0)
+                                and not _structural_issue(candidate, seconds)
+                                and not _phantom_phrase_kind(candidate)
+                            )
+                            if confident:
+                                english = candidate
+                                selected = rescue
+                                log.info(
+                                    "Recovered missed Japanese speech: gen=%d "
+                                    "segment=%.2f-%.2f vad=%.3f ja=%r en=%r",
+                                    utt.generation, utt.start_s, utt.end_s,
+                                    utt.vad_confidence, japanese_evidence[:100],
+                                    english[:100],
+                                )
+                    except Exception as exc:
+                        log.warning("Whisper empty-speech recovery failed: %s", exc)
+
             phantom_kind = _phantom_phrase_kind(english)
             phantom_enabled = (
                 getattr(cfg, "verify_stock_outros", True)
@@ -386,7 +453,8 @@ def run_whisper(
             verifier = getattr(whisper, "transcribe_japanese_evidence", None)
             if callable(verifier):
                 try:
-                    japanese_evidence = verifier(utt.audio)
+                    if not japanese_evidence:
+                        japanese_evidence = verifier(utt.audio)
                     revised = neutralize_with_japanese(english, japanese_evidence)
                     if revised != english:
                         log.info(
@@ -531,6 +599,18 @@ def run(
     session_cache: SessionSubtitleCache | None = None,
 ) -> None:
     """Run direct Whisper AST after FireRedVAD."""
+    vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
+    log.info(
+        "Whisper speech-recall VAD (%s): threshold=%.2f, min_speech=%dms, "
+        "pad=%dms, silence=%dms, onset=%dms, soft_cap=%.1fs, hard_cap=%.1fs, "
+        "negative_probes=%s; beam=%d",
+        "live" if ingest.source.live else "VOD",
+        vad_cfg.threshold, vad_cfg.min_speech_ms, vad_cfg.speech_pad_ms,
+        vad_cfg.min_silence_ms, vad_cfg.onset_ms, vad_cfg.max_utterance_s,
+        vad_cfg.max_utterance_s + vad_cfg.max_split_extension_s,
+        "on" if vad_cfg.fallback_s > 0 else "off",
+        cfg.whisper.beam_size,
+    )
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
     sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
@@ -548,7 +628,7 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("vad", run_segmenter, failures, cfg.vad, audio_q, utt_q, generation),
+            args=("vad", run_segmenter, failures, vad_cfg, audio_q, utt_q, generation),
             name="vad", daemon=True,
         ),
         threading.Thread(

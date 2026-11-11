@@ -1,7 +1,7 @@
 """Load config.toml into typed dataclasses (missing keys fall back to defaults)."""
 
 import tomllib
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 
@@ -55,23 +55,40 @@ class SeparationConfig:
 
 @dataclass
 class VadConfig:
-    threshold: float = 0.50
-    neg_threshold: float = 0.30
+    # Accuracy-oriented speech recall on Japanese gaming dialogue.
+    # Sensitivity is balanced with the existing no-probe / Whisper guards.
+    threshold: float = 0.43
+    neg_threshold: float = 0.28
     min_silence_ms: int = 500
-    speech_pad_ms: int = 150
-    min_speech_ms: int = 250
+    speech_pad_ms: int = 300
+    min_speech_ms: int = 180
     short_reply_ms: int = 120
     short_reply_probability: float = 0.85
-    onset_ms: int = 80  # continuous speech required before opening a segment
-    prob_smooth_frames: int = 5  # smooth raw FireRed probabilities across 50 ms
-    max_utterance_s: float = 7.0
-    # At the soft limit, prefer a sustained natural pause.
-    max_split_extension_s: float = 1.0  # hard deadline remains 8s
-    split_pause_min_ms: int = 80
-    split_context_ms: int = 120  # retain boundary audio, without duplication
+    onset_ms: int = 70  # shorter sustained-speech gate, preserve clipped onsets
+    prob_smooth_frames: int = 5
+    max_utterance_s: float = 12.0  # VOD: more sentence context for direct AST
+    max_split_extension_s: float = 2.0  # VOD hard cap 14 seconds
+    live_max_utterance_s: float = 7.0  # live: avoid long queued subtitles
+    live_max_split_extension_s: float = 1.0  # live hard cap 8 seconds
+    split_pause_min_ms: int = 100
+    split_context_ms: int = 160
     fallback_s: float = 0.0  # opt-in probes risk invented words on non-speech/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
+
+
+def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
+    """VOD gets longer utterances; live remains bounded for subtitle timing.
+
+    Preserve every configured VAD setting and never mutate the original.
+    """
+    if not live:
+        return cfg
+    return replace(
+        cfg,
+        max_utterance_s=cfg.live_max_utterance_s,
+        max_split_extension_s=cfg.live_max_split_extension_s,
+    )
 
 
 @dataclass
@@ -84,7 +101,7 @@ class WhisperConfig:
     download_root: str = ""  # empty uses the normal Hugging Face cache
     language: str = "ja"  # fixed Japanese source language
     task: str = "translate"  # direct Japanese audio to English
-    beam_size: int = 5
+    beam_size: int = 6  # accuracy-first beam search, slower but same model
     temperature: float = 0.0
     no_speech_threshold: float = 0.6
     log_prob_threshold: float = -1.0
@@ -93,7 +110,7 @@ class WhisperConfig:
     # Conservative safeguards for short, noisy VTuber/gaming utterances.
     repetition_penalty: float = 1.05
     no_repeat_ngram_size: int = 3
-    max_new_tokens: int = 160
+    max_new_tokens: int = 192  # less risk of cutting off longer VOD English
     reject_low_confidence: bool = True
     min_avg_logprob: float = -1.20
     max_compression_ratio: float = 2.4
@@ -132,7 +149,13 @@ class WhisperConfig:
     # Only recover a weak translation when both decoding passes agree
     # verbatim, FireRedVAD is confident, and both passes indicate speech.
     rescue_stable_weak_speech: bool = True
-    retry_max_audio_s: float = 12.0
+    retry_max_audio_s: float = 15.0  # allow one retry on VOD utterances
+    # Targeted silent-first-pass recovery: only clear Japanese speech evidence
+    # plus very strong VAD may rescue a completely empty AST output.
+    recover_empty_speech: bool = True
+    recover_min_vad_confidence: float = 0.88
+    recover_max_no_speech_prob: float = 0.45
+    recover_max_audio_s: float = 8.0
     # Additional per-cue VAD/decoder timing and quality log entries.
     diagnostics: bool = False
     # Apply a tiny set of neutral English rewrites only when a Japanese

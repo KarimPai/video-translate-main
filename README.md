@@ -44,12 +44,30 @@ Focused offline test: `uv run --no-sync python -m unittest discover -s tests -p 
 
 You can also run the CLI with `--video-quality 720`. The launcher choice takes precedence over custom video format selectors in `config.toml`; when the CLI flag is absent, the existing selectors remain unchanged. Finished VODs still prefer HTTPS/DASH and fall back to HLS; live streams still prefer HLS. Whisper audio inference, VAD, and the independent audio ingest format are unaffected.
 
+## Accuracy-oriented Japanese speech recall (experimental)
+
+This branch preserves the direct Whisper Large-v3 JA-audio → English AST model and anti-hallucination checks. The changes favor missed-speech recall and longer complete VOD sentences over minimum throughput, without adding a translator, audio enhancement, diarization or another model.
+
+**FireRedVAD default changes:** threshold 0.50→0.43, negative threshold 0.30→0.28, minimum speech 250→180 ms, onset 80→70 ms, padding 150→300 ms, quiet-point minimum 80→100 ms, split context 120→160 ms. The high-confidence 120 ms reply exception remains. Silence remains 500 ms and **VAD-negative fallback probes remain OFF** to limit false speech from music and effects. Lower VAD thresholds can nevertheless admit additional game audio; compare against the earlier branch before treating it as better.
+
+**Context by playback mode:** VOD uses 12 s soft / 14 s hard utterance caps so Japanese clauses have more context, while live retains 7 s soft / 8 s hard caps to avoid delayed captions. Both retain timestamp-contiguous forced splitting, native MPV seeking and progress handoffs. The effective profile is logged as `Whisper speech-recall VAD`. Local `config.toml` overrides are preserved, including `live_max_utterance_s` and `live_max_split_extension_s`.
+
+**Decoder:** beam 5→6 (beam search at temperature 0), output token allowance 160→192, and uncertain-utterance retry limit 12→15 s (only where existing strict retry conditions warrant). GPU compute precision remains `int8_float16` and previous text conditioning stays OFF; no broad temperature fallback or speculative previous-caption prompt is enabled.
+
+**Evidence-gated empty-window rescue:** If the *initial* Whisper pass returns no segments (not a rejected segment), FireRedVAD confidence ≥0.88, original decoder no-speech probability ≤0.45, and the utterance lasts 0.45–8 seconds, one targeted JA transcription on the same audio checks for recognized Japanese speech. If it returns plausible Japanese text, a final unprompted English AST attempt at the existing 0.2 retry temperature must pass strict logprob, no-speech, loop, compression, pacing and stock-phantom guards. Total budget at most three model calls for this rescue (AST→JA→AST). When no evidence or low confidence, publish **nothing** rather than invent speech. Japanese and English come from the *same* model, so correlated hallucinations remain possible.
+
+Tunable `[whisper]` keys: `recover_empty_speech = true`, `recover_min_vad_confidence = 0.88`, `recover_max_no_speech_prob = 0.45`, `recover_max_audio_s = 8.0`. Set `recover_empty_speech = false` to compare recall without the rescue. Extra inference is limited to selected silent/neutrality/phantom checks; live delay and VOD pacing may still be affected by the increased VAD context. Do not treat this as an observed CER/WER improvement until annotated HoloGTA clips are tested.
+
+Focused regression: `uv run --no-sync python -m unittest discover -s tests -p "test_whisper_accuracy_recall.py" -v` or run the entire suite.
+
 ## Key defaults and silence protections
 
     [whisper]
     model = "large-v3"
     compute_type = "int8_float16"
-    beam_size = 5
+    beam_size = 6
+    max_new_tokens = 192
+    recover_empty_speech = true
     temperature = 0.0
     no_speech_retry_block_threshold = 0.85
     verify_stock_outros = true
@@ -59,10 +77,10 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
     collapse_repetitions = true
 
     [vad]
-    threshold = 0.50
-    min_speech_ms = 250
+    threshold = 0.43
+    min_speech_ms = 180
     min_silence_ms = 500
-    speech_pad_ms = 150
+    speech_pad_ms = 300
     fallback_s = 0.0
 
     [ingest]
@@ -70,7 +88,7 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
 
 The segmenter retains pre-onset audio in addition to the onset confirmation window. The usual 250 ms speech minimum also accepts short runs with at least 120 ms of consecutive smoothed speech probability at or above 0.85. This can recover brief replies and can admit more speech-like game audio.
 
-Whisper uses scalar temperature 0, beam 5, no-speech 0.6, log probability -1.0 and compression ratio 2.4. The verifier may decode the same PCM once at temperature 0.2 without prompts or names, up to 12 seconds per retry. It checks unusually long output, multiword loops and combinations of weak VAD and decoder evidence. A higher score alone cannot replace an existing translation with different words. Filler and nonverbal-only laughter cleanup is enabled by default even with the optional concise style prompt disabled; meaningful repetition and genuine signoffs remain eligible. To restore unfiltered text, set both `[whisper].remove_fillers = false` and `[whisper].collapse_repetitions = false` in local config.toml.
+Whisper uses scalar temperature 0, beam 6, no-speech 0.6, log probability -1.0 and compression ratio 2.4. The verifier may decode the same PCM once at temperature 0.2 without prompts or names, up to 15 seconds per uncertainty retry. It checks unusually long output, multiword loops and combinations of weak VAD and decoder evidence. A higher score alone cannot replace an existing translation with different words. Filler and nonverbal-only laughter cleanup is enabled by default even with the optional concise style prompt disabled; meaningful repetition and genuine signoffs remain eligible. To restore unfiltered text, set both `[whisper].remove_fillers = false` and `[whisper].collapse_repetitions = false` in local config.toml.
 
 ## Targeted generic-outro verification
 

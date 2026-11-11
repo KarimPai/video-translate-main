@@ -1,6 +1,7 @@
 """PLaMo 3 Translate with an automatically managed local llama.cpp server."""
 
 import atexit
+from collections import Counter
 import json
 import logging
 import re
@@ -81,6 +82,17 @@ _HOLOGTA_TERMS = {
 }
 
 
+def _needs_fragment_context(ja: str) -> bool:
+    """Only short, demonstrably context-dependent Japanese speech fragments."""
+    current = ja.strip().rstrip("。！？!? ")
+    if not current or len(current) > 26:
+        return False
+    return bool(
+        re.match(r"^(?:それ|これ|あれ|その|あの|だから|でも|で、|じゃあ)", current)
+        or re.search(r"(?:けど|けれど|ので|だから|って|とか|から|なのに)$", current)
+    )
+
+
 def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> list[tuple[str, str]]:
     """Longest-first, non-overlapping current-source matches (never future guesses)."""
     scene = (
@@ -115,6 +127,7 @@ class PlamoTranslator:
         self.cfg = cfg
         self.memory_lines = max(0, getattr(cfg, "memory_lines", 24))
         self.glossary = glossary
+        self.validation_stats: Counter[str] = Counter()
         self.vod_title = " ".join(vod_title.split())[:200]
         self.url = cfg.plamo_base_url.rstrip("/") + "/chat/completions"
         self.base_url = cfg.plamo_base_url.rstrip("/")
@@ -218,8 +231,17 @@ class PlamoTranslator:
                 log.info("PLaMo model is still loading; retrying warm-up...")
             time.sleep(min(1.0, max(0.0, remaining)))
 
+    def _count_validation(self, reason: str) -> None:
+        stats = getattr(self, "validation_stats", None)
+        if stats is not None:
+            stats[reason] += 1
+
     def close(self) -> None:
         """Stop only the llama-server process started by this translator."""
+        stats = getattr(self, "validation_stats", None)
+        if stats:
+            log.info("PLaMo translation validation summary: %s", dict(stats))
+            stats.clear()
         process = self.process
         self.process = None
         if process is not None and process.poll() is None:
@@ -253,6 +275,8 @@ class PlamoTranslator:
             if self.cfg.neutral_subjects else None
         )
         reason = pronoun_reason or suspicious_translation(ja, english, names=names)
+        if reason:
+            self._count_validation("flag:" + reason)
         if reason and self.cfg.retry_suspicious:
             log.info("PLaMo suspicious translation (%s): JP=%r EN=%r; retry without prior chat",
                      reason, ja[:150], english[:160])
@@ -264,6 +288,7 @@ class PlamoTranslator:
                     neutral_retry=bool(pronoun_reason),
                 ))
             except Exception as exc:
+                self._count_validation("retry_unavailable")
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
                 retry_reason = (
@@ -272,8 +297,10 @@ class PlamoTranslator:
                 ) or suspicious_translation(ja, candidate, names=names)
                 if retry_reason is None:
                     english = candidate
+                    self._count_validation("retry_accepted")
                     log.info("PLaMo validation retry accepted (trigger=%s)", reason)
                 else:
+                    self._count_validation("retry_rejected:" + retry_reason)
                     log.warning(
                         "PLaMo retry still suspicious (%s); keeping first result with safe fallbacks",
                         retry_reason,
@@ -312,12 +339,22 @@ class PlamoTranslator:
             context_lines=self.cfg.context_lines,
             memory_lines=getattr(self.cfg, "memory_lines", 24),
         )
+        fragment_hint = ""
+        if (self.cfg.fragment_context and dialogue_history
+                and _needs_fragment_context(ja)):
+            # Past JP is evidence for a short omitted referent; past English
+            # may be an incorrect guess. Never translate the prior line again.
+            prior_ja = dialogue_history[-1][0].strip()[:160]
+            fragment_hint = (
+                "\nImmediately preceding Japanese (reference only, NOT part of the "
+                "current subtitle): " + prior_ja
+            )
         options: dict = {
             "source_lang": "ja",
             "target_lang": "en",
             "context": _translation_context(self.vod_title, neutral_retry=neutral_retry) + (
                 "\n" + memory if memory else ""
-            ),
+            ) + fragment_hint,
         }
         if hits := _current_glossary_matches(ja, self.vod_title, self.glossary):
             options["glossary"] = [

@@ -38,9 +38,9 @@ from ..timeline import record_session_anchor
 log = logging.getLogger(__name__)
 
 IPC_PATH = (
-    r"\\.\pipe\auto-translate-mpv"
+    r"\\.\pipe\auto-translate-malay-mpv"
     if sys.platform == "win32"
-    else "/tmp/auto-translate-mpv.sock"
+    else "/tmp/auto-translate-malay-mpv.sock"
 )
 WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1

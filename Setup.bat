@@ -1,0 +1,35 @@
+@echo off
+setlocal
+chcp 65001 >nul
+cd /d "%~dp0"
+title Haas + PLaMo - First-time Setup
+
+echo ============================================
+echo   Haas ASR + PLaMo 3 - Windows Setup
+echo ============================================
+echo.
+echo This installs Windows tools, Python packages,
+echo Vulkan speech.cpp, Haas and CUDA llama.cpp.
+echo PLaMo Q4_K_M downloads on first translation.
+echo Downloads and installers require internet access.
+echo.
+
+if not exist "%~dp0scripts\Setup-Windows.ps1" (
+    echo ERROR: scripts\Setup-Windows.ps1 is missing.
+    echo Extract the ENTIRE ZIP before running Setup.bat.
+    pause
+    exit /b 1
+)
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Setup-Windows.ps1" -ProjectDir "%~dp0"
+set "SETUP_RESULT=%ERRORLEVEL%"
+echo.
+if "%SETUP_RESULT%"=="0" (
+    echo SETUP FINISHED. Double-click "Start translate.bat".
+    echo First start downloads PLaMo 3 Translate 2B Q4_K_M.
+) else (
+    echo SETUP FAILED. Read the error above, then rerun Setup.bat.
+)
+echo.
+pause
+exit /b %SETUP_RESULT%

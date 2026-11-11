@@ -10,7 +10,7 @@ import re
 _ROLE = (
     r"(?:customers?|clients?|guests?|visitors?|patients?|employees?|"
     r"shops?|stores?|business(?:es)?|teams?|cars?|vehicles?|homes?|"
-    r"houses?|jobs?|articles?|reports?|streams?|friends?|"
+    r"houses?|jobs?|articles?|reports?|streams?|"
     r"characters?|orders?|purchases?|sales?|deliver(?:y|ies))"
 )
 _QUAL = r"(?:(?:very|first|second|third|next|last|new|only|regular|loyal|best|favorite|favourite)\s+){0,2}"

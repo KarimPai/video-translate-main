@@ -982,6 +982,25 @@ class Ingest:
 
         return audio_urls[0]
 
+    def _wait_for_shared_live_restart(self) -> None:
+        """Keep shared live MPV and PCM on the same HLS session after errors."""
+        with self._proc_lock:
+            if self._stopped or self._restart_at is not None:
+                return
+        log.warning(
+            "shared live HLS audio ended; requesting synchronized "
+            "MPV/video/audio session restart"
+        )
+        self._video_failed.set()
+        # MpvOutput responds by calling request_restart(), which replaces the
+        # playlist and audio generation together. Do not independently reopen
+        # an older rolling HLS segment while MPV continues the old stream.
+        while True:
+            with self._proc_lock:
+                if self._stopped or self._restart_at is not None:
+                    return
+            time.sleep(0.1)
+
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
         vod_retries = 0
@@ -1076,7 +1095,9 @@ class Ingest:
                         time.sleep(min(1.5, 0.3 * vod_retries))
                         continue
 
-                if self.source.live:
+                if self.source.live and self.video_out:
+                    self._wait_for_shared_live_restart()
+                elif self.source.live:
                     with self._proc_lock:
                         if self._stopped:
                             break

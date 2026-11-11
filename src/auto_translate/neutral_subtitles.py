@@ -93,6 +93,15 @@ def neutralize_with_japanese(english: str, japanese: str) -> str:
             return ("The " if match.group(0)[0].isupper() else "the ") + role
         result = _OWNED_ROLE.sub(drop_owner, result)
 
+    # Japanese "guys" is very often just 人たち/人々. A mention of father
+    # elsewhere in the same mixed-speaker cue should not force "those guys".
+    if not re.search(r"男たち|男性|男の人|男の子|男子|少年たち", jp):
+        def neutral_people(match: re.Match[str]) -> str:
+            noun = match.group("noun")
+            singular = noun.casefold().endswith(("guy", "dude"))
+            return match.group("det") + (" person" if singular else " people")
+        result = _GENDER_PEOPLE.sub(neutral_people, result)
+
     if not _JA_GENDER.search(jp) and not _JA_OWNER.search(jp) and not _JA_NAMED.search(jp):
         # Preserve verb tense: "he killed" -> "someone killed".
         # A person already specified in the Japanese (including their name)
@@ -103,16 +112,9 @@ def neutralize_with_japanese(english: str, japanese: str) -> str:
         def rewrite_object(match: re.Match[str]) -> str:
             return match.group("prefix") + " someone"
 
-        def rewrite_people(match: re.Match[str]) -> str:
-            noun = match.group("noun")
-            singular = noun.casefold().endswith(("guy", "dude"))
-            replacement = "person" if singular else "people"
-            return match.group("det") + " " + replacement
-
         result = _GENDER_SUBJECT.sub(rewrite_subject, result)
         result = _GENDER_OBJECT.sub(rewrite_object, result)
         result = _GENDER_PREP.sub(rewrite_object, result)
-        result = _GENDER_PEOPLE.sub(rewrite_people, result)
 
     if not (_JA_FIRST.search(jp) or _JA_IMPLIED_FIRST.search(jp)):
         short = result.strip()

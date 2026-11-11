@@ -62,6 +62,16 @@ class NeutralWhisperTests(unittest.TestCase):
             "This person is amazing.",
         )
         self.assertEqual(
+            neutralize_with_japanese(
+                "Those guys aren't your father.", "あの人たちは父親じゃない"
+            ),
+            "Those people aren't your father.",
+        )
+        self.assertEqual(
+            neutralize_with_japanese("Those guys left.", "男たちが去った"),
+            "Those guys left.",
+        )
+        self.assertEqual(
             neutralize_with_japanese("And he arrived.", "それで来ました"),
             "And someone arrived.",
         )

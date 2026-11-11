@@ -106,10 +106,13 @@ def main() -> None:
             source = replace(source, paced=False)
             log.info("MPV VOD: fast audio ingestion enabled for seek buffering")
 
+        shared_live_hls = bool(use_mpv and source.live)
+        if shared_live_hls:
+            log.info("MPV live: synchronized shared local HLS audio/video enabled")
         ingest = Ingest(
             source,
             cfg.ingest,
-            None,  # MPV plays the original video; FFmpeg ingests audio only
+            "fmp4" if shared_live_hls else None,  # VOD keeps original MPV video
             cfg.mpv.ytdlp_format,
             0.0,
         )

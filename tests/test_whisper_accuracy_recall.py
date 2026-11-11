@@ -30,7 +30,8 @@ class AccuracyRecallTests(unittest.TestCase):
             result = vad.feed(AudioChunk(0, pcm, 0.0)) + vad.flush()
         self.assertEqual(len(result), 1)
         self.assertGreaterEqual(result[0].vad_confidence, 0.43)
-        self.assertLessEqual(result[0].start_s, .72)
+        # 300ms preroll plus the 70ms onset gate retains preceding context.
+        self.assertLessEqual(result[0].start_s, .80)
         self.assertGreater(result[0].end_s, 1.45)
         self.assertFalse(result[0].probe)
 

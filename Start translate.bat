@@ -1,6 +1,13 @@
 @echo off
 setlocal DisableDelayedExpansion
 chcp 65001 >nul
+rem Prefer the CUDA llama.cpp binary installed by Setup.bat.
+set "LLAMA_PATH_FILE=%LOCALAPPDATA%\HaasPLaMo\llama-bin-path.txt"
+if exist "%LLAMA_PATH_FILE%" (
+    for /f "usebackq delims=" %%P in ("%LLAMA_PATH_FILE%") do (
+        if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
+    )
+)
 title Haas + PLaMo 3 Translate 2B Retest
 cd /d "%~dp0"
 if errorlevel 1 (

@@ -160,10 +160,16 @@ def main() -> None:
         source = replace(source, paced=False)
         log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
 
-    # MPV plays the original video stream; Ingest handles audio only.
+    # Only livestreams share a local HLS playlist between MPV and FFmpeg
+    # speech recognition. VOD keeps direct MPV playback and fast audio seek.
+    shared_live_hls = bool(use_mpv and source.live)
+    if shared_live_hls:
+        log.info("MPV live: synchronized shared local HLS audio/video enabled")
     ingest = Ingest(
         source,
         cfg.ingest,
+        video_out="fmp4" if shared_live_hls else None,
+        video_format=cfg.mpv.ytdlp_format if shared_live_hls else "",
         separation_cfg=cfg.separation,
         deepfilter_cfg=cfg.deepfilter,
     )

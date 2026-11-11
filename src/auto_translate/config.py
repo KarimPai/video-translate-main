@@ -75,6 +75,11 @@ class VadConfig:
     fallback_s: float = 0.0  # opt-in probes risk invented words on non-speech/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
+    # VOD-only low-probability "shadow" probes. They are screened twice
+    # against the same Whisper model before any cue can be published.
+    background_probe_s: float = 4.0
+    background_probe_min_prob: float = 0.20
+    background_probe_min_run_ms: int = 150
 
 
 def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
@@ -83,6 +88,14 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
     Preserve every configured VAD setting and never mutate the original.
     """
     if not live:
+        # Normal VAD misses quiet background-only speech between foreground
+        # turns. Screen low-confidence 4s windows without lowering its main
+        # speech gate or enabling unconditional probes on game effects.
+        if cfg.fallback_s == 0 and cfg.background_probe_s > 0:
+            return replace(
+                cfg, fallback_s=cfg.background_probe_s,
+                background_probe_min_prob=cfg.background_probe_min_prob,
+            )
         return cfg
     return replace(
         cfg,
@@ -162,6 +175,9 @@ class WhisperConfig:
     # transcription of the same audio supports them. No new model/LLM.
     neutral_subtitles: bool = True
     neutral_verify_max_audio_s: float = 14.0  # allow full VOD clauses; costs an extra decode
+    background_probe_enabled: bool = True
+    background_probe_min_vad_confidence: float = 0.20
+    background_probe_max_audio_s: float = 5.0
 
 
 @dataclass

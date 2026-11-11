@@ -40,12 +40,20 @@ class VadConfigurationTests(unittest.TestCase):
                         live_max_utterance_s=6.5)
         vod = vad_for_source(cfg, live=False)
         live = vad_for_source(cfg, live=True)
-        self.assertIs(vod, cfg)
+        self.assertIsNot(vod, cfg)
         self.assertIsNot(live, cfg)
+        self.assertEqual(vod.fallback_s, 4.0)
+        self.assertEqual(vod.background_probe_min_prob, 0.20)
+        self.assertEqual(live.fallback_s, 0.0)
         self.assertEqual((vod.max_utterance_s, vod.max_split_extension_s), (12.0, 2.0))
         self.assertEqual((live.max_utterance_s, live.max_split_extension_s), (6.5, 1.0))
         self.assertEqual((live.threshold, live.speech_pad_ms), (0.37, 90))
         self.assertEqual(cfg.max_utterance_s, 12.0)
+
+    def test_shadow_probe_can_be_disabled_without_affecting_main_vad(self):
+        cfg = VadConfig(background_probe_s=0.0)
+        self.assertIs(vad_for_source(cfg, live=False), cfg)
+        self.assertEqual(vad_for_source(cfg, live=True).fallback_s, 0.0)
 
     def test_noise_probe_can_be_opted_in(self):
         with tempfile.TemporaryDirectory() as directory:

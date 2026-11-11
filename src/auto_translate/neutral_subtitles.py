@@ -22,7 +22,7 @@ _OWNED_ROLE = re.compile(
 # Never rewrite contractions (he's/she'd): their tense is ambiguous.
 _GENDER_SUBJECT = re.compile(r"\b(?:he|she)\b(?!['’])", re.I)
 _GENDER_OBJECT = re.compile(
-    r"\b(?P<prefix>killed?|shot|saved?|saw|seen|see|met|meet|"
+    r"\b(?P<prefix>kill(?:ed)?|shot|save(?:d)?|saw|seen|see|met|meet|"
     r"followed?|chased?|helped?|heard?|called?|hit|hurt|found|"
     r"told|asked?|watched?|talked to|looked at)\s+"
     r"(?P<object>him|her)\b(?!['’])", re.I
@@ -49,6 +49,9 @@ _JA_OWNER = re.compile(
     r"君|彼|彼女|彼ら|あの人|その人|みんな|皆|"
     r"[一-龯ぁ-んァ-ヶー]{1,12}(?:さん|ちゃん|くん|君))の"
 )
+_JA_NAMED = re.compile(r"[一-龯ぁ-んァ-ヶー]{1,12}(?:さん|ちゃん|くん|君)")
+
+
 _JA_GENDER = re.compile(
     r"彼(?!女)|彼女|男性|女性|男の人|女の人|男の子|女の子|"
     r"父|母|パパ|ママ|兄|姉|弟|妹|息子|娘|夫|妻|"
@@ -90,7 +93,7 @@ def neutralize_with_japanese(english: str, japanese: str) -> str:
             return ("The " if match.group(0)[0].isupper() else "the ") + role
         result = _OWNED_ROLE.sub(drop_owner, result)
 
-    if not _JA_GENDER.search(jp) and not _JA_OWNER.search(jp):
+    if not _JA_GENDER.search(jp) and not _JA_OWNER.search(jp) and not _JA_NAMED.search(jp):
         # Preserve verb tense: "he killed" -> "someone killed".
         # A person already specified in the Japanese (including their name)
         # must not be stripped based on English alone.

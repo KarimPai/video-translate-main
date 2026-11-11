@@ -38,6 +38,16 @@ This does not load PLaMo or a second model, change FireRedVAD, touch the anti-ha
 
 Focused offline test: `uv run --no-sync python -m unittest discover -s tests -p "test_whisper_neutral_subtitles.py" -v`.
 
+## Background-only quiet speech recovery (VOD, experimental)
+
+The previous Whisper pipeline always discarded VAD-negative fallback probes, so changing the VAD threshold could not recover low-level speech *between* foreground turns. VOD now gets 4-second low-probability windows only where FireRedVAD reports a sustained probability ≥0.20 for 150ms (below the main 0.43 speech gate). Rejected silence/gunshot spikes do not reach Whisper. Live stays on the original no-probe profile.
+
+For each candidate window, already-loaded Whisper performs a Japanese transcription, then **two unprompted English AST passes**. Only when Japanese contains a speech-like phrase, the two English passes agree exactly (ignoring punctuation), and both meet strict confidence/silence/loop/phantom checks does the subtitle appear. This avoids publishing unverified music/effects speech and does not add models. The background cue retains its original timestamps and never enters later Whisper prompt history. Each candidate can cost three inferences; VOD playback or seek latency may increase.
+
+This is an attempt to recover **quiet speech outside other speakers' detected speech spans**, not true source separation. Speech occurring *simultaneously* under a louder speaker remains mixed and Whisper can still omit it. Full overlap handling requires a separately benchmarked multi-speaker separation or source-audio-track solution; simply adding speaker labels would not recover unheard words.
+
+Disable with `[vad] background_probe_s = 0.0` (removes probe generation) or `[whisper] background_probe_enabled = false` (skips probe inference). Noise probing remains filtered and threshold-controlled. Focused test: `uv run --no-sync python -m unittest discover -s tests -p "test_whisper_background_probe.py" -v`.
+
 ## YouTube quality selector
 
 `Start translate.bat` now displays a numbered video-quality menu after the URL: **1 = 360p, 2 = 480p, 3 = 720p, 4 = 1080p**. Enter **3**, or press Enter to use the default **720p**. The choice is applied before MPV opens the video, and yt-dlp chooses the best available stream **not exceeding** that height (for example, 480p if 720p is unavailable). A mid-playback quality change is intentionally not offered because reloading the source may disturb native seeking and subtitle timing.
@@ -48,7 +58,7 @@ You can also run the CLI with `--video-quality 720`. The launcher choice takes p
 
 This branch preserves the direct Whisper Large-v3 JA-audio → English AST model and anti-hallucination checks. The changes favor missed-speech recall and longer complete VOD sentences over minimum throughput, without adding a translator, audio enhancement, diarization or another model.
 
-**FireRedVAD default changes:** threshold 0.50→0.43, negative threshold 0.30→0.28, minimum speech 250→180 ms, onset 80→70 ms, padding 150→300 ms, quiet-point minimum 80→100 ms, split context 120→160 ms. The high-confidence 120 ms reply exception remains. Silence remains 500 ms and **VAD-negative fallback probes remain OFF** to limit false speech from music and effects. Lower VAD thresholds can nevertheless admit additional game audio; compare against the earlier branch before treating it as better.
+**FireRedVAD default changes:** threshold 0.50→0.43, negative threshold 0.30→0.28, minimum speech 250→180 ms, onset 80→70 ms, padding 150→300 ms, quiet-point minimum 80→100 ms, split context 120→160 ms. The high-confidence 120 ms reply exception remains. Silence remains 500 ms. **VOD-only low-VAD probes are now narrowly screened** (sustained ≥0.20 scores, 150ms; JA verification plus two agreeing high-confidence EN passes). Live/background-overlap remains unchanged. Lower VAD thresholds can nevertheless admit additional game audio; compare against the earlier branch before treating it as better.
 
 **Context by playback mode:** VOD uses 12 s soft / 14 s hard utterance caps so Japanese clauses have more context, while live retains 7 s soft / 8 s hard caps to avoid delayed captions. Both retain timestamp-contiguous forced splitting, native MPV seeking and progress handoffs. The effective profile is logged as `Whisper speech-recall VAD`. Local `config.toml` overrides are preserved, including `live_max_utterance_s` and `live_max_split_extension_s`.
 

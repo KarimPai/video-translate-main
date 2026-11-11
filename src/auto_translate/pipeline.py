@@ -215,6 +215,64 @@ def _stable_weak_speech(first: object, second: object, vad_confidence: float | N
     return first.weak_text if tokens[0] == tokens[1] else ""
 
 
+def _recover_background_probe(
+    whisper: WhisperLargeV3,
+    utt: Utterance,
+    cfg: object | None,
+) -> tuple[str, str]:
+    """Evidence-gated VOD-only recovery of low-VAD, otherwise-skipped audio.
+
+    Japanese detection alone is not enough: require two *unprompted* English
+    AST passes to agree exactly, with strong model confidence and ordinary
+    cadence. Background speech overlapping foreground speech is NOT solved
+    by this path; it inspects only VAD-negative audio gaps.
+    """
+    duration = len(utt.audio) / SAMPLE_RATE
+    if (not getattr(cfg, "background_probe_enabled", True)
+            or not hasattr(whisper, "decode_audio")
+            or duration < 1.5
+            or duration > float(getattr(cfg, "background_probe_max_audio_s", 5.0))
+            or utt.vad_confidence is None
+            or utt.vad_confidence < float(getattr(
+                cfg, "background_probe_min_vad_confidence", 0.20))
+            or _discard_probe(utt.audio)
+            or float(np.sqrt(np.mean(np.square(
+                utt.audio.astype(np.float64))))) < 0.003):
+        return "", ""
+    verifier = getattr(whisper, "transcribe_japanese_evidence", None)
+    if not callable(verifier):
+        return "", ""
+    try:
+        japanese = verifier(utt.audio)
+        if not re.search(r"[\u3040-\u30ff\u3400-\u9fff]{3,}", japanese):
+            return "", japanese
+        candidates = [
+            whisper.decode_audio(
+                utt.audio, prompt=None, hotwords=None,
+                temperature=temperature,
+            )
+            for temperature in (0.0, float(getattr(cfg, "retry_temperature", 0.2)))
+        ]
+    except Exception as exc:
+        log.warning("Whisper background probe failed: %s", exc)
+        return "", ""
+    for decoded in candidates:
+        text = decoded.text.strip()
+        if (not text or decoded.suspicious
+                or decoded.avg_logprob is None or decoded.avg_logprob < -0.35
+                or decoded.no_speech_prob is None or decoded.no_speech_prob > 0.20
+                or (decoded.compression_ratio is not None
+                    and decoded.compression_ratio > 2.0)
+                or _structural_issue(text, duration)
+                or _phantom_phrase_kind(text)):
+            return "", japanese
+    first, second = candidates
+    if (len(_words(first.text)) < 2
+            or _words(first.text) != _words(second.text)):
+        return "", japanese
+    return first.text.strip(), japanese
+
+
 def run_whisper(
     whisper: WhisperLargeV3,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
@@ -244,6 +302,38 @@ def run_whisper(
             continue
 
         utt = item
+        if utt.probe:
+            # Never treat an unverified gap as dialogue. Unlike ordinary
+            # speech, these low-VAD windows require JA evidence + two
+            # agreeing EN passes. Do not feed their English into context.
+            utt.timings.asr_start = time.monotonic()
+            english, jp = _recover_background_probe(whisper, utt, cfg)
+            if english and getattr(cfg, "neutral_subtitles", True):
+                english = neutralize_with_japanese(english, jp)
+            if english and (getattr(cfg, "remove_fillers", True)
+                            or getattr(cfg, "collapse_repetitions", True)):
+                english = concise_english(
+                    english,
+                    remove_fillers=getattr(cfg, "remove_fillers", True),
+                    collapse_repetitions=getattr(cfg, "collapse_repetitions", True),
+                )
+            utt.timings.asr_end = time.monotonic()
+            if english and (get_generation is None
+                            or utt.generation == get_generation()):
+                log.info(
+                    "Recovered VAD-negative background speech: %.2f-%.2fs "
+                    "vad=%.3f JA=%r EN=%r",
+                    utt.start_s, utt.end_s, utt.vad_confidence,
+                    jp[:100], english[:100],
+                )
+                out_q.put(Subtitle(
+                    start_s=utt.start_s,
+                    end_s=utt.end_s,
+                    ja="", en=english, timings=utt.timings,
+                    generation=utt.generation,
+                    speech_start_s=utt.start_s,
+                ))
+            continue
         context.prepare(utt)
         cached = session_cache.match(utt.start_s, utt.end_s) if session_cache is not None else None
         if cached is not None:
@@ -252,9 +342,6 @@ def run_whisper(
                 cached, generation=utt.generation, timings=utt.timings,
                 speaker_handoff=utt.speaker_handoff or cached.speaker_handoff,
             ))
-            continue
-        # VAD-negative noise probes are never safe for direct AST.
-        if utt.probe:
             continue
         if not len(utt.audio) or not np.isfinite(utt.audio).all():
             continue
@@ -606,12 +693,12 @@ def run(
     log.info(
         "Whisper speech-recall VAD (%s): threshold=%.2f, min_speech=%dms, "
         "pad=%dms, silence=%dms, onset=%dms, soft_cap=%.1fs, hard_cap=%.1fs, "
-        "negative_probes=%s; beam=%d",
+        "background_probes=%s; beam=%d",
         "live" if ingest.source.live else "VOD",
         vad_cfg.threshold, vad_cfg.min_speech_ms, vad_cfg.speech_pad_ms,
         vad_cfg.min_silence_ms, vad_cfg.onset_ms, vad_cfg.max_utterance_s,
         vad_cfg.max_utterance_s + vad_cfg.max_split_extension_s,
-        "on" if vad_cfg.fallback_s > 0 else "off",
+        "on" if vad_cfg.fallback_s > 0 and cfg.whisper.background_probe_enabled else "off",
         cfg.whisper.beam_size,
     )
     audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)

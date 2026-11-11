@@ -169,6 +169,7 @@ class Segmenter:
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
         self.fallback_min = _ms_to_frames(cfg.fallback_min_s * 1000)
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
+        self.background_min_run_frames = _ms_to_frames(cfg.background_probe_min_run_ms)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
         self.vad = StreamingFireRedVAD(cfg.threshold)
@@ -185,6 +186,7 @@ class Segmenter:
         self._prob_history: deque[float] = deque(maxlen=self.prob_smooth_frames)
         self._onset_count = 0
         self._idle: list[np.ndarray] = []  # non-speech frames since the last utterance (fallback)
+        self._idle_probs: list[float] = []  # parallel raw-smoothed VAD scores
         self._idle_start = next_sample
         self._frames: list[np.ndarray] = []  # current utterance
         self._probs: list[float] = []
@@ -265,7 +267,7 @@ class Segmenter:
             self._preroll_probs.append(prob)
             self._onset_count = self._onset_count + 1 if prob >= cfg.threshold else 0
             if self._onset_count < self.onset_frames:
-                self._add_idle(frame)
+                self._add_idle(frame, prob)
                 return
             # Only sustained speech opens a segment. Keep the entire preroll
             # and all its confidence values instead of clipping its first word.
@@ -354,13 +356,15 @@ class Segmenter:
             self._preroll_probs.extend(rest_probs)
             self._onset_count = 0
             self._idle, self._idle_start = list(rest_frames), end
+            self._idle_probs = list(rest_probs)
 
-    def _add_idle(self, frame: np.ndarray) -> None:
+    def _add_idle(self, frame: np.ndarray, prob: float) -> None:
         if not self.fallback_frames:
             return
         if not self._idle:
             self._idle_start = self._next_frame_sample
         self._idle.append(frame)
+        self._idle_probs.append(prob)
         if len(self._idle) >= self.fallback_frames:
             # Cut at the quietest frame in the last ~2 s, so a word is less likely to be split.
             lo = max(self.fallback_min, len(self._idle) - self.split_search)
@@ -369,11 +373,24 @@ class Segmenter:
 
     def _emit_probe(self, n: int) -> None:
         """Send the first `n` idle frames to Whisper Large-v3 as a probe (if long and loud enough)."""
-        frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
+        n = max(n, 0)
+        frames, self._idle = self._idle[:n], self._idle[n:]
+        probs, self._idle_probs = self._idle_probs[:n], self._idle_probs[n:]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME
         if not self.fallback_frames or len(frames) < self.fallback_min:
             return
+        if len(probs) != len(frames):
+            raise RuntimeError("VAD idle score and audio alignment was lost")
+        if self.cfg.background_probe_min_prob > 0:
+            # Sustained low-confidence *speech-like* probabilities are needed.
+            # A high-volume gunshot or a 40ms isolated spike does not qualify.
+            streak = longest = 0
+            for probability in probs:
+                streak = streak + 1 if probability >= self.cfg.background_probe_min_prob else 0
+                longest = max(longest, streak)
+            if longest < self.background_min_run_frames:
+                return
         audio = np.concatenate(frames)
         if np.sqrt(np.mean(audio * audio)) < self.fallback_min_rms:
             return  # (near) silence
@@ -384,6 +401,9 @@ class Segmenter:
             audio,
             probe=True,
             generation=self._generation,
+            vad_confidence=(
+                max(probs) if probs else None
+            ),
         )
         utt.timings.audio_read = self._read_at - (self._next_frame_sample + FRAME - end) / SAMPLE_RATE
         utt.timings.segmented = time.monotonic()

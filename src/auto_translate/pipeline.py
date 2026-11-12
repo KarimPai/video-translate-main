@@ -99,6 +99,7 @@ def run_asr(
     live: bool = False,
     dual=None,
     live_late_window_s: float = 7.0,
+    stop: threading.Event | None = None,
 ) -> None:
     """Transcribe utterances; retry only convincing VOD speech omissions."""
     while True:
@@ -106,6 +107,8 @@ def run_asr(
 
         if item is None:
             break
+        if stop is not None and stop.is_set():
+            continue  # discard queued ASR work after player shutdown
 
         if isinstance(item, AudioProgress):
             if get_generation is not None and item.generation != get_generation():
@@ -248,6 +251,7 @@ def run_translate(
     live: bool = False,
     playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
+    stop: threading.Event | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
@@ -259,6 +263,8 @@ def run_translate(
 
         if item is None:
             break
+        if stop is not None and stop.is_set():
+            continue  # do not translate queued cues after player shutdown
 
         if isinstance(item, AudioProgress):
             if get_generation is not None and item.generation != get_generation():
@@ -498,6 +504,7 @@ def run(
                 bool(ingest.source.live),
                 dual,
                 cfg.mpv.live_late_window_s,
+                stop,
             ),
             name="asr",
             daemon=True,
@@ -513,6 +520,7 @@ def run(
                 bool(ingest.source.live),
                 getattr(dual, "playback_position", None),
                 cfg.mpv.live_late_window_s,
+                stop,
             ),
             name="translate",
             daemon=True,
@@ -701,6 +709,15 @@ def run(
                     + cfg.translate.timeout_s
                     + cfg.translate.retry_timeout_s))
                 deadline = time.monotonic() + grace_s
+                # Main loop is no longer rendering subtitles: keep draining
+                # completed cues so MT cannot block forever on a full queue.
+                # Stop-aware ASR/MT stages discard pending work and propagate
+                # their existing EOF sentinel when producers exit.
+                while time.monotonic() < deadline and any(t.is_alive() for t in threads):
+                    try:
+                        sub_q.get(timeout=0.10)
+                    except queue.Empty:
+                        pass
                 for thread in threads:
                     if thread.is_alive():
                         thread.join(timeout=max(0., deadline - time.monotonic()))

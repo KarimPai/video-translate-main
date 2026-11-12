@@ -171,6 +171,7 @@ class PlamoTranslator:
             "--jinja",
             "--no-prefill-assistant",
             "-ngl", str(self.cfg.plamo_gpu_layers),
+            "-np", "1",  # translation is serialized; avoid 4 parallel KV slots
         ]
 
         if self.cfg.plamo_gpu_layers == 0:

@@ -38,9 +38,12 @@ class GpuBudget:
             while not self.stop.is_set():
                 self.used = used_gb()
                 log.info("GPU 0 total used GB=%s target=%.2f", self.used, self.cfg.target_gb)
-                if self.used is None or self.used >= self.cfg.emergency_threshold_gb:
+                # At the soft threshold shed GPU selector first; emergency
+                # shedding happens in the callback. Sampling cannot enforce
+                # an absolute hardware VRAM allocation ceiling.
+                if self.used is None or self.used >= self.cfg.optimization_threshold_gb:
                     release()
-                self.stop.wait(2)
+                self.stop.wait(1.5)
         self.thread = threading.Thread(target=monitor, daemon=True, name="gpu-budget")
         self.thread.start()
 

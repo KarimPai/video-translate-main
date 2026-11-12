@@ -107,12 +107,15 @@ class AsrConfig:
 @dataclass
 class DualAsrConfig:
     enabled: bool = True
+    language_routing: bool = True  # Nemotron auto-language English passthrough
     secondary_live_mode: str = "selective"
     secondary_vod_mode: str = "all"
     live_timeout_s: float = 2.0
     vod_timeout_s: float = 25.0
 
     def __post_init__(self):
+        if type(self.language_routing) is not bool:
+            raise ValueError("language_routing must be boolean")
         for mode in (self.secondary_live_mode, self.secondary_vod_mode):
             if mode not in ("off", "selective", "all"):
                 raise ValueError("secondary mode must be off, selective or all")

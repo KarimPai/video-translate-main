@@ -7,6 +7,7 @@ import numpy as np
 
 from ..text_filter import is_usable_transcript
 from .nemotron import NemotronASR
+from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import compare
 
@@ -27,6 +28,7 @@ class DualASR:
         self.lock = threading.Lock()
         self.pending = None
         self.playback_position = lambda: None
+        self.session_id = str(time.time_ns())
         if not cfg.dual_asr.enabled or self.mode == "off":
             return
         try:
@@ -108,7 +110,7 @@ class DualASR:
                 self.generation = generation
             self.history.append(text[:160])
 
-    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None):
+    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):
@@ -128,7 +130,7 @@ class DualASR:
 
         def recognize():
             try:
-                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop)
+                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s)
             except Exception:
                 log.exception("Optional recognition failed at %.3fs", utt.start_s)
             finally:
@@ -149,7 +151,7 @@ class DualASR:
         self.pending.join()
         return result[0]
 
-    def choose(self, utt, primary, title, backlog, current, primary_stop=None):
+    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
         """Return a selected original, or None to use the existing Haas path."""
         worker, selector = self.worker, self.selector
         if worker is None:
@@ -175,8 +177,9 @@ class DualASR:
         try:
             started = time.perf_counter()
             secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
+            secondary_elapsed_s = time.perf_counter() - started
             log.info("Nemotron ASR %.2f-%.2fs audio decoded in %.3fs",
-                     utt.start_s, utt.end_s, time.perf_counter() - started)
+                     utt.start_s, utt.end_s, secondary_elapsed_s)
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
             self.release()
@@ -185,12 +188,38 @@ class DualASR:
             return ""
         log.debug("ASR generation=%d %.3f-%.3f Haas=%r Nemotron=%r",
                   utt.generation, utt.start_s, utt.end_s, primary, secondary)
+        def record(selected_text, selected_by, score=None, flags=None, selector_called=False):
+            append_comparison({
+                "session_id": self.session_id,
+                "generation": utt.generation,
+                "start_s": round(utt.start_s, 3),
+                "end_s": round(utt.end_s, 3),
+                "duration_s": round(utt.end_s - utt.start_s, 3),
+                "haas": primary,
+                "nemotron": secondary,
+                "chosen": selected_text,
+                "chosen_by": selected_by,
+                "haas_elapsed_s": (round(primary_elapsed_s, 3)
+                                   if primary_elapsed_s is not None else None),
+                "nemotron_elapsed_s": round(secondary_elapsed_s, 3),
+                "similarity": round(score, 4) if score is not None else None,
+                "flags": flags or [],
+                "selector_called": selector_called,
+                "haas_stop": primary_stop,
+                "nemotron_stop": worker.last_stop,
+                "vad_confidence": utt.vad_confidence,
+            })
+
         if not is_usable_transcript(secondary):
+            record(primary, "haas_secondary_unusable")
             return None
         result = primary if is_usable_transcript(primary) else secondary
+        selected_by = "haas" if is_usable_transcript(primary) else "nemotron_rescue"
+        selector_called = False
         if (primary_stop == "model_limit" and worker.last_stop == "complete"
                 and secondary.startswith(primary) and len(secondary) > len(primary)):
             result = secondary
+            selected_by = "nemotron_completion"
         terms = self.glossary.find(primary + " " + secondary)
         score, flags = compare(primary, secondary, terms)
         if score < 1 and primary:
@@ -205,6 +234,11 @@ class DualASR:
                         "haas_stop": primary_stop, "secondary_stop": worker.last_stop,
                         "similarity": score, "disagreement": flags,
                     }, timeout)
+                    selector_called = True
+                    selected_by = getattr(selector, "last_choice", None)
+                    if selected_by not in ("haas", "nemotron", "uncertain"):
+                        selected_by = "nemotron" if result == secondary else "haas"
                 except Exception as exc:
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
+        record(result, selected_by, score, flags, selector_called)
         return result

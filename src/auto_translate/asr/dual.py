@@ -79,10 +79,13 @@ class DualASR:
     def release_selector(self):
         """Reclaim the optional GPU selector first, retaining secondary ASR."""
         with self.lock:
-            selector, self.selector = self.selector, None
-        if selector:
-            log.warning("GPU pressure: releasing optional transcript selector")
-            selector.close()
+            selector = self.selector
+            # A CPU selector consumes no GPU VRAM: retain it at soft pressure.
+            if selector is None or not getattr(selector, "gpu_layers", 0):
+                return
+            self.selector = None
+        log.warning("GPU pressure: releasing optional GPU transcript selector")
+        selector.close()
 
     def release(self):
         with self.lock:

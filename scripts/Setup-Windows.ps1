@@ -28,6 +28,28 @@ function Install-Winget([string]$Command, [string]$PackageId) {
     if ($LASTEXITCODE -ne 0) { throw "WinGet installation failed: $PackageId (exit $LASTEXITCODE)" }
     Require-Command $Command "WinGet should have installed $PackageId"
 }
+function Find-Mpv {
+    $command = Get-Command mpv.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return $command.Source }
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA\Programs")
+    foreach ($root in $roots) {
+        if (-not $root) { continue }
+        foreach ($folder in @('MPV Player', 'mpv', 'mpv.net')) {
+            $candidate = Join-Path $root "$folder\mpv.exe"
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+    }
+    foreach ($scope in @('HKCU:', 'HKLM:')) {
+        $key = "$scope\Software\Microsoft\Windows\CurrentVersion\App Paths\mpv.exe"
+        if (Test-Path $key) {
+            $candidate = (Get-Item $key).GetValue('')
+            if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
+        }
+    }
+    $packages = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages"
+    Get-ChildItem -Path "$packages\shinchiro.mpv_*\*" -Filter mpv.exe -Recurse -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+}
 function Fetch-Asset([object]$Asset, [string]$Destination) {
     Write-Host "Downloading $($Asset.name)..."
     Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $Destination -UseBasicParsing
@@ -59,7 +81,19 @@ try {
     Install-Winget uv 'astral-sh.uv'
     Install-Winget 'yt-dlp' 'yt-dlp.yt-dlp'
     Install-Winget ffmpeg 'yt-dlp.FFmpeg'
-    Install-Winget mpv 'shinchiro.mpv'
+    $mpv = Find-Mpv
+    if (-not $mpv) {
+        Step 'Installing shinchiro.mpv using WinGet'
+        & winget install --source winget --exact --id shinchiro.mpv --accept-package-agreements --accept-source-agreements
+        Refresh-Path
+        $mpv = Find-Mpv
+        if (-not $mpv) { throw 'MPV executable could not be located. Add the folder containing mpv.exe to PATH and rerun Setup.bat.' }
+    }
+    Write-Host "Using MPV: $mpv"
+    $cache = Join-Path $ProjectDir '.cache'
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $cache 'mpv-path.txt'), $mpv)
+
 
     Step 'Installing Python 3.12 and project dependencies'
     Push-Location -LiteralPath $ProjectDir

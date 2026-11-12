@@ -332,6 +332,15 @@ def find_mpv(configured: str) -> str:
     if configured:
         return configured
 
+    if sys.platform == "win32":
+        marker = Path(__file__).resolve().parents[3] / ".cache" / "mpv-path.txt"
+        try:
+            installed = Path(marker.read_text(encoding="utf-8-sig").strip())
+            if installed.is_absolute() and installed.name.lower() == "mpv.exe" and installed.is_file():
+                return str(installed)
+        except OSError:
+            pass
+
     if found := shutil.which("mpv"):
         return found
 

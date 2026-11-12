@@ -49,7 +49,7 @@ After successful setup, double-click **`Start translate.bat`**. If any installer
 Requires Python 3.12+, uv, FFmpeg, yt-dlp, mpv, a working Vulkan `speech` CLI from speech.cpp, Haas-ja-v1.0 model, and a GPU-enabled `llama-server` for PLaMo.
 
 ```bat
-cd /d C:\Games\video-translate-main && git fetch origin +refs/heads/feature/haas-dual-asr-reconciliation:refs/remotes/origin/feature/haas-dual-asr-reconciliation && git switch feature/haas-dual-asr-reconciliation && git merge --ff-only origin/feature/haas-dual-asr-reconciliation && call Setup.bat && uv run --locked python -m unittest discover -s tests -v && call "Start translate.bat"
+cd /d C:\Games && git clone --single-branch --branch feature/haas-dual-asr-reconciliation https://github.com/KarimPai/video-translate-main.git video-translate-dual-asr && cd /d C:\Games\video-translate-dual-asr && call Setup.bat && uv run --locked python -m unittest discover -s tests -v && call "Start translate.bat"
 ```
 
 Choose video quality **1=360p, 2=480p, 3=720p (default), 4=1080p**. VODs prefer direct HTTPS/DASH sources with lower-quality fallback; live sources prefer HLS.

@@ -32,7 +32,7 @@ class AdaptiveMemoryTests(unittest.TestCase):
     def test_invalid_guard_parameters(self):
         for kwargs in ({"startup_headroom_gb": -0.1},
                        {"low_free_gb": 0.8},
-                       {"emergency_free_gb": 0.4},
+                       {"emergency_free_gb": 0.60},
                        {"sample_interval_s": 0.01}):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(ValueError):

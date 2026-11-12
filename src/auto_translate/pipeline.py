@@ -2,6 +2,7 @@
 """Wire the stages together with threads and queues."""
 
 import logging
+import math
 import queue
 import threading
 import time
@@ -72,6 +73,20 @@ def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
     return False
 
 
+def _expired_live_cue(cue, playback_position, late_window_s: float) -> bool:
+    """Only skip whole cues MPV already played; never drop raw PCM/progress."""
+    if not callable(playback_position):
+        return False
+    try:
+        position = playback_position()
+    except (RuntimeError, OSError, ValueError):
+        return False
+    # Refuse to shed on grossly inconsistent MPV clocks (e.g. bad live
+    # timeline anchors); dropping all dialogue would be worse than backlog.
+    return (position is not None and math.isfinite(position)
+            and max(0.0, late_window_s) < position - cue.end_s <= 120.0)
+
+
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | None]",
@@ -83,6 +98,7 @@ def run_asr(
     asr_cfg: AsrConfig | None = None,
     live: bool = False,
     dual=None,
+    live_late_window_s: float = 7.0,
 ) -> None:
     """Transcribe utterances; retry only convincing VOD speech omissions."""
     while True:
@@ -101,6 +117,10 @@ def run_asr(
         utt = item
 
         if get_generation is not None and utt.generation != get_generation():
+            continue
+        if (live and dual is not None and _expired_live_cue(
+                utt, getattr(dual, "playback_position", None), live_late_window_s)):
+            log.info("Skipping expired live ASR cue %.2f-%.2fs", utt.start_s, utt.end_s)
             continue
 
         # Reuse complete Japanese+English results when a backward seek
@@ -126,7 +146,8 @@ def run_asr(
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         choice = (dual.select_segment(utt, text, vod_title,
-                                      lambda: in_q.qsize() > 1 or out_q.qsize() > 1, get_generation,
+                                      lambda: (in_q.qsize() > (1 if live else 5)
+                                               or out_q.qsize() > (1 if live else 5)), get_generation,
                                       getattr(asr, "last_stop", None))
                   if dual is not None else None)
         if choice is not None:
@@ -137,6 +158,7 @@ def run_asr(
         # Edge silence sometimes helps Haas terminate an omitted short cue.
         duration = utt.end_s - utt.start_s
         if (choice is None and not live and asr_cfg is not None and asr_cfg.retry_empty_speech
+                and not getattr(asr, "last_failed", False)
                 and not utt.probe and not is_usable_transcript(text)
                 and utt.vad_confidence is not None
                 and utt.vad_confidence >= asr_cfg.retry_min_confidence
@@ -221,6 +243,9 @@ def run_translate(
     in_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
     out_q: "queue.Queue[Subtitle | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
+    live: bool = False,
+    playback_position: Callable[[], float | None] | None = None,
+    live_late_window_s: float = 7.0,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
@@ -250,6 +275,9 @@ def run_translate(
         tr = item
 
         if get_generation is not None and tr.generation != get_generation():
+            continue
+        if live and _expired_live_cue(tr, playback_position, live_late_window_s):
+            log.info("Skipping expired live PLaMo cue %.2f-%.2fs", tr.start_s, tr.end_s)
             continue
 
         # Seek resets are normally carried by AudioProgress. Also protect
@@ -467,6 +495,7 @@ def run(
                 cfg.asr,
                 bool(ingest.source.live),
                 dual,
+                cfg.mpv.live_late_window_s,
             ),
             name="asr",
             daemon=True,
@@ -479,6 +508,9 @@ def run(
                 text_q,
                 sub_q,
                 lambda: ingest.generation,
+                bool(ingest.source.live),
+                getattr(dual, "playback_position", None),
+                cfg.mpv.live_late_window_s,
             ),
             name="translate",
             daemon=True,

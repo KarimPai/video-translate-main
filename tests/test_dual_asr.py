@@ -191,17 +191,21 @@ class RecoveryTests(unittest.TestCase):
     @patch("auto_translate.asr.HaasASR")
     def test_primary_recovers_without_reading_stale_response(self, constructor):
         from auto_translate.asr import PrimaryASR
-        first, second = Mock(), Mock()
+        first, second, third = Mock(), Mock(), Mock()
         first.transcribe.side_effect = TimeoutError()
-        second.transcribe.return_value = "行こう"
-        constructor.side_effect = [first, second]
+        second.transcribe.side_effect = TimeoutError()
+        third.transcribe.return_value = "行こう"
+        constructor.side_effect = [first, second, third]
         primary = PrimaryASR(Config().asr)
+        self.assertEqual(primary.transcribe(None), "")
+        self.assertEqual(constructor.call_args.args[0].haas_device, "Vulkan0")
         self.assertEqual(primary.transcribe(None), "")
         self.assertEqual(primary.transcribe(None), "行こう")
         self.assertEqual(constructor.call_args.args[0].haas_device, "cpu")
         first.close.assert_called_once()
-        primary.close()
         second.close.assert_called_once()
+        primary.close()
+        third.close.assert_called_once()
 
     def test_live_backlog_detaches_stalled_request(self):
         import threading

@@ -18,6 +18,7 @@ class PrimaryASR:
         self.closed = False
         self.lock = threading.Lock()
         self.failures = 0
+        self.last_failed = False
 
     def transcribe(self, audio, probe=False):
         with self.lock:
@@ -35,12 +36,20 @@ class PrimaryASR:
                     worker.close()
             self.failures += 1
             self.last_stop = None
-            if self.failures >= 2 or self.closed:
+            self.last_failed = True
+            if self.closed or self.failures >= 3:
                 raise
-            self.cfg = replace(self.cfg, haas_device="cpu")
-            log.warning("Primary worker failed; next Haas decode will use CPU: %s", exc)
+            # A transient Vulkan timeout should not immediately force slow
+            # CPU inference; restart that device once before falling back.
+            if self.failures >= 2 and self.cfg.haas_device.lower() != "cpu":
+                self.cfg = replace(self.cfg, haas_device="cpu")
+                log.warning("Repeated Haas failures; switching next decode to CPU: %s", exc)
+            else:
+                log.warning("Haas worker failed; restarting next cue on %s: %s",
+                            self.cfg.haas_device, exc)
             return ""
         self.failures = 0
+        self.last_failed = False
         self.last_stop = worker.last_stop
         return result
 

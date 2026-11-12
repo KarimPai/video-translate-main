@@ -35,8 +35,12 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "Translate the CURRENT Japanese audio transcript faithfully into concise, natural English subtitles. "
     "Japanese often omits subjects, gender and possessors; do not invent them. "
     "When the source leaves the actor unspecified, prefer a natural impersonal or subjectless "
-    "sentence (e.g. 運転が下手 -> 'The driving is bad'; 分からない -> 'Not sure'; "
-    "事故だ -> 'There's been an accident'). "
+    "sentence rather than an invented 'that person' or an assumed pronoun. "
+    "For short gaming speech, omit the English subject whenever the meaning survives: "
+    "もう出た -> 'Already left' (not 'He already left'); "
+    "戻ってきた -> 'Back again' (not 'She came back'). "
+    "Examples: 運転が下手 -> 'The driving is bad'; 分からない -> 'Not sure'; "
+    "事故だ -> 'There's been an accident'. "
     "Do NOT automatically assume the streamer is speaking as 'I', or that another player "
     "is 'he' or 'she'. If the Japanese clearly indicates a third person but not their gender, "
     "prefer the stated role/name; use 'they/them' only if a third-person referent is needed. "
@@ -328,13 +332,15 @@ class PlamoTranslator:
     ) -> str:
         messages: list[dict[str, str]] = []
         dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
-        for source, translation in dialogue_history:
-            messages.append({"role": "user", "content": source})
-            # Prior inferred pronouns must not contaminate new translations.
-            messages.append({
-                "role": "assistant",
-                "content": neutralize_unsupported_subjects(source, translation),
-            })
+        if not self.cfg.neutral_subjects:
+            for source, translation in dialogue_history:
+                messages.append({"role": "user", "content": source})
+                messages.append({
+                    "role": "assistant",
+                    "content": neutralize_unsupported_subjects(source, translation),
+                })
+        # In neutral mode, previous English may have guessed the speaker.
+        # Carry Japanese context without presenting those guesses as assistant examples.
         messages.append({"role": "user", "content": ja})
 
         memory = build_recent_context(
@@ -342,6 +348,12 @@ class PlamoTranslator:
             context_lines=self.cfg.context_lines,
             memory_lines=getattr(self.cfg, "memory_lines", 24),
         )
+        source_hint = ""
+        if self.cfg.neutral_subjects and dialogue_history:
+            previous = [source.strip()[:100] for source, _ in dialogue_history[-2:] if source.strip()]
+            if previous:
+                source_hint = ("\nRecent Japanese (context only, not speech to translate; "
+                               "never infer speaker gender from it): " + " / ".join(previous))
         fragment_hint = ""
         if (self.cfg.fragment_context and dialogue_history
                 and _needs_fragment_context(ja)):
@@ -357,7 +369,7 @@ class PlamoTranslator:
             "target_lang": "en",
             "context": _translation_context(self.vod_title, neutral_retry=neutral_retry) + (
                 "\n" + memory if memory else ""
-            ) + fragment_hint,
+            ) + source_hint + fragment_hint,
         }
         if hits := _current_glossary_matches(ja, self.vod_title, self.glossary):
             options["glossary"] = [

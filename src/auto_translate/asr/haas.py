@@ -56,7 +56,7 @@ class HaasASR:
         )
         self._reader.start()
         try:
-            response = self._read_response()
+            response = self._read_response(self.cfg.startup_timeout_s)
             status = json.loads(response)
         except Exception as exc:
             self.close()
@@ -119,13 +119,31 @@ class HaasASR:
         request_id = str(self.request_counter)
         pcm = base64.b64encode(pcm_int16.tobytes()).decode("ascii")
 
-        self.process.stdin.write(json.dumps({
-            "type": "chunk", "id": request_id, "seq": 0, "pcm": pcm,
-        }) + "\n")
-        self.process.stdin.write(json.dumps({
-            "type": "transcribe", "id": request_id, "sample_rate": 16000,
-        }) + "\n")
-        self.process.stdin.flush()
+        # A hung speech.cpp worker can block stdin.write as well as
+        # stdout.readline. Enforce one deadline across submission and decode.
+        # PrimaryASR retires the child after any timeout.
+        pipe = self.process.stdin
+        submitted = threading.Event()
+        write_errors = []
+        chunk = json.dumps({"type": "chunk", "id": request_id, "seq": 0, "pcm": pcm}) + "\n"
+        decode = json.dumps({"type": "transcribe", "id": request_id, "sample_rate": 16000}) + "\n"
+
+        def submit():
+            try:
+                pipe.write(chunk)
+                pipe.write(decode)
+                pipe.flush()
+            except (OSError, ValueError) as exc:
+                write_errors.append(exc)
+            finally:
+                submitted.set()
+
+        threading.Thread(target=submit, name="haas-stdin", daemon=True).start()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not submitted.wait(remaining):
+            raise TimeoutError("speech.cpp stdin submission deadline expired")
+        if write_errors:
+            raise RuntimeError(f"speech.cpp stdin failed: {write_errors[0]}") from write_errors[0]
 
         while True:
             remaining = deadline - time.monotonic()

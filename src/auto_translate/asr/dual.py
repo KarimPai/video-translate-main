@@ -76,6 +76,17 @@ class DualASR:
             self.selector = None
             log.warning("Selector unavailable; deterministic selection: %s", exc)
 
+    def release_selector(self):
+        """Reclaim the optional GPU selector first, retaining secondary ASR."""
+        with self.lock:
+            selector = self.selector
+            # A CPU selector consumes no GPU VRAM: retain it at soft pressure.
+            if selector is None or not getattr(selector, "gpu_layers", 0):
+                return
+            self.selector = None
+        log.warning("GPU pressure: releasing optional GPU transcript selector")
+        selector.close()
+
     def release(self):
         with self.lock:
             worker, selector = self.worker, self.selector
@@ -110,6 +121,10 @@ class DualASR:
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):
             return None
+        # Backpressure must not extend an otherwise usable primary transcript.
+        # Still allow rescue when Haas missed speech entirely.
+        if backlog() and (self.live or is_usable_transcript(primary)):
+            return None
         cancelled = threading.Event()
         finished = threading.Event()
         result = [None]
@@ -136,7 +151,7 @@ class DualASR:
             deadline = min(deadline, self.deadline(utt))
         while not finished.wait(.05):
             if (time.monotonic() >= deadline or generation() != utt.generation
-                    or (self.live and backlog())):
+                    or (backlog() and (self.live or is_usable_transcript(primary)))):
                 cancelled.set()
                 return None
         self.pending.join()
@@ -160,6 +175,8 @@ class DualASR:
         secondary_budget = (self.cfg.dual_asr.live_timeout_s if self.live
                             else self.cfg.dual_asr.vod_timeout_s)
         if self.live and (backlog() or time.monotonic() + secondary_budget > end):
+            return None
+        if not self.live and backlog() and is_usable_transcript(primary):
             return None
         if (self.mode == "selective" and primary_stop != "model_limit" and primary and len(primary) > 5
                 and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4):

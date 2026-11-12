@@ -90,7 +90,9 @@ class AsrConfig:
     haas_device: str = "Vulkan0"
     haas_decode_on_cpu: bool = False
     blocklist: list[str] = field(default_factory=list)
-    response_timeout_s: float = 30.0  # fail a stalled speech.cpp request promptly
+    response_timeout_s: float = 24.0  # per-utterance VOD recognition watchdog
+    live_response_timeout_s: float = 12.0  # prevent stalled Vulkan decode from delaying live cues
+    startup_timeout_s: float = 45.0  # model cold starts may take longer than decode
     retry_empty_speech: bool = True  # VOD only; no music-only speculative decoding
     retry_min_confidence: float = 0.80
     retry_min_duration_s: float = 0.6

@@ -273,8 +273,13 @@ def main() -> None:
         selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
     language_status = ("auto JA/EN (English passthrough)" if
                        cfg.dual_asr.language_routing and dual.worker else "Japanese only")
+    indonesian_status = (
+        "CPU Whisper Small" if dual.indonesian is not None
+        else "off / model not cached"
+    )
     print(f"ASR: Haas + {'Nemotron 3.5' if dual.worker else 'no secondary'} | "
-          f"Language: {language_status} | Selector: {selector_status} | "
+          f"Language: {language_status} | Indonesian: {indonesian_status} | "
+          f"Selector: {selector_status} | "
           f"PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
     budget.start(relieve_pressure)
     try:

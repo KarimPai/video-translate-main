@@ -1,3 +1,55 @@
+# Experimental Haas + Nemotron 3.5 + LFM-JP + PLaMo
+
+**Branch:** `feature/haas-nemotron-lfm-reconciler-20261113` — isolated from the previous stable dual-ASR branch.
+
+| Role | Model | Runtime / precision |
+| --- | --- | --- |
+| Primary Japanese ASR | Haas-ja-v1.0, 616M | speech.cpp Vulkan0 |
+| Secondary Japanese ASR | NVIDIA Nemotron 3.5 Streaming 0.6B | NeMo-Speech.cpp CUDA, official Q8_0 GGUF (~742 MB download) |
+| Japanese A/B/U reconciler | LiquidAI LFM2.5-1.2B-JP-202606 | llama.cpp Q4_K_M (~731 MB download), GPU when admitted, CPU otherwise |
+| JA → EN translation | PLaMo 3 Translate 2B | llama.cpp Q4_K_M with budget-based partial GPU offload |
+
+The two ASRs receive the same FireRedVAD-segmented Japanese audio. Nemotron uses its **own** NeMo-Speech.cpp runtime; it is NOT compatible with the existing speech.cpp secondary worker. The secondary runs through a persistent local HTTP server so the model is not reloaded on every utterance. Its transcription uses `language=ja-JP` and never directly translates audio into English.
+
+The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve Haas), using original Japanese hypotheses, recent Japanese and glossary context. It does not listen to audio and cannot guarantee a correct decision when both hypotheses are plausible. PLaMo retains the neutral-subject translation behavior. If Nemotron or the selector fails or cannot be admitted under the GPU budget, the system falls back to the existing Haas path rather than silently activating Qwen.
+
+## Windows NeMo-Speech.cpp prerequisite
+
+Nemotron requires an additional executable **nemo-speech.exe**. The existing speech.cpp installation does not provide it. Use the **official NVIDIA installer** described at https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/install.md . On Windows, its documented PowerShell installation is:
+
+```powershell
+irm https://github.com/NVIDIA/NeMo-Speech.cpp/raw/main/scripts/install.ps1 | iex
+```
+
+Inspect the installer and its dependencies before executing a downloaded script. Open a **new** terminal afterward, then confirm the binary and download the official Q8 model:
+
+```bat
+nemo-speech --version && nemo-speech doctor && nemo-speech pull nemotron-3.5
+```
+
+The optional server writes diagnostics to `logs/nemotron.log`; the reconciler writes to `logs/reconciler.log`; pipeline, VRAM and fallback details remain in `logs/run.log`. The model can take longer to initialize on its first download. CPU fallback is not automatic for Nemotron: if GPU admission fails, the optional ASR is disabled for that session while Haas remains active.
+
+## Approximate memory plan (decimal GB)
+
+| Component | Planning estimate of device VRAM |
+| --- | ---: |
+| Haas Vulkan | 0.7–1.1 |
+| Nemotron 3.5 Q8_0 CUDA | 0.9–1.5 |
+| LFM-JP reconciler Q4_K_M GPU | 0.9–1.4 |
+| PLaMo 2B Q4_K_M 12 GPU layers | 0.5–1.1 |
+| FireRedVAD, MPV, CUDA/Vulkan, desktop buffers | 0.8–1.5 |
+| **Combined indicative range, RTX VSR disabled** | **3.8–6.6** |
+
+These figures are not measured. The RTX 3070 hard policy targets at most **7.5 decimal GB** (soft shedding at 7.0, emergency at 7.3). RTX VSR, simultaneous CUDA allocations and Windows desktop usage can raise peaks. If GPU admission fails, LFM is attempted on CPU; if the optional Nemotron cannot fit, the pipeline runs Haas alone with PLaMo.
+
+After Windows installation and checking out this branch, run `uv sync`, then `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`, then `Start translate.bat`. The changes have not yet been measured on your RTX 3070; benchmark the same VOD passages against the previous Qwen secondary model before making it the default.
+
+---
+
+## Legacy notes: earlier Haas + Qwen experimental branch
+
+The following material documents the preceding dual-ASR experiment; model names, runtime requirements and download instructions in that historical section may no longer match this Nemotron branch.
+
 # Haas + Qwen dual Japanese ASR with PLaMo translation
 
 Feature branch `feature/haas-dual-asr-reconciliation` uses original 16 kHz mono FireRedVAD speech segments. Haas runs first. The secondary speech.cpp worker receives the same samples, generation and media interval. Both ASRs stay resident after admission. PLaMo receives one Japanese cue and produces the English MPV subtitle.

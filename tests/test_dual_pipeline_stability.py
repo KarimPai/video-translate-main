@@ -171,6 +171,26 @@ class AsrComparisonTests(unittest.TestCase):
         self.assertIn("negation", record["flags"])
         self.assertEqual(record["haas_elapsed_s"], 0.15)
 
+    def test_comparison_log_contains_utf8_transcripts_and_rotates(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from auto_translate.asr.diagnostics import append_comparison
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "asr-comparison.jsonl"
+            append_comparison({
+                "haas": "行く", "nemotron": "まだ行かない",
+                "chosen_by": "nemotron", "selector_called": True,
+            }, path=path)
+            payload = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(payload["haas"], "行く")
+            self.assertEqual(payload["nemotron"], "まだ行かない")
+            self.assertEqual(payload["chosen_by"], "nemotron")
+            with patch("auto_translate.asr.diagnostics._MAX_FILE_BYTES", 1):
+                append_comparison({"haas": "次", "nemotron": "次"}, path=path)
+            self.assertTrue((Path(td) / "asr-comparison.previous.jsonl").exists())
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["haas"], "次")
+
     def test_invalid_secondary_is_recorded_without_changing_primary(self):
         from auto_translate.asr.dual import DualASR
         from auto_translate.glossary import Glossary

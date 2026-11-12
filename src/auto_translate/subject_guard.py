@@ -139,7 +139,11 @@ def neutralize_unsupported_subjects(japanese: str, english: str) -> str:
 _FIRST_PERSON_IMPLIED = re.compile(
     r"思(?:う|います|って|った)|考えて(?:いる|ます)|"
     r"(?:(?:し|やり|行き|食べ|見|帰り|戻り|遊び|買い|使い|会い|寝)たい)"
-    r"|つもり|行ってきます|いただきます"
+    r"|つもり|行ってきます|いただきます|いただこう|"
+    r"欲しい|ほしい|欲しー|ほしー|"
+    r"ごめん(?:なさい)?|すみません|すいません|"
+    r"(?:あげる|あげたい|あげよう|渡してあげる|差し上げる)|"
+    r"(?:しよう|やろう|行こう|行きましょう|買おう|買おっ|取ろう)"
 )
 _FIRST_EN = re.compile(
     r"\b(?:I|I'm|I've|I'd|I'll|me|my|mine|myself|we|we're|we've|"

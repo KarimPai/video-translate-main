@@ -42,7 +42,7 @@ class ComparisonTests(unittest.TestCase):
                 selected(answer, "行く", "行け")
 
     def test_thresholds(self):
-        for cls, kwargs in [(GpuBudgetConfig, {"maximum_gb": 7.6}),
+        for cls, kwargs in [(GpuBudgetConfig, {"startup_headroom_gb": 0.1}),
                             (ReconcilerConfig, {"enabled": "false"}),
                             (DualAsrConfig, {"secondary_live_mode": "often"})]:
             with self.assertRaises(ValueError):
@@ -50,10 +50,12 @@ class ComparisonTests(unittest.TestCase):
 
     @patch("auto_translate.gpu_budget.subprocess.check_output")
     def test_device_memory(self, output):
-        output.return_value = "7000\n"
+        output.return_value = "7000,8192\n"
         self.assertAlmostEqual(used_gb(), 7.340032)
         budget = GpuBudget(GpuBudgetConfig())
-        self.assertFalse(budget.admits(.1))
+        self.assertAlmostEqual(budget.total, 8192 * 1048576 / 1e9)
+        self.assertTrue(budget.admits(.1))  # No absolute 7.5 GB cutoff.
+        self.assertFalse(budget.admits(1.2))  # Leaves startup headroom.
         output.side_effect = subprocess.TimeoutExpired("nvidia-smi", 2)
         self.assertFalse(budget.admits(0))
 
@@ -116,6 +118,7 @@ class PipelineSelectionTests(unittest.TestCase):
         self.assertEqual(self.run_stage("待て", "待って")[0].ja, "待て")
         self.dual.live = False
         self.budget.used = 7.15
+        self.budget.pressure_level = "critical"
         self.assertEqual(self.run_stage("待て", "待って")[0].ja, "待て")
         self.dual.worker.transcribe.assert_not_called()
 

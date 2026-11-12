@@ -269,8 +269,8 @@ def main() -> None:
     selector_status = "off"
     if dual.selector:
         placement = f"{dual.selector.gpu_layers} GPU layers requested" if dual.selector.gpu_layers else "CPU"
-        selector_status = f"Qwen3.5-0.8B Q4_K_M ({placement})"
-    print(f"ASR: Haas + {'Qwen3-ASR' if dual.worker else 'no secondary'} | "
+        selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
+    print(f"ASR: Haas + {'Nemotron 3.5' if dual.worker else 'no secondary'} | "
           f"Selector: {selector_status} | PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
     budget.start(relieve_pressure)
     try:

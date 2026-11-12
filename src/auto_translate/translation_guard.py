@@ -33,10 +33,10 @@ _NEGATIVE_EN_MEANING = re.compile(
 )
 # Compare numeric *values*, not surface digits: 100万 == 1 million,
 # 8400万 == 84 million, and 3億 == 300 million.
-_JP_VALUE = re.compile(r"\\d+(?:\\.\\d+)?(?:億|万|千)?")
+_JP_VALUE = re.compile(r"\d+(?:\.\d+)?(?:億|万|千)?")
 _EN_VALUE = re.compile(
-    r"(?<![a-z0-9])\\d[\\d,]*(?:\\.\\d+)?"
-    r"(?:\\s*(?:billion|million|thousand|bn|mm|m|k))?(?![a-z])",
+    r"(?<![a-z0-9])\d[\d,]*(?:\.\d+)?"
+    r"(?:\s*(?:billion|million|thousand|bn|mm|m|k))?(?![a-z])",
     re.I,
 )
 _JP_SCALE = {"億": Decimal(100_000_000), "万": Decimal(10_000),

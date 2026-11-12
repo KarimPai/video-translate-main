@@ -2,17 +2,29 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
+import urllib.error
 
 import numpy as np
 
 from ..text_filter import is_usable_transcript
-from .nemotron import NemotronASR
+from .nemotron import NemotronASR, LanguageTranscript
+from .language_router import classify_language
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import compare
 
 log = logging.getLogger(__name__)
 SECONDARY = "nemotron-3.5"
+
+
+@dataclass(frozen=True)
+class LanguageProbe:
+    """One Nemotron auto-language transcript, reused for Japanese comparison."""
+    text: str
+    language: str | None
+    route: str
+    elapsed_s: float
 
 
 class DualASR:
@@ -29,6 +41,10 @@ class DualASR:
         self.pending = None
         self.playback_position = lambda: None
         self.session_id = str(time.time_ns())
+        self.language_routing_supported = True
+        self.language_failures = 0
+        self.previous_english_end_s = None
+        self.previous_english_generation = None
         if not cfg.dual_asr.enabled or self.mode == "off":
             return
         try:
@@ -110,7 +126,82 @@ class DualASR:
                 self.generation = generation
             self.history.append(text[:160])
 
-    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
+    def preflight_language(self, utt, current=None):
+        """One fast auto-language Nemotron request before Japanese-only Haas.
+
+        Fail closed: unknown/failed language ID never bypasses translation.
+        Does not launch another model or replace the Japanese LFM selector.
+        """
+        if (not self.cfg.dual_asr.language_routing or
+                not self.language_routing_supported or self.worker is None or
+                (self.pending is not None and self.pending.is_alive()) or
+                utt.probe or utt.vad_confidence is None or
+                utt.vad_confidence < self.cfg.vad.threshold or
+                not len(utt.audio) or not np.isfinite(utt.audio).all() or
+                np.max(np.abs(utt.audio)) < 1e-5 or
+                self.budget.pressure_level == "critical"):
+            return None
+        if self.live:
+            remaining = self.deadline(utt) - time.monotonic()
+            if remaining < 0.75:
+                return None
+            timeout = min(1.5, self.cfg.dual_asr.live_timeout_s, remaining)
+        else:
+            timeout = min(3.0, self.cfg.dual_asr.vod_timeout_s)
+        started = time.perf_counter()
+        try:
+            detected = self.worker.transcribe_with_language(utt.audio, timeout=timeout)
+            if not isinstance(detected, LanguageTranscript):
+                raise ValueError("auto-language response has no structured language metadata")
+        except Exception as exc:
+            self.language_failures += 1
+            if isinstance(exc, (urllib.error.HTTPError, ValueError)) or self.language_failures >= 3:
+                self.language_routing_supported = False
+                log.warning("Nemotron language-ID unsupported/unreliable; reverting to original Japanese route: %s", exc)
+            else:
+                log.warning("Nemotron language-ID attempt failed; Japanese fallback: %s", exc)
+            return None
+        self.language_failures = 0
+        if current is not None and utt.generation != current():
+            return None
+        elapsed = time.perf_counter() - started
+        contiguous_english = (
+            self.previous_english_generation == utt.generation and
+            self.previous_english_end_s is not None and
+            0 <= utt.start_s - self.previous_english_end_s <= 6.0
+        )
+        route = classify_language(
+            detected.language, detected.text, utt.end_s - utt.start_s,
+            previous_english=contiguous_english,
+        )
+        result = LanguageProbe(detected.text, detected.language, route, elapsed)
+        log.info("Nemotron auto language %.2f-%.2fs detected=%s route=%s duration=%.3fs",
+                 utt.start_s, utt.end_s, detected.language or "unknown", route, elapsed)
+        if route == "english":
+            self.previous_english_end_s = utt.end_s
+            self.previous_english_generation = utt.generation
+            append_comparison({
+                "session_id": self.session_id,
+                "generation": utt.generation,
+                "start_s": round(utt.start_s, 3),
+                "end_s": round(utt.end_s, 3),
+                "haas": None,
+                "nemotron": detected.text,
+                "chosen": detected.text,
+                "chosen_by": "english_passthrough",
+                "detected_language": detected.language,
+                "language_route": "english_passthrough",
+                "haas_elapsed_s": None,
+                "nemotron_elapsed_s": round(elapsed, 3),
+                "selector_called": False,
+                "vad_confidence": utt.vad_confidence,
+            })
+        elif route == "japanese":
+            self.previous_english_end_s = None
+            self.previous_english_generation = None
+        return result
+
+    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):
@@ -130,7 +221,7 @@ class DualASR:
 
         def recognize():
             try:
-                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s)
+                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, prefetched)
             except Exception:
                 log.exception("Optional recognition failed at %.3fs", utt.start_s)
             finally:
@@ -151,7 +242,7 @@ class DualASR:
         self.pending.join()
         return result[0]
 
-    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
+    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
         """Return a selected original, or None to use the existing Haas path."""
         worker, selector = self.worker, self.selector
         if worker is None:
@@ -172,12 +263,19 @@ class DualASR:
         if not self.live and backlog() and is_usable_transcript(primary):
             return None
         if (self.mode == "selective" and primary_stop != "model_limit" and primary and len(primary) > 5
-                and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4):
+                and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4
+                and prefetched is None):
             return None
         try:
-            started = time.perf_counter()
-            secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
-            secondary_elapsed_s = time.perf_counter() - started
+            if (prefetched is not None and prefetched.route == "japanese"
+                    and is_usable_transcript(prefetched.text)):
+                secondary = prefetched.text
+                secondary_elapsed_s = prefetched.elapsed_s
+                log.debug("Reusing Nemotron auto-Japanese transcript at %.2fs", utt.start_s)
+            else:
+                started = time.perf_counter()
+                secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
+                secondary_elapsed_s = time.perf_counter() - started
             log.info("Nemotron ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
         except Exception as exc:
@@ -197,6 +295,10 @@ class DualASR:
                 "duration_s": round(utt.end_s - utt.start_s, 3),
                 "haas": primary,
                 "nemotron": secondary,
+                "detected_language": getattr(prefetched, "language", None),
+                "language_route": ("japanese_reconciled" if getattr(prefetched, "route", None) == "japanese"
+                                   else "uncertain_japanese_fallback" if prefetched is not None
+                                   else "japanese_forced"),
                 "chosen": selected_text,
                 "chosen_by": selected_by,
                 "haas_elapsed_s": (round(primary_elapsed_s, 3)

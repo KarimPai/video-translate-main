@@ -17,7 +17,7 @@ The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve
 
 **No fixed 7.5 GB application ceiling or forced playback stop.** The RTX 3070 retains its physical 8 GiB VRAM limit. `nvidia-smi` reports device-wide `memory.used,memory.total`, and admission uses the measured **free** memory rather than fixed used-memory thresholds. Model placement can use VRAM above 7.5 decimal GB when available.
 
-The pipeline reserves approximately 0.35 GB at startup for transient MPV/CUDA allocations. GPU selector shedding occurs only if measured device free memory falls to 0.30 GB or less; optional ASR is also released if free memory reaches 0.12 GB. These are **physical headroom guardrails**, not a fixed used-memory cap. The app **never stops MPV solely because total usage passes 7.5 GB**. Device OOM remains possible; Windows WDDM/driver allocations and RTX VSR may vary during playback.
+The pipeline reserves approximately 0.65 GB at startup for transient MPV/CUDA allocations. GPU selector shedding occurs only if measured device free memory falls to 0.55 GB or less; optional ASR is also released if free memory reaches 0.25 GB. These are **physical headroom guardrails**, not a fixed used-memory cap. The app **never stops MPV solely because total usage passes 7.5 GB**. Device OOM remains possible; Windows WDDM/driver allocations and RTX VSR may vary during playback.
 
 FireRedVAD now defaults to CPU (`[vad] device = "cpu"`) and uses the **same** FireRed streaming model, 10 ms frame probabilities, segmentation, thresholds, padding and seek resets. `device = "cuda"` remains available for A/B testing. CPU avoids establishing a PyTorch CUDA context for the tiny model and may free driver/buffer VRAM. The exact VRAM saving requires measurement.
 
@@ -27,9 +27,9 @@ Older local `config.toml` GPU fields `target_gb`, `optimization_threshold_gb`, `
 
 ```toml
 [gpu_budget]
-startup_headroom_gb = 0.35
-low_free_gb = 0.30
-emergency_free_gb = 0.12
+startup_headroom_gb = 0.65
+low_free_gb = 0.55
+emergency_free_gb = 0.25
 sample_interval_s = 2.0
 
 [vad]

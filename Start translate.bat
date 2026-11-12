@@ -8,7 +8,7 @@ if exist "%LLAMA_PATH_FILE%" (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
     )
 )
-title Haas + PLaMo 3 Translate 2B Retest
+title Haas + Nemotron 3.5 + LFM + PLaMo
 cd /d "%~dp0"
 if errorlevel 1 (
     echo ERROR: Cannot enter the project directory.
@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 echo.
 echo ========================================
-echo   Haas Japanese ASR + PLaMo 3 Translate
+echo   Haas + Nemotron Japanese Dual ASR
 echo ========================================
 echo.
 set "VIDEO_URL="
@@ -82,9 +82,14 @@ if errorlevel 1 (
     )
 )
 echo.
-echo Starting direct Japanese ASR with PLaMo 3 Translate 2B...
-echo Original 16 kHz audio, FireRedVAD, Haas + budget-admitted Qwen ASR, PLaMo translation.
+echo Starting Haas + Nemotron 3.5 ASR, LFM reconciler, PLaMo 3 Translate...
+echo Original 16 kHz audio, FireRedVAD, Haas + budget-admitted Nemotron ASR, LFM reconciliation, PLaMo translation.
 echo Active models, VRAM readings and fallback reasons: logs\run.log
+where nemo-speech >nul 2>nul
+if errorlevel 1 if not exist "%LOCALAPPDATA%\Programs\NeMoSpeech\bin\nemo-speech.exe" (
+    echo WARNING: NeMo-Speech.cpp not detected; secondary Nemotron will not run.
+    echo Install NVIDIA NeMo-Speech.cpp Windows release; see README.md.
+)
 echo.
 
 uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"

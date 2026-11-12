@@ -345,6 +345,16 @@ def find_mpv(configured: str) -> str:
     )
 
 
+def _live_buffer_seconds(span, player_pos):
+    """Available decoded media beyond the paused player, in its shared HLS epoch."""
+    if span is None:
+        return 0.0
+    first, end = span
+    # MPV can initially report zero for a playlist whose timestamps start hours in.
+    start = max(first, player_pos) if player_pos is not None else first
+    return max(0.0, end - start)
+
+
 def _mpv_media_url(ingest: Ingest) -> str:
     """Share media segments in live mode; preserve original VOD playback."""
     if ingest.source.live and ingest.video_out:
@@ -432,6 +442,8 @@ class MpvOutput:
             # YouTube video stream.
             "--cache=yes",
             "--demuxer-readahead-secs=120",
+            *([f"--cache-pause-wait={min(8.0, max(1.0, cfg.delay_s)):g}"]
+              if ingest.source.live else []),
             "--demuxer-max-bytes=1GiB",
             "--demuxer-max-back-bytes=1GiB",
             # Shared readers open the oldest available segment. Media PTS
@@ -924,20 +936,12 @@ class MpvOutput:
         self._last_direct_sample_at = time.monotonic()
 
         if self.ingest.source.live:
-            unpause_at = (
-                self.ingest.first_pts_at
-                + self.cfg.delay_s
-            )
-            log.info(
-                "live playback delay: %.1fs",
-                self.cfg.delay_s,
-            )
+            log.info("live media prebuffer target: %.1fs", self.cfg.delay_s)
         else:
             # Start the stream immediately, but keep MPV paused until the
             # translator has built a small lead. This is translation waiting,
             # not video prebuffering.
             self._now = self._session_start
-            unpause_at = None
 
             log.info(
                 "waiting for translation to reach %s (+%.0fs)",
@@ -950,6 +954,8 @@ class MpvOutput:
 
         paused = True
         invalid_polls = 0
+        last_buffer_end = None
+        buffer_updated_at = time.monotonic()
 
         while not self.stop.is_set():
 
@@ -959,20 +965,29 @@ class MpvOutput:
                     return
                 return
 
-            should_unpause = (
-                unpause_at is not None
-                and time.monotonic() >= unpause_at
-            )
-
-            if paused and unpause_at is None:
-                should_unpause = self._translation_ready()
+            should_unpause = False
+            if paused:
+                if self.ingest.source.live:
+                    span = self.ingest.live_audio_span
+                    if span and span[1] != last_buffer_end:
+                        last_buffer_end = span[1]
+                        buffer_updated_at = time.monotonic()
+                    elif time.monotonic() - buffer_updated_at >= 45:
+                        log.warning("live startup buffer stopped growing for 45s")
+                        self._recover_video_stream()
+                        return
+                    buffered_s = _live_buffer_seconds(span, self.ipc.get("time-pos"))
+                    should_unpause = buffered_s >= self.cfg.delay_s
+                    if should_unpause:
+                        log.info("live prebuffer ready: available=%.1fs target=%.1fs", buffered_s, self.cfg.delay_s)
+                else:
+                    should_unpause = self._translation_ready()
 
             # User input overrides the optional translation prebuffer. Never
             # force MPV back to pause immediately after its Play button is used.
             # Once manually playing, do not auto-pause for low translation lead.
             if paused and self.ipc.get("pause") is False:
                 paused = False
-                unpause_at = None
                 log.info(
                     "MPV manually started; continuing playback without "
                     "waiting for the translation buffer"
@@ -987,7 +1002,6 @@ class MpvOutput:
                 )
 
                 paused = False
-                unpause_at = None
 
                 log.info(
                     "mpv playing from %s",
@@ -1221,9 +1235,9 @@ class MpvOutput:
             drift = (clock.mapping_error - clock.initial_error
                      if clock.verified and clock.initial_error is not None else None)
             log.info("epoch_id=%d verified=%s audio_span=%s mpv_pts=%s mpv_audio_pts=%s "
-                     "player_av_delta_s=%s player_av_drift_s=%s delay_target_s=%.1f late_presented=%d late_dropped=%d",
+                     "player_av_delta_s=%s player_av_drift_s=%s media_ahead_s=%.1f delay_target_s=%.1f late_presented=%d late_dropped=%d",
                      clock.epoch_id, clock.verified, span, mpv_pos, audio, clock.mapping_error, drift,
-                     self.cfg.delay_s, self._late_shown, self._late_dropped)
+                     _live_buffer_seconds(span, audio), self.cfg.delay_s, self._late_shown, self._late_dropped)
         return result
 
     def _source_time_from_mpv(self, mpv_pos: float) -> float:

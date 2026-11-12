@@ -72,7 +72,7 @@ fallback_s = 0.0
 - **Speech sensitivity:** 0.45→0.38 threshold and 100→70 ms onset gate aim to recover quieter words and rapid reactions; the 200 ms sustained-speech requirement remains, with the existing high-confidence short-reply exception.
 - **Sentence completeness:** 200→320 ms speech padding, 500→550 ms end silence, and a longer quiet-point split search aim to avoid clipping beginnings/endings and splitting sentences early.
 - **VOD:** 14 s soft utterance cap / 16 s hard cap instead of 11 s / 12 s. Haas has full-context attention, but very long chunks can still lose words, so the hard cap remains bounded.
-- **Live:** 7 s soft / 8 s hard cap for the existing 9-second playback delay. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
+- **Live:** 7 s soft / 8 s hard cap for livestreams. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
 - **Anti-hallucination:** VAD-negative fallback probing stays **off**. Avoided enabling speculative extra decoding on music, and kept translation repeat/prompt-leak rejection.
 - **Overrides:** Your local `config.toml` continues to override these defaults. Check effective values in `logs\\run.log` under `FireRedVAD accuracy-first`.
 
@@ -133,7 +133,7 @@ The correction vocabulary is intentionally small to minimize false positive name
 - Worker failures are reported to the main runner instead of silently hanging. The queue watchdog excludes intentional VOD pause and audio read-ahead parking.
 - Session-only subtitles and processed-region caching are preserved, including reuse after backward seeking.
 - MPV safe hardware decode and the existing native OSC seekbar are preserved.
-- For live playback, the configured original delay remains **9 seconds** (not a hard subtitle timestamp offset).
+- For live playback, the default startup target is **20 seconds of buffered media**.
 
 ## Scope and limitations
 
@@ -167,7 +167,7 @@ CPU-only verification: `uv run --no-sync python -m unittest discover -s tests -p
 
 ## Livestream timing and validation
 
-Use the existing configuration. The default live startup delay is 9 seconds and
+Use the existing configuration. The default live startup target is 20 seconds of media ahead of playback. After a cache underrun MPV targets up to 8 seconds before resuming. Override the startup target with `[mpv] delay_s` or `--delay`. The setting
 `[mpv] live_late_window_s` defaults to 7. Keep FFmpeg and its companion
 `ffprobe.exe` on PATH. This change adds no Python packages or GPU models.
 

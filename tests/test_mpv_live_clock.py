@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from auto_translate.live_clock import Discontinuity, LiveMediaClock
-from auto_translate.output.mpv import MpvOutput
+from auto_translate.output.mpv import MpvOutput, _live_buffer_seconds
 
 
 class LiveMpvClockTests(unittest.TestCase):
@@ -29,6 +29,16 @@ class LiveMpvClockTests(unittest.TestCase):
         self.assertIsNone(self.sample(0, 1, 15260))
         self.assertIsNone(self.sample(float("nan"), 2))
         self.assertEqual(self.sample(0, 3), 0)
+
+    def test_startup_reserve_uses_available_media(self):
+        from auto_translate.config import MpvConfig
+        target = MpvConfig().delay_s
+        self.assertEqual(target, 20)
+        for pos in (0, None, 808):
+            self.assertLess(_live_buffer_seconds((808, 812.5), pos), target)
+            self.assertEqual(_live_buffer_seconds((808, 828), pos), target)
+        self.assertEqual(_live_buffer_seconds((808, 830), 825), 5)
+        self.assertEqual(_live_buffer_seconds(None, 808), 0)
 
     def test_pause_and_long_poll_gap(self):
         self.sample(15261, 1)

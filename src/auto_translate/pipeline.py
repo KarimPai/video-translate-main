@@ -145,10 +145,12 @@ def run_asr(
 
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
+        primary_elapsed_s = time.monotonic() - utt.timings.asr_start
         choice = (dual.select_segment(utt, text, vod_title,
                                       lambda: (in_q.qsize() > (1 if live else 5)
                                                or out_q.qsize() > (1 if live else 5)), get_generation,
-                                      getattr(asr, "last_stop", None))
+                                      getattr(asr, "last_stop", None),
+                                      primary_elapsed_s)
                   if dual is not None else None)
         if choice is not None:
             text = choice
@@ -675,7 +677,9 @@ def run(
         log.info("stopping (Ctrl+C)")
 
     finally:
-        # Always release ASR, PLaMo and MPV, including after a worker timeout.
+        # Stop producers and MPV first; never close Haas or PLaMo while
+        # an ASR/MT thread is still actively using the model.
+        stop.set()
         try:
             for out in outputs:
                 try:
@@ -685,7 +689,26 @@ def run(
         finally:
             try:
                 ingest.stop()
+            except Exception:
+                log.exception("ingest shutdown failed")
             finally:
+                # Ingest.run emits the audio EOF sentinel, which propagates
+                # VAD -> ASR -> MT. Give in-flight VOD requests time to finish.
+                grace_s = max(15.0, min(120.0,
+                    cfg.asr.response_timeout_s
+                    + cfg.dual_asr.vod_timeout_s
+                    + cfg.reconciler.vod_timeout_s
+                    + cfg.translate.timeout_s
+                    + cfg.translate.retry_timeout_s))
+                deadline = time.monotonic() + grace_s
+                for thread in threads:
+                    if thread.is_alive():
+                        thread.join(timeout=max(0., deadline - time.monotonic()))
+                active = [thread.name for thread in threads if thread.is_alive()]
+                if active:
+                    log.warning("shutdown grace expired; worker threads still active: %s", active)
+                else:
+                    log.info("all pipeline workers exited before model shutdown")
                 for label, worker in (("Haas", asr), ("PLaMo", translator)):
                     close = getattr(worker, "close", None)
                     if callable(close):

@@ -31,7 +31,7 @@ class ComparisonTests(unittest.TestCase):
             self.assertLess(compare(a, b, [])[0], 1)
 
     def test_contract(self):
-        for letter, label, expected in [("A", "haas", "行く"), ("B", "qwen", "行け"),
+        for letter, label, expected in [("A", "haas", "行く"), ("B", "nemotron", "行け"),
                                         ("U", "uncertain", "行く")]:
             record = selected(letter, "行く", "行け")
             self.assertEqual(record["selection"], label)
@@ -184,7 +184,8 @@ for line in sys.stdin:
             thread.join(2)
         self.assertEqual(requests[0]["grammar"], "root ::= [ABU]")
         self.assertEqual(requests[0]["max_tokens"], 4)
-        self.assertFalse(requests[0]["chat_template_kwargs"]["enable_thinking"])
+        self.assertNotIn("chat_template_kwargs", requests[0])
+        self.assertEqual("LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M", Reconciler.__module__ and __import__("auto_translate.asr.reconciler", fromlist=["MODEL"]).MODEL)
 
 
 class RecoveryTests(unittest.TestCase):

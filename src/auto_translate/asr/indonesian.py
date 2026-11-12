@@ -25,8 +25,8 @@ _OUTRO = re.compile(
 
 
 _NON_SPEECH = re.compile(
-    r"^\\s*[\\[(]?\\s*(?:music|instrumental|laugh(?:ter|s)?|applause|"
-    r"noise|sound effects?|silence)\\s*[\\])]?[.!?\\s]*$", re.I
+    r"^\s*[\[(]?\s*(?:music|instrumental|laugh(?:ter|s)?|applause|"
+    r"noise|sound effects?|silence)\s*[\])]?[.!?\s]*$", re.I
 )
 
 @dataclass(frozen=True)

@@ -185,7 +185,8 @@ for line in sys.stdin:
         self.assertEqual(requests[0]["grammar"], "root ::= [ABU]")
         self.assertEqual(requests[0]["max_tokens"], 4)
         self.assertNotIn("chat_template_kwargs", requests[0])
-        self.assertEqual("LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M", Reconciler.__module__ and __import__("auto_translate.asr.reconciler", fromlist=["MODEL"]).MODEL)
+        self.assertEqual(__import__("auto_translate.asr.reconciler", fromlist=["MODEL"]).MODEL,
+                         "LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M")
 
 
 class RecoveryTests(unittest.TestCase):

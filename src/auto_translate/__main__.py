@@ -137,7 +137,12 @@ def main() -> None:
     from .asr.dual import DualASR
     from dataclasses import replace
     budget = GpuBudget(cfg.gpu_budget)
-    primary_cfg = cfg.asr if budget.admits(1.35) else replace(cfg.asr, haas_device="cpu")
+    decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
+                      if source.live else cfg.asr.response_timeout_s)
+    timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
+    primary_cfg = timed_cfg if budget.admits(1.35) else replace(timed_cfg, haas_device="cpu")
+    log.info("Haas per-cue timeout=%.1fs (startup timeout=%.1fs)",
+             decode_timeout, timed_cfg.startup_timeout_s)
     log.info("Primary Haas device=%s; GPU target %.1f decimal GB",
              primary_cfg.haas_device, budget.cfg.target_gb)
     t0 = time.perf_counter()
@@ -244,12 +249,22 @@ def main() -> None:
             raise
 
     def relieve_pressure():
-        dual.release()
-        if budget.used is not None and budget.used >= budget.cfg.maximum_gb:
+        used = budget.used
+        if used is None or used >= budget.cfg.emergency_threshold_gb:
+            dual.release()
+        elif used >= budget.cfg.optimization_threshold_gb:
+            dual.release_selector()
+        if used is not None and used >= budget.cfg.maximum_gb:
             used = budget.refresh()
             if used is not None and used >= budget.cfg.maximum_gb:
                 log.error("Device memory still over maximum after optional model release; stopping")
                 stop.set()
+
+    # MPV/VSR allocate GPU surfaces AFTER optional model startup. Recheck
+    # after the player is ready rather than waiting for the monitor's tick.
+    budget.refresh()
+    if budget.used is None or budget.used >= budget.cfg.optimization_threshold_gb:
+        relieve_pressure()
 
     selector_status = "off"
     if dual.selector:

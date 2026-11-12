@@ -1,9 +1,7 @@
 import logging
-import subprocess
 import threading
 import time
 from collections import deque
-from dataclasses import replace
 
 import numpy as np
 
@@ -35,8 +33,6 @@ class DualASR:
             # Admission includes MPV, VAD, model scratch and Windows headroom.
             if not budget.admits(1.7):
                 raise RuntimeError("insufficient measured GPU headroom for secondary ASR")
-            if not budget.admits(1.7):
-                raise RuntimeError("GPU admission changed during model download")
             self.worker = NemotronASR(device="cuda:0")
             if not budget.admits(0.5):
                 raise RuntimeError("secondary ASR exceeded its startup reservation")
@@ -67,7 +63,7 @@ class DualASR:
             log.info("Insufficient GPU headroom for LFM2.5-1.2B-JP; selecting on CPU")
         try:
             self.selector = Reconciler(0)
-            log.info("Qwen3.5-0.8B transcript selector ready; CPU")
+            log.info("LFM2.5-1.2B-JP transcript selector ready; CPU")
         except Exception as exc:
             self.selector = None
             log.warning("Selector unavailable; deterministic selection: %s", exc)

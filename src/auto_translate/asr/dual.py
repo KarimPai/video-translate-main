@@ -174,7 +174,7 @@ class DualASR:
                 and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4):
             return None
         try:
-            qwen = worker.transcribe(utt.audio, timeout=secondary_budget)
+            secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
             self.release()
@@ -182,22 +182,22 @@ class DualASR:
         if current and current() != utt.generation:
             return ""
         log.debug("ASR generation=%d %.3f-%.3f Haas=%r Nemotron=%r",
-                  utt.generation, utt.start_s, utt.end_s, primary, qwen)
-        if not is_usable_transcript(qwen):
+                  utt.generation, utt.start_s, utt.end_s, primary, secondary)
+        if not is_usable_transcript(secondary):
             return None
-        result = primary if is_usable_transcript(primary) else qwen
+        result = primary if is_usable_transcript(primary) else secondary
         if (primary_stop == "model_limit" and worker.last_stop == "complete"
-                and qwen.startswith(primary) and len(qwen) > len(primary)):
-            result = qwen
-        terms = self.glossary.find(primary + " " + qwen)
-        score, flags = compare(primary, qwen, terms)
+                and secondary.startswith(primary) and len(secondary) > len(primary)):
+            result = secondary
+        terms = self.glossary.find(primary + " " + secondary)
+        score, flags = compare(primary, secondary, terms)
         if score < 1 and primary:
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
             timeout = min(end - time.monotonic(), self.cfg.reconciler.live_timeout_s
                           if self.live else self.cfg.reconciler.vod_timeout_s)
             if selector and timeout >= 0.25 and not (self.live and backlog()):
                 try:
-                    result = selector.choose(primary, qwen, {
+                    result = selector.choose(primary, secondary, {
                         "title_channel": title[:200], "recent_ja": context,
                         "glossary": terms[:12], "vad_probability": utt.vad_confidence,
                         "haas_stop": primary_stop, "secondary_stop": worker.last_stop,

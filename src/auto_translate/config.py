@@ -108,14 +108,28 @@ class AsrConfig:
 class DualAsrConfig:
     enabled: bool = True
     language_routing: bool = True  # Nemotron auto-language English passthrough
+    indonesian_routing: bool = True  # CPU Whisper Small for Zeta/Indonesian
+    indonesian_model: str = "small"  # multilingual Whisper; cached before running
+    indonesian_cpu_threads: int = 4
+    indonesian_min_confidence: float = 0.65
+    indonesian_min_margin: float = 0.20
+    indonesian_min_duration_s: float = 1.2
     secondary_live_mode: str = "selective"
     secondary_vod_mode: str = "all"
     live_timeout_s: float = 2.0
     vod_timeout_s: float = 25.0
 
     def __post_init__(self):
-        if type(self.language_routing) is not bool:
-            raise ValueError("language_routing must be boolean")
+        if type(self.language_routing) is not bool or type(self.indonesian_routing) is not bool:
+            raise ValueError("language routing flags must be boolean")
+        if not self.indonesian_model or not isinstance(self.indonesian_model, str):
+            raise ValueError("indonesian_model must be a nonempty Whisper model name")
+        if type(self.indonesian_cpu_threads) is not int or not 1 <= self.indonesian_cpu_threads <= 8:
+            raise ValueError("indonesian_cpu_threads must be between 1 and 8")
+        if (not 0.5 <= self.indonesian_min_confidence <= 1.0
+                or not 0.0 <= self.indonesian_min_margin <= 0.5
+                or not 0.4 <= self.indonesian_min_duration_s <= 10.0):
+            raise ValueError("invalid Indonesian Whisper language-ID gate settings")
         for mode in (self.secondary_live_mode, self.secondary_vod_mode):
             if mode not in ("off", "selective", "all"):
                 raise ValueError("secondary mode must be off, selective or all")

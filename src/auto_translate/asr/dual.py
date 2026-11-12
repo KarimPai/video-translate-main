@@ -132,7 +132,8 @@ class DualASR:
         Fail closed: unknown/failed language ID never bypasses translation.
         Does not launch another model or replace the Japanese LFM selector.
         """
-        if (not self.cfg.dual_asr.language_routing or
+        if (not self.cfg.dual_asr.enabled or
+                not self.cfg.dual_asr.language_routing or
                 not self.language_routing_supported or self.worker is None or
                 (self.pending is not None and self.pending.is_alive()) or
                 utt.probe or utt.vad_confidence is None or

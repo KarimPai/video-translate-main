@@ -188,6 +188,32 @@ class AsrComparisonTests(unittest.TestCase):
                          "haas_secondary_unusable")
 
 
+class ShutdownCancellationTests(unittest.TestCase):
+    def test_queued_asr_is_discarded_after_player_close(self):
+        import threading
+        stop = threading.Event()
+        stop.set()
+        aq, tq = queue.Queue(), queue.Queue()
+        aq.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
+        aq.put(None)
+        worker = Mock()
+        run_asr(worker, aq, tq, stop=stop)
+        worker.transcribe.assert_not_called()
+        self.assertEqual(list(tq.queue), [None])
+
+    def test_queued_translation_is_discarded_after_player_close(self):
+        import threading
+        stop = threading.Event()
+        stop.set()
+        tq, sq = queue.Queue(), queue.Queue()
+        tq.put(Transcript(2, 3, "待って"))
+        tq.put(None)
+        worker = Mock(memory_lines=0)
+        run_translate(worker, 0, tq, sq, stop=stop)
+        worker.translate.assert_not_called()
+        self.assertEqual(list(sq.queue), [None])
+
+
 class ShutdownOrderingTests(unittest.TestCase):
     def test_models_close_only_after_in_flight_pipeline_threads_exit(self):
         import threading

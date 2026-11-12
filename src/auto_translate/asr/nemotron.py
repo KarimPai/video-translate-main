@@ -1,4 +1,4 @@
-"""Optional Japanese Nemotron ASR using NVIDIA NeMo-Speech.cpp local HTTP server.
+"""Multilingual Nemotron ASR using NVIDIA NeMo-Speech.cpp local HTTP server.
 
 This is deliberately a separate owned process from speech.cpp (Haas). It
 starts once per session, preserving the existing VAD timestamps and subtitles.
@@ -14,6 +14,7 @@ import time
 import urllib.request
 import uuid
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -52,9 +53,15 @@ def _wav16(audio):
     return buffer.getvalue()
 
 
-def _multipart(audio_wav):
+@dataclass(frozen=True)
+class LanguageTranscript:
+    text: str
+    language: str | None = None
+
+
+def _multipart(audio_wav, *, language="ja-JP", response_format="json"):
     boundary = "----jp-asr-" + uuid.uuid4().hex
-    fields = [("language", "ja-JP"), ("response_format", "json")]
+    fields = [("language", language), ("response_format", response_format)]
     data = bytearray()
     for key, value in fields:
         data.extend((f"--{boundary}\r\nContent-Disposition: form-data; "
@@ -100,26 +107,45 @@ class NemotronASR:
             self.close()
             raise
 
-    def transcribe(self, audio, timeout=None):
+    def _request_transcription(self, audio, timeout, *, language, response_format):
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError("Nemotron ASR server exited")
         if timeout is None:
             timeout = 25.0
         if timeout <= 0:
             raise TimeoutError("Nemotron deadline exceeded")
-        payload, boundary = _multipart(_wav16(audio))
+        payload, boundary = _multipart(
+            _wav16(audio), language=language, response_format=response_format
+        )
         request = urllib.request.Request(
             self.url + "/v1/audio/transcriptions",
             data=payload,
             headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
-            method="POST")
+            method="POST",
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             result = json.load(response)
-        transcript = result.get("text")
-        if not isinstance(transcript, str):
-            raise ValueError("Nemotron returned no Japanese transcript text")
+        if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+            raise ValueError("Nemotron returned no transcription text")
         self.last_stop = "unknown"
-        return transcript.strip()
+        return result
+
+    def transcribe(self, audio, timeout=None):
+        """Previous forced-Japanese route; keep compatibility and accuracy fallback."""
+        result = self._request_transcription(
+            audio, timeout, language="ja-JP", response_format="json"
+        )
+        return result["text"].strip()
+
+    def transcribe_with_language(self, audio, timeout=None):
+        """Single auto-language inference; language is unknown if metadata absent."""
+        result = self._request_transcription(
+            audio, timeout, language="auto", response_format="verbose_json"
+        )
+        language = result.get("language")
+        if not isinstance(language, str) or not language.strip():
+            language = None
+        return LanguageTranscript(result["text"].strip(), language)
 
     def close(self):
         process = self.process

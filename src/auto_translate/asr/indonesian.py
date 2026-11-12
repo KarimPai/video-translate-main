@@ -24,6 +24,11 @@ _OUTRO = re.compile(
 )
 
 
+_NON_SPEECH = re.compile(
+    r"^\\s*[\\[(]?\\s*(?:music|instrumental|laugh(?:ter|s)?|applause|"
+    r"noise|sound effects?|silence)\\s*[\\])]?[.!?\\s]*$", re.I
+)
+
 @dataclass(frozen=True)
 class IndonesianResult:
     """Accepted Indonesian speech; text is English, possibly empty on failure."""
@@ -119,7 +124,7 @@ class IndonesianWhisper:
         )
         en = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
         if (not en or not is_usable_transcript(en) or _JAPANESE.search(en)
-                or _OUTRO.fullmatch(en)):
+                or _OUTRO.fullmatch(en) or _NON_SPEECH.fullmatch(en)):
             en = ""
         elapsed = time.monotonic() - started
         log.info("Indonesian Whisper route audio=%.2fs confidence=%.3f "

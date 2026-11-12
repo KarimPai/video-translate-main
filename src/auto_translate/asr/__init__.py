@@ -18,6 +18,7 @@ class PrimaryASR:
         self.closed = False
         self.lock = threading.Lock()
         self.failures = 0
+        self.last_failed = False
 
     def transcribe(self, audio, probe=False):
         with self.lock:
@@ -35,6 +36,7 @@ class PrimaryASR:
                     worker.close()
             self.failures += 1
             self.last_stop = None
+            self.last_failed = True
             if self.closed or self.failures >= 3:
                 raise
             # A transient Vulkan timeout should not immediately force slow
@@ -47,6 +49,7 @@ class PrimaryASR:
                             self.cfg.haas_device, exc)
             return ""
         self.failures = 0
+        self.last_failed = False
         self.last_stop = worker.last_stop
         return result
 

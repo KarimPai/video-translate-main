@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..live_clock import Discontinuity, LiveMediaClock
 from ..config import MpvConfig
 from .rtx_vsr import (
     VSR_FILTER, VSR_LABEL, VsrPerformanceGuard,
@@ -392,8 +393,10 @@ class MpvOutput:
         self._uses_original_timeline = False
         self._last_direct_pos: float | None = None
         self._last_direct_sample_at = 0.0
-        self._last_live_mpv_pos: float | None = None
-        self._last_live_sample_at: float | None = None
+        self._live_clock = LiveMediaClock(ingest.generation)
+        self._live_diagnostic_at = 0.0
+        self._late_shown = self._late_dropped = 0
+        self._last_emergency_s = float("-inf")
         self._manually_paused = False
         self._vsr_launch_args = launch_options(cfg.rtx_vsr, cfg.hwdec, sys.platform)
         self._vsr_requested = bool(self._vsr_launch_args)
@@ -431,8 +434,8 @@ class MpvOutput:
             "--demuxer-readahead-secs=120",
             "--demuxer-max-bytes=1GiB",
             "--demuxer-max-back-bytes=1GiB",
-            # Start near the HLS live edge, matching FFmpeg's normal -3.
-            # Index 0 started MPV at an older segment than the ASR audio.
+            # Shared readers open the oldest available segment. Media PTS
+            # identifies content even if the playlist rotates between opens.
             *(
                 [
                     "--demuxer-lavf-o=live_start_index=0"
@@ -594,7 +597,7 @@ class MpvOutput:
         return self._manually_paused
 
     def show(self, sub: Subtitle) -> None:
-        if sub.end_s < self._session_start:
+        if not self.ingest.source.live and sub.end_s < self._session_start:
             return
 
         if not sub.en.strip():
@@ -622,15 +625,19 @@ class MpvOutput:
         if now is not None and now > until:
             late_by = now - until
             allowed_late = max(0.0, getattr(getattr(self, "cfg", None), "live_late_window_s", self.LIVE_LATE_WINDOW_S))
-            if self.ingest.source.live and late_by <= allowed_late:
+            if (self.ingest.source.live and late_by <= allowed_late
+                    and now >= getattr(self, "_last_emergency_s", float("-inf")) + self.LIVE_LATE_DISPLAY_S):
                 log.warning(
                     "displaying late live subtitle now: "
                     "generation=%d speech_end=%.3f mpv_clock=%.3f late=%.3fs",
                     sub.generation, sub.end_s, now, late_by,
                 )
+                self._late_shown = getattr(self, "_late_shown", 0) + 1
+                self._last_emergency_s = now
                 show_from = now
                 until = now + self.LIVE_LATE_DISPLAY_S
             else:
+                self._late_dropped = getattr(self, "_late_dropped", 0) + 1
                 log.warning(
                     "dropping expired subtitle: generation=%d "
                     "speech_end=%.3f mpv_clock=%.3f late=%.3fs live=%s",
@@ -641,6 +648,11 @@ class MpvOutput:
 
         line = _Line(sub, show_from, until)
         with self._lock:
+            if self.ingest.source.live:
+                if sub.generation != self.ingest.generation:
+                    return
+                # Bound memory during long manual pauses or unavailable player PTS.
+                del self._lines[:-255]
             self._lines.append(line)
         self._subtitle_ready.set()
 
@@ -797,8 +809,8 @@ class MpvOutput:
                 # open its existing playlist, not a separately resolved YouTube
                 # live rendition that may begin at another HLS segment.
                 if not self.ingest.wait_video_ready():
-                    log.error("shared live HLS playlist unavailable; stopping")
-                    self.stop.set()
+                    log.warning("shared live HLS playlist unavailable")
+                    self._recover_video_stream()
                     return
                 log.info("MPV live: loading same local HLS playlist as ASR")
             video_url = _mpv_media_url(self.ingest)
@@ -824,7 +836,7 @@ class MpvOutput:
                     "MPV could not load shared live HLS; refusing an "
                     "unsynchronized original-source fallback"
                 )
-                self.stop.set()
+                self._recover_video_stream()
                 return
 
             if not loaded and not self.ingest.video_out:
@@ -879,7 +891,12 @@ class MpvOutput:
                         break
                     time.sleep(0.05)
 
+        audio_deadline = time.monotonic() + 45
         while not self.ingest.first_pts_ready.wait(0.2):
+            if self.ingest.source.live and (self.ingest.video_failed.is_set() or time.monotonic() > audio_deadline):
+                log.warning("live audio timestamp unavailable during startup")
+                self._recover_video_stream()
+                return
             if self.stop.is_set():
                 return
 
@@ -894,8 +911,7 @@ class MpvOutput:
         self._mpv_anchor = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
-        self._last_live_mpv_pos = None
-        self._last_live_sample_at = None
+        self._live_clock = LiveMediaClock(self.ingest.generation)
         current_pos = self.ipc.get("time-pos")
         # An HLS live clock may initially report 0 (or a placeholder) and
         # jump to the playlist's multi-hour media PTS after file-loaded.
@@ -933,6 +949,7 @@ class MpvOutput:
             return
 
         paused = True
+        invalid_polls = 0
 
         while not self.stop.is_set():
 
@@ -980,9 +997,28 @@ class MpvOutput:
             self._manually_paused = (
                 not paused and self.ipc.get("pause") is True
             )
-            if (pos := self.ipc.get("time-pos")) is not None:
-                if self.ingest.source.live:
-                    self._sample_live_clock(float(pos), time.monotonic())
+            pos = self.ipc.get("time-pos")
+            if self.ingest.source.live:
+                try:
+                    pos = self._sample_live_clock(pos, time.monotonic())
+                except Discontinuity as exc:
+                    log.warning("epoch_id=%d recovery_reason=%s", self.ingest.generation, exc)
+                    self._recover_video_stream()
+                    return
+                if pos is None:
+                    self._now = None
+                    self._clear_overlay()
+                    if paused or self._manually_paused or self.ipc.get("paused-for-cache"):
+                        invalid_polls = 0
+                    else:
+                        invalid_polls += 1
+                        if invalid_polls >= 300:
+                            log.warning("epoch_id=%d recovery_reason=unverified_player_pts", self.ingest.generation)
+                            self._recover_video_stream()
+                            return
+                else:
+                    invalid_polls = 0
+            if pos is not None:
                 if self._direct_video_loaded and not self.ingest.source.live:
                     sampled_at = time.monotonic()
                     if self._last_direct_pos is not None:
@@ -1013,7 +1049,7 @@ class MpvOutput:
                     self._last_direct_pos = float(pos)
                     self._last_direct_sample_at = sampled_at
 
-                if self._mpv_anchor is None:
+                if self._mpv_anchor is None and not self.ingest.source.live:
                     self._mpv_anchor = float(pos)
                     record_session_anchor(
                         self.ingest.source.timeline,
@@ -1034,18 +1070,27 @@ class MpvOutput:
                 self._now = self._source_time_from_mpv(float(pos))
                 if not self.ingest.source.live:
                     self.ingest.set_playback_position(self._now)
-                if self.ingest.source.duration is not None:
+                if not self.ingest.source.live and self.ingest.source.duration is not None:
                     self._now = min(self._now, self.ingest.source.duration)
 
                 self._render(self._now)
 
-            if self._replay_requested():
+            if self.ingest.source.live:
+                while not self.ipc.events.empty():
+                    event = self.ipc.events.get_nowait()
+                    if event.get("event") == "start-file" or (
+                        event.get("event") == "end-file" and event.get("reason") in ("error", "eof")
+                    ):
+                        log.warning("epoch_id=%d recovery_reason=player_%s", self.ingest.generation, event["event"])
+                        self._recover_video_stream()
+                        return
+            elif self._replay_requested():
                 if self._now is not None and self.ipc.get("eof-reached"):
                     log.info("replay requested after VOD end; restarting from beginning")
                     if self._jump(self.ingest.source.start_s - self._now):
                         return
 
-            if (delta := self._jump_request()) and self._jump(delta):
+            if not self.ingest.source.live and (delta := self._jump_request()) and self._jump(delta):
                 return
 
             self._check_vsr_health()
@@ -1080,11 +1125,14 @@ class MpvOutput:
 
         self.ipc.command("set_property", "pause", True)
         self._now = None
-        self._shown = ""
+        self._clear_overlay()
+        if self.ingest.source.live:
+            restart_at = 0.0
+        self.ingest.request_restart(restart_at)
+        self._last_emergency_s = float("-inf")
         with self._lock:
             self._lines.clear()
 
-        self.ingest.request_restart(restart_at)
         if self.ingest.source.live and self.ingest.video_out:
             # Reopen the fresh shared playlist, never continue playing the
             # disconnected HLS session while audio restarts independently.
@@ -1158,35 +1206,25 @@ class MpvOutput:
             return False
         return self._restart_audio_at(target, seek_video=True)
 
-    def _sample_live_clock(self, mpv_pos: float, sampled_at: float) -> None:
-        """Keep PCM-relative live subtitle time continuous across HLS PTS jumps.
+    def _clear_overlay(self) -> None:
+        if self._shown:
+            self.ipc.command("osd-overlay", id=OVERLAY_ID, format="none", data="")
+            self._shown = ""
 
-        Some YouTube HLS streams initially expose time-pos=0 in MPV and then
-        switch to a multi-hour media timestamp. Rebase on that discontinuity
-        rather than treating new subtitles as hours late. Ordinary realtime
-        advancement, including long scheduler stalls, must not trigger rebasing.
-        """
-        previous_pos = self._last_live_mpv_pos
-        previous_at = self._last_live_sample_at
-        if previous_pos is not None and previous_at is not None:
-            elapsed = max(0.0, sampled_at - previous_at)
-            raw_step = mpv_pos - previous_pos
-            if raw_step < -5.0 or raw_step > elapsed + 5.0:
-                source_now = (
-                    self._now
-                    if self._now is not None
-                    else self._clock_source_anchor
-                )
-                self._mpv_anchor = (
-                    mpv_pos - (source_now - self._clock_source_anchor)
-                )
-                log.warning(
-                    "MPV live clock discontinuity: %.3f -> %.3f "
-                    "(elapsed=%.3fs); reanchored subtitles at %.3fs",
-                    previous_pos, mpv_pos, elapsed, source_now,
-                )
-        self._last_live_mpv_pos = mpv_pos
-        self._last_live_sample_at = sampled_at
+    def _sample_live_clock(self, mpv_pos, sampled_at):
+        span = self.ingest.live_audio_span
+        audio = self.ipc.get("audio-pts")
+        clock = self._live_clock
+        result = clock.observe(mpv_pos, audio, span, sampled_at)
+        if sampled_at >= self._live_diagnostic_at:
+            self._live_diagnostic_at = sampled_at + 30
+            drift = (clock.mapping_error - clock.initial_error
+                     if clock.verified and clock.initial_error is not None else None)
+            log.info("epoch_id=%d verified=%s audio_span=%s mpv_pts=%s mpv_audio_pts=%s "
+                     "player_av_delta_s=%s player_av_drift_s=%s delay_target_s=%.1f late_presented=%d late_dropped=%d",
+                     clock.epoch_id, clock.verified, span, mpv_pos, audio, clock.mapping_error, drift,
+                     self.cfg.delay_s, self._late_shown, self._late_dropped)
+        return result
 
     def _source_time_from_mpv(self, mpv_pos: float) -> float:
         """Map MPV clock to absolute audio/subtitle timestamp.
@@ -1195,14 +1233,7 @@ class MpvOutput:
         timeline; anchoring again on each audio restart accumulates drift
         after repeated seeks. Only the fMP4 fallback needs a relative clock.
         """
-        if self.ingest.source.live:
-            # MPV HLS time-pos may be a playlist timestamp, whereas FFmpeg
-            # advances the ASR clock from decoded PCM seconds. Anchor the two
-            # clocks to their initial playback positions, not absolute PTS.
-            if self._mpv_anchor is None:
-                return self._clock_source_anchor
-            return self._clock_source_anchor + mpv_pos - self._mpv_anchor
-        if getattr(self, "_uses_original_timeline", False):
+        if self.ingest.source.live or getattr(self, "_uses_original_timeline", False):
             return mpv_pos
         if self._mpv_anchor is None:
             return mpv_pos
@@ -1210,7 +1241,7 @@ class MpvOutput:
 
     def _mpv_time_from_source(self, source_pos: float) -> float:
         """Inverse of _source_time_from_mpv, including for repeated seeks."""
-        if getattr(self, "_uses_original_timeline", False):
+        if self.ingest.source.live or getattr(self, "_uses_original_timeline", False):
             return source_pos
         if self._mpv_anchor is None:
             return source_pos

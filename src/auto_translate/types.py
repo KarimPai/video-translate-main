@@ -1,7 +1,6 @@
 """Data passed between pipeline stages.
 
-Media timestamps (`start_s` / `end_s`) are seconds since ingest start, computed from the
-PCM sample count. Wall-clock times live only in `Timings` and are used for latency logging.
+Media timestamps (`start_s` / `end_s`) are shared local media PTS for MPV live playback, or source seconds for VOD. Wall-clock times live only in `Timings` and are used for latency logging.
 """
 
 from dataclasses import dataclass, field
@@ -30,6 +29,7 @@ class AudioChunk:
     read_at: float  # time.monotonic() when it was read from ffmpeg
     reset: bool = False  # discontinuity (vod jump): audio continues at start_sample, pcm is empty
     generation: int = 0
+    timestamped: bool = False  # start_sample is a decoded live frame PTS in 1/16000 s
 
 @dataclass
 class AudioProgress:

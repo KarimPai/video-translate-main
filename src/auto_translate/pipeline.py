@@ -339,6 +339,7 @@ class Stats:
     total_max_s: float = 0.0
     max_q: dict[str, int] = field(default_factory=dict)
     recent_lag_s: deque[float] = field(default_factory=lambda: deque(maxlen=512))
+    stage_lags: deque = field(default_factory=lambda: deque(maxlen=512))
     deadline_misses: int = 0
 
     def add(self, sub: Subtitle, deadline_s: float | None = None) -> None:
@@ -351,6 +352,11 @@ class Stats:
         self.mt_sum_s += mt_s
         self.total_sum_s += total_s
         self.recent_lag_s.append(total_s)
+        if deadline_s is not None and tm.audio_read and tm.segmented:
+            self.stage_lags.append((
+                max(0, tm.segmented - tm.audio_read), asr_s, mt_s,
+                max(0, time.monotonic() - tm.audio_read),
+            ))
         if deadline_s is not None and total_s > deadline_s:
             self.deadline_misses += 1
         self.asr_max_s = max(self.asr_max_s, asr_s)
@@ -373,8 +379,16 @@ class Stats:
 
         sorted_lag = sorted(self.recent_lag_s)
         p95 = sorted_lag[min(len(sorted_lag) - 1, int(len(sorted_lag) * 0.95))]
+        stages = ""
+        if self.stage_lags:
+            for name, values in zip(("vad", "asr", "translation", "cue_ready"), zip(*self.stage_lags)):
+                ordered = sorted(values)
+                for percent in (50, 95, 99):
+                    if len(ordered) >= {50: 2, 95: 20, 99: 100}[percent]:
+                        rank = (len(ordered) * percent + 99) // 100 - 1
+                        stages += f"{name}_p{percent}={ordered[rank]:.3f}s "
         return (
-            f"{self.lines} lines | "
+            f"{self.lines} lines | {stages}"
             f"pipeline p95 {p95:.2f}s, deadline misses {self.deadline_misses} | "
             f"{fmt('asr', self.asr_sum_s, self.asr_max_s)} | "
             f"{fmt('mt', self.mt_sum_s, self.mt_max_s)} | "

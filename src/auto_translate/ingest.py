@@ -12,6 +12,8 @@ MPV video/audio stream-copy output is kept separate from audio processing.
 
 import functools
 import http.server
+import json
+import math
 import logging
 import queue
 import re
@@ -28,6 +30,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from .config import IngestConfig, SeparationConfig, DeepFilterConfig
+from .live_clock import pcm_batches
 from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
 
@@ -189,6 +192,30 @@ def resolve_source(
 # ---- ingest ------------------------------------------------------------------------------
 
 
+def probe_live_segment(playlist: Path, segment: str) -> tuple[float, float]:
+    """Read the shared fragment locally once; require overlapping audio/video presentation."""
+    result = subprocess.run([
+        "ffprobe", "-v", "error", "-show_packets", "-show_entries",
+        "packet=codec_type,pts_time,duration_time", "-of", "json",
+        f"concat:init.mp4|{segment}",
+    ], cwd=playlist.parent, capture_output=True, check=True, timeout=8)
+    spans = {}
+    for packet in json.loads(result.stdout)["packets"]:
+        kind = packet["codec_type"]
+        if kind not in ("audio", "video"):
+            continue
+        pts = float(packet["pts_time"])
+        end = pts + float(packet.get("duration_time", 0))
+        if not math.isfinite(pts) or not math.isfinite(end):
+            raise ValueError("non-finite fragment PTS")
+        low, high = spans.get(kind, (pts, end))
+        spans[kind] = min(low, pts), max(high, end)
+    audio, video = spans["audio"], spans["video"]
+    if max(audio[0], video[0]) >= min(audio[1], video[1]):
+        raise ValueError(f"no overlapping A/V timestamps: {spans}")
+    return audio
+
+
 class Ingest:
     def __init__(
         self,
@@ -219,6 +246,9 @@ class Ingest:
         self._cache_root = (
             Path(self._cache_temp.name) if self._cache_temp else None
         )
+        self._probe_lock = threading.Lock()
+        self._verified_playlist = None
+        self._prefer_muxed = False
         self._cache_sequence = 0
         self._http_server: http.server.ThreadingHTTPServer | None = None
         self._http_thread: threading.Thread | None = None
@@ -255,6 +285,7 @@ class Ingest:
         self._session = 0
         self._generation = 0
 
+        self.live_audio_span: tuple[float, float] | None = None
         self.first_pts: float | None = None
         self.first_pts_at = 0.0
         self.first_pts_ready = threading.Event()
@@ -318,6 +349,8 @@ class Ingest:
         playlist = Path(self.video_playlist)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            if self._stopped or self._video_failed.is_set():
+                return False
             proc = self._video_proc
             if proc is not None and proc.poll() not in (None, 0):
                 log.error("fMP4 cache writer exited before producing a segment")
@@ -326,8 +359,22 @@ class Ingest:
                 content = playlist.read_text(encoding="utf-8")
                 if "#EXTINF:" in content and ".m4s" in content:
                     init_file = playlist.parent / "init.mp4"
-                    segments = list(playlist.parent.glob("segment_*.m4s"))
-                    if init_file.exists() and any(p.stat().st_size > 0 for p in segments):
+                    segment = next((line for line in content.splitlines()
+                                    if line.startswith("segment_") and line.endswith(".m4s")), None)
+                    if segment and init_file.stat().st_size and (playlist.parent / segment).stat().st_size:
+                        if self.source.live:
+                            with self._probe_lock:
+                                if self._verified_playlist != playlist:
+                                    try:
+                                        span = probe_live_segment(playlist, segment)
+                                    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
+                                        log.warning("unverified live fragment %s: %s", segment, exc)
+                                        self._prefer_muxed = True
+                                        return False
+                                    self._verified_playlist = playlist
+                                    log.info("epoch_id=%d first_segment=%s audio_pts_range=%s",
+                                             self.generation, segment, span)
+                        log.info("HLS ready playlist=%s first_segment=%s", playlist.parent.name, segment)
                         return True
             except OSError:
                 pass
@@ -364,10 +411,13 @@ class Ingest:
             self._playback_position_s = float(start_s)
             self._vod_pacing_waiting_generation = None
             self.first_pts = None
+            self.live_audio_span = None
             self._restart_at = start_s
             self.first_pts_ready.clear()
 
             if not preserve_video_cache:
+                if self.source.live and self._inputs and len(self._inputs) > 1:
+                    self._prefer_muxed = True
                 self._inputs = None
                 self._video_proc = None
                 if self._cache_root is not None:
@@ -496,7 +546,7 @@ class Ingest:
 
         threading.Thread(
             target=self._read_stderr,
-            args=(proc.stderr, session, False),
+            args=(proc.stderr, session, False, proc),
             name="ffmpeg-video-log",
             daemon=True,
         ).start()
@@ -565,6 +615,9 @@ class Ingest:
             "-report",
         ]
 
+        if src.live:
+            ffmpeg += ["-copyts"]
+
         for url in inputs:
             if not src.live:
                 ffmpeg += ["-readrate", "1"]
@@ -610,7 +663,7 @@ class Ingest:
             # every fragment so backward seeking within the session is possible.
             hls_options += [
                 "-hls_list_size", "30",
-                "-hls_flags", "delete_segments+independent_segments",
+                "-hls_flags", "temp_file+delete_segments+independent_segments",
             ]
         else:
             hls_options += [
@@ -619,28 +672,23 @@ class Ingest:
                 "-hls_flags", "temp_file+independent_segments",
             ]
 
-        # YouTube's separate HLS video rendition can deliver H.264 packets
-        # without PTS/DTS. Stream-copying those packets into fragmented MP4
-        # fails because the muxer requires valid timestamps. Decode the video
-        # and regenerate its timeline, then use NVENC to keep the repair
-        # GPU-accelerated. Passthrough frame sync avoids CFR frame clipping;
-        # forced IDR keyframes let the HLS muxer cut complete 2-second chunks.
-        # The AAC rendition is already compressed; only convert ADTS framing
-        # to the MPEG-4 AudioSpecificConfig required by MP4/fMP4.
+        # genpts reconstructs missing PTS from decode timing where possible.
+        # Live renditions share source timestamps. Keep their relative offsets.
         return ffmpeg + [
             "-map", "0:v:0?",
             "-map", audio,
-            "-vf", "setpts=N/(FRAME_RATE*TB)",
+            *([] if src.live else ["-vf", "setpts=N/(FRAME_RATE*TB)"]),
             "-c:v", "h264_nvenc",
             "-preset", "p1",
             "-tune", "ull",
             "-rc", "vbr",
             "-cq", "18",
             "-b:v", "0",
+            *(["-enc_time_base:v", "demux"] if src.live else []),
             "-fps_mode", "passthrough",
             "-g", "120",
             "-forced-idr", "1",
-            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-force_key_frames", "expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))" if src.live else "expr:gte(t,n_forced*2)",
             "-c:a", "copy",
             "-bsf:a", "aac_adtstoasc",
             *hls_options,
@@ -661,7 +709,7 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "warning",
+            "info" if self.source.live else "warning",
             "-copyts",
         ]
 
@@ -682,13 +730,13 @@ class Ingest:
 
         audio_filters = self._pitch_filter(output_rate)
         output_layout = "stereo" if self.separation_enabled else "mono"
-        # PCM bytes are the authoritative audio clock; _read_session()
-        # initializes first_pts from the first decoded chunk, including for
-        # fallback fMP4 playback. No per-frame ashowinfo filter is needed.
         audio_filters += [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
         ]
+        if self.source.live:
+            audio_filters += [f"asettb=1/{output_rate}", "ashowinfo"]
+            ffmpeg += ["-flush_packets", "1"]
         log.info(
             "ASR audio from fMP4 cache: source_start=%.3fs playlist_offset=%.3fs rate=%dHz",
             self.source.start_s,
@@ -727,13 +775,19 @@ class Ingest:
             if Path(self.source.location).exists():
                 self._inputs = [self.source.location]
             else:
+                selector = self.video_format
+                if self.source.live and self._prefer_muxed:
+                    combined = [term for term in selector.split("/") if term.startswith("b[") and "+" not in term]
+                    if combined:
+                        selector = "/".join([*combined, selector])
+                        log.info("live recovery preferring a combined A/V rendition")
                 cmd = [
                     "yt-dlp",
                     "--no-warnings",
                     "--remote-components",
                     "ejs:github",
                     "-f",
-                    self.video_format,
+                    selector,
                     "-g",
                 ]
                 cmd += _cookie_args(self.cfg) + [self.source.location]
@@ -751,12 +805,9 @@ class Ingest:
         stream: IO[bytes],
         session: int,
         capture_pts: bool = True,
+        writer: subprocess.Popen | None = None,
     ) -> None:
-        """Read FFmpeg warnings/errors and optional video progress heartbeats.
-
-        PCM sample arrival initializes first_pts in _read_session(), avoiding
-        unnecessary per-frame audio timestamp diagnostics.
-        """
+        """Read writer heartbeats and diagnostic messages from untimed readers."""
         receiver_gone = False
 
         for raw in stream:
@@ -784,6 +835,15 @@ class Ingest:
             )
 
             lower = line.lower()
+
+            if writer is not None and self.source.live and any(token in lower for token in (
+                "timestamps are unset in a packet", "non-monotonic dts", "packet corrupt",
+                "failed to open segment", "timestamp discontinuity",
+            )):
+                with self._proc_lock:
+                    if self._video_proc is writer:
+                        log.warning("epoch_id=%d recovery_reason=%s", self._generation, line)
+                        self._video_failed.set()
 
             important = any(
                 value in lower
@@ -820,6 +880,11 @@ class Ingest:
                 continue
 
             stalled_for = time.monotonic() - progress_at
+            if stalled_for >= 45 and self.source.live:
+                with self._proc_lock:
+                    if self._video_proc is proc:
+                        self._video_failed.set()
+                return
             if stalled_for >= 12.0 and not warned:
                 with self._proc_lock:
                     current = self._video_proc is proc
@@ -1124,7 +1189,8 @@ class Ingest:
                 ]
                 raise
 
-        if self.video_out:
+        live_pts = bool(self.video_out and self.source.live)
+        if self.video_out and not live_pts:
             assert procs[0].stderr is not None
 
             threading.Thread(
@@ -1152,6 +1218,18 @@ class Ingest:
         pending = b""
 
         try:
+            frames = None
+            frame = None
+            if live_pts:
+                rate = (SEPARATION_INPUT_RATE if self.separation_enabled else
+                        DEEPFILTER_INPUT_RATE if self.deepfilter_enabled else SAMPLE_RATE)
+                channels = 2 if self.separation_enabled else 1
+                frames = pcm_batches(procs[-1].stderr, stdout, rate, channels,
+                                     round(CHUNK_SAMPLES * rate / SAMPLE_RATE))
+                frame = next(frames, None)
+                if frame is None:
+                    raise RuntimeError("no timestamped live PCM")
+                first = sample = round(frame[0] * SAMPLE_RATE / rate)
             if self.separation_enabled:
                 assert self.separation_cfg is not None
 
@@ -1198,7 +1276,15 @@ class Ingest:
                 if not self._wait_for_vod_lead(reader_sample, generation):
                     break
 
-                if worker:
+                if frames is not None:
+                    if frame is None:
+                        frame = next(frames, None)
+                    if frame is None:
+                        break
+                    pts, data = frame
+                    frame = None
+                    sample = round(pts * SAMPLE_RATE / rate)
+                elif worker:
                     data = stdout.read(SEPARATION_READ_FRAMES * 4)
                 else:
                     data = stdout.read(CHUNK_SAMPLES * 2)
@@ -1206,15 +1292,17 @@ class Ingest:
                 if not data:
                     break
 
-                # PTS logging can be absent or report N/A for fMP4 audio.
-                # The decoded PCM stream itself is proof that the audio clock
-                # is available, so never leave MPV blocked waiting for stderr.
                 with self._proc_lock:
+                    if generation != self._generation or self._stopped:
+                        break
+                    if live_pts:
+                        end_pts = (pts + len(data) // (2 * channels)) / rate
+                        self.live_audio_span = (first / SAMPLE_RATE, end_pts)
                     if (
                         generation == self._generation
                         and self.first_pts is None
                     ):
-                        self.first_pts = self.source.start_s
+                        self.first_pts = first / SAMPLE_RATE if live_pts else self.source.start_s
                         self.first_pts_at = time.monotonic()
                         self.first_pts_ready.set()
                 if first_chunk_after_seek:
@@ -1281,6 +1369,7 @@ class Ingest:
                             pcm,
                             time.monotonic(),
                             generation=generation,
+                            timestamped=live_pts,
                         )
                     )
 
@@ -1307,6 +1396,10 @@ class Ingest:
                     except subprocess.TimeoutExpired:
                         p.kill()
                         p.wait()
+
+                if live_pts:
+                    stdout.close()
+                    procs[-1].stderr.close()
 
                 # Remove only this session's audio processes. Do not replace
                 # the shared list: it may also contain the MPV video process.

@@ -11,7 +11,7 @@ import re
 # pronoun. Japanese pronouns may appear in kana or kanji in Haas transcripts.
 _FIRST_PERSON = re.compile(
     r"私|わたし|ワタシ|わたくし|ワタクシ|僕|ぼく|ボク|俺|おれ|オレ|"
-    r"あたし|アタシ|あたい|オイラ|わし|ワシ|うちら|僕ら|俺ら|私たち"
+    r"あたし|アタシ|あたい|オイラ|わし|ワシ|うちら|僕ら|俺ら|私たち|我々|われわれ|ワレワレ"
 )
 _SECOND_PERSON = re.compile(
     r"あなた|アナタ|貴方|あんた|アンタ|お前|おまえ|オマエ|"
@@ -138,7 +138,7 @@ def neutralize_unsupported_subjects(japanese: str, english: str) -> str:
 # Japanese can also strongly imply first person through 思う / たい / つもり.
 _FIRST_PERSON_IMPLIED = re.compile(
     r"思(?:う|います|って|った)|考えて(?:いる|ます)|"
-    r"(?:(?:し|やり|行き|食べ|見|帰り|戻り|遊び|買い|使い|会い|寝)たい)"
+    r"(?:(?:し|やり|行き|食べ|見|帰り|戻り|遊び|買い|使い|会い|寝|なり)たい)"
     r"|つもり|行ってきます|いただきます|いただこう|"
     r"欲しい|ほしい|欲しー|ほしー|"
     r"ごめん(?:なさい)?|すみません|すいません|"

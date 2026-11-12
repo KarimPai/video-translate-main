@@ -9,10 +9,29 @@
 | Japanese A/B/U reconciler | LiquidAI LFM2.5-1.2B-JP-202606 | llama.cpp Q4_K_M (~731 MB download), GPU when admitted, CPU otherwise |
 | JA → EN translation | PLaMo 3 Translate 2B | llama.cpp Q4_K_M with budget-based partial GPU offload |
 
-The two ASRs receive the same FireRedVAD-segmented Japanese audio. Nemotron uses its **own** NeMo-Speech.cpp runtime; it is NOT compatible with the existing speech.cpp secondary worker. The secondary runs through a persistent local HTTP server so the model is not reloaded on every utterance. Its transcription uses `language=ja-JP` and never directly translates audio into English.
+The two ASRs receive FireRedVAD-segmented speech. Nemotron uses its **own** NeMo-Speech.cpp runtime and persistent local HTTP server, not the speech.cpp worker. With language routing enabled, it detects speech language using `language=auto` and `response_format=verbose_json` before Haas: confidently English speech is transcribed directly, while Japanese speech continues through Haas, LFM and PLaMo. If language detection is uncertain or unavailable, the existing forced-`ja-JP` Japanese ASR fallback is preserved.
 
 The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve Haas), using original Japanese hypotheses, recent Japanese and glossary context. It does not listen to audio and cannot guarantee a correct decision when both hypotheses are plausible. PLaMo retains the neutral-subject translation behavior. If Nemotron or the selector fails or cannot be admitted under the GPU budget, the system falls back to the existing Haas path rather than silently activating Qwen.
 
+## English speech recognition without Japanese phonetic mistranslation
+
+```toml
+[dual_asr]
+language_routing = true  # default; false disables language routing
+```
+
+Nemotron 3.5's existing CUDA model now makes **one** auto-language HTTP request per eligible speech segment. The response must explicitly identify English (e.g. `en-US`) and contain a meaningful Latin-alphabet transcript before the system bypasses Japanese speech recognition and PLaMo. It forwards the English directly as an English-only subtitle with the original audio timestamps. Consecutive English replies can be shorter after an established English-language turn. Bare interjections, missing/unsupported language labels, Japanese text mixed into English output, noise labels, timeouts or unsupported API responses **never** trigger English bypass; they fall back to Japanese processing. On servers without auto-language verbose results, the code disables routing for the session and continues with the original `ja-JP` request format.
+
+For Japanese speech, Nemotron's auto-language transcription is reused in Haas/Nemotron LFM reconciliation so a second Nemotron decode is normally unnecessary. Language routing can add up to 1.5s (live) or 3.0s (VOD) before Haas when the auto-language request is slow; failures revert to Japanese promptly. The change requires **no additional model or VRAM residency**.
+
+`logs/asr-comparison.jsonl` records `detected_language`, `language_route`, and `chosen_by` alongside both Japanese hypotheses where applicable. English entries use `chosen_by="english_passthrough"`, `haas=null`; Japanese/uncertain entries show the selected original transcript and LFM decision. These records are diagnostics, not a validated language-identification benchmark. Genuine code-switching within a single speech segment may still require future word-level routing.
+
+```bat
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+---
+    
 ## Japanese ASR and translation reliability update (2026-11-13)
 
 - **Per-utterance comparison:** a local `logs/asr-comparison.jsonl` file records each completed Haas/Nemotron pair, full Japanese hypotheses, selected hypothesis, reconciler choice (`haas`, `nemotron`, or `uncertain`), VAD confidence, model stop reasons, similarity/negation/missing-phrase flags, individual decode times, source timestamps, generation, and a session ID. Logs rotate at 20 MiB to `logs/asr-comparison.previous.jsonl`. No transcripts are uploaded to an external service. Logs show model disagreements, **not independently verified accuracy**.

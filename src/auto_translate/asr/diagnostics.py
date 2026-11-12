@@ -17,6 +17,6 @@ def append_comparison(record: dict, path: Path = Path("logs/asr-comparison.jsonl
         if path.exists() and path.stat().st_size > _MAX_FILE_BYTES:
             path.replace(path.with_suffix(".previous.jsonl"))
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-    except OSError as exc:
+            stream.write(json.dumps(record, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+    except (OSError, TypeError, ValueError) as exc:
         log.warning("ASR comparison logging unavailable: %s", exc)

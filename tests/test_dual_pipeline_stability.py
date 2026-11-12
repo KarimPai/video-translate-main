@@ -143,5 +143,147 @@ class BackpressureTests(unittest.TestCase):
         dual.worker.transcribe.assert_not_called()
 
 
+class AsrComparisonTests(unittest.TestCase):
+    def test_exact_lfm_choice_and_both_japanese_candidates_are_recorded(self):
+        import threading
+        from auto_translate.asr.dual import DualASR
+        from auto_translate.glossary import Glossary
+        cfg = Config()
+        cfg.dual_asr.enabled = False
+        budget = Mock(pressure_level="normal")
+        dual = DualASR(cfg, budget, Glossary({}), False)
+        dual.worker = Mock(last_stop="complete")
+        dual.worker.transcribe.return_value = "まだ行かない"
+        dual.selector = Mock(last_choice="nemotron")
+        dual.selector.choose.return_value = "まだ行かない"
+        utt = Utterance(10.0, 11.0, np.ones(16000, dtype=np.float32),
+                        vad_confidence=0.96)
+        with patch("auto_translate.asr.dual.append_comparison") as save:
+            result = dual.choose(utt, "行く", "", lambda: False, None,
+                                 "complete", 0.15)
+        self.assertEqual(result, "まだ行かない")
+        record = save.call_args.args[0]
+        self.assertEqual(record["haas"], "行く")
+        self.assertEqual(record["nemotron"], "まだ行かない")
+        self.assertEqual(record["chosen_by"], "nemotron")
+        self.assertEqual(record["chosen"], "まだ行かない")
+        self.assertTrue(record["selector_called"])
+        self.assertIn("negation", record["flags"])
+        self.assertEqual(record["haas_elapsed_s"], 0.15)
+
+    def test_comparison_log_contains_utf8_transcripts_and_rotates(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from auto_translate.asr.diagnostics import append_comparison
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "asr-comparison.jsonl"
+            append_comparison({
+                "haas": "行く", "nemotron": "まだ行かない",
+                "chosen_by": "nemotron", "selector_called": True,
+            }, path=path)
+            payload = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(payload["haas"], "行く")
+            self.assertEqual(payload["nemotron"], "まだ行かない")
+            self.assertEqual(payload["chosen_by"], "nemotron")
+            with patch("auto_translate.asr.diagnostics._MAX_FILE_BYTES", 1):
+                append_comparison({"haas": "次", "nemotron": "次"}, path=path)
+            self.assertTrue((Path(td) / "asr-comparison.previous.jsonl").exists())
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["haas"], "次")
+
+    def test_invalid_secondary_is_recorded_without_changing_primary(self):
+        from auto_translate.asr.dual import DualASR
+        from auto_translate.glossary import Glossary
+        cfg = Config()
+        cfg.dual_asr.enabled = False
+        dual = DualASR(cfg, Mock(pressure_level="normal"), Glossary({}), False)
+        dual.worker = Mock(last_stop="complete")
+        dual.worker.transcribe.return_value = ""
+        utt = Utterance(2, 3, np.ones(16000, dtype=np.float32),
+                        vad_confidence=0.95)
+        with patch("auto_translate.asr.dual.append_comparison") as save:
+            result = dual.choose(utt, "待って", "", lambda: False, None)
+        self.assertIsNone(result)
+        self.assertEqual(save.call_args.args[0]["chosen_by"],
+                         "haas_secondary_unusable")
+
+
+class ShutdownCancellationTests(unittest.TestCase):
+    def test_queued_asr_is_discarded_after_player_close(self):
+        import threading
+        stop = threading.Event()
+        stop.set()
+        aq, tq = queue.Queue(), queue.Queue()
+        aq.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
+        aq.put(None)
+        worker = Mock()
+        run_asr(worker, aq, tq, stop=stop)
+        worker.transcribe.assert_not_called()
+        self.assertEqual(list(tq.queue), [None])
+
+    def test_queued_translation_is_discarded_after_player_close(self):
+        import threading
+        stop = threading.Event()
+        stop.set()
+        tq, sq = queue.Queue(), queue.Queue()
+        tq.put(Transcript(2, 3, "待って"))
+        tq.put(None)
+        worker = Mock(memory_lines=0)
+        run_translate(worker, 0, tq, sq, stop=stop)
+        worker.translate.assert_not_called()
+        self.assertEqual(list(sq.queue), [None])
+
+
+class ShutdownOrderingTests(unittest.TestCase):
+    def test_models_close_only_after_in_flight_pipeline_threads_exit(self):
+        import threading
+        from auto_translate.pipeline import run
+
+        stop = threading.Event()
+        stop.set()  # MPV window already closed; exercise shutdown path.
+        unblock_ingest = threading.Event()
+        asr_done = threading.Event()
+        mt_done = threading.Event()
+        cfg = Config()
+        ingest = Mock()
+        ingest.source.live = False
+        ingest.source.start_s = 0.0
+        ingest.generation = 0
+        ingest.stop.side_effect = unblock_ingest.set
+
+        def produce(q):
+            if not unblock_ingest.wait(3):
+                raise TimeoutError("ingest not stopped")
+            q.put(None)
+
+        def fake_vad(_cfg, audio_q, utt_q, _get_generation):
+            self.assertIsNone(audio_q.get(timeout=3))
+            utt_q.put(None)
+
+        def fake_asr(_worker, utt_q, text_q, *args):
+            self.assertIsNone(utt_q.get(timeout=3))
+            asr_done.set()
+            text_q.put(None)
+
+        def fake_translate(_worker, _context, text_q, sub_q, *args):
+            self.assertIsNone(text_q.get(timeout=3))
+            mt_done.set()
+            sub_q.put(None)
+
+        ingest.run.side_effect = produce
+        asr = Mock()
+        translator = Mock()
+        asr.close.side_effect = lambda: self.assertTrue(asr_done.is_set())
+        translator.close.side_effect = lambda: self.assertTrue(mt_done.is_set())
+        with patch("auto_translate.pipeline.run_segmenter", side_effect=fake_vad), \
+             patch("auto_translate.pipeline.run_asr", side_effect=fake_asr), \
+             patch("auto_translate.pipeline.run_translate", side_effect=fake_translate):
+            run(ingest, cfg, asr, translator, [], stop)
+        self.assertTrue(asr_done.is_set())
+        self.assertTrue(mt_done.is_set())
+        asr.close.assert_called_once()
+        translator.close.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,17 @@
 # Copy sections into your existing config.toml to override defaults.
 [dual_asr]
 enabled = true
+# Nemotron detects JA/EN before Haas; confident English passes through untranslated.
+# Set false to restore the original Japanese-only ASR pipeline.
+language_routing = true
+# Nemotron does NOT support Indonesian; CPU Whisper multilingual Small fills that gap.
+# Pre-download ~500 MB once with the command in README; no extra GPU VRAM used.
+indonesian_routing = true
+indonesian_model = "small"
+indonesian_cpu_threads = 4
+indonesian_min_confidence = 0.65
+indonesian_min_margin = 0.20
+indonesian_min_duration_s = 1.2
 secondary_live_mode = "selective" # off, selective, all
 secondary_vod_mode = "all"
 live_timeout_s = 2.0
@@ -13,7 +24,12 @@ live_timeout_s = 4.0
 vod_timeout_s = 20.0
 
 [gpu_budget]
-target_gb = 6.8
-optimization_threshold_gb = 7.0
-emergency_threshold_gb = 7.3
-maximum_gb = 7.5
+# No artificial VRAM hard limit; monitor physical GPU free memory.
+startup_headroom_gb = 0.65
+low_free_gb = 0.55
+emergency_free_gb = 0.25
+sample_interval_s = 2.0
+
+[vad]
+# FireRedVAD stays the same model, now on CPU to avoid PyTorch CUDA overhead.
+device = "cpu"

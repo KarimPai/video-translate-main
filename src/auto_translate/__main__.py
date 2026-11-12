@@ -143,8 +143,8 @@ def main() -> None:
     primary_cfg = timed_cfg if budget.admits(1.35) else replace(timed_cfg, haas_device="cpu")
     log.info("Haas per-cue timeout=%.1fs (startup timeout=%.1fs)",
              decode_timeout, timed_cfg.startup_timeout_s)
-    log.info("Primary Haas device=%s; GPU target %.1f decimal GB",
-             primary_cfg.haas_device, budget.cfg.target_gb)
+    log.info("Primary Haas device=%s; GPU capacity=%s GB; free=%s GB; no fixed software ceiling",
+             primary_cfg.haas_device, budget.total, budget.free)
     t0 = time.perf_counter()
     try:
         asr = create_asr(primary_cfg)
@@ -164,12 +164,14 @@ def main() -> None:
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
     try:
-        # Keep room for FireRedVAD, MPV and the independent Vulkan encoder.
-        reserve = 5.35 if cfg.dual_asr.enabled else 2.8
-        if not budget.admits(reserve):
-            partial_reserve = 3.9 if cfg.dual_asr.enabled else 1.8
-            limit = 12 if budget.admits(partial_reserve) else 0
-            cfg.translate.plamo_gpu_layers = min(cfg.translate.plamo_gpu_layers, limit)
+        # Preserve room for two ASRs, the reconciler, and MPV/VSR on 8 GiB GPUs.
+        # A single 12-layer PLaMo server has proven fast enough; avoid 99-layer
+        # offload that may prevent the secondary model from loading.
+        if cfg.dual_asr.enabled and (budget.total is None or budget.total < 10.0):
+            cfg.translate.plamo_gpu_layers = min(cfg.translate.plamo_gpu_layers, 12)
+            log.info("Shared 8 GiB-class GPU: reserve PLaMo offload at 12 layers for dual ASR")
+        elif not budget.admits(2.8):
+            cfg.translate.plamo_gpu_layers = 0
         log.info("PLaMo GPU layer limit=%s", cfg.translate.plamo_gpu_layers)
         try:
             translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
@@ -249,29 +251,36 @@ def main() -> None:
             raise
 
     def relieve_pressure():
-        used = budget.used
-        if used is None or used >= budget.cfg.emergency_threshold_gb:
+        # Only real free-memory pressure causes degradation. No fixed 7.5 GB
+        # cutoff, and never terminate the primary Haas/PLaMo/MPV pipeline.
+        level = budget.pressure_level
+        if level == "critical":
+            log.warning("Near physical GPU capacity (free=%s GB): releasing optional models", budget.free)
             dual.release()
-        elif used >= budget.cfg.optimization_threshold_gb:
+        elif level == "low":
+            log.warning("Low physical GPU headroom (free=%s GB): releasing GPU selector", budget.free)
             dual.release_selector()
-        if used is not None and used >= budget.cfg.maximum_gb:
-            used = budget.refresh()
-            if used is not None and used >= budget.cfg.maximum_gb:
-                log.error("Device memory still over maximum after optional model release; stopping")
-                stop.set()
 
     # MPV/VSR allocate GPU surfaces AFTER optional model startup. Recheck
     # after the player is ready rather than waiting for the monitor's tick.
     budget.refresh()
-    if budget.used is None or budget.used >= budget.cfg.optimization_threshold_gb:
+    if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
 
     selector_status = "off"
     if dual.selector:
         placement = f"{dual.selector.gpu_layers} GPU layers requested" if dual.selector.gpu_layers else "CPU"
-        selector_status = f"Qwen3.5-0.8B Q4_K_M ({placement})"
-    print(f"ASR: Haas + {'Qwen3-ASR' if dual.worker else 'no secondary'} | "
-          f"Selector: {selector_status} | PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
+        selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
+    language_status = ("auto JA/EN (English passthrough)" if
+                       cfg.dual_asr.language_routing and dual.worker else "Japanese only")
+    indonesian_status = (
+        "CPU Whisper Small" if dual.indonesian is not None
+        else "off / model not cached"
+    )
+    print(f"ASR: Haas + {'Nemotron 3.5' if dual.worker else 'no secondary'} | "
+          f"Language: {language_status} | Indonesian: {indonesian_status} | "
+          f"Selector: {selector_status} | "
+          f"PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
     budget.start(relieve_pressure)
     try:
         run(

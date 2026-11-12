@@ -1,3 +1,146 @@
+# Experimental Haas + Nemotron 3.5 + LFM-JP + PLaMo
+
+**Branch:** `feature/haas-nemotron-lfm-reconciler-20261113` — isolated from the previous stable dual-ASR branch.
+
+| Role | Model | Runtime / precision |
+| --- | --- | --- |
+| Primary Japanese ASR | Haas-ja-v1.0, 616M | speech.cpp Vulkan0 |
+| Secondary Japanese ASR | NVIDIA Nemotron 3.5 Streaming 0.6B | NeMo-Speech.cpp CUDA, official Q8_0 GGUF (~742 MB download) |
+| Japanese A/B/U reconciler | LiquidAI LFM2.5-1.2B-JP-202606 | llama.cpp Q4_K_M (~731 MB download), GPU when admitted, CPU otherwise |
+| JA → EN translation | PLaMo 3 Translate 2B | llama.cpp Q4_K_M with budget-based partial GPU offload |
+
+The two ASRs receive FireRedVAD-segmented speech. Nemotron uses its **own** NeMo-Speech.cpp runtime and persistent local HTTP server, not the speech.cpp worker. With language routing enabled, it detects speech language using `language=auto` and `response_format=verbose_json` before Haas: confidently English speech is transcribed directly, while Japanese speech continues through Haas, LFM and PLaMo. If language detection is uncertain or unavailable, the existing forced-`ja-JP` Japanese ASR fallback is preserved.
+
+The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve Haas), using original Japanese hypotheses, recent Japanese and glossary context. It does not listen to audio and cannot guarantee a correct decision when both hypotheses are plausible. PLaMo retains the neutral-subject translation behavior. If Nemotron or the selector fails or cannot be admitted under the GPU budget, the system falls back to the existing Haas path rather than silently activating Qwen.
+
+## Zeta / Indonesian speech support — CPU Whisper Small
+
+**Nemotron 3.5 does not support Indonesian `id-ID`.** Its list of 40 supported language-locales includes Japanese and English, but not Indonesian. Automatic detection from Nemotron alone can incorrectly turn Indonesian speech into English or Japanese phonemes.
+
+The new language-router runs **multilingual Whisper Small, CTranslate2 `int8` on CPU** before Nemotron. On sufficiently confident Indonesian segments, it performs **direct Indonesian-audio → English translation** with Whisper's `task="translate"`. It skips Haas, Nemotron, LFM and PLaMo for that segment. Japanese and English still use their existing routes.
+
+- All Indonesian processing stays on CPU; **no additional GPU VRAM/model** is allocated.
+- The model is loaded once per translator session and uses 4 CPU threads by default.
+- The CPU model is optional: if its weights are not cached, log a warning and preserve the existing JA/EN route. It never silently downloads a model during a video.
+- The independent language gate only accepts Indonesian if Whisper detects `id`, probability ≥0.65, margin ≥0.20 over other languages, and the segment is at least 1.2 seconds. Short code-switches and uncertain speech remain a limitation.
+- If a segment confidently contains Indonesian but Whisper fails to produce usable English, drop that individual subtitle rather than fabricate Japanese dialogue. A genuine Japanese/English segment is not sent through the Indonesian translator.
+- Per-cue Indonesian decisions and CPU timings are written to `logs/asr-comparison.jsonl` (route `indonesian_to_english`) alongside the previous Japanese/English decisions.
+
+**One-time setup after updating the repository** (multilingual Whisper Small download is approximately 500 MB):
+
+```bat
+cd /d C:\Games\video-translate-dual-asr && uv sync && uv run --no-sync python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=4); print('CPU Indonesian Whisper ready')"
+```
+
+Normal startup subsequently uses **local cached weights only**. Optional `config.toml` overrides:
+
+```toml
+[dual_asr]
+language_routing = true
+indonesian_routing = true
+indonesian_model = "small"
+indonesian_cpu_threads = 4
+indonesian_min_confidence = 0.65
+indonesian_min_margin = 0.20
+indonesian_min_duration_s = 1.2
+```
+
+Set `indonesian_routing = false` to disable the CPU preflight without changing the Japanese/English behavior. Model accuracy and additional end-to-end latency must be benchmarked with actual Zeta Indonesian speech; Whisper Small is a compact compromise and direct speech translation is not guaranteed to preserve every word or code-switched phrase.
+
+---
+
+## English speech recognition without Japanese phonetic mistranslation
+
+```toml
+[dual_asr]
+language_routing = true  # default; false disables language routing
+```
+
+Nemotron 3.5's existing CUDA model now makes **one** auto-language HTTP request per eligible speech segment. The response must explicitly identify English (e.g. `en-US`) and contain a meaningful Latin-alphabet transcript before the system bypasses Japanese speech recognition and PLaMo. It forwards the English directly as an English-only subtitle with the original audio timestamps. Consecutive English replies can be shorter after an established English-language turn. Bare interjections, missing/unsupported language labels, Japanese text mixed into English output, noise labels, timeouts or unsupported API responses **never** trigger English bypass; they fall back to Japanese processing. On servers without auto-language verbose results, the code disables routing for the session and continues with the original `ja-JP` request format.
+
+For Japanese speech, Nemotron's auto-language transcription is reused in Haas/Nemotron LFM reconciliation so a second Nemotron decode is normally unnecessary. Language routing can add up to 1.5s (live) or 3.0s (VOD) before Haas when the auto-language request is slow; failures revert to Japanese promptly. The change requires **no additional model or VRAM residency**.
+
+`logs/asr-comparison.jsonl` records `detected_language`, `language_route`, and `chosen_by` alongside both Japanese hypotheses where applicable. English entries use `chosen_by="english_passthrough"`, `haas=null`; Japanese/uncertain entries show the selected original transcript and LFM decision. These records are diagnostics, not a validated language-identification benchmark. Genuine code-switching within a single speech segment may still require future word-level routing.
+
+```bat
+uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+---
+    
+## Japanese ASR and translation reliability update (2026-11-13)
+
+- **Per-utterance comparison:** a local `logs/asr-comparison.jsonl` file records each completed Haas/Nemotron pair, full Japanese hypotheses, selected hypothesis, reconciler choice (`haas`, `nemotron`, or `uncertain`), VAD confidence, model stop reasons, similarity/negation/missing-phrase flags, individual decode times, source timestamps, generation, and a session ID. Logs rotate at 20 MiB to `logs/asr-comparison.previous.jsonl`. No transcripts are uploaded to an external service. Logs show model disagreements, **not independently verified accuracy**.
+- **PLaMo retry reduction:** the local pronoun validator recognizes speaker intent implied by Japanese desires (`欲しい`, `～なりたい`), apologies (`ごめんなさい`), offers (`～あげる`), volition (`～しよう`), and explicit `我々`. It no longer retries solely because natural English uses “I” in these examples. Numeric validation compares **values** after unit conversion, so `100万` matches “1 million” and `3億` matches “300 million.” Genuine negation, name, number and unsupported gender warnings remain active.
+- **Safe player exit:** allow the MPV Windows IPC named pipe time to report the normal exit code. When playback stops, discard queued ASR/translation requests, drain produced subtitles, and join workers before closing Haas and PLaMo. This avoids the observed `primary ASR closed` race and misleading normal-exit broken-pipe traceback when workers exit within the grace period.
+- **Tests:** `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`. Validate real JP/EN quality with a 10–15 minute VOD and upload `logs/run.log`, `logs/asr-comparison.jsonl`, `logs/reconciler.log`, and `logs/plamo-server.log`. The new code is experimental and needs Windows testing.
+
+---
+
+## Adaptive GPU memory policy and CPU FireRedVAD (2026-11-13)
+
+**No fixed 7.5 GB application ceiling or forced playback stop.** The RTX 3070 retains its physical 8 GiB VRAM limit. `nvidia-smi` reports device-wide `memory.used,memory.total`, and admission uses the measured **free** memory rather than fixed used-memory thresholds. Model placement can use VRAM above 7.5 decimal GB when available.
+
+The pipeline reserves approximately 0.65 GB at startup for transient MPV/CUDA allocations. GPU selector shedding occurs only if measured device free memory falls to 0.55 GB or less; optional ASR is also released if free memory reaches 0.25 GB. These are **physical headroom guardrails**, not a fixed used-memory cap. The app **never stops MPV solely because total usage passes 7.5 GB**. Device OOM remains possible; Windows WDDM/driver allocations and RTX VSR may vary during playback.
+
+FireRedVAD now defaults to CPU (`[vad] device = "cpu"`) and uses the **same** FireRed streaming model, 10 ms frame probabilities, segmentation, thresholds, padding and seek resets. `device = "cuda"` remains available for A/B testing. CPU avoids establishing a PyTorch CUDA context for the tiny model and may free driver/buffer VRAM. The exact VRAM saving requires measurement.
+
+To prioritize resident Haas, Nemotron and GPU LFM on an 8-GiB-class card, PLaMo is limited to **12 GPU layers** and its llama.cpp server uses **one inference slot** (`-np 1`), rather than auto-allocating four parallel contexts. PLaMo's 4096 context and translation template remain unchanged.
+
+Older local `config.toml` GPU fields `target_gb`, `optimization_threshold_gb`, `emergency_threshold_gb`, and `maximum_gb` are ignored automatically. To override new defaults, use:
+
+```toml
+[gpu_budget]
+startup_headroom_gb = 0.65
+low_free_gb = 0.55
+emergency_free_gb = 0.25
+sample_interval_s = 2.0
+
+[vad]
+device = "cpu"
+```
+
+**Verify:** use `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v` then a 10–15-minute test of the same VOD with RTX VSR on and off. Inspect `logs/run.log` for `GPU 0 used=... total=... free=...`, `FireRed VAD initialized on CPU`, `Nemotron ASR ... decoded in ...`, `LFM2.5 ... ready`, and any fallback events. Also check `logs/plamo-server.log` for `n_slots = 1`. The new policy has **not** been validated yet on your Windows GPU.
+
+---
+
+## Windows NeMo-Speech.cpp prerequisite
+
+Nemotron requires an additional executable **nemo-speech.exe**. The existing speech.cpp installation does not provide it. Use the **official NVIDIA installer** described at https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/install.md . On Windows, its documented PowerShell installation is:
+
+```powershell
+irm https://github.com/NVIDIA/NeMo-Speech.cpp/raw/main/scripts/install.ps1 | iex
+```
+
+Inspect the installer and its dependencies before executing a downloaded script. Open a **new** terminal afterward, then confirm the binary and download the official Q8 model:
+
+```bat
+nemo-speech --version && nemo-speech doctor && nemo-speech pull nemotron-3.5
+```
+
+The optional server writes diagnostics to `logs/nemotron.log`; the reconciler writes to `logs/reconciler.log`; pipeline, VRAM and fallback details remain in `logs/run.log`. The model can take longer to initialize on its first download. CPU fallback is not automatic for Nemotron: if GPU admission fails, the optional ASR is disabled for that session while Haas remains active.
+
+## Approximate memory plan (decimal GB)
+
+| Component | Planning estimate of device VRAM |
+| --- | ---: |
+| Haas Vulkan | 0.7–1.1 |
+| Nemotron 3.5 Q8_0 CUDA | 0.9–1.5 |
+| LFM-JP reconciler Q4_K_M GPU | 0.9–1.4 |
+| PLaMo 2B Q4_K_M 12 GPU layers | 0.5–1.1 |
+| FireRedVAD, MPV, CUDA/Vulkan, desktop buffers | 0.8–1.5 |
+| **Combined indicative range, RTX VSR disabled** | **3.8–6.6** |
+
+These figures are not measured. The RTX 3070 hard policy targets at most **7.5 decimal GB** (soft shedding at 7.0, emergency at 7.3). RTX VSR, simultaneous CUDA allocations and Windows desktop usage can raise peaks. If GPU admission fails, LFM is attempted on CPU; if the optional Nemotron cannot fit, the pipeline runs Haas alone with PLaMo.
+
+After Windows installation and checking out this branch, run `uv sync`, then `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`, then `Start translate.bat`. The changes have not yet been measured on your RTX 3070; benchmark the same VOD passages against the previous Qwen secondary model before making it the default.
+
+---
+
+## Legacy notes: earlier Haas + Qwen experimental branch
+
+The following material documents the preceding dual-ASR experiment; model names, runtime requirements and download instructions in that historical section may no longer match this Nemotron branch.
+
 # Haas + Qwen dual Japanese ASR with PLaMo translation
 
 Feature branch `feature/haas-dual-asr-reconciliation` uses original 16 kHz mono FireRedVAD speech segments. Haas runs first. The secondary speech.cpp worker receives the same samples, generation and media interval. Both ASRs stay resident after admission. PLaMo receives one Japanese cue and produces the English MPV subtitle.

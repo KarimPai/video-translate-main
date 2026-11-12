@@ -99,6 +99,7 @@ def run_asr(
     live: bool = False,
     dual=None,
     live_late_window_s: float = 7.0,
+    stop: threading.Event | None = None,
 ) -> None:
     """Transcribe utterances; retry only convincing VOD speech omissions."""
     while True:
@@ -106,6 +107,8 @@ def run_asr(
 
         if item is None:
             break
+        if stop is not None and stop.is_set():
+            continue  # discard queued ASR work after player shutdown
 
         if isinstance(item, AudioProgress):
             if get_generation is not None and item.generation != get_generation():
@@ -144,11 +147,63 @@ def run_asr(
             continue
 
         utt.timings.asr_start = time.monotonic()
+        # Nemotron has no Indonesian locale; independent CPU Whisper detects
+        # and translates Indonesian before any JA/EN-only model sees the audio.
+        if dual is not None:
+            detect_id = getattr(dual, "preflight_indonesian", None)
+            if callable(detect_id):
+                indonesian = detect_id(utt, get_generation)
+                if indonesian is not None:
+                    if get_generation is not None and utt.generation != get_generation():
+                        continue
+                    if stop is not None and stop.is_set():
+                        continue
+                    utt.timings.asr_end = time.monotonic()
+                    if indonesian.english and is_usable_transcript(indonesian.english):
+                        log.info("Indonesian direct EN %.2f-%.2fs: %r "
+                                 "(skipped Haas, Nemotron, LFM and PLaMo)",
+                                 utt.start_s, utt.end_s, indonesian.english[:160])
+                        out_q.put(Subtitle(
+                            utt.start_s, utt.end_s, "", indonesian.english,
+                            utt.timings, generation=utt.generation,
+                            speech_start_s=utt.speech_start_s,
+                        ))
+                    else:
+                        log.warning("Indonesian speech at %.2f-%.2fs produced "
+                                    "no trustworthy English; refusing Japanese hallucination",
+                                    utt.start_s, utt.end_s)
+                    continue
+        # Nemotron can identify confidently English speech *before* Haas
+        # forces it into Japanese phonemes. Unknown/mixed uses old JP path.
+        probe = None
+        if dual is not None:
+            identify = getattr(dual, "preflight_language", None)
+            if callable(identify):
+                candidate = identify(utt, get_generation)
+                if getattr(candidate, "route", None) in ("english", "japanese", "uncertain"):
+                    probe = candidate
+        if get_generation is not None and utt.generation != get_generation():
+            continue
+        if stop is not None and stop.is_set():
+            continue
+        if probe is not None and probe.route == "english":
+            utt.timings.asr_end = time.monotonic()
+            if is_usable_transcript(probe.text):
+                log.info("English direct transcript %.2f-%.2fs: %r (skipped Haas, LFM, PLaMo)",
+                         utt.start_s, utt.end_s, probe.text[:160])
+                out_q.put(Subtitle(
+                    utt.start_s, utt.end_s, "", probe.text, utt.timings,
+                    generation=utt.generation, speech_start_s=utt.speech_start_s,
+                ))
+            continue
         text = asr.transcribe(utt.audio, utt.probe)
+        primary_elapsed_s = time.monotonic() - utt.timings.asr_start
         choice = (dual.select_segment(utt, text, vod_title,
                                       lambda: (in_q.qsize() > (1 if live else 5)
                                                or out_q.qsize() > (1 if live else 5)), get_generation,
-                                      getattr(asr, "last_stop", None))
+                                      getattr(asr, "last_stop", None),
+                                      primary_elapsed_s,
+                                      probe)
                   if dual is not None else None)
         if choice is not None:
             text = choice
@@ -246,6 +301,7 @@ def run_translate(
     live: bool = False,
     playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
+    stop: threading.Event | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
@@ -257,6 +313,8 @@ def run_translate(
 
         if item is None:
             break
+        if stop is not None and stop.is_set():
+            continue  # do not translate queued cues after player shutdown
 
         if isinstance(item, AudioProgress):
             if get_generation is not None and item.generation != get_generation():
@@ -289,7 +347,7 @@ def run_translate(
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.
         if isinstance(tr, Subtitle):
-            if tr.en and tr.en != "[translation failed]":
+            if tr.ja and tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
@@ -496,6 +554,7 @@ def run(
                 bool(ingest.source.live),
                 dual,
                 cfg.mpv.live_late_window_s,
+                stop,
             ),
             name="asr",
             daemon=True,
@@ -511,6 +570,7 @@ def run(
                 bool(ingest.source.live),
                 getattr(dual, "playback_position", None),
                 cfg.mpv.live_late_window_s,
+                stop,
             ),
             name="translate",
             daemon=True,
@@ -675,7 +735,9 @@ def run(
         log.info("stopping (Ctrl+C)")
 
     finally:
-        # Always release ASR, PLaMo and MPV, including after a worker timeout.
+        # Stop producers and MPV first; never close Haas or PLaMo while
+        # an ASR/MT thread is still actively using the model.
+        stop.set()
         try:
             for out in outputs:
                 try:
@@ -685,7 +747,35 @@ def run(
         finally:
             try:
                 ingest.stop()
+            except Exception:
+                log.exception("ingest shutdown failed")
             finally:
+                # Ingest.run emits the audio EOF sentinel, which propagates
+                # VAD -> ASR -> MT. Give in-flight VOD requests time to finish.
+                grace_s = max(15.0, min(120.0,
+                    cfg.asr.response_timeout_s
+                    + cfg.dual_asr.vod_timeout_s
+                    + cfg.reconciler.vod_timeout_s
+                    + cfg.translate.timeout_s
+                    + cfg.translate.retry_timeout_s))
+                deadline = time.monotonic() + grace_s
+                # Main loop is no longer rendering subtitles: keep draining
+                # completed cues so MT cannot block forever on a full queue.
+                # Stop-aware ASR/MT stages discard pending work and propagate
+                # their existing EOF sentinel when producers exit.
+                while time.monotonic() < deadline and any(t.is_alive() for t in threads):
+                    try:
+                        sub_q.get(timeout=0.10)
+                    except queue.Empty:
+                        pass
+                for thread in threads:
+                    if thread.is_alive():
+                        thread.join(timeout=max(0., deadline - time.monotonic()))
+                active = [thread.name for thread in threads if thread.is_alive()]
+                if active:
+                    log.warning("shutdown grace expired; worker threads still active: %s", active)
+                else:
+                    log.info("all pipeline workers exited before model shutdown")
                 for label, worker in (("Haas", asr), ("PLaMo", translator)):
                     close = getattr(worker, "close", None)
                     if callable(close):

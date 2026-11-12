@@ -29,16 +29,15 @@ class StreamingFireRedVAD:
 
     WINDOW_SAMPLES = 400  # 25 ms model window
 
-    def __init__(self, speech_threshold: float) -> None:
+    def __init__(self, speech_threshold: float, device: str = "cpu") -> None:
         from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
 
-        if not torch.cuda.is_available():
-            raise RuntimeError(
-                "FireRedVAD requires CUDA, but torch.cuda.is_available() is false. "
-                "Install a CUDA-enabled PyTorch build and verify the NVIDIA driver."
-            )
+        if device not in ("cpu", "cuda"):
+            raise ValueError("FireRedVAD device must be cpu or cuda")
+        if device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("FireRedVAD requested CUDA, but CUDA is unavailable")
 
         assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad"
         model_dir = assets / "Stream-VAD"
@@ -51,7 +50,7 @@ class StreamingFireRedVAD:
             )
 
         config = FireRedStreamVadConfig(
-            use_gpu=True,
+            use_gpu=(device == "cuda"),
             smooth_window_size=5,
             speech_threshold=speech_threshold,
             pad_start_frame=5,
@@ -62,8 +61,8 @@ class StreamingFireRedVAD:
         )
         self._stream = FireRedStreamVad.from_pretrained(str(model_dir), config)
         self._history = np.zeros(self.WINDOW_SAMPLES - FRAME, dtype=np.int16)
-        self.device = torch.cuda.get_device_name(0)
-        log.info("FireRed VAD initialized on CUDA (%s)", self.device)
+        self.device = torch.cuda.get_device_name(0) if device == "cuda" else "CPU"
+        log.info("FireRed VAD initialized on %s", self.device)
 
     def reset(self) -> None:
         """Reset streaming caches at a VOD seek without reloading model weights."""
@@ -178,7 +177,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD(cfg.threshold)
+        self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:

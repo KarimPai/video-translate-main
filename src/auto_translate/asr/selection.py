@@ -27,10 +27,10 @@ def compare(a, b, terms):
     return similarity, flags
 
 
-def selected(content, haas, qwen):
+def selected(content, haas, secondary):
     if content not in ("A", "B", "U"):
         raise ValueError("selector must return exactly A, B or U")
-    label = {"A": "haas", "B": "qwen", "U": "uncertain"}[content]
-    return {"selection": label, "selected_japanese": qwen if content == "B" else haas,
+    label = {"A": "haas", "B": "nemotron", "U": "uncertain"}[content]
+    return {"selection": label, "selected_japanese": secondary if content == "B" else haas,
             "uncertain": content == "U", "reason": "uncertain; using Haas" if content == "U"
             else "selected original hypothesis"}

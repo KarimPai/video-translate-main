@@ -775,19 +775,26 @@ class MpvOutput:
                 # normal window close from an unexpected player exit rather
                 # than reporting the pipe failure itself as the root cause.
                 returncode = self._proc.poll()
+                if returncode is None:
+                    # Windows can close the named pipe a moment before the
+                    # process handle reports exit code 0. Give normal quits a
+                    # brief chance to finish before treating them as failures.
+                    try:
+                        returncode = self._proc.wait(timeout=0.75)
+                    except subprocess.TimeoutExpired:
+                        pass
                 if returncode == 0:
-                    log.info("MPV window closed; stopping translator")
+                    log.info("MPV window closed normally; stopping translator")
                 elif returncode is not None:
                     log.error(
                         "MPV exited with code %s; IPC closed (%s). "
                         "Check logs/mpv.log for the playback error.",
                         returncode, exc,
-                        exc_info=True,
                     )
                 else:
-                    log.exception(
-                        "MPV IPC connection closed while the player may "
-                        "still be running; check logs/mpv.log"
+                    log.warning(
+                        "MPV IPC disconnected (%s); stopping translator "
+                        "and checking final process state", exc
                     )
                 self.stop.set()
 

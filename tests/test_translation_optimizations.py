@@ -90,6 +90,35 @@ class QualityOptimizationsTests(unittest.TestCase):
             suspicious_translation("テスト", "Earlier Japanese for scene continuity: ..."),
             "prompt_echo_or_loop")
 
+    def test_japanese_large_numbers_keep_equivalent_english_units(self):
+        for ja, en in [
+            ("100万かぁ", "1 million, huh?"),
+            ("8400万おいおい", "84 million, seriously!"),
+            ("3億だ", "300 million!"),
+            ("1000万", "10 million"),
+            ("1万", "10,000"),
+        ]:
+            with self.subTest(ja=ja, en=en):
+                self.assertIsNone(suspicious_translation(ja, en))
+        self.assertEqual(
+            suspicious_translation("3億", "200 million"), "numeric_mismatch"
+        )
+        self.assertEqual(
+            suspicious_translation("50人", "40 people"), "numeric_mismatch"
+        )
+
+    def test_legitimate_implicit_first_person_avoids_extra_translation(self):
+        for ja, en in [
+            ("自家用ジェット欲しい", "I want a private jet."),
+            ("ごめんなさい", "I'm sorry."),
+            ("ちょっと待ってこれあげるわ", "Wait a second, I'll give you this."),
+            ("これ買おう", "I'll buy this."),
+        ]:
+            with self.subTest(japanese=ja):
+                translator, calls = self.translator([en])
+                self.assertEqual(translator.translate(ja, []), en)
+                self.assertEqual(len(calls), 1)
+
     @staticmethod
     def translator(responses, title="ホロGTA 1日目"):
         obj = object.__new__(PlamoTranslator)

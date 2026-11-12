@@ -32,6 +32,8 @@ class NeutralSubjectTests(unittest.TestCase):
         self.assertIsNone(unsupported_person_reference("私が行く", "I'm going."))
         self.assertIsNone(unsupported_person_reference("こうしたい", "I want to do it this way."))
         self.assertIsNone(unsupported_person_reference("そう思う", "I think so."))
+        self.assertIsNone(unsupported_person_reference("我々は出血している", "We are bleeding."))
+        self.assertIsNone(unsupported_person_reference("我々の車", "Our car."))
         self.assertIsNone(unsupported_person_reference("彼は走った", "He ran."))
         self.assertIsNone(unsupported_person_reference("彼女が来た", "She arrived."))
 

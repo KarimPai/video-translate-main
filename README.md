@@ -13,6 +13,33 @@ The two ASRs receive the same FireRedVAD-segmented Japanese audio. Nemotron uses
 
 The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve Haas), using original Japanese hypotheses, recent Japanese and glossary context. It does not listen to audio and cannot guarantee a correct decision when both hypotheses are plausible. PLaMo retains the neutral-subject translation behavior. If Nemotron or the selector fails or cannot be admitted under the GPU budget, the system falls back to the existing Haas path rather than silently activating Qwen.
 
+## Adaptive GPU memory policy and CPU FireRedVAD (2026-11-13)
+
+**No fixed 7.5 GB application ceiling or forced playback stop.** The RTX 3070 retains its physical 8 GiB VRAM limit. `nvidia-smi` reports device-wide `memory.used,memory.total`, and admission uses the measured **free** memory rather than fixed used-memory thresholds. Model placement can use VRAM above 7.5 decimal GB when available.
+
+The pipeline reserves approximately 0.35 GB at startup for transient MPV/CUDA allocations. GPU selector shedding occurs only if measured device free memory falls to 0.30 GB or less; optional ASR is also released if free memory reaches 0.12 GB. These are **physical headroom guardrails**, not a fixed used-memory cap. The app **never stops MPV solely because total usage passes 7.5 GB**. Device OOM remains possible; Windows WDDM/driver allocations and RTX VSR may vary during playback.
+
+FireRedVAD now defaults to CPU (`[vad] device = "cpu"`) and uses the **same** FireRed streaming model, 10 ms frame probabilities, segmentation, thresholds, padding and seek resets. `device = "cuda"` remains available for A/B testing. CPU avoids establishing a PyTorch CUDA context for the tiny model and may free driver/buffer VRAM. The exact VRAM saving requires measurement.
+
+To prioritize resident Haas, Nemotron and GPU LFM on an 8-GiB-class card, PLaMo is limited to **12 GPU layers** and its llama.cpp server uses **one inference slot** (`-np 1`), rather than auto-allocating four parallel contexts. PLaMo's 4096 context and translation template remain unchanged.
+
+Older local `config.toml` GPU fields `target_gb`, `optimization_threshold_gb`, `emergency_threshold_gb`, and `maximum_gb` are ignored automatically. To override new defaults, use:
+
+```toml
+[gpu_budget]
+startup_headroom_gb = 0.35
+low_free_gb = 0.30
+emergency_free_gb = 0.12
+sample_interval_s = 2.0
+
+[vad]
+device = "cpu"
+```
+
+**Verify:** use `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v` then a 10–15-minute test of the same VOD with RTX VSR on and off. Inspect `logs/run.log` for `GPU 0 used=... total=... free=...`, `FireRed VAD initialized on CPU`, `Nemotron ASR ... decoded in ...`, `LFM2.5 ... ready`, and any fallback events. Also check `logs/plamo-server.log` for `n_slots = 1`. The new policy has **not** been validated yet on your Windows GPU.
+
+---
+
 ## Windows NeMo-Speech.cpp prerequisite
 
 Nemotron requires an additional executable **nemo-speech.exe**. The existing speech.cpp installation does not provide it. Use the **official NVIDIA installer** described at https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/install.md . On Windows, its documented PowerShell installation is:

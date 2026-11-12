@@ -13,7 +13,12 @@ live_timeout_s = 4.0
 vod_timeout_s = 20.0
 
 [gpu_budget]
-target_gb = 6.8
-optimization_threshold_gb = 7.0
-emergency_threshold_gb = 7.3
-maximum_gb = 7.5
+# No artificial VRAM hard limit; monitor physical GPU free memory.
+startup_headroom_gb = 0.35
+low_free_gb = 0.30
+emergency_free_gb = 0.12
+sample_interval_s = 2.0
+
+[vad]
+# FireRedVAD stays the same model, now on CPU to avoid PyTorch CUDA overhead.
+device = "cpu"

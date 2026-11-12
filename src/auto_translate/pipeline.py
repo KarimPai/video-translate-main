@@ -147,13 +147,37 @@ def run_asr(
             continue
 
         utt.timings.asr_start = time.monotonic()
+        # Nemotron can identify confidently English speech *before* Haas
+        # forces it into Japanese phonemes. Unknown/mixed uses old JP path.
+        probe = None
+        if dual is not None:
+            identify = getattr(dual, "preflight_language", None)
+            if callable(identify):
+                candidate = identify(utt, get_generation)
+                if getattr(candidate, "route", None) in ("english", "japanese", "uncertain"):
+                    probe = candidate
+        if get_generation is not None and utt.generation != get_generation():
+            continue
+        if stop is not None and stop.is_set():
+            continue
+        if probe is not None and probe.route == "english":
+            utt.timings.asr_end = time.monotonic()
+            if is_usable_transcript(probe.text):
+                log.info("English direct transcript %.2f-%.2fs: %r (skipped Haas, LFM, PLaMo)",
+                         utt.start_s, utt.end_s, probe.text[:160])
+                out_q.put(Subtitle(
+                    utt.start_s, utt.end_s, "", probe.text, utt.timings,
+                    generation=utt.generation, speech_start_s=utt.speech_start_s,
+                ))
+            continue
         text = asr.transcribe(utt.audio, utt.probe)
         primary_elapsed_s = time.monotonic() - utt.timings.asr_start
         choice = (dual.select_segment(utt, text, vod_title,
                                       lambda: (in_q.qsize() > (1 if live else 5)
                                                or out_q.qsize() > (1 if live else 5)), get_generation,
                                       getattr(asr, "last_stop", None),
-                                      primary_elapsed_s)
+                                      primary_elapsed_s,
+                                      probe)
                   if dual is not None else None)
         if choice is not None:
             text = choice
@@ -297,7 +321,7 @@ def run_translate(
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.
         if isinstance(tr, Subtitle):
-            if tr.en and tr.en != "[translation failed]":
+            if tr.ja and tr.en and tr.en != "[translation failed]":
                 history.append((tr.ja, tr.en))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start

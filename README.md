@@ -13,6 +13,15 @@ The two ASRs receive the same FireRedVAD-segmented Japanese audio. Nemotron uses
 
 The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve Haas), using original Japanese hypotheses, recent Japanese and glossary context. It does not listen to audio and cannot guarantee a correct decision when both hypotheses are plausible. PLaMo retains the neutral-subject translation behavior. If Nemotron or the selector fails or cannot be admitted under the GPU budget, the system falls back to the existing Haas path rather than silently activating Qwen.
 
+## Japanese ASR and translation reliability update (2026-11-13)
+
+- **Per-utterance comparison:** a local `logs/asr-comparison.jsonl` file records each completed Haas/Nemotron pair, full Japanese hypotheses, selected hypothesis, reconciler choice (`haas`, `nemotron`, or `uncertain`), VAD confidence, model stop reasons, similarity/negation/missing-phrase flags, individual decode times, source timestamps, generation, and a session ID. Logs rotate at 20 MiB to `logs/asr-comparison.previous.jsonl`. No transcripts are uploaded to an external service. Logs show model disagreements, **not independently verified accuracy**.
+- **PLaMo retry reduction:** the local pronoun validator recognizes speaker intent implied by Japanese desires (`欲しい`, `～なりたい`), apologies (`ごめんなさい`), offers (`～あげる`), volition (`～しよう`), and explicit `我々`. It no longer retries solely because natural English uses “I” in these examples. Numeric validation compares **values** after unit conversion, so `100万` matches “1 million” and `3億` matches “300 million.” Genuine negation, name, number and unsupported gender warnings remain active.
+- **Safe player exit:** allow the MPV Windows IPC named pipe time to report the normal exit code. When playback stops, discard queued ASR/translation requests, drain produced subtitles, and join workers before closing Haas and PLaMo. This avoids the observed `primary ASR closed` race and misleading normal-exit broken-pipe traceback when workers exit within the grace period.
+- **Tests:** `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`. Validate real JP/EN quality with a 10–15 minute VOD and upload `logs/run.log`, `logs/asr-comparison.jsonl`, `logs/reconciler.log`, and `logs/plamo-server.log`. The new code is experimental and needs Windows testing.
+
+---
+
 ## Adaptive GPU memory policy and CPU FireRedVAD (2026-11-13)
 
 **No fixed 7.5 GB application ceiling or forced playback stop.** The RTX 3070 retains its physical 8 GiB VRAM limit. `nvidia-smi` reports device-wide `memory.used,memory.total`, and admission uses the measured **free** memory rather than fixed used-memory thresholds. Model placement can use VRAM above 7.5 decimal GB when available.

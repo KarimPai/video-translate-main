@@ -28,6 +28,20 @@ class ExpiredLiveWorkTests(unittest.TestCase):
         primary.transcribe.assert_not_called()
         self.assertEqual(list(output_q.queue), [None])
 
+    def test_mismatched_mpv_clock_never_discards_all_live_speech(self):
+        primary = Mock()
+        primary.transcribe.return_value = "待って"
+        optional = Mock()
+        optional.playback_position = lambda: 15260.0
+        optional.select_segment.return_value = None
+        input_q, output_q = queue.Queue(), queue.Queue()
+        input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
+        input_q.put(None)
+        run_asr(primary, input_q, output_q, live=True, dual=optional,
+                live_late_window_s=7.0)
+        primary.transcribe.assert_called_once()
+        self.assertEqual(len(output_q.queue), 2)
+
     def test_vod_keeps_older_cues(self):
         primary = Mock()
         primary.transcribe.return_value = "待って"
@@ -84,6 +98,24 @@ class StalledPipeTests(unittest.TestCase):
                 self.assertLess(time.monotonic() - start, 1.0)
             finally:
                 worker.close()
+
+
+class SelectorPressureTests(unittest.TestCase):
+    def test_soft_pressure_releases_only_gpu_selector(self):
+        import threading
+        from auto_translate.asr.dual import DualASR
+        dual = object.__new__(DualASR)
+        dual.lock = threading.Lock()
+        selector = Mock(gpu_layers=0)
+        dual.selector = selector
+        dual.release_selector()
+        selector.close.assert_not_called()
+        self.assertIs(dual.selector, selector)
+
+        selector.gpu_layers = 99
+        dual.release_selector()
+        selector.close.assert_called_once()
+        self.assertIsNone(dual.selector)
 
 
 class BackpressureTests(unittest.TestCase):

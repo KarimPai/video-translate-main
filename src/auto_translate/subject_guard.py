@@ -180,7 +180,7 @@ _ROLE_POSSESSIVE = re.compile(
 # inferred merely from speaking to a customer/shopkeeper.
 _STATED_OWNER = re.compile(
     r"(?:私|わたし|ワタシ|俺|おれ|オレ|僕|ぼく|ボク|"
-    r"あたし|アタシ|うち|自分|私たち|俺ら|僕ら|"
+    r"あたし|アタシ|うち|自分|私たち|俺ら|僕ら|我々|われわれ|"
     r"あなた|アナタ|あんた|アンタ|お前|おまえ|オマエ|"
     r"君|きみ|キミ|彼|彼女|彼ら|あの人|その人|みんな|皆|"
     r"[一-龯ぁ-んァ-ヶー]{1,12}(?:さん|ちゃん|くん|君))の"

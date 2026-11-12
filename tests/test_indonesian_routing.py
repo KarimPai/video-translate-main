@@ -11,6 +11,7 @@ import numpy as np
 
 from auto_translate.asr.dual import DualASR
 from auto_translate.asr.indonesian import IndonesianWhisper, IndonesianResult
+from auto_translate.asr.nemotron import LanguageTranscript
 from auto_translate.config import Config, DualAsrConfig
 from auto_translate.glossary import Glossary
 from auto_translate.pipeline import run_asr, run_translate
@@ -148,9 +149,10 @@ class IndonesianPipelineTests(unittest.TestCase):
 
     def test_non_indonesian_follows_existing_asr(self):
         dual = self.setup_pipeline(None)
-        dual.worker.transcribe_with_language.return_value = Mock(
-            text="待って", language="ja-JP"
+        dual.worker.transcribe_with_language.return_value = LanguageTranscript(
+            "待って", "ja-JP"
         )
+        dual.worker.transcribe.return_value = "待って"
         primary = Mock(last_stop="complete")
         primary.transcribe.return_value = "待って"
         source, target = queue.Queue(), queue.Queue()

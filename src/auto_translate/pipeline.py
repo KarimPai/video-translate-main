@@ -158,6 +158,7 @@ def run_asr(
         # Edge silence sometimes helps Haas terminate an omitted short cue.
         duration = utt.end_s - utt.start_s
         if (choice is None and not live and asr_cfg is not None and asr_cfg.retry_empty_speech
+                and not getattr(asr, "last_failed", False)
                 and not utt.probe and not is_usable_transcript(text)
                 and utt.vad_confidence is not None
                 and utt.vad_confidence >= asr_cfg.retry_min_confidence

@@ -348,6 +348,7 @@ class Ingest:
         """Wait until the current playlist contains a complete initial fMP4 segment."""
         playlist = Path(self.video_playlist)
         deadline = time.monotonic() + timeout_s
+        attempted = set()
         while time.monotonic() < deadline:
             if self._stopped or self._video_failed.is_set():
                 return False
@@ -359,23 +360,30 @@ class Ingest:
                 content = playlist.read_text(encoding="utf-8")
                 if "#EXTINF:" in content and ".m4s" in content:
                     init_file = playlist.parent / "init.mp4"
-                    segment = next((line for line in content.splitlines()
-                                    if line.startswith("segment_") and line.endswith(".m4s")), None)
-                    if segment and init_file.stat().st_size and (playlist.parent / segment).stat().st_size:
-                        if self.source.live:
-                            with self._probe_lock:
-                                if self._verified_playlist != playlist:
-                                    try:
-                                        span = probe_live_segment(playlist, segment)
-                                    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
-                                        log.warning("unverified live fragment %s: %s", segment, exc)
-                                        self._prefer_muxed = True
-                                        return False
-                                    self._verified_playlist = playlist
-                                    log.info("epoch_id=%d first_segment=%s audio_pts_range=%s",
-                                             self.generation, segment, span)
-                        log.info("HLS ready playlist=%s first_segment=%s", playlist.parent.name, segment)
-                        return True
+                    segments = [line for line in content.splitlines()
+                                if line.startswith("segment_") and line.endswith(".m4s")]
+                    if segments and init_file.stat().st_size:
+                        if not self.source.live and (playlist.parent / segments[0]).stat().st_size:
+                            return True
+                        if not self.source.live:
+                            time.sleep(0.1)
+                            continue
+                        with self._probe_lock:
+                            if self._verified_playlist == playlist:
+                                return True
+                            for segment in segments:
+                                if segment in attempted or not (playlist.parent / segment).stat().st_size:
+                                    continue
+                                try:
+                                    span = probe_live_segment(playlist, segment)
+                                except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
+                                    attempted.add(segment)
+                                    log.warning("waiting for live A/V fragment after %s: %s", segment, exc)
+                                    continue
+                                self._verified_playlist = playlist
+                                log.info("epoch_id=%d verified_segment=%s audio_pts_range=%s",
+                                         self.generation, segment, span)
+                                return True
             except OSError:
                 pass
             time.sleep(0.1)

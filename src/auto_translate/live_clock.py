@@ -15,12 +15,14 @@ class Discontinuity(RuntimeError):
 # asettb immediately before ashowinfo fixes the time base to 1/output_rate.
 # Use the integer PTS: pts_time is rounded severely for multi-hour inputs.
 _SEGMENT = re.compile(rb"Opening '[^']*/segment_(\d+)\.m4s' for reading")
-_FRAME = re.compile(rb"\bn:(\d+) pts:(-?\d+) .*?\brate:(\d+) nb_samples:(\d+)")
+_FRAME = re.compile(rb"\bn:\s*(\d+)\s+pts:\s*(\S+).*?\brate:\s*(\d+)\s+nb_samples:\s*(\d+)")
 
 
 def pcm_frames(stderr, stdout, rate, channels):
     """Pair post-resample frame records with exactly their packed PCM bytes."""
     expected = None
+    pending = bytearray()
+    pending_samples = 0
     number = 0
     last_segment = None
     for line in stderr:
@@ -38,21 +40,45 @@ def pcm_frames(stderr, stdout, rate, channels):
             if b"failed" in line.lower() or b"error" in line.lower():
                 log.warning("live audio: %s", line.decode(errors="replace").strip())
             continue
+        # ashowinfo also emits side-data messages with the same logger prefix.
+        # Only frame records have an index and correspond to bytes on stdout.
+        if not re.search(rb"\b(?:n|pts|nb_samples):", line):
+            continue
         match = _FRAME.search(line)
         if not match:
-            raise Discontinuity("missing live audio frame PTS")
-        index, pts, actual_rate, count = map(int, match.groups())
-        if index != number or actual_rate != rate or not 0 < count <= rate or pts == -(1 << 63):
-            raise Discontinuity("invalid live audio frame metadata")
-        if expected is not None and abs(pts - expected) > 1:
-            raise Discontinuity(f"audio PTS gap: expected={expected} observed={pts} rate={rate}")
+            raise Discontinuity(f"malformed live audio frame {number}: {line[:240]!r}")
+        index, raw_pts, actual_rate, count = match.groups()
+        count = int(count)
+        if int(index) != number or int(actual_rate) != rate or not 0 < count <= rate:
+            raise Discontinuity(f"invalid live audio frame metadata at frame {number}")
         size = count * channels * 2
         data = stdout.read(size)
         if len(data) != size:
             raise Discontinuity("truncated timestamped PCM frame")
-        yield pts, data
         number += 1
+        if raw_pts in (b"NOPTS", b"N/A", b"-9223372036854775808"):
+            pending_samples += count
+            if pending_samples > rate // 2:
+                raise Discontinuity("live audio PTS unavailable for over 500 ms")
+            pending.extend(data)
+            continue
+        if not re.fullmatch(rb"-?\d+", raw_pts):
+            raise Discontinuity(f"unrecognized live audio PTS {raw_pts[:48]!r}")
+        pts = int(raw_pts)
+        if expected is not None and abs(pts - (expected + pending_samples)) > 1:
+            raise Discontinuity(f"audio PTS gap: expected={expected + pending_samples} observed={pts} rate={rate}")
+        if pending_samples:
+            if expected is not None:
+                # Both surrounding timestamps agree with the exact PCM duration.
+                yield expected, bytes(pending)
+            # A leading untimed interval has no verified start. Discard its PCM.
+            pending.clear()
+            pending_samples = 0
+        yield pts, data
         expected = pts + count
+    if pending_samples:
+        raise Discontinuity("audio ended before missing PTS could be verified")
+
 
 
 def pcm_batches(stderr, stdout, rate, channels, target_samples):

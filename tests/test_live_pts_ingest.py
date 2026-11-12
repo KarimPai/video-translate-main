@@ -31,6 +31,35 @@ class LiveFramesTests(unittest.TestCase):
             with self.subTest(lines=lines), self.assertRaises(Discontinuity):
                 list(pcm_frames(io.BytesIO(lines), io.BytesIO(pcm), 16000, 1))
 
+    def test_diagnostics_and_short_missing_pts_preserve_pcm_alignment(self):
+        header = b"[Parsed_ashowinfo_3 @ decoder] "
+        def frame(n, pts):
+            return header + f"n:{n} pts:{pts} pts_time:0 rate:16000 nb_samples:4\n".encode()
+        logs = (frame(0, 16000) + header + b" side data - unknown side data type: 23\n"
+                + frame(1, "NOPTS") + frame(2, 16008))
+        pcm = bytes(range(24))
+        self.assertEqual(list(pcm_frames(io.BytesIO(logs), io.BytesIO(pcm), 16000, 1)),
+                         [(16000, pcm[:8]), (16004, pcm[8:16]), (16008, pcm[16:])])
+        with self.assertRaisesRegex(Discontinuity, "audio PTS gap"):
+            list(pcm_frames(io.BytesIO(logs.replace(b"pts:16008", b"pts:26008")),
+                            io.BytesIO(pcm), 16000, 1))
+
+    def test_startup_accepts_second_fragment_in_same_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ingest = Ingest(Source("fixture", live=True), IngestConfig())
+            playlist = root / "index.m3u8"
+            ingest.video_out = str(playlist)
+            playlist.write_text("#EXTINF:2,\nsegment_000000.m4s\n#EXTINF:2,\nsegment_000001.m4s\n")
+            for name in ("init.mp4", "segment_000000.m4s", "segment_000001.m4s"):
+                (root / name).write_bytes(b"x")
+            with patch("auto_translate.ingest.probe_live_segment",
+                       side_effect=[KeyError("audio"), (4, 6)]) as probe:
+                self.assertTrue(ingest.wait_video_ready(1))
+                self.assertTrue(ingest.wait_video_ready(1))
+                self.assertEqual(probe.call_count, 2)
+            self.assertEqual(ingest.generation, 0)
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "requires FFmpeg suite")
     def test_rotated_vfr_playlist_and_resampled_speech_onset(self):
         with tempfile.TemporaryDirectory() as tmp:

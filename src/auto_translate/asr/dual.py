@@ -160,8 +160,7 @@ class DualASR:
                 or not len(utt.audio) or not np.isfinite(utt.audio).all()
                 or np.max(np.abs(utt.audio)) < 1e-5):
             return ""
-        used = self.budget.used
-        if used is None or used >= self.budget.cfg.optimization_threshold_gb:
+        if self.budget.pressure_level == "critical":
             return None
         end = self.deadline(utt)
         secondary_budget = (self.cfg.dual_asr.live_timeout_s if self.live
@@ -174,7 +173,10 @@ class DualASR:
                 and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4):
             return None
         try:
+            started = time.perf_counter()
             secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
+            log.info("Nemotron ASR %.2f-%.2fs audio decoded in %.3fs",
+                     utt.start_s, utt.end_s, time.perf_counter() - started)
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
             self.release()

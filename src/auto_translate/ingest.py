@@ -192,6 +192,10 @@ def resolve_source(
 # ---- ingest ------------------------------------------------------------------------------
 
 
+class FragmentClockMismatch(ValueError):
+    """Both tracks have packets, but their presentation intervals are disjoint."""
+
+
 def probe_live_segment(playlist: Path, segment: str) -> tuple[float, float]:
     """Read the shared fragment locally once; require overlapping audio/video presentation."""
     result = subprocess.run([
@@ -212,7 +216,7 @@ def probe_live_segment(playlist: Path, segment: str) -> tuple[float, float]:
         spans[kind] = min(low, pts), max(high, end)
     audio, video = spans["audio"], spans["video"]
     if max(audio[0], video[0]) >= min(audio[1], video[1]):
-        raise ValueError(f"no overlapping A/V timestamps: {spans}")
+        raise FragmentClockMismatch(f"no overlapping A/V timestamps: {spans}")
     return audio
 
 
@@ -248,6 +252,7 @@ class Ingest:
         )
         self._probe_lock = threading.Lock()
         self._verified_playlist = None
+        self._probe_attempts: dict[tuple[Path, str], bool] = {}
         self._prefer_muxed = False
         self._cache_sequence = 0
         self._http_server: http.server.ThreadingHTTPServer | None = None
@@ -348,9 +353,8 @@ class Ingest:
         """Wait until the current playlist contains a complete initial fMP4 segment."""
         playlist = Path(self.video_playlist)
         deadline = time.monotonic() + timeout_s
-        attempted = set()
         while time.monotonic() < deadline:
-            if self._stopped or self._video_failed.is_set():
+            if self._stopped or self._video_failed.is_set() or Path(self.video_playlist) != playlist:
                 return False
             proc = self._video_proc
             if proc is not None and proc.poll() not in (None, 0):
@@ -372,12 +376,22 @@ class Ingest:
                             if self._verified_playlist == playlist:
                                 return True
                             for segment in segments:
-                                if segment in attempted or not (playlist.parent / segment).stat().st_size:
+                                key = (playlist, segment)
+                                if key in self._probe_attempts or not (playlist.parent / segment).stat().st_size:
                                     continue
                                 try:
                                     span = probe_live_segment(playlist, segment)
                                 except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
-                                    attempted.add(segment)
+                                    mismatch = isinstance(exc, FragmentClockMismatch)
+                                    self._probe_attempts[key] = mismatch
+                                    if mismatch and sum(v for (path, _), v in self._probe_attempts.items()
+                                                        if path == playlist) >= 2:
+                                        log.warning("repeated disjoint A/V timestamps; refreshing live source: %s", exc)
+                                        with self._proc_lock:
+                                            if Path(self.video_playlist) == playlist:
+                                                self._prefer_muxed = True
+                                                self._video_failed.set()
+                                        return False
                                     log.warning("waiting for live A/V fragment after %s: %s", segment, exc)
                                     continue
                                 self._verified_playlist = playlist
@@ -625,6 +639,10 @@ class Ingest:
 
         if src.live:
             ffmpeg += ["-copyts"]
+            if len(inputs) == 1:
+                # A common origin preserves inter-track offsets and avoids a
+                # large initial edit when the first fragment has only video.
+                ffmpeg += ["-start_at_zero"]
 
         for url in inputs:
             if not src.live:
@@ -639,6 +657,9 @@ class Ingest:
                 if start_s:
                     ffmpeg += ["-ss", f"{start_s:.3f}"]
 
+            path = urlparse(url).path.lower()
+            if src.live and (".m3u8" in path or "/hls_playlist/" in path):
+                ffmpeg += ["-seg_max_retry", "2"]
             # Retry transient HTTP/HLS segment connection failures before
             # allowing the video sender process to exit.
             ffmpeg += [
@@ -846,7 +867,7 @@ class Ingest:
 
             if writer is not None and self.source.live and any(token in lower for token in (
                 "timestamps are unset in a packet", "non-monotonic dts", "packet corrupt",
-                "failed to open segment", "timestamp discontinuity",
+                "failed too many times, skipping", "timestamp discontinuity",
             )):
                 with self._proc_lock:
                     if self._video_proc is writer:

@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from auto_translate.config import IngestConfig, VadConfig
-from auto_translate.ingest import Ingest, Source, probe_live_segment
+from auto_translate.ingest import FragmentClockMismatch, Ingest, Source, probe_live_segment
 from auto_translate.live_clock import Discontinuity, pcm_frames
 from auto_translate.types import SAMPLE_RATE
 from auto_translate.vad import FRAME, Segmenter
@@ -59,6 +59,50 @@ class LiveFramesTests(unittest.TestCase):
                 self.assertTrue(ingest.wait_video_ready(1))
                 self.assertEqual(probe.call_count, 2)
             self.assertEqual(ingest.generation, 0)
+
+    def test_sparse_open_messages_require_a_real_pcm_gap_for_recovery(self):
+        header = b"[Parsed_ashowinfo_3] "
+        logs = (b"Opening 'http://localhost/segment_000036.m4s' for reading\n" +
+                header + b"n:0 pts:100 rate:16000 nb_samples:4\n" +
+                b"Opening 'http://localhost/segment_000038.m4s' for reading\n" +
+                header + b"n:1 pts:104 rate:16000 nb_samples:4\n")
+        self.assertEqual([pts for pts, _ in pcm_frames(io.BytesIO(logs), io.BytesIO(bytes(16)), 16000, 1)],
+                         [100, 104])
+        with self.assertRaisesRegex(Discontinuity, "audio PTS gap"):
+            list(pcm_frames(io.BytesIO(logs.replace(b"pts:104", b"pts:32104")),
+                            io.BytesIO(bytes(16)), 16000, 1))
+
+    def test_writer_can_retry_an_upstream_segment_before_restart(self):
+        ingest = Ingest(Source("fixture", live=True), IngestConfig())
+        ingest.video_out = "index.m3u8"
+        writer = ingest._video_proc = Mock()
+        ingest._inputs = ["https://example.test/live.m3u8"]
+        cmd = ingest._video_command()
+        self.assertEqual(cmd[cmd.index("-seg_max_retry") + 1], "2")
+        self.assertIn("-start_at_zero", cmd)
+        ingest._inputs *= 2
+        self.assertNotIn("-start_at_zero", ingest._video_command())
+        ingest._read_stderr([b"Failed to open segment 279 of playlist 0"], 0, False, writer)
+        self.assertFalse(ingest.video_failed.is_set())
+        ingest._read_stderr([b"Segment 279 of playlist 0 failed too many times, skipping"], 0, False, writer)
+        self.assertTrue(ingest.video_failed.is_set())
+
+    def test_disjoint_tracks_abort_after_two_distinct_fragments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ingest = Ingest(Source("fixture", live=True), IngestConfig())
+            playlist = root / "index.m3u8"
+            ingest.video_out = str(playlist)
+            names = ["segment_000000.m4s", "segment_000001.m4s"]
+            playlist.write_text("".join("#EXTINF:2,\n" + name + "\n" for name in names))
+            for name in ["init.mp4", *names]:
+                (root / name).write_bytes(b"x")
+            with patch("auto_translate.ingest.probe_live_segment",
+                       side_effect=FragmentClockMismatch("audio=0 video=564")) as probe:
+                self.assertFalse(ingest.wait_video_ready(1))
+                self.assertFalse(ingest.wait_video_ready(1))
+                self.assertEqual(probe.call_count, 2)
+            self.assertTrue(ingest.video_failed.is_set())
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "requires FFmpeg suite")
     def test_rotated_vfr_playlist_and_resampled_speech_onset(self):

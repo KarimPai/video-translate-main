@@ -33,7 +33,8 @@ def pcm_frames(stderr, stdout, rate, channels):
             if segment:
                 sequence = int(segment.group(1))
                 if last_segment is not None and sequence not in (last_segment, last_segment + 1):
-                    raise Discontinuity(f"local HLS sequence jumped {last_segment} -> {sequence}")
+                    log.info("HLS open log jumped %d -> %d; checking decoded PCM timestamps",
+                             last_segment, sequence)
                 if last_segment is None or sequence % 30 == 0:
                     log.info("live audio opened segment=%d", sequence)
                 last_segment = sequence

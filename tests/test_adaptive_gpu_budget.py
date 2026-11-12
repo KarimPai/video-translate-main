@@ -8,19 +8,19 @@ from auto_translate.vad import Segmenter
 
 
 class AdaptiveMemoryTests(unittest.TestCase):
-    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(7.95, 8.59))
+    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(7.70, 8.59))
     def test_no_fixed_7_5gb_ceiling(self, sample):
         budget = GpuBudget(GpuBudgetConfig())
         self.assertEqual(budget.pressure_level, "normal")
-        self.assertTrue(budget.admits(0.20))  # 7.95 GB in use is allowed.
+        self.assertTrue(budget.admits(0.20))  # 7.70 GB in use is allowed.
         self.assertFalse(budget.admits(0.40))  # Reserve must fit plus headroom.
 
-    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(8.37, 8.59))
+    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(8.19, 8.59))
     def test_low_physical_headroom_only(self, sample):
         budget = GpuBudget(GpuBudgetConfig())
         self.assertEqual(budget.pressure_level, "low")
         self.assertFalse(budget.admits(0.0))
-        budget.free = 0.10
+        budget.free = 0.20
         self.assertEqual(budget.pressure_level, "critical")
 
     @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(None, None))
@@ -31,7 +31,7 @@ class AdaptiveMemoryTests(unittest.TestCase):
 
     def test_invalid_guard_parameters(self):
         for kwargs in ({"startup_headroom_gb": -0.1},
-                       {"low_free_gb": 0.5},
+                       {"low_free_gb": 0.8},
                        {"emergency_free_gb": 0.4},
                        {"sample_interval_s": 0.01}):
             with self.subTest(kwargs=kwargs):

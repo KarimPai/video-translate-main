@@ -128,14 +128,15 @@ try {
 
     Step 'Installing CUDA 12.4 llama.cpp binaries and matching runtime'
     $installRoot = Join-Path $env:LOCALAPPDATA 'HaasPLaMo'
-    $llamaRoot = Join-Path $installRoot 'llama-b9500-cuda12'
+    # b12318 recognizes tokenizer.ggml.model=plamo3 in the translator GGUF.
+    $llamaRoot = Join-Path $installRoot 'llama-b12318-cuda12'
     $pathFile = Join-Path $installRoot 'dual-llama-bin-path.txt'
     New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
         $headers = @{ 'User-Agent' = 'HaasPLaMo-Setup'; 'Accept' = 'application/vnd.github+json' }
-        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b9500' -Headers $headers
-        $build = $release.assets | Where-Object name -eq 'llama-b9500-bin-win-cuda-12.4-x64.zip'
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b12318' -Headers $headers
+        $build = $release.assets | Where-Object name -eq 'llama-b12318-bin-win-cuda-12.4-x64.zip'
         $runtime = $release.assets | Where-Object name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'
         if (-not $build -or -not $runtime) {
             throw 'No matching CUDA 12.4 llama.cpp Windows release found. See https://github.com/ggml-org/llama.cpp/releases'

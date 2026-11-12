@@ -6,7 +6,7 @@ Feature branch `feature/haas-dual-asr-reconciliation` uses original 16 kHz mono 
 |---|---|---|---|
 | Japanese primary, FastConformer/TDT | sakasegawa/Haas-ja-v1.0-GGUF / Haas-616M-ja-v1.0-Q8_0.gguf | speech.cpp 0.10.1 Vulkan | Apache-2.0 |
 | Japanese secondary, Qwen3-ASR | sakasegawa/Qwen3-ASR-1.7B-GGUF / Qwen3-ASR-1.7B-Q6_K.gguf | independent speech.cpp worker, forced Japanese | Apache-2.0 |
-| Japanese selector | bartowski/Qwen_Qwen3.5-2B-GGUF / Qwen_Qwen3.5-2B-Q4_K_M.gguf | llama.cpp b9500, 2048 context, CPU by default | Apache-2.0 |
+| Japanese selector | bartowski/Qwen_Qwen3.5-2B-GGUF / Qwen_Qwen3.5-2B-Q4_K_M.gguf | llama.cpp b12318, 2048 context, CPU by default | Apache-2.0 |
 | English translator | pfnet/plamo-3-translate-2b-GGUF / plamo-3-translate-2b-Q4_K_M.gguf | separate PLaMo llama.cpp server | PLaMo Community License |
 
 The speech.cpp catalog pins ASR files and checksums. The two llama.cpp processes use the shared Hugging Face cache. First launch can take several minutes. Run Setup.bat once on Windows to install the pinned executables. The console reports the active ASR and selector after admission. See logs/run.log for fallbacks and logs/reconciler.log for selector startup errors.

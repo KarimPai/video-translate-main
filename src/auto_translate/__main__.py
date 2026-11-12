@@ -53,6 +53,8 @@ def main() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    from .windows_job import bind_process_tree
+    bind_process_tree()
     cuda_dlls.setup()
 
     from .asr import create_asr
@@ -131,8 +133,21 @@ def main() -> None:
     )
 
     # Load models before starting ingest.
+    from .gpu_budget import GpuBudget
+    from .asr.dual import DualASR
+    from dataclasses import replace
+    budget = GpuBudget(cfg.gpu_budget)
+    primary_cfg = cfg.asr if budget.admits(1.35) else replace(cfg.asr, haas_device="cpu")
+    log.info("Primary Haas device=%s; GPU target %.1f decimal GB",
+             primary_cfg.haas_device, budget.cfg.target_gb)
     t0 = time.perf_counter()
-    asr = create_asr(cfg.asr)
+    try:
+        asr = create_asr(primary_cfg)
+    except (RuntimeError, OSError):
+        if primary_cfg.haas_device.lower() == "cpu":
+            raise
+        log.warning("Haas Vulkan startup failed; retrying on CPU", exc_info=True)
+        asr = create_asr(replace(primary_cfg, haas_device="cpu"))
 
     asr_model = cfg.asr.haas_model
     log.info(
@@ -144,9 +159,21 @@ def main() -> None:
     t0 = time.perf_counter()
     glossary = Glossary.load(Path(cfg.translate.glossary))
     try:
-        translator = create_translator(
-            cfg.translate, glossary, vod_title=vod_context,
-        )
+        # Keep room for FireRedVAD, MPV and the independent Vulkan encoder.
+        reserve = 5.35 if cfg.dual_asr.enabled else 2.8
+        if not budget.admits(reserve):
+            partial_reserve = 3.9 if cfg.dual_asr.enabled else 1.8
+            limit = 12 if budget.admits(partial_reserve) else 0
+            cfg.translate.plamo_gpu_layers = min(cfg.translate.plamo_gpu_layers, limit)
+        log.info("PLaMo GPU layer limit=%s", cfg.translate.plamo_gpu_layers)
+        try:
+            translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
+        except (RuntimeError, OSError):
+            if not cfg.translate.plamo_gpu_layers:
+                raise
+            log.warning("PLaMo GPU startup failed; retrying on CPU", exc_info=True)
+            cfg.translate.plamo_gpu_layers = 0
+            translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
     except BaseException:
         close = getattr(asr, "close", None)
         if callable(close):
@@ -162,7 +189,6 @@ def main() -> None:
     if use_mpv and not source.live and source.paced:
         # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
         # buffer promptly after seeking. MPV itself keeps real-time playback.
-        from dataclasses import replace
         source = replace(source, paced=False)
         log.info("MPV VOD: fast audio ingestion enabled for seek rebuffering")
 
@@ -197,27 +223,54 @@ def main() -> None:
             )
         )
 
+    try:
+        dual = DualASR(cfg, budget, glossary, source.live)
+    except BaseException:
+        asr.close()
+        translator.close()
+        raise
+
     if use_mpv:
         from .output.mpv import MpvOutput
         try:
-            outputs.append(MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache))
+            player = MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache)
+            outputs.append(player)
+            dual.playback_position = player.playback_position
         except BaseException:
+            dual.release()
             ingest.stop()
             asr.close()
             translator.close()
             raise
 
-    run(
-        ingest,
-        cfg,
-        asr,
-        translator,
-        outputs,
-        stop,
-        captions=captions,
-        vod_title=vod_context,
-        session_cache=subtitle_cache,
-    )
+    def relieve_pressure():
+        dual.release()
+        if budget.used is not None and budget.used >= budget.cfg.maximum_gb:
+            used = budget.refresh()
+            if used is not None and used >= budget.cfg.maximum_gb:
+                log.error("Device memory still over maximum after optional model release; stopping")
+                stop.set()
+
+    print(f"ASR: Haas + {'Qwen3-ASR' if dual.worker else 'no secondary'} | "
+          f"Selector: {'Qwen3.5' if dual.selector else 'off'} | PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
+    budget.start(relieve_pressure)
+    try:
+        run(
+            ingest,
+            cfg,
+            asr,
+            translator,
+            outputs,
+            stop,
+            captions=captions,
+            vod_title=vod_context,
+            session_cache=subtitle_cache,
+            dual=dual,
+        )
+    finally:
+        budget.close()
+        dual.release()
+
 
 
 if __name__ == "__main__":

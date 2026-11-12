@@ -5,6 +5,7 @@ import queue
 import threading
 import shutil
 import subprocess
+import time
 
 import numpy as np
 
@@ -17,9 +18,10 @@ log = logging.getLogger(__name__)
 class HaasASR:
     """Haas-ja-v1.0 through speech.cpp's persistent Vulkan worker."""
 
-    def __init__(self, cfg: AsrConfig) -> None:
+    def __init__(self, cfg: AsrConfig, *, language: str | None = None) -> None:
         self.cfg = cfg
         self.request_counter = 0
+        self.last_stop = None
 
         speech = shutil.which("speech")
         if speech is None:
@@ -31,8 +33,12 @@ class HaasASR:
         command = [
             speech, "worker", cfg.haas_model,
             "--device", cfg.haas_device,
-            f"--decode-on-cpu={str(cfg.haas_decode_on_cpu).lower()}",
         ]
+        if language:
+            command.extend(["--language", language])
+        else:
+            command.append(f"--decode-on-cpu={str(cfg.haas_decode_on_cpu).lower()}")
+
 
         try:
             self.process = subprocess.Popen(
@@ -46,25 +52,24 @@ class HaasASR:
         # Avoid an unbounded Windows PIPE.readline() during a hung inference.
         self._reader = threading.Thread(
             target=self._pump_output, args=(self.process.stdout,),
-            name="haas-stdout", daemon=True,
+            name=f"{cfg.haas_model}-stdout", daemon=True,
         )
         self._reader.start()
-        response = self._read_response()
-
         try:
+            response = self._read_response()
             status = json.loads(response)
-        except json.JSONDecodeError as exc:
-            self.process.terminate()
+        except Exception as exc:
+            self.close()
             raise RuntimeError(
-                f"speech.cpp returned invalid startup data: {response.strip()!r}"
+                f"speech.cpp returned invalid startup response: {exc}"
             ) from exc
 
         if status.get("type") != "ready":
-            self.process.terminate()
+            self.close()
             raise RuntimeError(f"Haas worker failed to start: {status}")
 
         log.info(
-            "Haas ASR ready (%s, %s; speech.cpp %s)",
+            "speech.cpp worker ready (%s, %s; speech.cpp %s)",
             cfg.haas_model, cfg.haas_device, status.get("version", "unknown version"),
         )
 
@@ -75,9 +80,9 @@ class HaasASR:
         finally:
             self._responses.put(None)
 
-    def _read_response(self) -> str:
+    def _read_response(self, timeout=None) -> str:
         try:
-            response = self._responses.get(timeout=max(0.5, self.cfg.response_timeout_s))
+            response = self._responses.get(timeout=self.cfg.response_timeout_s if timeout is None else timeout)
         except queue.Empty as exc:
             raise TimeoutError(
                 f"Haas speech.cpp worker unresponsive for {self.cfg.response_timeout_s:.1f}s"
@@ -103,10 +108,11 @@ class HaasASR:
             if stream is not None:
                 stream.close()
 
-    def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
+    def transcribe(self, audio: np.ndarray, probe: bool = False, *, timeout=None) -> str:
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError("Haas ASR worker is no longer running.")
 
+        deadline = time.monotonic() + (timeout if timeout is not None else self.cfg.response_timeout_s)
         audio = np.ascontiguousarray(audio, dtype=np.float32)
         pcm_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
         self.request_counter += 1
@@ -122,13 +128,17 @@ class HaasASR:
         self.process.stdin.flush()
 
         while True:
-            response = self._read_response()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("speech.cpp recognition deadline expired")
+            response = self._read_response(remaining)
             result = json.loads(response)
             if result.get("id") != request_id:
                 continue
             if result.get("type") == "error":
                 raise RuntimeError(f"Haas transcription failed: {result}")
             if result.get("type") == "end":
+                self.last_stop = result.get("stop")
                 text = result.get("text", "").strip()
                 break
 

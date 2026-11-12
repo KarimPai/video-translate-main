@@ -46,6 +46,7 @@ def evaluate(rows: list[dict[str, str]]) -> dict:
             missed += not bool(out)
         else:
             spurious += bool(out)
+            char_errors += len(out)  # insertions on verified non-speech
         if out and row.get("output_en"):
             flags += bool(suspicious_translation(out, row["output_en"]))
     return {

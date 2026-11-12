@@ -82,6 +82,7 @@ def run_asr(
     session_cache: SessionSubtitleCache | None = None,
     asr_cfg: AsrConfig | None = None,
     live: bool = False,
+    dual=None,
 ) -> None:
     """Transcribe utterances; retry only convincing VOD speech omissions."""
     while True:
@@ -124,10 +125,18 @@ def run_asr(
 
         utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
+        choice = (dual.select_segment(utt, text, vod_title,
+                                      lambda: in_q.qsize() > 1 or out_q.qsize() > 1, get_generation,
+                                      getattr(asr, "last_stop", None))
+                  if dual is not None else None)
+        if choice is not None:
+            text = choice
+            if not text:
+                continue
         # Do not re-decode music, low-confidence noise or live audio.
         # Edge silence sometimes helps Haas terminate an omitted short cue.
         duration = utt.end_s - utt.start_s
-        if (not live and asr_cfg is not None and asr_cfg.retry_empty_speech
+        if (choice is None and not live and asr_cfg is not None and asr_cfg.retry_empty_speech
                 and not utt.probe and not is_usable_transcript(text)
                 and utt.vad_confidence is not None
                 and utt.vad_confidence >= asr_cfg.retry_min_confidence
@@ -146,7 +155,7 @@ def run_asr(
 
         caption_match = (
             captions.match(utt.start_s, utt.end_s)
-            if captions is not None
+            if choice is None and captions is not None
             else None
         )
         if text and caption_match is not None and caption_match.reliable:
@@ -168,27 +177,30 @@ def run_asr(
 
         # Proper names must be repaired before translation and glossary lookup.
         # The VOD title is a stronger signal than kanji auto-caption spelling.
-        corrected = correct_asr_name(
-            text,
-            vod_title=vod_title,
-            caption=caption_match.text if caption_match else "",
-        )
-        if corrected != text:
-            log.debug("Watame ASR name correction: %s -> %s", text, corrected)
-            text = corrected
+        if choice is None:
+            corrected = correct_asr_name(
+                text,
+                vod_title=vod_title,
+                caption=caption_match.text if caption_match else "",
+            )
+            if corrected != text:
+                log.debug("Watame ASR name correction: %s -> %s", text, corrected)
+                text = corrected
 
-        repaired = correct_known_asr_terms(
-            text,
-            video_context=vod_title,
-            caption=caption_match.text if caption_match and caption_match.reliable else "",
-        )
-        if repaired != text:
-            log.info("Verified context ASR term: %r -> %r", text, repaired)
-            text = repaired
+            repaired = correct_known_asr_terms(
+                text,
+                video_context=vod_title,
+                caption=caption_match.text if caption_match and caption_match.reliable else "",
+            )
+            if repaired != text:
+                log.info("Verified context ASR term: %r -> %r", text, repaired)
+                text = repaired
 
         if get_generation is not None and utt.generation != get_generation():
             continue
 
+        if dual is not None:
+            dual.remember(utt.generation, text)
         out_q.put(
             Transcript(
                 utt.start_s,
@@ -393,6 +405,7 @@ def run(
     captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
+    dual=None,
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
 
@@ -453,6 +466,7 @@ def run(
                 session_cache,
                 cfg.asr,
                 bool(ingest.source.live),
+                dual,
             ),
             name="asr",
             daemon=True,

@@ -657,6 +657,10 @@ class MpvOutput:
                 self._subtitle_ready.set()
             self._buffer_condition.notify_all()
 
+    def playback_position(self):
+        """Last sampled position in the subtitle source timeline."""
+        return self._now
+
     def _translation_ready(self) -> bool:
         """Start after a 5s lead from new work or previously cached audio."""
         with self._buffer_condition:

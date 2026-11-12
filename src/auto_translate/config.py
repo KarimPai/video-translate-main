@@ -98,6 +98,58 @@ class AsrConfig:
 
 
 @dataclass
+class DualAsrConfig:
+    enabled: bool = True
+    secondary_live_mode: str = "selective"
+    secondary_vod_mode: str = "all"
+    live_timeout_s: float = 2.0
+    vod_timeout_s: float = 25.0
+
+    def __post_init__(self):
+        for mode in (self.secondary_live_mode, self.secondary_vod_mode):
+            if mode not in ("off", "selective", "all"):
+                raise ValueError("secondary mode must be off, selective or all")
+        validate_timing(self)
+
+
+def validate_timing(cfg):
+    if type(cfg.enabled) is not bool:
+        raise ValueError("enabled must be a boolean")
+    for timeout in (cfg.live_timeout_s, cfg.vod_timeout_s):
+        if type(timeout) not in (float, int) or not 0 < timeout <= 120:
+            raise ValueError("request timeout must be in (0, 120] seconds")
+
+
+@dataclass
+class ReconcilerConfig:
+    enabled: bool = True
+    gpu_layers: int = 0
+    live_timeout_s: float = 4.0
+    vod_timeout_s: float = 20.0
+
+    def __post_init__(self):
+        validate_timing(self)
+        if type(self.gpu_layers) is not int or not 0 <= self.gpu_layers <= 99:
+            raise ValueError("gpu_layers must be an integer between 0 and 99")
+
+
+@dataclass
+class GpuBudgetConfig:
+    target_gb: float = 6.8
+    optimization_threshold_gb: float = 7.0
+    emergency_threshold_gb: float = 7.3
+    maximum_gb: float = 7.5
+
+    def __post_init__(self):
+        values = (self.target_gb, self.optimization_threshold_gb,
+                  self.emergency_threshold_gb, self.maximum_gb)
+        if any(type(v) not in (int, float) for v in values) or not (
+            0 < values[0] <= values[1] < values[2] < values[3] <= 7.5
+        ):
+            raise ValueError("invalid decimal GPU budget thresholds")
+
+
+@dataclass
 class TranslateConfig:
     """PLaMo 3 Translate 2B settings (sole translation engine)."""
 
@@ -137,7 +189,7 @@ class MpvConfig:
 
     enabled: bool = False
     path: str = ""
-    delay_s: float = 9.0
+    delay_s: float = 20.0
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"
@@ -170,6 +222,9 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
 
 @dataclass
 class Config:
+    dual_asr: DualAsrConfig = field(default_factory=DualAsrConfig)
+    reconciler: ReconcilerConfig = field(default_factory=ReconcilerConfig)
+    gpu_budget: GpuBudgetConfig = field(default_factory=GpuBudgetConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
     deepfilter: DeepFilterConfig = field(default_factory=DeepFilterConfig)
@@ -223,6 +278,9 @@ def load_config(path: Path) -> Config:
         translate_data.pop(obsolete, None)
 
     return Config(
+        dual_asr=DualAsrConfig(**data.get("dual_asr", {})),
+        reconciler=ReconcilerConfig(**data.get("reconciler", {})),
+        gpu_budget=GpuBudgetConfig(**data.get("gpu_budget", {})),
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),

@@ -1,0 +1,19 @@
+# Copy sections into your existing config.toml to override defaults.
+[dual_asr]
+enabled = true
+secondary_live_mode = "selective" # off, selective, all
+secondary_vod_mode = "all"
+live_timeout_s = 2.0
+vod_timeout_s = 25.0
+
+[reconciler]
+enabled = true
+gpu_layers = 0
+live_timeout_s = 4.0
+vod_timeout_s = 20.0
+
+[gpu_budget]
+target_gb = 6.8
+optimization_threshold_gb = 7.0
+emergency_threshold_gb = 7.3
+maximum_gb = 7.5

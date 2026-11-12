@@ -169,6 +169,9 @@ class PlamoTranslator:
             "-ngl", str(self.cfg.plamo_gpu_layers),
         ]
 
+        if self.cfg.plamo_gpu_layers == 0:
+            command.extend(["--device", "none", "--no-kv-offload"])
+
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         self._server_log = (log_dir / "plamo-server.log").open(

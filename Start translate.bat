@@ -2,7 +2,7 @@
 setlocal DisableDelayedExpansion
 chcp 65001 >nul
 rem Prefer the CUDA llama.cpp binary installed by Setup.bat.
-set "LLAMA_PATH_FILE=%LOCALAPPDATA%\HaasPLaMo\llama-bin-path.txt"
+set "LLAMA_PATH_FILE=%LOCALAPPDATA%\HaasPLaMo\dual-llama-bin-path.txt"
 if exist "%LLAMA_PATH_FILE%" (
     for /f "usebackq delims=" %%P in ("%LLAMA_PATH_FILE%") do (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
@@ -63,6 +63,8 @@ if defined RTX_VSR_ARG (
     echo RTX VSR off ^(standard MPV playback^).
 )
 
+if not exist "config.toml" copy /y "config.dual-asr.example.toml" "config.toml" >nul
+if exist "%LOCALAPPDATA%\Programs\speech.cpp\current\speech.exe" set "PATH=%LOCALAPPDATA%\Programs\speech.cpp\current;%PATH%"
 if not exist "logs" mkdir "logs"
 if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
@@ -81,7 +83,8 @@ if errorlevel 1 (
 )
 echo.
 echo Starting direct Japanese ASR with PLaMo 3 Translate 2B...
-echo Original 16 kHz audio, FireRedVAD CUDA, Haas Vulkan, PLaMo llama.cpp.
+echo Original 16 kHz audio, FireRedVAD, Haas + budget-admitted Qwen ASR, PLaMo translation.
+echo Active models, VRAM readings and fallback reasons: logs\run.log
 echo.
 
 uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"

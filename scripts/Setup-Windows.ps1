@@ -1,4 +1,4 @@
-# Windows 11 x64, NVIDIA CUDA + Vulkan; run through ../Setup.bat.
+﻿# Windows 11 x64, NVIDIA CUDA + Vulkan; run through ../Setup.bat.
 # Installer sources: WinGet, nyosegawa/speech.cpp, ggml-org/llama.cpp.
 param([Parameter(Mandatory = $true)][string]$ProjectDir)
 $ErrorActionPreference = 'Stop'
@@ -71,11 +71,13 @@ try {
     } finally { Pop-Location }
 
     Step 'Installing speech.cpp (official installer)'
-    if (-not (Get-Command speech -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command speech -ErrorAction SilentlyContinue) -or
+        ((& speech --version) -join '') -notlike 'speech.cpp 0.10.1,*') {
         $speechScript = Join-Path $env:TEMP ('speech-install-' + [guid]::NewGuid().ToString('N') + '.ps1')
         try {
-            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.ps1' -OutFile $speechScript -UseBasicParsing
-            & $speechScript
+            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nyosegawa/speech.cpp/v0.10.1/install.ps1' -OutFile $speechScript -UseBasicParsing
+            & $speechScript -Version 0.10.1
+            $env:Path = "$env:LOCALAPPDATA\Programs\speech.cpp\current;$env:Path"
             if (-not $?) { throw 'speech.cpp installer failed.' }
         } finally { Remove-Item -LiteralPath $speechScript -Force -ErrorAction SilentlyContinue }
     } else { Write-Host 'speech.cpp already installed.' }
@@ -92,22 +94,15 @@ try {
 
     Step 'Installing CUDA 12.4 llama.cpp binaries and matching runtime'
     $installRoot = Join-Path $env:LOCALAPPDATA 'HaasPLaMo'
-    $llamaRoot = Join-Path $installRoot 'llama-cuda12'
-    $pathFile = Join-Path $installRoot 'llama-bin-path.txt'
+    $llamaRoot = Join-Path $installRoot 'llama-b9500-cuda12'
+    $pathFile = Join-Path $installRoot 'dual-llama-bin-path.txt'
     New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
         $headers = @{ 'User-Agent' = 'HaasPLaMo-Setup'; 'Accept' = 'application/vnd.github+json' }
-        # Version-tag releases may not provide Windows assets. Find the newest with BOTH CUDA archives.
-        $releases = @(Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=25' -Headers $headers)
-        $build = $null
-        $runtime = $null
-        foreach ($release in $releases) {
-            if ($release.prerelease -or $release.draft) { continue }
-            $a = @($release.assets | Where-Object { $_.name -match '^llama-.*-bin-win-cuda-12\.4-x64\.zip$' } | Select-Object -First 1)
-            $b = @($release.assets | Where-Object { $_.name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip' } | Select-Object -First 1)
-            if ($a.Count -and $b.Count) { $build = $a[0]; $runtime = $b[0]; break }
-        }
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b9500' -Headers $headers
+        $build = $release.assets | Where-Object name -eq 'llama-b9500-bin-win-cuda-12.4-x64.zip'
+        $runtime = $release.assets | Where-Object name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'
         if (-not $build -or -not $runtime) {
             throw 'No matching CUDA 12.4 llama.cpp Windows release found. See https://github.com/ggml-org/llama.cpp/releases'
         }

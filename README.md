@@ -1,17 +1,35 @@
-# Haas Japanese ASR + PLaMo 3 Translate 2B — 2026-11-11 Retest
+# Haas + Qwen dual Japanese ASR with PLaMo translation
 
-**Experimental branch:** `feature/haas-plamo-retest-20261111`, forked from the latest Haas/PLaMo `main` baseline. This is not the VoicePing/Whisper AST pipeline. `main` is unchanged.
+Feature branch `feature/haas-dual-asr-reconciliation` uses original 16 kHz mono FireRedVAD speech segments. Haas runs first. The secondary speech.cpp worker receives the same samples, generation and media interval. Both ASRs stay resident after admission. PLaMo receives one Japanese cue and produces the English MPV subtitle.
 
-## Active pipeline
+| Role | Repository and filename | Runtime | License |
+|---|---|---|---|
+| Japanese primary, FastConformer/TDT | sakasegawa/Haas-ja-v1.0-GGUF / Haas-616M-ja-v1.0-Q8_0.gguf | speech.cpp 0.10.1 Vulkan | Apache-2.0 |
+| Japanese secondary, Qwen3-ASR | sakasegawa/Qwen3-ASR-1.7B-GGUF / Qwen3-ASR-1.7B-Q6_K.gguf | independent speech.cpp worker, forced Japanese | Apache-2.0 |
+| Japanese selector | bartowski/Qwen_Qwen3.5-2B-GGUF / Qwen_Qwen3.5-2B-Q4_K_M.gguf | llama.cpp b9500, 2048 context, CPU by default | Apache-2.0 |
+| English translator | pfnet/plamo-3-translate-2b-GGUF / plamo-3-translate-2b-Q4_K_M.gguf | separate PLaMo llama.cpp server | PLaMo Community License |
 
-`YouTube live/VOD or local source → FFmpeg original 16 kHz mono audio → FireRedVAD (CUDA) → Haas-ja-v1.0 (Vulkan speech.cpp) → PLaMo 3 Translate 2B Q4_K_M (local llama.cpp) → English-only MPV captions`.
+The speech.cpp catalog pins ASR files and checksums. The two llama.cpp processes use the shared Hugging Face cache. First launch can take several minutes. Run Setup.bat once on Windows to install the pinned executables. The console reports the active ASR and selector after admission. See logs/run.log for fallbacks and logs/reconciler.log for selector startup errors.
 
-- MPV plays the original video with the native timeline and seekbar. Source ingest is audio-only for direct-video playback.
-- Terminal prints `JP:` and `EN:` lines; MPV overlays only English, up to three stacked lines.
-- Japanese YouTube VOD captions are optional evidence and can assist Haas misrecognition.
-- `glossary.toml` and the original title/channel context remain active for proper names and terms. Existing conservative Watame/Watanabe correction is preserved.
-- No VoicePing, Whisper, separate LLM beyond PLaMo, Sherpa diarization, forced aligner or new audio classifier.
-- Vocal separation and DeepFilterNet are disabled by default; the original speech signal is used.
+## Configuration and fallback
+
+The launcher seeds a missing config.toml from config.dual-asr.example.toml. Existing configurations inherit defaults for missing sections. In [dual_asr], enabled=false selects baseline A. In [reconciler], enabled=false selects B. Enable both for C. Live defaults to selective, with a 2 s secondary timeout and a 4 s selector timeout. VOD defaults to all, with 25 s and 20 s timeouts. Both support off, selective or all. The live playback delay defaults to 20 s. Existing local overrides take precedence.
+
+The selector compares kana, width, spacing and punctuation while preserving numeric decimals, lexical differences and particles. Different kanji readings, short reactions, negation, missing spans and glossary mismatches can trigger selection. Only an exact original can pass JSON validation. VAD confidence describes the audio segment. The workers do not supply calibrated, comparable transcript probabilities. Baseline B keeps usable Haas when both transcripts differ and recovers a validated omission from Qwen. Stage debug logs contain both originals. Successful dual selections bypass subsequent caption spelling rewrites. Baseline caption recovery and PLaMo glossary, context and translation retries remain available.
+
+GPU policy samples total NVIDIA device 0 usage in decimal GB, including desktop and playback allocations. Admission reservations include estimated runtime buffers and future playback/VAD headroom. The target is 6.8 GB. At 7.0 GB optional work is skipped. At 7.3 GB optional processes are released for the session. If total usage still measures at least 7.5 GB after release, playback stops. A missing counter disables optional GPU work. This sampled application policy cannot enforce a WDDM hardware limit or detect every transient spike. Assumes the RTX 3070 is NVIDIA device 0 and speech.cpp Vulkan0. PLaMo first tries its configured layer count, then a partial or CPU placement when admission requires it. Keep [reconciler].gpu_layers=0 for CPU selection.
+
+## Paired accuracy evaluation
+
+Use local, rights-cleared clips of identical Hololive audio for all three profiles. Include solo and overlapping speakers, rapid dialogue, names, negation, laughter, silence and music. Use one annotated interval per clip. Prepare a UTF-8 CSV with clip,reference_ja,reference_en,tags columns. Clip paths are relative to the manifest. Use empty references for verified non-speech. Run from the repository root after setup.
+
+```bat
+uv run --locked --with psutil==7.0.0 python scripts/benchmark_dual.py clips\manifest.csv results-abc
+```
+
+A/B/C JSON reports include source hashes, aligned text, CER, missed/spurious speech, sampled process-tree CPU time and RSS, device-wide mean and peak VRAM, and wall time including startup. Per-run logs retain cue timings, pipeline p95 and maximum queue depths. A failed or disabled optional model invalidates that profile. For each tagged clip manually score preserved names, polarity, speakers, meaning and omissions against the source. Parallel speakers can be missed by both recognizers.
+
+For playback testing, repeat a saved VOD section in MPV, pause for two minutes, seek backward, and compare onset against audible speech. For live, record one session, observe clock discontinuities/reconnections, backlog and expired cue counts. Log GPU-engine time using a Windows GPU trace for Python, both speech workers and both llama servers. Verify owned PIDs exit after MPV close, Ctrl+C and console close. Hardware results, playback offsets and transcript quality require local measurement.
 
 ## Shareable Windows ZIP installation
 
@@ -31,7 +49,7 @@ After successful setup, double-click **`Start translate.bat`**. If any installer
 Requires Python 3.12+, uv, FFmpeg, yt-dlp, mpv, a working Vulkan `speech` CLI from speech.cpp, Haas-ja-v1.0 model, and a GPU-enabled `llama-server` for PLaMo.
 
 ```bat
-cd /d C:\Games && git clone -b feature/haas-plamo-retest-20261111 --single-branch https://github.com/KarimPai/video-translate-main.git video-translate-haas-plamo-retest && cd /d C:\Games\video-translate-haas-plamo-retest && uv sync && uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v && "Start translate.bat"
+cd /d C:\Games\video-translate-main && git fetch origin +refs/heads/feature/haas-dual-asr-reconciliation:refs/remotes/origin/feature/haas-dual-asr-reconciliation && git switch feature/haas-dual-asr-reconciliation && git merge --ff-only origin/feature/haas-dual-asr-reconciliation && call Setup.bat && uv run --locked python -m unittest discover -s tests -v && call "Start translate.bat"
 ```
 
 Choose video quality **1=360p, 2=480p, 3=720p (default), 4=1080p**. VODs prefer direct HTTPS/DASH sources with lower-quality fallback; live sources prefer HLS.
@@ -47,7 +65,7 @@ CLI: `--mpv --video-quality 480 --hwdec auto-safe --rtx-vsr`, or opt in through 
 
 ## Accuracy-first FireRedVAD defaults (experimental)
 
-The retest branch now prioritizes **retaining audible Japanese speech over minimum subtitle latency**. No new model is installed: Haas-ja-v1.0 (speech.cpp Vulkan) and PLaMo 3 Translate 2B are unchanged. The VAD receives the original 16-kHz mono audio, without GTCRN, DeepFilterNet, or diarization.
+The retest branch now prioritizes **retaining audible Japanese speech over minimum subtitle latency**. The VAD receives the original 16-kHz mono audio, without GTCRN, DeepFilterNet, or diarization.
 
 ```toml
 [vad]
@@ -72,7 +90,7 @@ fallback_s = 0.0
 - **Speech sensitivity:** 0.45→0.38 threshold and 100→70 ms onset gate aim to recover quieter words and rapid reactions; the 200 ms sustained-speech requirement remains, with the existing high-confidence short-reply exception.
 - **Sentence completeness:** 200→320 ms speech padding, 500→550 ms end silence, and a longer quiet-point split search aim to avoid clipping beginnings/endings and splitting sentences early.
 - **VOD:** 14 s soft utterance cap / 16 s hard cap instead of 11 s / 12 s. Haas has full-context attention, but very long chunks can still lose words, so the hard cap remains bounded.
-- **Live:** 7 s soft / 8 s hard cap for the existing 9-second playback delay. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
+- **Live:** 7 s soft / 8 s hard cap for the existing 20-second live playback delay. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
 - **Anti-hallucination:** VAD-negative fallback probing stays **off**. Avoided enabling speculative extra decoding on music, and kept translation repeat/prompt-leak rejection.
 - **Overrides:** Your local `config.toml` continues to override these defaults. Check effective values in `logs\\run.log` under `FireRedVAD accuracy-first`.
 
@@ -133,7 +151,7 @@ The correction vocabulary is intentionally small to minimize false positive name
 - Worker failures are reported to the main runner instead of silently hanging. The queue watchdog excludes intentional VOD pause and audio read-ahead parking.
 - Session-only subtitles and processed-region caching are preserved, including reuse after backward seeking.
 - MPV safe hardware decode and the existing native OSC seekbar are preserved.
-- For live playback, the configured original delay remains **9 seconds** (not a hard subtitle timestamp offset).
+- For live playback, the default delay is **20 seconds** (not a hard subtitle timestamp offset).
 
 ## Scope and limitations
 

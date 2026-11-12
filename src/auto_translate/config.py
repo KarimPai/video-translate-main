@@ -59,6 +59,7 @@ class VadConfig:
     complete utterances for VOD. Live has a shorter cap for subtitle timing.
     """
 
+    device: str = "cpu"  # keep PyTorch CUDA context off the RTX 3070 by default
     threshold: float = 0.38  # less aggressive than 0.45: recover quieter speech
     neg_threshold: float = 0.25
     min_silence_ms: int = 550  # wait for genuine phrase-ending silence
@@ -82,6 +83,10 @@ class VadConfig:
     fallback_s: float = 0.0  # do not ASR-decode VAD-negative music/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
+
+    def __post_init__(self):
+        if self.device not in ("cpu", "cuda"):
+            raise ValueError("VAD device must be cpu or cuda")
 
 
 @dataclass
@@ -137,18 +142,22 @@ class ReconcilerConfig:
 
 @dataclass
 class GpuBudgetConfig:
-    target_gb: float = 6.8
-    optimization_threshold_gb: float = 7.0
-    emergency_threshold_gb: float = 7.3
-    maximum_gb: float = 7.5
+    """GPU capacity-relative headroom; no fixed application VRAM limit."""
+
+    startup_headroom_gb: float = 0.35
+    low_free_gb: float = 0.30
+    emergency_free_gb: float = 0.12
+    sample_interval_s: float = 2.0
 
     def __post_init__(self):
-        values = (self.target_gb, self.optimization_threshold_gb,
-                  self.emergency_threshold_gb, self.maximum_gb)
-        if any(type(v) not in (int, float) for v in values) or not (
-            0 < values[0] <= values[1] < values[2] < values[3] <= 7.5
-        ):
-            raise ValueError("invalid decimal GPU budget thresholds")
+        values = (self.startup_headroom_gb, self.low_free_gb,
+                  self.emergency_free_gb, self.sample_interval_s)
+        if any(type(value) not in (int, float) for value in values):
+            raise ValueError("GPU headroom settings must be numeric")
+        if not (0 <= self.emergency_free_gb < self.low_free_gb
+                <= self.startup_headroom_gb <= 2
+                and 0.5 <= self.sample_interval_s <= 30):
+            raise ValueError("invalid GPU free-memory headroom settings")
 
 
 @dataclass
@@ -279,10 +288,17 @@ def load_config(path: Path) -> Config:
     ):
         translate_data.pop(obsolete, None)
 
+    # Old config.toml files may contain hard VRAM thresholds; ignore them.
+    # The current policy uses real NVIDIA total/free memory, with no forced stop.
+    gpu_budget_data = dict(data.get("gpu_budget", {}))
+    for obsolete in ("target_gb", "optimization_threshold_gb",
+                     "emergency_threshold_gb", "maximum_gb"):
+        gpu_budget_data.pop(obsolete, None)
+
     return Config(
         dual_asr=DualAsrConfig(**data.get("dual_asr", {})),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),
-        gpu_budget=GpuBudgetConfig(**data.get("gpu_budget", {})),
+        gpu_budget=GpuBudgetConfig(**gpu_budget_data),
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),

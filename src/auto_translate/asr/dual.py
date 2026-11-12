@@ -8,12 +8,12 @@ from dataclasses import replace
 import numpy as np
 
 from ..text_filter import is_usable_transcript
-from .haas import HaasASR
+from .nemotron import NemotronASR
 from .reconciler import Reconciler
 from .selection import compare
 
 log = logging.getLogger(__name__)
-SECONDARY = "qwen3-asr-1.7b:q6_k"
+SECONDARY = "nemotron-3.5"
 
 
 class DualASR:
@@ -33,18 +33,14 @@ class DualASR:
             return
         try:
             # Admission includes MPV, VAD, model scratch and Windows headroom.
-            if not budget.admits(2.6):
+            if not budget.admits(1.7):
                 raise RuntimeError("insufficient measured GPU headroom for secondary ASR")
-            subprocess.run(["speech", "pull", SECONDARY], check=True, timeout=600)
-            subprocess.run(["speech", "info", SECONDARY], check=True, timeout=20,
-                           stdout=subprocess.DEVNULL)
-            if not budget.admits(2.6):
+            if not budget.admits(1.7):
                 raise RuntimeError("GPU admission changed during model download")
-            self.worker = HaasASR(replace(cfg.asr, haas_model=SECONDARY,
-                                         haas_decode_on_cpu=False), language="ja")
-            if not budget.admits(0.65):
+            self.worker = NemotronASR(device="cuda:0")
+            if not budget.admits(0.5):
                 raise RuntimeError("secondary ASR exceeded its startup reservation")
-            log.info("Secondary %s ready on %s (%s)", SECONDARY, cfg.asr.haas_device, self.mode)
+            log.info("Secondary %s ready on CUDA0 (%s)", SECONDARY, self.mode)
         except Exception as exc:
             log.warning("Haas + PLaMo fallback: %s", exc)
             self.release()
@@ -53,14 +49,14 @@ class DualASR:
             self._start_selector(cfg.reconciler.gpu_layers)
 
     def _start_selector(self, layers):
-        # Decimal GB estimates for the 580 MB GGUF, context/compute buffers
+        # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
         # and MPV/VAD allocations that may arrive after model startup.
         playback_reserve = 0.65
-        if layers and self.budget.admits(0.95 + playback_reserve):
+        if layers and self.budget.admits(1.15 + playback_reserve):
             try:
                 self.selector = Reconciler(layers)
                 if self.budget.admits(playback_reserve):
-                    log.info("Qwen3.5-0.8B transcript selector ready; GPU layers requested=%d", layers)
+                    log.info("LFM2.5-1.2B-JP transcript selector ready; GPU layers requested=%d", layers)
                     return
                 self.selector.close()
                 self.selector = None
@@ -68,7 +64,7 @@ class DualASR:
             except Exception as exc:
                 log.warning("GPU selector failed to start; trying CPU: %s", exc)
         elif layers:
-            log.info("Insufficient GPU headroom for Qwen3.5-0.8B; selecting on CPU")
+            log.info("Insufficient GPU headroom for LFM2.5-1.2B-JP; selecting on CPU")
         try:
             self.selector = Reconciler(0)
             log.info("Qwen3.5-0.8B transcript selector ready; CPU")
@@ -189,7 +185,7 @@ class DualASR:
             return None
         if current and current() != utt.generation:
             return ""
-        log.debug("ASR generation=%d %.3f-%.3f Haas=%r Qwen=%r",
+        log.debug("ASR generation=%d %.3f-%.3f Haas=%r Nemotron=%r",
                   utt.generation, utt.start_s, utt.end_s, primary, qwen)
         if not is_usable_transcript(qwen):
             return None
@@ -208,7 +204,7 @@ class DualASR:
                     result = selector.choose(primary, qwen, {
                         "title_channel": title[:200], "recent_ja": context,
                         "glossary": terms[:12], "vad_probability": utt.vad_confidence,
-                        "haas_stop": primary_stop, "qwen_stop": worker.last_stop,
+                        "haas_stop": primary_stop, "secondary_stop": worker.last_stop,
                         "similarity": score, "disagreement": flags,
                     }, timeout)
                 except Exception as exc:

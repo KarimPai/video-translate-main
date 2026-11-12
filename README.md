@@ -13,6 +13,42 @@ The two ASRs receive FireRedVAD-segmented speech. Nemotron uses its **own** NeMo
 
 The reconciler selects exactly A (Haas), B (Nemotron), or U (uncertain; preserve Haas), using original Japanese hypotheses, recent Japanese and glossary context. It does not listen to audio and cannot guarantee a correct decision when both hypotheses are plausible. PLaMo retains the neutral-subject translation behavior. If Nemotron or the selector fails or cannot be admitted under the GPU budget, the system falls back to the existing Haas path rather than silently activating Qwen.
 
+## Zeta / Indonesian speech support — CPU Whisper Small
+
+**Nemotron 3.5 does not support Indonesian `id-ID`.** Its list of 40 supported language-locales includes Japanese and English, but not Indonesian. Automatic detection from Nemotron alone can incorrectly turn Indonesian speech into English or Japanese phonemes.
+
+The new language-router runs **multilingual Whisper Small, CTranslate2 `int8` on CPU** before Nemotron. On sufficiently confident Indonesian segments, it performs **direct Indonesian-audio → English translation** with Whisper's `task="translate"`. It skips Haas, Nemotron, LFM and PLaMo for that segment. Japanese and English still use their existing routes.
+
+- All Indonesian processing stays on CPU; **no additional GPU VRAM/model** is allocated.
+- The model is loaded once per translator session and uses 4 CPU threads by default.
+- The CPU model is optional: if its weights are not cached, log a warning and preserve the existing JA/EN route. It never silently downloads a model during a video.
+- The independent language gate only accepts Indonesian if Whisper detects `id`, probability ≥0.65, margin ≥0.20 over other languages, and the segment is at least 1.2 seconds. Short code-switches and uncertain speech remain a limitation.
+- If a segment confidently contains Indonesian but Whisper fails to produce usable English, drop that individual subtitle rather than fabricate Japanese dialogue. A genuine Japanese/English segment is not sent through the Indonesian translator.
+- Per-cue Indonesian decisions and CPU timings are written to `logs/asr-comparison.jsonl` (route `indonesian_to_english`) alongside the previous Japanese/English decisions.
+
+**One-time setup after updating the repository** (multilingual Whisper Small download is approximately 500 MB):
+
+```bat
+cd /d C:\Games\video-translate-dual-asr && uv sync && uv run --no-sync python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=4); print('CPU Indonesian Whisper ready')"
+```
+
+Normal startup subsequently uses **local cached weights only**. Optional `config.toml` overrides:
+
+```toml
+[dual_asr]
+language_routing = true
+indonesian_routing = true
+indonesian_model = "small"
+indonesian_cpu_threads = 4
+indonesian_min_confidence = 0.65
+indonesian_min_margin = 0.20
+indonesian_min_duration_s = 1.2
+```
+
+Set `indonesian_routing = false` to disable the CPU preflight without changing the Japanese/English behavior. Model accuracy and additional end-to-end latency must be benchmarked with actual Zeta Indonesian speech; Whisper Small is a compact compromise and direct speech translation is not guaranteed to preserve every word or code-switched phrase.
+
+---
+
 ## English speech recognition without Japanese phonetic mistranslation
 
 ```toml

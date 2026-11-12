@@ -50,17 +50,31 @@ class DualASR:
             self.release()
             return
         if cfg.reconciler.enabled:
-            layers = cfg.reconciler.gpu_layers if budget.admits(2.2) else 0
+            self._start_selector(cfg.reconciler.gpu_layers)
+
+    def _start_selector(self, layers):
+        # Decimal GB estimates for the 580 MB GGUF, context/compute buffers
+        # and MPV/VAD allocations that may arrive after model startup.
+        playback_reserve = 0.65
+        if layers and self.budget.admits(0.95 + playback_reserve):
             try:
                 self.selector = Reconciler(layers)
-                if layers and not budget.admits(.65):
-                    self.selector.close()
-                    self.selector = None
-                    layers = 0
-                    self.selector = Reconciler(0)
-                log.info("Qwen3.5 transcript selector ready; GPU layers=%d", layers)
+                if self.budget.admits(playback_reserve):
+                    log.info("Qwen3.5-0.8B transcript selector ready; GPU layers requested=%d", layers)
+                    return
+                self.selector.close()
+                self.selector = None
+                log.warning("Selector exceeded startup reservation; switching to CPU")
             except Exception as exc:
-                log.warning("Selector unavailable; deterministic selection: %s", exc)
+                log.warning("GPU selector failed to start; trying CPU: %s", exc)
+        elif layers:
+            log.info("Insufficient GPU headroom for Qwen3.5-0.8B; selecting on CPU")
+        try:
+            self.selector = Reconciler(0)
+            log.info("Qwen3.5-0.8B transcript selector ready; CPU")
+        except Exception as exc:
+            self.selector = None
+            log.warning("Selector unavailable; deterministic selection: %s", exc)
 
     def release(self):
         with self.lock:

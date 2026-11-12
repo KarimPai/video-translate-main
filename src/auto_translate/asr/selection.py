@@ -1,5 +1,4 @@
 """Conservative Japanese comparison and exact two-candidate selection."""
-import json
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -28,24 +27,10 @@ def compare(a, b, terms):
     return similarity, flags
 
 
-SCHEMA = {
-    "type": "object", "additionalProperties": False,
-    "properties": {"selection": {"enum": ["haas", "qwen", "uncertain"]},
-                   "selected_japanese": {"type": "string"}, "uncertain": {"type": "boolean"},
-                   "reason": {"type": "string"}},
-    "required": ["selection", "selected_japanese", "uncertain", "reason"],
-}
-
-
 def selected(content, haas, qwen):
-    result = json.loads(content)
-    if type(result) is not dict or set(result) != set(SCHEMA["required"]):
-        raise ValueError("unexpected selection fields")
-    label = result["selection"]
-    if (label not in ("haas", "qwen", "uncertain") or type(result["uncertain"]) is not bool
-            or not isinstance(result["reason"], str) or len(result["reason"]) > 300):
-        raise ValueError("invalid selection")
-    expected = qwen if label == "qwen" else haas
-    if result["selected_japanese"] != expected or (label == "uncertain") != result["uncertain"]:
-        raise ValueError("unsupported transcript or uncertainty flag")
-    return expected
+    if content not in ("A", "B", "U"):
+        raise ValueError("selector must return exactly A, B or U")
+    label = {"A": "haas", "B": "qwen", "U": "uncertain"}[content]
+    return {"selection": label, "selected_japanese": qwen if content == "B" else haas,
+            "uncertain": content == "U", "reason": "uncertain; using Haas" if content == "U"
+            else "selected original hypothesis"}

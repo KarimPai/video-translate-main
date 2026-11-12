@@ -123,7 +123,7 @@ def validate_timing(cfg):
 @dataclass
 class ReconcilerConfig:
     enabled: bool = True
-    gpu_layers: int = 0
+    gpu_layers: int = 99
     live_timeout_s: float = 4.0
     vod_timeout_s: float = 20.0
 

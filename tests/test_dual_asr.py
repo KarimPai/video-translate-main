@@ -31,12 +31,15 @@ class ComparisonTests(unittest.TestCase):
             self.assertLess(compare(a, b, [])[0], 1)
 
     def test_contract(self):
-        good = dict(selection="qwen", selected_japanese="行け", uncertain=False, reason="文脈")
-        self.assertEqual(selected(json.dumps(good), "行く", "行け"), "行け")
-        for change in [dict(selected_japanese="行こう"), dict(uncertain=0), dict(reason=[]),
-                       dict(extra=1), dict(selection="other"), dict(uncertain=True)]:
+        for letter, label, expected in [("A", "haas", "行く"), ("B", "qwen", "行け"),
+                                        ("U", "uncertain", "行く")]:
+            record = selected(letter, "行く", "行け")
+            self.assertEqual(record["selection"], label)
+            self.assertEqual(record["selected_japanese"], expected)
+            self.assertEqual(record["uncertain"], letter == "U")
+        for answer in ["", "AB", "A because", "行こう", None, {}]:
             with self.assertRaises(ValueError):
-                selected(json.dumps(good | change), "行く", "行け")
+                selected(answer, "行く", "行け")
 
     def test_thresholds(self):
         for cls, kwargs in [(GpuBudgetConfig, {"maximum_gb": 7.6}),
@@ -165,10 +168,7 @@ for line in sys.stdin:
                 requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 self.send_response(200)
                 self.end_headers()
-                selection = dict(selection="qwen", selected_japanese="まだ行かない",
-                                 uncertain=False, reason="negation")
-                self.wfile.write(json.dumps({"choices": [{"message": {
-                    "content": json.dumps(selection)}}]}).encode())
+                self.wfile.write(json.dumps({"choices": [{"message": {"content": "B"}}]}).encode())
 
             def log_message(self, *args):
                 pass
@@ -182,7 +182,9 @@ for line in sys.stdin:
             selector.process.poll.return_value = None
             self.assertEqual(selector.choose("行く", "まだ行かない", {}, 2), "まだ行かない")
             thread.join(2)
-        self.assertEqual(requests[0]["response_format"]["type"], "json_schema")
+        self.assertEqual(requests[0]["grammar"], "root ::= [ABU]")
+        self.assertEqual(requests[0]["max_tokens"], 4)
+        self.assertFalse(requests[0]["chat_template_kwargs"]["enable_thinking"])
 
 
 class RecoveryTests(unittest.TestCase):
@@ -227,3 +229,27 @@ class RecoveryTests(unittest.TestCase):
             dual.pending.join(2)
         dual.playback_position = lambda: 13.
         self.assertLess(dual.deadline(utt), time.monotonic())
+
+class SelectorPlacementTests(unittest.TestCase):
+    @patch("auto_translate.asr.dual.Reconciler")
+    def test_full_offload_and_fallback(self, constructor):
+        dual = object.__new__(DualASR)
+        dual.budget = Mock()
+        for checks, layers in [([True, True], [99]), ([False], [0]), ([True, False], [99, 0])]:
+            with self.subTest(checks=checks):
+                constructor.reset_mock()
+                dual.budget.admits.side_effect = checks
+                dual._start_selector(ReconcilerConfig().gpu_layers)
+                self.assertEqual([call.args[0] for call in constructor.call_args_list], layers)
+                if len(layers) == 2:
+                    constructor.return_value.close.assert_called_once()
+
+    @patch("auto_translate.asr.dual.Reconciler")
+    def test_gpu_startup_failure_retries_on_cpu(self, constructor):
+        dual = object.__new__(DualASR)
+        dual.budget = Mock()
+        cpu = Mock()
+        constructor.side_effect = [RuntimeError("allocation failed"), cpu]
+        dual._start_selector(99)
+        self.assertIs(dual.selector, cpu)
+        self.assertEqual(constructor.call_args.args, (0,))

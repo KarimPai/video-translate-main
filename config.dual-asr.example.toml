@@ -8,7 +8,7 @@ vod_timeout_s = 25.0
 
 [reconciler]
 enabled = true
-gpu_layers = 0
+gpu_layers = 99
 live_timeout_s = 4.0
 vod_timeout_s = 20.0
 

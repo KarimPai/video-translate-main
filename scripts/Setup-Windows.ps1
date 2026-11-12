@@ -162,8 +162,9 @@ try {
     Step 'Checking Python environment'
     Push-Location -LiteralPath $ProjectDir
     try {
-        & uv run --no-sync python -c 'import numpy, fireredvad, auto_translate; print("Python dependency check OK")'
+        & uv run --no-sync python -c 'import numpy, fireredvad, auto_translate'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
+        Write-Host 'Python dependency check OK'
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green

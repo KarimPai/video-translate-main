@@ -49,7 +49,7 @@ def run_clip(profile, clip, cfg, output, env):
     if process.wait():
         raise RuntimeError(f"{profile} failed for {clip}; see {output}.log")
     log = output.with_suffix(".log").read_text(encoding="utf8")
-    if profile != "A" and ("Secondary qwen3-asr" not in log or "Releasing optional" in log
+    if profile != "A" and ("Secondary nemotron-3.5" not in log or "Releasing optional" in log
                            or "Secondary ASR failed" in log):
         raise RuntimeError(f"{profile} degraded to baseline; see {output}.log")
     if profile == "C" and ("transcript selector ready" not in log or "Selector fallback" in log):

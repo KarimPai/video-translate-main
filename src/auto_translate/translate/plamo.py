@@ -40,7 +40,7 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "もう出た -> 'Already left' (not 'He already left'); "
     "戻ってきた -> 'Back again' (not 'She came back'). "
     "Examples: 運転が下手 -> 'The driving is bad'; 分からない -> 'Not sure'; "
-    "事故だ -> 'There's been an accident'). "
+    "事故だ -> 'There's been an accident'. "
     "Do NOT automatically assume the streamer is speaking as 'I', or that another player "
     "is 'he' or 'she'. If the Japanese clearly indicates a third person but not their gender, "
     "prefer the stated role/name; use 'they/them' only if a third-person referent is needed. "

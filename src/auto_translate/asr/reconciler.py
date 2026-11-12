@@ -65,6 +65,7 @@ class Reconciler:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             answer = json.load(response)["choices"][0]["message"]["content"]
         record = selected(answer, haas, secondary)
+        self.last_choice = record["selection"]
         log.info("Selector choice=%s elapsed=%.3fs", record["selection"], time.monotonic() - started)
         return record["selected_japanese"]
 

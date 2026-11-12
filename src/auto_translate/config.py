@@ -144,9 +144,9 @@ class ReconcilerConfig:
 class GpuBudgetConfig:
     """GPU capacity-relative headroom; no fixed application VRAM limit."""
 
-    startup_headroom_gb: float = 0.35
-    low_free_gb: float = 0.30
-    emergency_free_gb: float = 0.12
+    startup_headroom_gb: float = 0.65
+    low_free_gb: float = 0.55
+    emergency_free_gb: float = 0.25
     sample_interval_s: float = 2.0
 
     def __post_init__(self):

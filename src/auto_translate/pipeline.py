@@ -81,8 +81,10 @@ def _expired_live_cue(cue, playback_position, late_window_s: float) -> bool:
         position = playback_position()
     except (RuntimeError, OSError, ValueError):
         return False
+    # Refuse to shed on grossly inconsistent MPV clocks (e.g. bad live
+    # timeline anchors); dropping all dialogue would be worse than backlog.
     return (position is not None and math.isfinite(position)
-            and cue.end_s + max(0.0, late_window_s) < position)
+            and max(0.0, late_window_s) < position - cue.end_s <= 120.0)
 
 
 def run_asr(

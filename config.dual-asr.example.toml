@@ -14,9 +14,9 @@ vod_timeout_s = 20.0
 
 [gpu_budget]
 # No artificial VRAM hard limit; monitor physical GPU free memory.
-startup_headroom_gb = 0.35
-low_free_gb = 0.30
-emergency_free_gb = 0.12
+startup_headroom_gb = 0.65
+low_free_gb = 0.55
+emergency_free_gb = 0.25
 sample_interval_s = 2.0
 
 [vad]

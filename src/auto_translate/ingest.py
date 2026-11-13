@@ -12,6 +12,7 @@ MPV video/audio stream-copy output is kept separate from audio processing.
 
 import functools
 import http.server
+import io
 import logging
 import queue
 import re
@@ -35,7 +36,27 @@ log = logging.getLogger(__name__)
 
 
 class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
-    """Serve the local fMP4 cache without noisy per-request logging."""
+    """Serve the local fMP4 cache without locking live playlists over HTTP."""
+
+    def send_head(self):
+        # On Windows, streaming an open index.m3u8 file while FFmpeg tries
+        # to atomically replace it can make rename(.tmp, .m3u8) fail with
+        # "Operation not permitted". Snapshot the small playlist into RAM,
+        # CLOSE the file, then send the HTTP headers/body. fMP4 segments
+        # continue through SimpleHTTPRequestHandler's streaming path.
+        if urlparse(self.path).path.lower().endswith(".m3u8"):
+            playlist = Path(self.translate_path(self.path))
+            try:
+                payload = playlist.read_bytes()
+            except OSError:
+                return super().send_head()
+            self.send_response(200)
+            self.send_header("Content-type", "application/vnd.apple.mpegurl")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.end_headers()
+            return io.BytesIO(payload)
+        return super().send_head()
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -249,6 +270,7 @@ class Ingest:
         self._video_proc: subprocess.Popen | None = None
         self._video_progress_lock = threading.Lock()
         self._video_progress_at = 0.0
+        self._video_output_time_us: int | None = None
         self._video_failed = threading.Event()
         self._proc_lock = threading.Lock()
         self._inputs: list[str] | None = None
@@ -494,6 +516,7 @@ class Ingest:
 
         with self._video_progress_lock:
             self._video_progress_at = time.monotonic()
+            self._video_output_time_us = None
 
         assert proc.stderr is not None
 
@@ -506,7 +529,7 @@ class Ingest:
 
         threading.Thread(
             target=self._watch_video_progress,
-            args=(proc,),
+            args=(proc, Path(self.video_playlist)),
             name="ffmpeg-video-progress",
             daemon=True,
         ).start()
@@ -587,6 +610,8 @@ class Ingest:
                 "-http_persistent", "0",
                 "-reconnect", "1",
                 "-reconnect_streamed", "1",
+                "-reconnect_on_network_error", "1",
+                "-reconnect_on_http_error", "429,5xx",
                 "-reconnect_delay_max", "10",
                 # Regenerate missing presentation timestamps and ignore
                 # potentially unreliable input indexes on YouTube HLS.
@@ -765,10 +790,21 @@ class Ingest:
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
 
-            # FFmpeg emits a progress heartbeat when transcoding fallback video.
-            if not capture_pts and line.startswith("progress="):
+            # -progress emits "progress=continue" even if timestamps did
+            # not advance. Record REAL media-clock advancement, not heartbeats.
+            if not capture_pts and (
+                    line.startswith("out_time_us=") or line.startswith("out_time_ms=")):
+                try:
+                    output_time_us = int(line.partition("=")[2])
+                except ValueError:
+                    continue
                 with self._video_progress_lock:
-                    self._video_progress_at = time.monotonic()
+                    if (self._video_output_time_us is None
+                            or output_time_us > self._video_output_time_us):
+                        self._video_output_time_us = output_time_us
+                        self._video_progress_at = time.monotonic()
+                continue
+            if not capture_pts and line.startswith("progress="):
                 continue
 
             receiver_gone |= any(

@@ -2,7 +2,7 @@ name: Offline quality regression tests
 
 on:
   push:
-    branches: [main, feature/haas-plamo-quality-reliability-20261112, feature/haas-dual-asr-reconciliation]
+    branches: [main, feature/haas-plamo-quality-reliability-20261112, feature/haas-dual-asr-reconciliation, feature/haas-whisper-turbo-dual-asr-20261114]
   pull_request:
 
 jobs:

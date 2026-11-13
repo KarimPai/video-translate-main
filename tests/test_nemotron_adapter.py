@@ -1,4 +1,4 @@
-"""Offline contract tests for the separate NeMo-Speech.cpp ASR process."""
+"""Offline contract tests for the separate CrispASR Parakeet JA ASR process."""
 import io
 import json
 import threading
@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from auto_translate.asr.nemotron import NemotronASR, _multipart, _wav16
+from auto_translate.asr.nemotron import ParakeetASR, _multipart, _wav16
 from auto_translate.asr.reconciler import MODEL
 
 
@@ -30,7 +30,7 @@ class NemotronPayloadTests(unittest.TestCase):
     def test_hardcode_japanese_language_and_wav(self):
         body, boundary = _multipart(_wav16(np.ones(1600, dtype=np.float32) * 0.1))
         self.assertIn(b'filename="utterance.wav"', body)
-        self.assertIn(b'ja-JP', body)
+        self.assertIn(b'ja', body)
         self.assertIn(b'Content-Type: audio/wav', body)
         self.assertTrue(body.endswith(("--" + boundary + "--\r\n").encode("ascii")))
 
@@ -56,7 +56,7 @@ class NemotronPayloadTests(unittest.TestCase):
         with HTTPServer(("127.0.0.1", 0), Handler) as server:
             thread = threading.Thread(target=server.handle_request, daemon=True)
             thread.start()
-            worker = object.__new__(NemotronASR)
+            worker = object.__new__(ParakeetASR)
             worker.url = f"http://127.0.0.1:{server.server_port}"
             worker.process = Mock()
             worker.process.poll.return_value = None
@@ -67,12 +67,12 @@ class NemotronPayloadTests(unittest.TestCase):
 
         self.assertEqual(requests[0][0], "/v1/audio/transcriptions")
         self.assertIn("multipart/form-data; boundary=", requests[0][1])
-        self.assertIn(b'ja-JP', requests[0][2])
+        self.assertIn(b'ja', requests[0][2])
         self.assertIn(b'RIFF', requests[0][2])
         self.assertEqual(worker.last_stop, "unknown")
 
     def test_server_exit_fails_without_fake_result(self):
-        worker = object.__new__(NemotronASR)
+        worker = object.__new__(ParakeetASR)
         worker.process = Mock()
         worker.process.poll.return_value = 1
         with self.assertRaises(RuntimeError):

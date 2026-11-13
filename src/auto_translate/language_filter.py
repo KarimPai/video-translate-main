@@ -28,6 +28,9 @@ class LanguageDecision:
     japanese_probability: float
     drop: bool
     reason: str
+    # Per-window predictions: (language, top confidence, Japanese confidence,
+    # top-vs-runner-up margin). Empty for short or failed classification.
+    windows: tuple[tuple[str, float, float, float], ...] = ()
 
 
 class LanguageFilter:
@@ -129,8 +132,10 @@ class LanguageFilter:
             return LanguageDecision(
                 first[0], min(p[1] for p in predicted),
                 max(p[2] for p in predicted), True, "confident_non_japanese",
+                windows=tuple(predicted),
             )
         return LanguageDecision(
             first[0], first[1],
             max(p[2] for p in predicted), False, "japanese_or_uncertain",
+            windows=tuple(predicted),
         )

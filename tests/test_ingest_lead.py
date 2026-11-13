@@ -120,6 +120,20 @@ class YoutubeAudioRecoveryTests(unittest.TestCase):
         self.assertEqual(reader.call_count, 3)
         self.assertIsNone(outputs.get_nowait())
 
+    def test_alternate_youtube_client_only_on_retry(self):
+        ing = self.failed_vod_ingest()
+        ing.cfg = SimpleNamespace(ytdlp_format="bestaudio",
+                                  cookies_from_browser="")
+        response = Mock(stdout="https://audio.example/test\\n")
+        with patch("auto_translate.ingest.subprocess.run",
+                   return_value=response) as run:
+            self.assertEqual(ing._resolve_audio_url(), "https://audio.example/test")
+            self.assertNotIn("--extractor-args", run.call_args.args[0])
+            ing._audio_client_fallback = True
+            ing._resolve_audio_url()
+            self.assertIn("youtube:player_client=default,-web_embedded",
+                          run.call_args.args[0])
+
     def test_mpv_drain_handles_closed_ipc_pipe(self):
         output = object.__new__(MpvOutput)
         output.stop = threading.Event()

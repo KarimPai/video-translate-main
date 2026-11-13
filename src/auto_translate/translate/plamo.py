@@ -265,6 +265,38 @@ class PlamoTranslator:
             self._server_log = None
         atexit.unregister(self.close)
 
+    def _retry_on_cooldown(self, reason: str) -> bool:
+        """Back off repeatedly failed subjective first-person retries.
+
+        Keep the first three attempts and periodically probe again; do not
+        suppress retries for negation, numbers, gender, or other issues.
+        """
+        if reason != "unsupported_first_person_reference":
+            return False
+        misses = getattr(self, "_first_person_retry_misses", 0)
+        remaining = getattr(self, "_first_person_retry_cooldown", 0)
+        if remaining > 0:
+            self._first_person_retry_cooldown = remaining - 1
+            self._count_validation("retry_skipped:first_person_cooldown")
+            return True
+        return False
+
+    def _record_retry_outcome(self, reason: str, accepted: bool) -> None:
+        if reason != "unsupported_first_person_reference":
+            return
+        if accepted:
+            self._first_person_retry_misses = 0
+            self._first_person_retry_cooldown = 0
+        else:
+            misses = getattr(self, "_first_person_retry_misses", 0) + 1
+            if misses >= 3:
+                self._first_person_retry_misses = 0
+                self._first_person_retry_cooldown = 5
+                log.info("First-person retry was rejected three times; "
+                         "skip the next five such retries, then probe again")
+            else:
+                self._first_person_retry_misses = misses
+
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         if getattr(self, "memory_lines", 0):
             reused = reuse_recent_short_term(ja, history)
@@ -285,7 +317,8 @@ class PlamoTranslator:
         reason = pronoun_reason or suspicious_translation(ja, english, names=names)
         if reason:
             self._count_validation("flag:" + reason)
-        if reason and self.cfg.retry_suspicious:
+        if (reason and self.cfg.retry_suspicious
+                and not self._retry_on_cooldown(reason)):
             log.info("PLaMo suspicious translation (%s): JP=%r EN=%r; retry without prior chat",
                      reason, ja[:150], english[:160])
             try:
@@ -297,6 +330,7 @@ class PlamoTranslator:
                 ))
             except Exception as exc:
                 self._count_validation("retry_unavailable")
+                self._record_retry_outcome(reason, accepted=False)
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
                 retry_reason = (
@@ -306,9 +340,11 @@ class PlamoTranslator:
                 if retry_reason is None:
                     english = candidate
                     self._count_validation("retry_accepted")
+                    self._record_retry_outcome(reason, accepted=True)
                     log.info("PLaMo validation retry accepted (trigger=%s)", reason)
                 else:
                     self._count_validation("retry_rejected:" + retry_reason)
+                    self._record_retry_outcome(reason, accepted=False)
                     log.warning(
                         "PLaMo retry still suspicious (%s); keeping first result with safe fallbacks",
                         retry_reason,

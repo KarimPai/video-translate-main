@@ -842,32 +842,65 @@ class Ingest:
             elif receiver_gone:
                 log.debug("ffmpeg: %s", line)
 
-    def _watch_video_progress(self, proc: subprocess.Popen) -> None:
-        """Warn when FFmpeg stops reporting output progress for too long."""
-        last_seen = 0.0
+    @staticmethod
+    def _video_stall_reason(media_age_s: float, playlist_age_s: float) -> str | None:
+        """Treat a stalled HLS playlist as failure even if FFmpeg stays alive."""
+        if playlist_age_s >= 18.0:
+            return "stale_hls_playlist"
+        if media_age_s >= 18.0:
+            return "stalled_media_output"
+        return None
+
+    def _watch_video_progress(
+        self, proc: subprocess.Popen, playlist_path: Path | None = None,
+    ) -> None:
+        """Restart shared live playback when output or playlist stops advancing.
+
+        A process can remain alive while YouTube segments fail or FFmpeg's
+        index.m3u8.tmp -> index.m3u8 rename fails on Windows. Status
+        heartbeats are not sufficient evidence that playback media advances.
+        """
+        playlist = playlist_path or Path(self.video_playlist)
+        last_playlist_revision: tuple[int, int] | None = None
+        playlist_advanced_at = time.monotonic()
         warned = False
 
         while proc.poll() is None:
             time.sleep(2.0)
+            with self._proc_lock:
+                if self._stopped or self._video_proc is not proc:
+                    return
+            now = time.monotonic()
+            try:
+                state = playlist.stat()
+                if state.st_size > 0:
+                    revision = (state.st_mtime_ns, state.st_size)
+                    if revision != last_playlist_revision:
+                        last_playlist_revision = revision
+                        playlist_advanced_at = now
+                        warned = False
+            except OSError:
+                # A temporarily missing playlist is handled like a stall.
+                pass
 
             with self._video_progress_lock:
-                progress_at = self._video_progress_at
-
-            if progress_at != last_seen:
-                last_seen = progress_at
-                warned = False
-                continue
-
-            stalled_for = time.monotonic() - progress_at
-            if stalled_for >= 12.0 and not warned:
-                with self._proc_lock:
-                    current = self._video_proc is proc
-                if current:
-                    log.warning(
-                        "FFmpeg video output made no progress for %.1fs; "
-                        "the sender may be blocked or source delivery may be stalled",
-                        stalled_for,
-                    )
+                media_advanced_at = self._video_progress_at
+            media_age = max(0.0, now - media_advanced_at)
+            playlist_age = max(0.0, now - playlist_advanced_at)
+            reason = self._video_stall_reason(media_age, playlist_age)
+            if reason:
+                log.error(
+                    "Shared live HLS %s: media has not advanced for %.1fs, "
+                    "playlist unchanged for %.1fs; requesting synchronized "
+                    "MPV/ASR recovery", reason, media_age, playlist_age,
+                )
+                self._video_failed.set()
+                return
+            if not warned and max(media_age, playlist_age) >= 10.0:
+                log.warning(
+                    "Shared live HLS lagging: media age %.1fs, "
+                    "playlist age %.1fs", media_age, playlist_age,
+                )
                 warned = True
 
         returncode = proc.poll()

@@ -272,7 +272,7 @@ def main() -> None:
         placement = f"{dual.selector.gpu_layers} GPU layers requested" if dual.selector.gpu_layers else "CPU"
         selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
     # Japanese-only Parakeet has no multilingual language detection.
-    # Legacy Indonesian ASR was removed; never access dual.indonesian.
+    # Do not report an Indonesian worker: that optional third-ASR feature was removed.
     print(f"ASR: Haas + {'Parakeet JA 0.6B' if dual.worker else 'no secondary'} | "
           f"Language: Japanese only | "
           f"Selector: {selector_status} | "

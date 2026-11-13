@@ -392,6 +392,8 @@ class MpvOutput:
         self._closed = False
         self._video_retries = 0
         self._last_video_recovery_at: float | None = None
+        self._live_cache_pause_since: float | None = None
+        self._next_live_cache_check_at = 0.0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
@@ -442,7 +444,7 @@ class MpvOutput:
             # default 1-second refill after an underrun repeatedly resumed
             # with insufficient data, causing 1s play / 1s buffer cycles.
             # Require 4s of packets before resuming; VOD stays unchanged.
-            *(["--cache-pause-wait=4"] if ingest.source.live else []),
+            *(["--cache-pause-wait=2"] if ingest.source.live else []),
             "--demuxer-readahead-secs=120",
             "--demuxer-max-bytes=1GiB",
             "--demuxer-max-back-bytes=1GiB",
@@ -941,6 +943,8 @@ class MpvOutput:
         self._last_direct_sample_at = time.monotonic()
 
         if self.ingest.source.live:
+            self._live_cache_pause_since = None
+            self._next_live_cache_check_at = 0.0
             unpause_at = (
                 self.ingest.first_pts_at
                 + self.cfg.delay_s
@@ -1013,6 +1017,13 @@ class MpvOutput:
             self._manually_paused = (
                 not paused and self.ipc.get("pause") is True
             )
+            # MPV can underrun audio while the HLS playlist continues to
+            # advance with video-only packets. The FFmpeg playlist watchdog
+            # cannot catch that class of failure; monitor the actual player.
+            if not paused and self._check_live_cache_stall():
+                if self._recover_video_stream():
+                    return
+                return
             if (pos := self.ipc.get("time-pos")) is not None:
                 if self.ingest.source.live:
                     self._sample_live_clock(float(pos), time.monotonic())
@@ -1093,6 +1104,35 @@ class MpvOutput:
                                 wait_s = boundary - self._now
             self._subtitle_ready.wait(max(0.005, wait_s))
 
+    def _check_live_cache_stall(self) -> bool:
+        """Escalate a sustained live MPV cache underrun to shared A/V recovery."""
+        if not self.ingest.source.live or not self.ingest.video_out:
+            return False
+        now = time.monotonic()
+        if now < self._next_live_cache_check_at:
+            return False
+        self._next_live_cache_check_at = now + 1.0
+        if self.ipc.get("pause") is True:
+            # A manual pause is not a network stall.
+            self._live_cache_pause_since = None
+            return False
+        if self.ipc.get("paused-for-cache") is not True:
+            self._live_cache_pause_since = None
+            return False
+        if self._live_cache_pause_since is None:
+            self._live_cache_pause_since = now
+            log.info("MPV live cache buffering started; monitoring for recovery")
+            return False
+        stalled_for = now - self._live_cache_pause_since
+        if stalled_for < 10.0:
+            return False
+        log.warning(
+            "MPV live cache buffering for %.1fs without recovery; "
+            "requesting synchronized stream restart", stalled_for,
+        )
+        self.ingest.video_failed.set()
+        return True
+
     def _recover_video_stream(self) -> bool:
         """Restart shared video/audio with a bounded short-window retry policy."""
         now = time.monotonic()
@@ -1107,6 +1147,8 @@ class MpvOutput:
             self.stop.set()
             return False
         self._last_video_recovery_at = now
+        self._live_cache_pause_since = None
+        self._next_live_cache_check_at = 0.0
 
         restart_at = self._now
         if restart_at is None:

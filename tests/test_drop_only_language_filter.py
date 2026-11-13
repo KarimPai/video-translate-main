@@ -37,6 +37,16 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertTrue(v.drop)
         self.assertEqual(v.language, "en")
 
+    def test_classifier_exposes_windows_for_code_switch_diagnostics(self):
+        filt = make_filter([
+            ("id", .91, .01, .78),
+            ("ja", .87, .87, .71),
+        ])
+        result = filt.classify(audio(10.0))
+        self.assertFalse(result.drop)
+        self.assertEqual(len(result.windows), 2)
+        self.assertEqual([p[0] for p in result.windows], ["id", "ja"])
+
     def test_confident_indonesian_is_dropped(self):
         filt = make_filter([("id", .93, .015, .87)])
         self.assertTrue(filt.classify(audio()).drop)

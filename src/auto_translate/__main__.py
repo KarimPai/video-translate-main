@@ -284,9 +284,9 @@ def main() -> None:
     if dual.selector:
         placement = f"{dual.selector.gpu_layers} GPU layers requested" if dual.selector.gpu_layers else "CPU"
         selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
-    # Japanese-only Parakeet has no multilingual language detection.
+    # Whisper Turbo only transcribes Japanese; ECAPA filters other languages first.
     # Do not report an Indonesian worker: that optional third-ASR feature was removed.
-    print(f"ASR: Haas + {'Parakeet JA 0.6B' if dual.worker else 'no secondary'} | "
+    print(f"ASR: Haas + {'Whisper Large-v3 Turbo' if dual.worker else 'no secondary'} | "
           f"Language: Japanese only (EN/ID audio filter: "
           f"{'CPU ECAPA' if language_filter else 'off'}) | "
           f"Selector: {selector_status} | "

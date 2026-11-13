@@ -154,7 +154,7 @@ class AsrComparisonTests(unittest.TestCase):
         dual = DualASR(cfg, budget, Glossary({}), False)
         dual.worker = Mock(last_stop="complete")
         dual.worker.transcribe.return_value = "まだ行かない"
-        dual.selector = Mock(last_choice="parakeet")
+        dual.selector = Mock(last_choice="whisper_turbo")
         dual.selector.choose.return_value = "まだ行かない"
         utt = Utterance(10.0, 11.0, np.ones(16000, dtype=np.float32),
                         vad_confidence=0.96)
@@ -164,8 +164,8 @@ class AsrComparisonTests(unittest.TestCase):
         self.assertEqual(result, "まだ行かない")
         record = save.call_args.args[0]
         self.assertEqual(record["haas"], "行く")
-        self.assertEqual(record["parakeet"], "まだ行かない")
-        self.assertEqual(record["chosen_by"], "parakeet")
+        self.assertEqual(record["whisper_turbo"], "まだ行かない")
+        self.assertEqual(record["chosen_by"], "whisper_turbo")
         self.assertEqual(record["chosen"], "まだ行かない")
         self.assertTrue(record["selector_called"])
         self.assertIn("negation", record["flags"])
@@ -179,19 +179,19 @@ class AsrComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "asr-comparison.jsonl"
             append_comparison({
-                "haas": "行く", "parakeet": "まだ行かない",
-                "chosen_by": "parakeet", "selector_called": True,
+                "haas": "行く", "whisper_turbo": "まだ行かない",
+                "chosen_by": "whisper_turbo", "selector_called": True,
             }, path=path)
             payload = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(payload["haas"], "行く")
-            self.assertEqual(payload["parakeet"], "まだ行かない")
-            self.assertEqual(payload["chosen_by"], "parakeet")
+            self.assertEqual(payload["whisper_turbo"], "まだ行かない")
+            self.assertEqual(payload["chosen_by"], "whisper_turbo")
             with patch("auto_translate.asr.diagnostics._MAX_FILE_BYTES", 1):
-                append_comparison({"haas": "次", "parakeet": "次"}, path=path)
+                append_comparison({"haas": "次", "whisper_turbo": "次"}, path=path)
             self.assertTrue((Path(td) / "asr-comparison.previous.jsonl").exists())
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["haas"], "次")
 
-    def test_selected_parakeet_name_uses_matching_caption_evidence(self):
+    def test_selected_whisper_turbo_name_uses_matching_caption_evidence(self):
         # Previously selecting secondary meant choice != None and skipped
         # even exact aligned caption-based Watame name repair.
         from auto_translate.captions import CaptionMatch
@@ -214,7 +214,7 @@ class AsrComparisonTests(unittest.TestCase):
         self.assertIsNone(output_q.get_nowait())
         caption.match.assert_called_once_with(2, 3)
 
-    def test_selected_parakeet_watame_name_uses_confirmed_video_context(self):
+    def test_selected_whisper_turbo_watame_name_uses_confirmed_video_context(self):
         primary = Mock()
         primary.transcribe.return_value = "渡辺、行こう"
         dual = Mock()

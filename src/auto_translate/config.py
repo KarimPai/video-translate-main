@@ -134,15 +134,29 @@ class LanguageFilterConfig:
 @dataclass
 class DualAsrConfig:
     enabled: bool = True
-    language_routing: bool = False  # Parakeet JA is Japanese-only
+    language_routing: bool = False  # Language filtering happens before either Japanese ASR.
+    secondary_model: str = "h2oai/faster-whisper-large-v3-turbo"
+    secondary_device: str = "cuda"
+    secondary_compute_type: str = "int8_float16"
+    secondary_beam_size: int = 6
     secondary_live_mode: str = "selective"
     secondary_vod_mode: str = "all"
-    live_timeout_s: float = 2.0
+    live_timeout_s: float = 5.0
     vod_timeout_s: float = 25.0
 
     def __post_init__(self):
         if type(self.language_routing) is not bool:
             raise ValueError("language routing flags must be boolean")
+        if not self.secondary_model.strip():
+            raise ValueError("secondary model identifier must be nonempty")
+        if self.secondary_device not in ("cuda", "cpu"):
+            raise ValueError("secondary_device must be cuda or cpu")
+        if self.secondary_compute_type not in ("int8_float16", "float16", "int8", "float32"):
+            raise ValueError("invalid Whisper Turbo compute_type")
+        if self.secondary_device == "cpu" and self.secondary_compute_type in ("int8_float16", "float16"):
+            raise ValueError("CPU Whisper Turbo requires int8 or float32 compute_type")
+        if type(self.secondary_beam_size) is not int or not 1 <= self.secondary_beam_size <= 10:
+            raise ValueError("secondary_beam_size must be in 1..10")
         for mode in (self.secondary_live_mode, self.secondary_vod_mode):
             if mode not in ("off", "selective", "all"):
                 raise ValueError("secondary mode must be off, selective or all")

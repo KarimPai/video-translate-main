@@ -149,7 +149,7 @@ def run_asr(
             continue
 
         # Language is determined from ORIGINAL audio, not Japanese-forced ASR.
-        # Never send confidently English or Indonesian speech to Haas/Parakeet,
+        # Never send confidently English or Indonesian speech to Haas/Whisper Turbo,
         # PLaMo, terminal, web or MPV. No English/Indonesian subtitles exist.
         if language_filter is not None:
             verdict = language_filter.classify(utt.audio)

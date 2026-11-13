@@ -1,8 +1,8 @@
-"""Japanese-only Parakeet does not attempt English language routing."""
+"""Japanese-only Whisper Turbo does not attempt English language routing."""
 import unittest
 from unittest.mock import Mock
 from auto_translate.asr.dual import DualASR
-from auto_translate.asr.nemotron import ParakeetASR
+from auto_translate.asr.whisper_turbo import WhisperTurboASR
 from auto_translate.config import Config, load_config
 from auto_translate.glossary import Glossary
 from auto_translate.types import Utterance
@@ -13,10 +13,8 @@ class JapaneseOnlyRoutingTests(unittest.TestCase):
     def test_default_disables_language_routing(self):
         self.assertFalse(Config().dual_asr.language_routing)
 
-    def test_parakeet_never_identifies_english(self):
-        worker = object.__new__(ParakeetASR)
-        with self.assertRaises(NotImplementedError):
-            worker.transcribe_with_language(np.ones(16000, dtype=np.float32))
+    def test_whisper_turbo_is_transcription_only(self):
+        self.assertFalse(hasattr(WhisperTurboASR, "transcribe_with_language"))
 
     def test_no_preflight_even_if_legacy_flag_enabled(self):
         cfg = Config()

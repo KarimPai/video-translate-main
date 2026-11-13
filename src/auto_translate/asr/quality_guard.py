@@ -37,6 +37,6 @@ def disagreement_unresolved(primary, secondary, selected, similarity, flags, sel
     if selected_by == "uncertain":
         return similarity < 0.45 and bool(flags)
     # A deterministic fallback is not independent evidence for a transcript.
-    if selected_by in ("haas", "parakeet_rescue", "haas_secondary_unusable"):
+    if selected_by in ("haas", "whisper_turbo_rescue", "haas_secondary_unusable"):
         return False
     return False

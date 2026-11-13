@@ -8,19 +8,19 @@ import urllib.error
 import numpy as np
 
 from ..text_filter import is_usable_transcript
-from .nemotron import ParakeetASR
+from .whisper_turbo import WhisperTurboASR
 from .language_router import classify_language
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import compare
 
 log = logging.getLogger(__name__)
-SECONDARY = "parakeet-ja-0.6b"
+SECONDARY = "whisper-large-v3-turbo"
 
 
 @dataclass(frozen=True)
 class LanguageProbe:
-    """Legacy optional language probe, unused by Japanese-only Parakeet."""
+    """Legacy optional language probe, unused by Japanese-only Whisper Turbo."""
     text: str
     language: str | None
     route: str
@@ -49,12 +49,18 @@ class DualASR:
             return
         try:
             # Admission includes MPV, VAD, model scratch and Windows headroom.
-            if not budget.admits(1.7):
+            if cfg.dual_asr.secondary_device == "cuda" and not budget.admits(1.9):
                 raise RuntimeError("insufficient measured GPU headroom for secondary ASR")
-            self.worker = ParakeetASR(device="cuda:0")
-            if not budget.admits(0.5):
+            self.worker = WhisperTurboASR(
+                model=cfg.dual_asr.secondary_model,
+                device=cfg.dual_asr.secondary_device,
+                compute_type=cfg.dual_asr.secondary_compute_type,
+                beam_size=cfg.dual_asr.secondary_beam_size,
+            )
+            if cfg.dual_asr.secondary_device == "cuda" and not budget.admits(0.3):
                 raise RuntimeError("secondary ASR exceeded its startup reservation")
-            log.info("Secondary %s ready on CUDA0 (%s)", SECONDARY, self.mode)
+            log.info("Secondary %s ready on %s (%s)", SECONDARY,
+                     cfg.dual_asr.secondary_device, self.mode)
         except Exception as exc:
             log.warning("Haas + PLaMo fallback: %s", exc)
             self.release()
@@ -127,7 +133,7 @@ class DualASR:
             self.history.append(text[:160])
 
     def preflight_language(self, utt, current=None):
-        """Parakeet JA is Japanese-only; do not attempt language detection."""
+        """Whisper Turbo JA is Japanese-only; do not attempt language detection."""
         return None
 
     def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
@@ -200,12 +206,12 @@ class DualASR:
                     and is_usable_transcript(prefetched.text)):
                 secondary = prefetched.text
                 secondary_elapsed_s = prefetched.elapsed_s
-                log.debug("Reusing Parakeet auto-Japanese transcript at %.2fs", utt.start_s)
+                log.debug("Reusing Whisper Turbo auto-Japanese transcript at %.2fs", utt.start_s)
             else:
                 started = time.perf_counter()
                 secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
                 secondary_elapsed_s = time.perf_counter() - started
-            log.info("Parakeet ASR %.2f-%.2fs audio decoded in %.3fs",
+            log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
@@ -213,7 +219,7 @@ class DualASR:
             return None
         if current and current() != utt.generation:
             return ""
-        log.debug("ASR generation=%d %.3f-%.3f Haas=%r Parakeet=%r",
+        log.debug("ASR generation=%d %.3f-%.3f Haas=%r Whisper Turbo=%r",
                   utt.generation, utt.start_s, utt.end_s, primary, secondary)
         def record(selected_text, selected_by, score=None, flags=None, selector_called=False):
             append_comparison({
@@ -223,7 +229,7 @@ class DualASR:
                 "end_s": round(utt.end_s, 3),
                 "duration_s": round(utt.end_s - utt.start_s, 3),
                 "haas": primary,
-                "parakeet": secondary,
+                "whisper_turbo": secondary,
                 "detected_language": getattr(prefetched, "language", None),
                 "language_route": ("japanese_reconciled" if getattr(prefetched, "route", None) == "japanese"
                                    else "uncertain_japanese_fallback" if prefetched is not None
@@ -232,12 +238,12 @@ class DualASR:
                 "chosen_by": selected_by,
                 "haas_elapsed_s": (round(primary_elapsed_s, 3)
                                    if primary_elapsed_s is not None else None),
-                "parakeet_elapsed_s": round(secondary_elapsed_s, 3),
+                "whisper_turbo_elapsed_s": round(secondary_elapsed_s, 3),
                 "similarity": round(score, 4) if score is not None else None,
                 "flags": flags or [],
                 "selector_called": selector_called,
                 "haas_stop": primary_stop,
-                "parakeet_stop": worker.last_stop,
+                "whisper_turbo_stop": worker.last_stop,
                 "vad_confidence": utt.vad_confidence,
             })
 
@@ -248,12 +254,12 @@ class DualASR:
             record(primary, "haas_secondary_unusable")
             return None
         result = primary if is_usable_transcript(primary) else secondary
-        selected_by = "haas" if is_usable_transcript(primary) else "parakeet_rescue"
+        selected_by = "haas" if is_usable_transcript(primary) else "whisper_turbo_rescue"
         selector_called = False
         if (primary_stop == "model_limit" and worker.last_stop == "complete"
                 and secondary.startswith(primary) and len(secondary) > len(primary)):
             result = secondary
-            selected_by = "parakeet_completion"
+            selected_by = "whisper_turbo_completion"
         terms = self.glossary.find(primary + " " + secondary)
         score, flags = compare(primary, secondary, terms)
         if score < 1 and primary:
@@ -270,8 +276,8 @@ class DualASR:
                     }, timeout)
                     selector_called = True
                     selected_by = getattr(selector, "last_choice", None)
-                    if selected_by not in ("haas", "parakeet", "uncertain"):
-                        selected_by = "parakeet" if result == secondary else "haas"
+                    if selected_by not in ("haas", "whisper_turbo", "uncertain"):
+                        selected_by = "whisper_turbo" if result == secondary else "haas"
                 except Exception as exc:
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
         from .quality_guard import transcript_problem, disagreement_unresolved

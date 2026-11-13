@@ -1,3 +1,20 @@
+# Haas + Whisper Large-v3 Turbo Japanese dual-ASR (2026-11-14)
+
+**Current branch:** `feature/haas-whisper-turbo-dual-asr-20261114`, based on the Japanese-only language-filter branch.
+
+- Haas-ja-v1.0 (Vulkan) remains primary; Whisper Large-v3 Turbo (CTranslate2 `int8_float16` CUDA) replaces Parakeet and runs in a restartable subprocess.
+- Original 16 kHz Japanese speech goes to both ASRs. LFM2.5-JP selects A=Haas, B=Whisper Turbo, U=uncertain; PLaMo 3 Translate 2B generates English subtitles.
+- CPU VoxLingua107 still drops only high-confidence English and Indonesian audio before either ASR; it does **not** translate or display either spoken language. Ambiguous code-switching continues as Japanese.
+- Physical GPU headroom gating is retained, with no artificial 7.5-GB ceiling. LFM GPU offload falls back to CPU, and a failed secondary gracefully falls back to Haas. PLaMo remains capped at 12 GPU layers on RTX 3070-class cards.
+- Download: the public HF CTranslate2 checkpoint `h2oai/faster-whisper-large-v3-turbo` (~1.6 GB) is fetched automatically once. No CrispASR executable or Parakeet GGUF is needed. Logs: `logs/run.log`, `logs/whisper-turbo.log`, `logs/asr-comparison.jsonl`, `logs/reconciler.log`.
+- Run `uv sync`, then `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`, then `Start translate.bat`. Existing `config.toml` may still set 2s live secondary timeout; raise `[dual_asr] live_timeout_s = 5.0` to use Whisper reliably.
+- To use CPU when CUDA memory is insufficient: set `secondary_device = "cpu"` and `secondary_compute_type = "int8"` in `[dual_asr]`. This is slower.
+- Accuracy and runtime have not yet been verified on the user's RTX 3070; measure the new comparison logs on an actual VOD.
+
+---
+
+## Historical notes from earlier experiments (some model names and commands below are obsolete)
+
 # Experimental Haas + Nemotron 3.5 + LFM-JP + PLaMo
 
 **Branch:** `feature/haas-nemotron-lfm-reconciler-20261113` — isolated from the previous stable dual-ASR branch.

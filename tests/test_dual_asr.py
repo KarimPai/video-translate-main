@@ -31,7 +31,7 @@ class ComparisonTests(unittest.TestCase):
             self.assertLess(compare(a, b, [])[0], 1)
 
     def test_contract(self):
-        for letter, label, expected in [("A", "haas", "行く"), ("B", "parakeet", "行け"),
+        for letter, label, expected in [("A", "haas", "行く"), ("B", "whisper_turbo", "行け"),
                                         ("U", "uncertain", "行く")]:
             record = selected(letter, "行く", "行け")
             self.assertEqual(record["selection"], label)

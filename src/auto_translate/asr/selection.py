@@ -30,7 +30,7 @@ def compare(a, b, terms):
 def selected(content, haas, secondary):
     if content not in ("A", "B", "U"):
         raise ValueError("selector must return exactly A, B or U")
-    label = {"A": "haas", "B": "parakeet", "U": "uncertain"}[content]
+    label = {"A": "haas", "B": "whisper_turbo", "U": "uncertain"}[content]
     return {"selection": label, "selected_japanese": secondary if content == "B" else haas,
             "uncertain": content == "U", "reason": "uncertain; using Haas" if content == "U"
             else "selected original hypothesis"}

@@ -1,0 +1,162 @@
+"""Optional Japanese Whisper Large-v3 Turbo ASR in a killable CTranslate2 process.
+
+Keep CUDA allocations isolated from Haas Vulkan and llama.cpp. The parent can
+enforce a deadline and release VRAM without leaving a timed-out decode running.
+"""
+import logging
+import multiprocessing as mp
+import threading
+import time
+from pathlib import Path
+
+import numpy as np
+
+log = logging.getLogger(__name__)
+MODEL = "h2oai/faster-whisper-large-v3-turbo"
+
+
+def _audio16(audio):
+    """Validate the existing 16 kHz mono float samples, without resampling."""
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim != 1 or not len(samples) or not np.isfinite(samples).all():
+        raise ValueError("Whisper Turbo expects finite 16 kHz mono audio")
+    return np.ascontiguousarray(np.clip(samples, -1, 1))
+
+
+def _decode(model, samples, beam_size):
+    """Never let Whisper auto-detect English or choose the translation task."""
+    segments, _ = model.transcribe(
+        samples,
+        task="transcribe",
+        language="ja",
+        beam_size=beam_size,
+        temperature=0.0,
+        condition_on_previous_text=False,
+        initial_prompt=None,
+        vad_filter=False,  # FireRedVAD has already segmented original audio.
+        no_speech_threshold=0.6,
+        log_prob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
+        without_timestamps=True,
+        word_timestamps=False,
+    )
+    phrases = []
+    for segment in segments:  # faster-whisper decodes lazily.
+        if (getattr(segment, "no_speech_prob", 0.0) > 0.75
+                and getattr(segment, "avg_logprob", 0.0) < -0.75):
+            continue
+        value = segment.text.strip()
+        if value:
+            phrases.append(value)
+    return " ".join(phrases).strip()
+
+
+def _worker_main(connection, model_name, device, compute_type, beam_size):
+    try:
+        Path("logs").mkdir(exist_ok=True)
+        logging.basicConfig(filename="logs/whisper-turbo.log", encoding="utf-8",
+                            level=logging.INFO, force=True)
+        from auto_translate.cuda_dlls import setup
+        setup()
+        from faster_whisper import WhisperModel
+        model = WhisperModel(model_name, device=device,
+                             compute_type=compute_type, cpu_threads=4,
+                             num_workers=1)
+        connection.send({"type": "ready"})
+        while True:
+            command = connection.recv()
+            if command is None:
+                break
+            try:
+                samples = _audio16(command)
+                transcript = _decode(model, samples, beam_size)
+                connection.send({"type": "transcript", "text": transcript,
+                                 "stop": "complete" if transcript else "unknown"})
+            except Exception as exc:
+                logging.exception("Whisper Turbo decode failed")
+                connection.send({"type": "error", "message": str(exc)})
+    except EOFError:
+        pass
+    except BaseException as exc:
+        logging.exception("Whisper Turbo startup or worker failure")
+        try:
+            connection.send({"type": "error", "message": str(exc)})
+        except (OSError, EOFError, BrokenPipeError):
+            pass
+    finally:
+        connection.close()
+
+
+class WhisperTurboASR:
+    """Persistent, single-flight secondary Japanese recognition worker."""
+
+    def __init__(self, *, model=MODEL, device="cuda", compute_type="int8_float16",
+                 beam_size=6, startup_timeout=600):
+        self.last_stop = "unknown"
+        self._lock = threading.Lock()
+        self.process = None
+        self.connection = None
+        context = mp.get_context("spawn")
+        parent, child = context.Pipe(duplex=True)
+        self.connection = parent
+        self.process = context.Process(
+            target=_worker_main,
+            args=(child, model, device, compute_type, beam_size),
+            name="whisper-turbo-asr", daemon=True,
+        )
+        try:
+            self.process.start()
+            child.close()
+            deadline = time.monotonic() + startup_timeout
+            while time.monotonic() < deadline:
+                if self.connection.poll(0.2):
+                    response = self.connection.recv()
+                    if response.get("type") == "ready":
+                        log.info("Whisper Turbo ready: model=%s device=%s compute=%s beam=%d",
+                                 model, device, compute_type, beam_size)
+                        return
+                    raise RuntimeError("Whisper Turbo startup: " + response.get("message", "unknown error"))
+                if not self.process.is_alive():
+                    raise RuntimeError("Whisper Turbo worker exited during model startup")
+            raise TimeoutError("Whisper Turbo startup timed out; inspect logs/whisper-turbo.log")
+        except BaseException:
+            child.close()
+            self.close()
+            raise
+
+    def transcribe(self, audio, timeout=None):
+        samples = _audio16(audio)
+        if timeout is None:
+            timeout = 25.0
+        if timeout <= 0:
+            raise TimeoutError("Whisper Turbo deadline exceeded")
+        if self.process is None or not self.process.is_alive() or self.connection is None:
+            raise RuntimeError("Whisper Turbo worker unavailable")
+        try:
+            self.connection.send(samples)
+            if not self.connection.poll(timeout):
+                self.close()  # Kill a stalled CUDA inference, not only the waiting thread.
+                raise TimeoutError("Whisper Turbo transcription timed out")
+            response = self.connection.recv()
+        except (EOFError, BrokenPipeError, OSError) as exc:
+            self.close()
+            raise RuntimeError("Whisper Turbo worker communication failed") from exc
+        if response.get("type") != "transcript":
+            self.close()
+            raise RuntimeError("Whisper Turbo worker error: " + response.get("message", "unknown"))
+        self.last_stop = response.get("stop", "unknown")
+        return response["text"]
+
+    def close(self):
+        with self._lock:
+            process, connection = self.process, self.connection
+            self.process = self.connection = None
+        if connection is not None:
+            connection.close()
+        if process is not None:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=2)

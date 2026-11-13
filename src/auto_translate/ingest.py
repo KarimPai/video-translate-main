@@ -843,12 +843,14 @@ class Ingest:
             elif receiver_gone:
                 log.debug("ffmpeg: %s", line)
 
-            # An HLS video writer can survive a lost *audio* rendition and
-            # continue publishing video-only segments. MPV then remains
-            # buffering although playlist timestamps are still advancing.
-            # Restart the shared session on a confirmed missing source segment
-            # or fatal playlist write error, but never from the old process
-            # during shutdown/recovery.
+            # FFmpeg can skip ONE unavailable YouTube HLS segment and keep
+            # publishing playable media. Previously, each "Failed to open
+            # segment" triggered an unconditional restart -- even when MPV
+            # was actively playing -- imposing a fresh 20s live delay.
+            # Let FFmpeg continue here. Real failure is caught by the
+            # 10s MPV cache-pause monitor, 18s media/playlist watchdog,
+            # or FFmpeg process-exit watcher. Playlist write failure is
+            # structurally fatal and still requests immediate recovery.
             source_segment_failed = "failed to open segment" in lower
             playlist_write_failed = (
                 "index.m3u8" in lower
@@ -858,14 +860,18 @@ class Ingest:
                     and (source_segment_failed or playlist_write_failed)):
                 with self._proc_lock:
                     current = not self._stopped and self._video_proc is video_process
-                if current:
+                if current and playlist_write_failed:
                     log.error(
-                        "Shared live HLS source failure (%s); requesting "
-                        "synchronized MPV/ASR recovery",
-                        "missing_source_segment" if source_segment_failed
-                        else "playlist_write_failed",
+                        "Shared live HLS playlist write failed; requesting "
+                        "synchronized MPV/ASR recovery"
                     )
                     self._video_failed.set()
+                elif current and source_segment_failed:
+                    log.warning(
+                        "YouTube live segment unavailable; allowing FFmpeg "
+                        "to skip/retry without interrupting MPV. Recovery "
+                        "will trigger only if playback actually stalls."
+                    )
 
     @staticmethod
     def _video_stall_reason(media_age_s: float, playlist_age_s: float) -> str | None:

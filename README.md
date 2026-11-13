@@ -313,7 +313,7 @@ Check `logs\run.log` for application errors and `logs\mpv.log` for player warnin
 
 ## Quality and reliability pass (2026-11-12)
 
-- **Adaptive FireRedVAD:** 9s VOD / 5.5s live natural-pause targets, requiring a sustained 180ms low-confidence gap. The existing 14/16s VOD and 7/8s live maximum chunk rules still apply. Override `adaptive_split = false` in `[vad]` for an A/B comparison.
+- **Adaptive FireRedVAD:** 6.5s VOD / 4s live natural-pause targets, requiring a sustained 180ms low-confidence gap. The existing 14/16s VOD and 7/8s live maximum chunk rules still apply. Override `adaptive_split = false` in `[vad]` for an A/B comparison.
 - **Live cues:** playback uses the shared HLS source; stale completed cues more than 7s behind the mapped MPV clock are dropped rather than resurfaced out of context. Override `live_late_window_s` in `[mpv]`.
 - **PLaMo fragments:** short context-dependent Japanese utterances receive the immediately preceding Japanese cue as reference-only context. Existing translation history remains bounded; disable with `fragment_context = false` in `[translate]`.
 - **Missed VOD speech:** an empty unusable Haas result is retried once with an additional 200ms edge silence *only* when FireRedVAD confidence is at least .80 and duration is 0.6-10s. This does not add new speech or force hallucination-prone probing. No extra live retries; toggle `retry_empty_speech = false` in `[asr]`.

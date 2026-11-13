@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
+from .asr.diagnostics import append_comparison
 from .asr.quality_guard import transcript_problem
 from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
@@ -151,8 +152,16 @@ def run_asr(
         # Language is determined from ORIGINAL audio, not Japanese-forced ASR.
         # Never send confidently English or Indonesian speech to Haas/Whisper Turbo,
         # PLaMo, terminal, web or MPV. No English/Indonesian subtitles exist.
+        session = getattr(dual, "session_id", None)
+        cue = dict(session_id=session, generation=utt.generation,
+                   start_s=round(utt.start_s, 3), end_s=round(utt.end_s, 3))
         if language_filter is not None:
+            started = time.monotonic()
             verdict = language_filter.classify(utt.audio)
+            if session:
+                append_comparison(dict(cue, stage="language_filter", language=verdict.language,
+                                       probability=verdict.probability, dropped=verdict.drop,
+                                       reason=verdict.reason, elapsed_s=time.monotonic()-started))
             if verdict.drop:
                 log.info(
                     "Filtered non-Japanese audio %.2f-%.2fs: %s "
@@ -186,6 +195,7 @@ def run_asr(
                                       primary_elapsed_s,
                                       None)
                   if dual is not None else None)
+        original_haas = text
         if choice is not None:
             text = choice
             if not text:
@@ -219,6 +229,7 @@ def run_asr(
         # Caption evidence can correct a proper name regardless of whether
         # the reconciler selected Haas or Parakeet. Previously a non-None
         # dual-ASR selection skipped ALL caption matching and name repairs.
+        before_caption = text
         caption_match = (
             captions.match(utt.start_s, utt.end_s)
             if captions is not None else None
@@ -253,6 +264,7 @@ def run_asr(
         # Corrections must apply to the FINAL selected Japanese hypothesis.
         # These rules use explicit caption/video context and do not synthesize
         # new speech; never repair phonetic Watanabe against an explicit caption.
+        before_name = text
         corrected = correct_asr_name(
             text,
             vod_title=vod_title,
@@ -276,6 +288,12 @@ def run_asr(
 
         if dual is not None:
             dual.remember(utt.generation, text)
+            if session:
+                append_comparison(dict(cue, stage="japanese", haas=original_haas,
+                                       selected_ja=choice, after_asr_retry=before_caption,
+                                       after_caption=before_name, after_name=corrected,
+                                       after_term_repair=text, speech_start_s=utt.speech_start_s,
+                                       asr_elapsed_s=utt.timings.asr_end-utt.timings.asr_start))
         out_q.put(
             Transcript(
                 utt.start_s,
@@ -284,6 +302,7 @@ def run_asr(
                 utt.timings,
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
+                diagnostic_session=session,
             )
         )
 
@@ -353,6 +372,7 @@ def run_translate(
             continue
 
         tr.timings.mt_start = time.monotonic()
+        before_history = tr.ja
         en = ""
         suppressed = False
 
@@ -405,6 +425,13 @@ def run_translate(
                 )
 
         tr.timings.mt_end = time.monotonic()
+        if tr.diagnostic_session:
+            append_comparison(dict(stage="translation", session_id=tr.diagnostic_session,
+                                   generation=tr.generation, start_s=round(tr.start_s, 3),
+                                   end_s=round(tr.end_s, 3), final_ja=tr.ja if translator else None,
+                                   history_repair_from=before_history if before_history != tr.ja else None,
+                                   final_en=en, suppressed=suppressed,
+                                   mt_elapsed_s=tr.timings.mt_end-tr.timings.mt_start))
         if suppressed:
             log.info(
                 "Translated cue %.2f-%.2fs suppressed by English output guard; "

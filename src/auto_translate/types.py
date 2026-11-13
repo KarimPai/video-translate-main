@@ -60,6 +60,8 @@ class Transcript:
     generation: int = 0
     speech_start_s: float | None = None
 
+    diagnostic_session: str | None = None
+
 
 @dataclass
 class Subtitle:

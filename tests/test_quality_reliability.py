@@ -23,8 +23,8 @@ class AdaptiveVadTests(unittest.TestCase):
     def test_live_uses_shorter_natural_pause_target(self):
         cfg = VadConfig()
         live = vad_for_source(cfg, live=True)
-        self.assertEqual(live.adaptive_split_s, 5.5)
-        self.assertEqual(cfg.adaptive_split_s, 9.0)
+        self.assertEqual(live.adaptive_split_s, 4.0)
+        self.assertEqual(cfg.adaptive_split_s, 6.5)
         self.assertEqual(live.max_utterance_s, 7.0)
 
     def test_earlier_clear_pause_splits_without_losing_samples(self):

@@ -23,7 +23,7 @@ def rejection_reason(text: str) -> str | None:
     """Return why an ASR result should be dropped, or None if it looks usable.
 
     Deliberately conservative: short reactions and speech containing laughter
-    are retained. Only laughter-only output and obvious repeated-character
+    are retained. Explicit nonspeech labels, chat markers and obvious decoder
     loops are rejected.
     """
     compact = _compact(text)
@@ -38,7 +38,9 @@ def rejection_reason(text: str) -> str | None:
     laugh_kana = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in compact)
     without_laughter = _LAUGHTER.sub("", laugh_kana)
     if compact and not without_laughter:
-        return "laughter_only"
+        # Spoken laughter is evidence of a reaction. Keep explicit sound
+        # labels and text-only laughter markers out of spoken subtitles.
+        return "laughter_only" if re.fullmatch(r"[w笑草]+", compact) else None
 
     # A single kana repeated many times is usually a vocalization or decoder
     # loop, not useful lexical content. Keep short reactions such as 「ええ」.

@@ -54,7 +54,7 @@ _NEUTRAL_SUBJECT_CONTEXT = (
     "Do not shift first person to third person when the source is first person. "
     "Never infer pronouns from the video title, streamer identity, or past English subtitles. "
     "Preserve negation, speaker intent, factual details, names and uncertainty; "
-    "do not invent unheard dialogue."
+    "retain quantities and units. Translate the supplied spelling; do not repair ASR or complete missing dialogue."
 )
 _STRICT_NEUTRAL_RETRY_CONTEXT = (
     "The previous translation assigned an unsupported speaker/person or gender. "
@@ -81,6 +81,11 @@ _HOLOGTA_TERMS = {
     "救急隊": "EMS",
     "ギャング": "gang",
     "警察": "police",
+    "無線機": "radio",
+    "パトカー": "patrol car",
+    "救急車": "ambulance",
+    "防弾チョッキ": "bulletproof vest",
+    "支給品": "issued equipment",
     "人質": "hostage",
     "パン屋": "bakery",
 }

@@ -40,3 +40,8 @@ def disagreement_unresolved(primary, secondary, selected, similarity, flags, sel
     if selected_by in ("haas", "whisper_turbo_rescue", "haas_secondary_unusable"):
         return False
     return False
+
+
+def suspicious_phonetics(text):
+    """Only a review signal on its own: katakana can be a real name."""
+    return re.fullmatch(r"[ァ-ヺー]{6,}[。！？!?]?", text.strip()) is not None

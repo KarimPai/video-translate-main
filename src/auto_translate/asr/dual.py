@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -12,7 +13,8 @@ from .whisper_turbo import WhisperTurboASR
 from .language_router import classify_language
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
-from .selection import compare
+from .selection import clause_differences, compare, scene_repair
+from .quality_guard import transcript_problem, disagreement_unresolved, suspicious_phonetics
 
 log = logging.getLogger(__name__)
 SECONDARY = "whisper-large-v3-turbo"
@@ -136,14 +138,23 @@ class DualASR:
         """Whisper Turbo JA is Japanese-only; do not attempt language detection."""
         return None
 
+    def log_fallback(self, utt, primary, elapsed, reason):
+        append_comparison(dict(stage="asr_fallback", session_id=self.session_id,
+                               generation=utt.generation, start_s=round(utt.start_s, 3),
+                               end_s=round(utt.end_s, 3), haas=primary,
+                               haas_elapsed_s=elapsed, fallback_reason=reason,
+                               vad_confidence=utt.vad_confidence))
+
     def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):
+            self.log_fallback(utt, primary, primary_elapsed_s, "secondary_unavailable" if self.worker is None else "worker_busy")
             return None
         # Backpressure must not extend an otherwise usable primary transcript.
         # Still allow rescue when Haas missed speech entirely.
         if backlog() and (self.live or is_usable_transcript(primary)):
+            self.log_fallback(utt, primary, primary_elapsed_s, "backlog")
             return None
         cancelled = threading.Event()
         finished = threading.Event()
@@ -173,34 +184,42 @@ class DualASR:
             if (time.monotonic() >= deadline or generation() != utt.generation
                     or (backlog() and (self.live or is_usable_transcript(primary)))):
                 cancelled.set()
+                self.log_fallback(utt, primary, primary_elapsed_s, "deadline_generation_or_backlog")
                 return None
         self.pending.join()
         return result[0]
 
     def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
-        """Return a selected original, or None to use the existing Haas path."""
+        """Return corroborated Japanese, an abstention, or None for the Haas path."""
         worker, selector = self.worker, self.selector
-        if worker is None:
+        duration = utt.end_s - utt.start_s
+
+        def fallback(reason):
+            self.log_fallback(utt, primary, primary_elapsed_s, reason)
             return None
+
+        if worker is None:
+            return fallback("secondary_unavailable")
         with self.lock:
             context = list(self.history) if self.generation == utt.generation else []
         if (utt.probe or utt.vad_confidence is None or utt.vad_confidence < self.cfg.vad.threshold
                 or not len(utt.audio) or not np.isfinite(utt.audio).all()
                 or np.max(np.abs(utt.audio)) < 1e-5):
+            self.log_fallback(utt, primary, primary_elapsed_s, "acoustic_guard")
             return ""
         if self.budget.pressure_level == "critical":
-            return None
+            return fallback("gpu_pressure")
         end = self.deadline(utt)
         secondary_budget = (self.cfg.dual_asr.live_timeout_s if self.live
                             else self.cfg.dual_asr.vod_timeout_s)
         if self.live and (backlog() or time.monotonic() + secondary_budget > end):
-            return None
+            return fallback("live_budget")
         if not self.live and backlog() and is_usable_transcript(primary):
-            return None
+            return fallback("backlog")
         if (self.mode == "selective" and primary_stop != "model_limit" and primary and len(primary) > 5
                 and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4
                 and prefetched is None):
-            return None
+            return fallback("selective_mode")
         try:
             if (prefetched is not None and prefetched.route == "japanese"
                     and is_usable_transcript(prefetched.text)):
@@ -216,13 +235,26 @@ class DualASR:
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
             self.release()
-            return None
+            return fallback("secondary_failure")
         if current and current() != utt.generation:
             return ""
         log.debug("ASR generation=%d %.3f-%.3f Haas=%r Whisper Turbo=%r",
                   utt.generation, utt.start_s, utt.end_s, primary, secondary)
+        lfm_text = None
+        lfm_choice = None
+        edits = []
+        selector_elapsed = None
+        fallback_reason = None
+
         def record(selected_text, selected_by, score=None, flags=None, selector_called=False):
             append_comparison({
+                "stage": "reconciliation",
+                "lfm_selected": lfm_text,
+                "lfm_choice": lfm_choice,
+                "corrected_ja": selected_text if edits else None,
+                "correction_evidence": edits,
+                "selector_elapsed_s": selector_elapsed,
+                "fallback_reason": fallback_reason,
                 "session_id": self.session_id,
                 "generation": utt.generation,
                 "start_s": round(utt.start_s, 3),
@@ -247,14 +279,22 @@ class DualASR:
                 "vad_confidence": utt.vad_confidence,
             })
 
-        if not is_usable_transcript(secondary):
-            if not is_usable_transcript(primary):
+        # A short English credit can be a real name/quote. Prefer a usable
+        # Japanese peer only on long audio with this specific discrepancy.
+        def suspect_credit(text, peer):
+            return (duration >= 3 and re.fullmatch(r"by [a-z]\.", text.strip(), re.I)
+                    and re.search(r"[ぁ-ヺ一-龯]", peer) and not transcript_problem(peer, duration))
+
+        if transcript_problem(secondary, duration) or suspect_credit(secondary, primary):
+            if transcript_problem(primary, duration):
                 record("", "both_unusable")
                 return ""
+            fallback_reason = transcript_problem(secondary, duration) or "short_credit_with_japanese_peer"
             record(primary, "haas_secondary_unusable")
             return None
-        result = primary if is_usable_transcript(primary) else secondary
-        selected_by = "haas" if is_usable_transcript(primary) else "whisper_turbo_rescue"
+        primary_ok = not transcript_problem(primary, duration) and not suspect_credit(primary, secondary)
+        result = primary if primary_ok else secondary
+        selected_by = "haas" if primary_ok else "whisper_turbo_rescue"
         selector_called = False
         if (primary_stop == "model_limit" and worker.last_stop == "complete"
                 and secondary.startswith(primary) and len(secondary) > len(primary)):
@@ -262,25 +302,48 @@ class DualASR:
             selected_by = "whisper_turbo_completion"
         terms = self.glossary.find(primary + " " + secondary)
         score, flags = compare(primary, secondary, terms)
-        if score < 1 and is_usable_transcript(primary):
+        if score < 1 and primary_ok and selected_by != "whisper_turbo_completion":
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
             timeout = min(end - time.monotonic(), self.cfg.reconciler.live_timeout_s
                           if self.live else self.cfg.reconciler.vod_timeout_s)
+            fallback_reason = "selector_unavailable_or_budget"
             if selector and timeout >= 0.25 and not (self.live and backlog()):
+                started = time.perf_counter()
                 try:
-                    result = selector.choose(primary, secondary, {
+                    selector_called = True
+                    selected = selector.choose(primary, secondary, {
                         "title_channel": title[:200], "recent_ja": context,
                         "glossary": terms[:12], "vad_probability": utt.vad_confidence,
                         "haas_stop": primary_stop, "secondary_stop": worker.last_stop,
                         "similarity": score, "disagreement": flags,
+                        "different_clauses": clause_differences(primary, secondary),
                     }, timeout)
-                    selector_called = True
+                    if selected not in (primary, secondary):
+                        raise ValueError("selector returned an unsupported hypothesis")
+                    result = selected
+                    fallback_reason = None
                     selected_by = getattr(selector, "last_choice", None)
                     if selected_by not in ("haas", "whisper_turbo", "uncertain"):
                         selected_by = "whisper_turbo" if result == secondary else "haas"
+                    lfm_choice = selected_by
+                    lfm_text = None if selected_by == "uncertain" else result
                 except Exception as exc:
+                    fallback_reason = type(exc).__name__
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
-        from .quality_guard import transcript_problem, disagreement_unresolved
+                finally:
+                    selector_elapsed = round(time.perf_counter() - started, 3)
+        if current and current() != utt.generation:
+            return ""
+        if score < 1 and primary_ok and result in (primary, secondary):
+            other = secondary if result == primary else primary
+            result, edits = scene_repair(result, other, title, context)
+        if suspicious_phonetics(result) and not terms and score < .45:
+            flags.append("uncorroborated_phonetics")
+            if selected_by == "uncertain" and utt.vad_confidence < .6:
+                record("", "abstain_weak_phonetics", score, flags, selector_called)
+                return ""
+        if duration >= 5 and len(result.strip()) <= 3:
+            flags.append("short_for_duration")
         issue = transcript_problem(result, utt.end_s - utt.start_s)
         if issue or disagreement_unresolved(primary, secondary, result, score, flags, selected_by):
             log.warning("Suppressing unreliable dual ASR %.2fs: %s", utt.start_s, issue or "unresolved_disagreement")

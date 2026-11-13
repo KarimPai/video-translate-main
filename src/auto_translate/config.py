@@ -75,8 +75,8 @@ class VadConfig:
     live_max_split_extension_s: float = 1.0  # live hard cap: 8s
     # Natural-pause splitting begins before the long-form hard cap.
     adaptive_split: bool = True
-    adaptive_split_s: float = 9.0  # VOD: keep context unless a clear pause occurs
-    live_adaptive_split_s: float = 5.5  # live: leave room for ASR + translation
+    adaptive_split_s: float = 6.5  # VOD: keep context unless a clear pause occurs
+    live_adaptive_split_s: float = 4.0  # live: leave room for ASR + translation
     adaptive_pause_ms: int = 180  # avoid cutting at very brief VAD dips
     split_pause_min_ms: int = 120
     split_context_ms: int = 160

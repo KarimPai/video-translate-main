@@ -522,7 +522,7 @@ class Ingest:
 
         threading.Thread(
             target=self._read_stderr,
-            args=(proc.stderr, session, False),
+            args=(proc.stderr, session, False, proc),
             name="ffmpeg-video-log",
             daemon=True,
         ).start()
@@ -779,6 +779,7 @@ class Ingest:
         stream: IO[bytes],
         session: int,
         capture_pts: bool = True,
+        video_process: subprocess.Popen | None = None,
     ) -> None:
         """Read FFmpeg warnings/errors and optional video progress heartbeats.
 
@@ -841,6 +842,30 @@ class Ingest:
                 log.error("ffmpeg: %s", line)
             elif receiver_gone:
                 log.debug("ffmpeg: %s", line)
+
+            # An HLS video writer can survive a lost *audio* rendition and
+            # continue publishing video-only segments. MPV then remains
+            # buffering although playlist timestamps are still advancing.
+            # Restart the shared session on a confirmed missing source segment
+            # or fatal playlist write error, but never from the old process
+            # during shutdown/recovery.
+            source_segment_failed = "failed to open segment" in lower
+            playlist_write_failed = (
+                "index.m3u8" in lower
+                and ("operation not permitted" in lower or "failed to rename" in lower)
+            )
+            if (not capture_pts and self.source.live and video_process is not None
+                    and (source_segment_failed or playlist_write_failed)):
+                with self._proc_lock:
+                    current = not self._stopped and self._video_proc is video_process
+                if current:
+                    log.error(
+                        "Shared live HLS source failure (%s); requesting "
+                        "synchronized MPV/ASR recovery",
+                        "missing_source_segment" if source_segment_failed
+                        else "playlist_write_failed",
+                    )
+                    self._video_failed.set()
 
     @staticmethod
     def _video_stall_reason(media_age_s: float, playlist_age_s: float) -> str | None:

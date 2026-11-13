@@ -10,6 +10,7 @@ import numpy as np
 
 from auto_translate.config import Config, LanguageFilterConfig
 from auto_translate.language_filter import LanguageDecision, LanguageFilter
+from auto_translate.asr.quality_guard import foreign_audio_transcript_problem
 from auto_translate.pipeline import run_asr
 from auto_translate.types import SAMPLE_RATE, Utterance
 
@@ -41,11 +42,12 @@ class DropOnlyLanguageTests(unittest.TestCase):
         filt = make_filter([
             ("id", .91, .01, .78),
             ("ja", .87, .87, .71),
+            ("en", .94, .01, .83),
         ])
         result = filt.classify(audio(10.0))
         self.assertFalse(result.drop)
-        self.assertEqual(len(result.windows), 2)
-        self.assertEqual([p[0] for p in result.windows], ["id", "ja"])
+        self.assertEqual(len(result.windows), 3)
+        self.assertEqual([p[0] for p in result.windows], ["id", "ja", "en"])
 
     def test_confident_indonesian_is_dropped(self):
         filt = make_filter([("id", .93, .015, .87)])
@@ -64,9 +66,13 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertFalse(filt.classify(audio()).drop)
 
     def test_mixed_japanese_english_long_segment_passes(self):
-        filt = make_filter([("en", .95, .01, .9), ("ja", .89, .89, .8)])
+        filt = make_filter([
+            ("en", .95, .01, .9),
+            ("ja", .89, .89, .8),
+            ("en", .92, .01, .85),
+        ])
         self.assertFalse(filt.classify(audio(12.0)).drop)
-        self.assertEqual(filt._predict.call_count, 2)
+        self.assertEqual(filt._predict.call_count, 3)
 
     def test_medium_length_code_switch_protects_japanese(self):
         filt = make_filter([("id", .96, .01, .9), ("ja", .81, .81, .6)])
@@ -74,7 +80,11 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertEqual(filt._predict.call_count, 2)
 
     def test_entire_long_segment_must_be_foreign(self):
-        filt = make_filter([("en", .94, .02, .9), ("id", .90, .03, .8)])
+        filt = make_filter([
+            ("en", .94, .02, .9),
+            ("id", .90, .03, .8),
+            ("en", .93, .02, .9),
+        ])
         self.assertTrue(filt.classify(audio(12.0)).drop)
 
     def test_short_reactions_are_preserved(self):
@@ -97,6 +107,92 @@ class DropOnlyLanguageTests(unittest.TestCase):
             LanguageFilterConfig(drop_probability=1.5)
         with self.assertRaises(ValueError):
             LanguageFilterConfig(max_window_s=1.5)
+
+
+class AudioEvidenceGibberishTests(unittest.TestCase):
+    @staticmethod
+    def foreign_verdict():
+        # Two windows support foreign speech, but a third is uncertain.
+        # The pre-ASR ALL-windows LID filter deliberately passed this cue.
+        return LanguageDecision(
+            "en", .87, .03, False, "japanese_or_uncertain",
+            windows=(("en", .87, .02, .62),
+                     ("id", .84, .01, .60),
+                     ("en", .60, .03, .18)),
+        )
+
+    def test_katakana_soup_requires_acoustic_foreign_evidence(self):
+        noise = "アミラムゴーイングアルロファーライフ"
+        self.assertEqual(
+            foreign_audio_transcript_problem(noise, self.foreign_verdict()),
+            "foreign_audio_katakana_soup",
+        )
+        self.assertIsNone(foreign_audio_transcript_problem(noise, None))
+
+    def test_latin_fragment_soup_requires_foreign_audio(self):
+        noise = "no fsです ok mybewarkからsj"
+        self.assertEqual(
+            foreign_audio_transcript_problem(noise, self.foreign_verdict()),
+            "foreign_audio_latin_fragments",
+        )
+
+    def test_valid_japanese_and_short_reactions_preserved(self):
+        for text in ("救急隊が病院に向かいます", "大丈夫ですか？",
+                     "はい、OKです", "カプセルカプセル"):
+            with self.subTest(text=text):
+                self.assertIsNone(foreign_audio_transcript_problem(
+                    text, self.foreign_verdict()))
+
+    def test_japanese_audio_vote_prevents_foreign_guard(self):
+        verdict = LanguageDecision(
+            "en", .90, .80, False, "japanese_or_uncertain",
+            windows=(("en", .90, .01, .8),
+                     ("ja", .80, .80, .65),
+                     ("en", .91, .01, .7)),
+        )
+        self.assertIsNone(foreign_audio_transcript_problem(
+            "アミラムゴーイングアルロファーライフ", verdict))
+
+    def test_reliable_aligned_japanese_caption_prevents_suppression(self):
+        caption = type("Caption", (), {
+            "reliable": True, "coverage": .92, "text": "あの人が来ます"
+        })()
+        self.assertIsNone(foreign_audio_transcript_problem(
+            "アミラムゴーイングアルロファーライフ",
+            self.foreign_verdict(), caption,
+        ))
+
+    def test_only_one_foreign_window_does_not_suppress_mixed_speech(self):
+        verdict = LanguageDecision(
+            "en", .91, .03, False, "japanese_or_uncertain",
+            windows=(("en", .91, .01, .8),
+                     ("unknown", .60, .03, .20)),
+        )
+        self.assertIsNone(foreign_audio_transcript_problem(
+            "アミラムゴーイングアルロファーライフ", verdict))
+
+    def test_pipeline_drops_foreign_phonetics_before_translation(self):
+        inp, out = queue.Queue(), queue.Queue()
+        primary = Mock()
+        primary.transcribe.return_value = "アミラムゴーイングアルロファーライフ"
+        lid = Mock()
+        lid.classify.return_value = self.foreign_verdict()
+        inp.put(Utterance(5., 14., audio(9.), vad_confidence=.92))
+        inp.put(None)
+        run_asr(primary, inp, out, language_filter=lid)
+        primary.transcribe.assert_called_once()
+        self.assertEqual(list(out.queue), [None])
+
+    def test_pipeline_preserves_coherent_japanese_when_lid_uncertain(self):
+        inp, out = queue.Queue(), queue.Queue()
+        primary = Mock()
+        primary.transcribe.return_value = "病院に向かいます"
+        lid = Mock()
+        lid.classify.return_value = self.foreign_verdict()
+        inp.put(Utterance(5., 14., audio(9.), vad_confidence=.92))
+        inp.put(None)
+        run_asr(primary, inp, out, language_filter=lid)
+        self.assertEqual(out.get_nowait().ja, "病院に向かいます")
 
 
 class JapanesePipelineOnlyTests(unittest.TestCase):

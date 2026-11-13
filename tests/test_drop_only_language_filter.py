@@ -11,8 +11,8 @@ import numpy as np
 from auto_translate.config import Config, LanguageFilterConfig
 from auto_translate.language_filter import LanguageDecision, LanguageFilter
 from auto_translate.asr.quality_guard import foreign_audio_transcript_problem
-from auto_translate.pipeline import run_asr
-from auto_translate.types import SAMPLE_RATE, Utterance
+from auto_translate.pipeline import run_asr, run_translate
+from auto_translate.types import SAMPLE_RATE, Transcript, Utterance
 
 
 def make_filter(results=None, cfg=None):
@@ -182,6 +182,16 @@ class AudioEvidenceGibberishTests(unittest.TestCase):
         run_asr(primary, inp, out, language_filter=lid)
         primary.transcribe.assert_called_once()
         self.assertEqual(list(out.queue), [None])
+
+    def test_translation_stage_rejects_invalid_transcript(self):
+        a, b = queue.Queue(), queue.Queue()
+        translator = Mock(memory_lines=0)
+        translator.translate.return_value = "Should never be used"
+        a.put(Transcript(2., 4., "Thank you for watching"))
+        a.put(None)
+        run_translate(translator, 0, a, b)
+        translator.translate.assert_not_called()
+        self.assertEqual(list(b.queue), [None])
 
     def test_pipeline_preserves_coherent_japanese_when_lid_uncertain(self):
         inp, out = queue.Queue(), queue.Queue()

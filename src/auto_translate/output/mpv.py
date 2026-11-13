@@ -438,6 +438,11 @@ class MpvOutput:
             # Keep a modest forward/backward demux cache for the direct
             # YouTube video stream.
             "--cache=yes",
+            # The local live HLS writer produces 2-second segments. MPV's
+            # default 1-second refill after an underrun repeatedly resumed
+            # with insufficient data, causing 1s play / 1s buffer cycles.
+            # Require 4s of packets before resuming; VOD stays unchanged.
+            *(["--cache-pause-wait=4"] if ingest.source.live else []),
             "--demuxer-readahead-secs=120",
             "--demuxer-max-bytes=1GiB",
             "--demuxer-max-back-bytes=1GiB",

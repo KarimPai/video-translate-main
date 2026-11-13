@@ -51,6 +51,27 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual((live.threshold, live.speech_pad_ms), (0.41, 400))
         self.assertEqual(configured.max_utterance_s, 14.0)
 
+    def test_opt_in_short_vod_segments_do_not_affect_live(self):
+        cfg = VadConfig(vod_short_segments=True)
+        vod = vad_for_source(cfg, live=False)
+        live = vad_for_source(cfg, live=True)
+        self.assertIsNot(vod, cfg)
+        self.assertEqual((vod.max_utterance_s, vod.max_split_extension_s,
+                          vod.adaptive_split_s), (11.0, 2.0, 7.5))
+        self.assertEqual((live.max_utterance_s, live.adaptive_split_s),
+                         (7.0, 5.5))
+        self.assertEqual((cfg.max_utterance_s, cfg.adaptive_split_s),
+                         (14.0, 9.0))
+
+    def test_short_vod_profile_is_optional_in_config_toml(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text("[vad]\\nvod_short_segments = true\\n",
+                            encoding="utf-8")
+            cfg = load_config(path).vad
+        self.assertTrue(cfg.vod_short_segments)
+        self.assertEqual(vad_for_source(cfg, live=False).max_utterance_s, 11.0)
+
     def test_noise_probe_can_be_opted_in(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

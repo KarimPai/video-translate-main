@@ -130,7 +130,7 @@ class DualASR:
         """Parakeet JA is Japanese-only; do not attempt language detection."""
         return None
 
-    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
+    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None, caption_match=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):
@@ -150,7 +150,7 @@ class DualASR:
 
         def recognize():
             try:
-                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, prefetched)
+                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, prefetched, caption_match)
             except Exception:
                 log.exception("Optional recognition failed at %.3fs", utt.start_s)
             finally:
@@ -171,7 +171,7 @@ class DualASR:
         self.pending.join()
         return result[0]
 
-    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
+    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None, caption_match=None):
         """Return a selected original, or None to use the existing Haas path."""
         worker, selector = self.worker, self.selector
         if worker is None:
@@ -239,6 +239,10 @@ class DualASR:
                 "haas_stop": primary_stop,
                 "parakeet_stop": worker.last_stop,
                 "vad_confidence": utt.vad_confidence,
+                "caption_coverage": (
+                    round(caption_match.coverage, 3)
+                    if caption_match is not None else None
+                ),
             })
 
         if not is_usable_transcript(secondary):
@@ -274,7 +278,29 @@ class DualASR:
                         selected_by = "parakeet" if result == secondary else "haas"
                 except Exception as exc:
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
-        from .quality_guard import transcript_problem, disagreement_unresolved
+        from .quality_guard import (
+            transcript_problem, disagreement_unresolved,
+            caption_supported_hypothesis,
+        )
+        # A synced Japanese caption can corroborate one original hypothesis,
+        # even when LFM abstains or chooses the other. Never synthesize an ASR
+        # combination or use loosely aligned rolling subtitles as ground truth.
+        caption_evidence = (
+            caption_supported_hypothesis(primary, secondary, caption_match)
+            if score < 1 else None
+        )
+        if caption_evidence:
+            evidence_choice, matched, other = caption_evidence
+            evidence_text = primary if evidence_choice == "haas" else secondary
+            if selected_by == "uncertain" or result != evidence_text:
+                log.info(
+                    "Caption-supported ASR decision %.2fs: %s "
+                    "(similarity=%.3f vs %.3f, caption coverage=%.2f)",
+                    utt.start_s, evidence_choice, matched, other,
+                    caption_match.coverage,
+                )
+                result = evidence_text
+                selected_by = evidence_choice + "_caption_evidence"
         issue = transcript_problem(result, utt.end_s - utt.start_s)
         if issue or disagreement_unresolved(primary, secondary, result, score, flags, selected_by):
             log.warning("Suppressing unreliable dual ASR %.2fs: %s", utt.start_s, issue or "unresolved_disagreement")

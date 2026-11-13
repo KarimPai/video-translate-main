@@ -97,9 +97,13 @@ class LanguageFilter:
         # Inspect both ends of long VAD utterances; mixed Japanese/English in a
         # single long segment must NOT be dropped solely on its dominant language.
         window = max(1, int(self.cfg.max_window_s * SAMPLE_RATE))
-        windows = [audio[:window]]
-        if samples > int(self.cfg.max_window_s * 1.5 * SAMPLE_RATE):
-            windows.append(audio[-window:])
+        if samples >= int(self.cfg.min_duration_s * 2 * SAMPLE_RATE):
+            # Inspect independent beginning/end halves even for medium 5-8s
+            # cues, where a speaker may switch English -> Japanese mid-phrase.
+            half_window = min(window, samples // 2)
+            windows = [audio[:half_window], audio[-half_window:]]
+        else:
+            windows = [audio[:window]]
 
         try:
             predicted = [self._predict(clip) for clip in windows]

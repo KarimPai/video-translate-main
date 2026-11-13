@@ -653,8 +653,24 @@ class Ingest:
         # and regenerate its timeline, then use NVENC to keep the repair
         # GPU-accelerated. Passthrough frame sync avoids CFR frame clipping;
         # forced IDR keyframes let the HLS muxer cut complete 2-second chunks.
-        # The AAC rendition is already compressed; only convert ADTS framing
-        # to the MPEG-4 AudioSpecificConfig required by MP4/fMP4.
+        # Video PTS remain synthesized from frames: some YouTube HLS H.264
+        # streams omit usable packet timestamps, so a pure PTS-STARTPTS
+        # video filter would produce invalid fMP4 fragments.
+        #
+        # Live AAC stream-copy preserves 2s timestamp gaps when a YouTube
+        # segment is skipped. Decode/re-encode live audio with a continuous
+        # relative timestamp origin and async resampling to fill missing audio
+        # intervals with silence instead of jumping ahead of the video.
+        # Keep VOD stream-copying unchanged.
+        if src.live:
+            audio_output = [
+                "-af", "asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0",
+                "-c:a", "aac",
+                "-b:a", "128k",
+            ]
+        else:
+            audio_output = ["-c:a", "copy", "-bsf:a", "aac_adtstoasc"]
+
         return ffmpeg + [
             "-map", "0:v:0?",
             "-map", audio,
@@ -669,8 +685,7 @@ class Ingest:
             "-g", "120",
             "-forced-idr", "1",
             "-force_key_frames", "expr:gte(t,n_forced*2)",
-            "-c:a", "copy",
-            "-bsf:a", "aac_adtstoasc",
+            *audio_output,
             *hls_options,
             # Emit a low-frequency progress heartbeat for stall diagnosis.
             "-stats_period", "5",

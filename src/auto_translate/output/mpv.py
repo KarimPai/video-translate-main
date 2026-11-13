@@ -13,6 +13,7 @@ using osd-overlay.
 import ctypes
 import json
 import logging
+import math
 import queue
 import shutil
 import socket
@@ -394,6 +395,8 @@ class MpvOutput:
         self._last_video_recovery_at: float | None = None
         self._live_cache_pause_since: float | None = None
         self._next_live_cache_check_at = 0.0
+        self._live_av_drift_since: float | None = None
+        self._next_live_av_check_at = 0.0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
@@ -947,6 +950,8 @@ class MpvOutput:
         if self.ingest.source.live:
             self._live_cache_pause_since = None
             self._next_live_cache_check_at = 0.0
+            self._live_av_drift_since = None
+            self._next_live_av_check_at = 0.0
             unpause_at = (
                 self.ingest.first_pts_at
                 + self.cfg.delay_s
@@ -1023,6 +1028,10 @@ class MpvOutput:
             # advance with video-only packets. The FFmpeg playlist watchdog
             # cannot catch that class of failure; monitor the actual player.
             if not paused and self._check_live_cache_stall():
+                if self._recover_video_stream():
+                    return
+                return
+            if not paused and self._check_live_av_drift():
                 if self._recover_video_stream():
                     return
                 return
@@ -1135,6 +1144,54 @@ class MpvOutput:
         self.ingest.video_failed.set()
         return True
 
+    def _check_live_av_drift(self) -> bool:
+        """Recover persistent A/V misalignment even while HLS keeps playing.
+
+        A skipped YouTube audio segment can jump AAC PTS by whole seconds.
+        MPV may keep playing without a cache underrun, so neither the cache
+        pause nor playlist watchdog catches this case. Ignore brief
+        corrections and do not restart paused/buffering or VOD playback.
+        """
+        if not self.ingest.source.live or not self.ingest.video_out:
+            return False
+        now = time.monotonic()
+        if now < self._next_live_av_check_at:
+            return False
+        self._next_live_av_check_at = now + 1.0
+
+        if (self.ipc.get("pause") is True
+                or self.ipc.get("paused-for-cache") is True):
+            self._live_av_drift_since = None
+            return False
+
+        measured = self.ipc.get("avsync")
+        try:
+            drift_s = float(measured)
+        except (TypeError, ValueError):
+            self._live_av_drift_since = None
+            return False
+        if not math.isfinite(drift_s) or abs(drift_s) < 0.5:
+            self._live_av_drift_since = None
+            return False
+
+        if self._live_av_drift_since is None:
+            self._live_av_drift_since = now
+            log.warning(
+                "MPV live A/V drift %.3fs; confirming it persists for 3s",
+                drift_s,
+            )
+            return False
+        if now - self._live_av_drift_since < 3.0:
+            return False
+
+        log.warning(
+            "MPV live A/V drift %.3fs sustained for %.1fs; "
+            "requesting synchronized MPV/ASR recovery",
+            drift_s, now - self._live_av_drift_since,
+        )
+        self.ingest.video_failed.set()
+        return True
+
     def _recover_video_stream(self) -> bool:
         """Restart shared video/audio with a bounded short-window retry policy."""
         now = time.monotonic()
@@ -1151,6 +1208,8 @@ class MpvOutput:
         self._last_video_recovery_at = now
         self._live_cache_pause_since = None
         self._next_live_cache_check_at = 0.0
+        self._live_av_drift_since = None
+        self._next_live_av_check_at = 0.0
 
         restart_at = self._now
         if restart_at is None:

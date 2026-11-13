@@ -77,7 +77,7 @@ def _multipart(audio_wav, *, language="ja", response_format="json"):
 class ParakeetASR:
     def __init__(self, device="cuda:0", startup_timeout=300):
         self.process = None
-        self.last_stop = "unknown"  # NeMo HTTP API does not report Haas stop causes.
+        self.last_stop = "unknown"  # CrispASR API does not report model stop causes.
         self.device = device
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -97,7 +97,7 @@ class ParakeetASR:
                 try:
                     with urllib.request.urlopen(self.url + "/health", timeout=1) as response:
                         if response.status == 200:
-                            log.info("Parakeet 3.5 ASR server ready on %s (%s)", self.url, device)
+                            log.info("Parakeet JA ASR server ready on %s (%s)", self.url, device)
                             return
                 except OSError:
                     pass
@@ -133,19 +133,12 @@ class ParakeetASR:
     def transcribe(self, audio, timeout=None):
         """Previous forced-Japanese route; keep compatibility and accuracy fallback."""
         result = self._request_transcription(
-            audio, timeout, language="ja-JP", response_format="json"
+            audio, timeout, language="ja", response_format="json"
         )
         return result["text"].strip()
 
-    def transcribe_with_language(self, audio, timeout=None):\n        raise NotImplementedError("Japanese-only Parakeet does not detect language")\n\n    def _unused_transcribe_with_language(self, audio, timeout=None):
-        """Single auto-language inference; language is unknown if metadata absent."""
-        result = self._request_transcription(
-            audio, timeout, language="auto", response_format="verbose_json"
-        )
-        language = result.get("language")
-        if not isinstance(language, str) or not language.strip():
-            language = None
-        return LanguageTranscript(result["text"].strip(), language)
+    def transcribe_with_language(self, audio, timeout=None):
+        raise NotImplementedError("Parakeet JA cannot identify spoken language")
 
     def close(self):
         process = self.process

@@ -75,6 +75,7 @@ class VadConfig:
     live_max_split_extension_s: float = 1.0  # live hard cap: 8s
     # Natural-pause splitting begins before the long-form hard cap.
     adaptive_split: bool = True
+    vod_short_segments: bool = False  # opt-in A/B test; preserve long-form default
     adaptive_split_s: float = 9.0  # VOD: keep context unless a clear pause occurs
     live_adaptive_split_s: float = 5.5  # live: leave room for ASR + translation
     adaptive_pause_ms: int = 180  # avoid cutting at very brief VAD dips
@@ -252,7 +253,14 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
     leaving the caller's original VAD settings unchanged.
     """
     if not live:
-        return cfg
+        if not cfg.vod_short_segments:
+            return cfg
+        return replace(
+            cfg,
+            max_utterance_s=min(cfg.max_utterance_s, 11.0),
+            adaptive_split_s=min(cfg.adaptive_split_s, 7.5),
+            max_split_extension_s=min(cfg.max_split_extension_s, 2.0),
+        )
     return replace(
         cfg,
         max_utterance_s=cfg.live_max_utterance_s,

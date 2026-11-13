@@ -196,12 +196,19 @@ def run_asr(
             continue
         text = asr.transcribe(utt.audio, utt.probe)
         primary_elapsed_s = time.monotonic() - utt.timings.asr_start
+        # Inspect synced captions before reconciliation, so LFM abstentions
+        # can be rescued with independent, sufficiently aligned JP evidence.
+        caption_match = (
+            captions.match(utt.start_s, utt.end_s)
+            if captions is not None else None
+        )
         choice = (dual.select_segment(utt, text, vod_title,
                                       lambda: (in_q.qsize() > (1 if live else 5)
                                                or out_q.qsize() > (1 if live else 5)), get_generation,
                                       getattr(asr, "last_stop", None),
                                       primary_elapsed_s,
-                                      probe)
+                                      probe,
+                                      caption_match)
                   if dual is not None else None)
         if choice is not None:
             text = choice
@@ -236,10 +243,6 @@ def run_asr(
         # Caption evidence can correct a proper name regardless of whether
         # the reconciler selected Haas or Parakeet. Previously a non-None
         # dual-ASR selection skipped ALL caption matching and name repairs.
-        caption_match = (
-            captions.match(utt.start_s, utt.end_s)
-            if captions is not None else None
-        )
         if text and caption_match is not None and caption_match.reliable:
             text = reconcile_caption(text, caption_match.text)
 

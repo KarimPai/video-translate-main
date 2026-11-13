@@ -43,8 +43,6 @@ class DualASR:
         self.session_id = str(time.time_ns())
         self.language_routing_supported = True
         self.language_failures = 0
-        self.indonesian = None
-        self.indonesian_failures = 0
         self.previous_english_end_s = None
         self.previous_english_generation = None
         if not cfg.dual_asr.enabled or self.mode == "off":
@@ -63,20 +61,6 @@ class DualASR:
             return
         if cfg.reconciler.enabled:
             self._start_selector(cfg.reconciler.gpu_layers)
-        if cfg.dual_asr.indonesian_routing:
-            try:
-                from .indonesian import IndonesianWhisper
-                self.indonesian = IndonesianWhisper(
-                    model_name=cfg.dual_asr.indonesian_model,
-                    cpu_threads=cfg.dual_asr.indonesian_cpu_threads,
-                )
-            except Exception as exc:
-                # The model is deliberately local-only: don't download during
-                # a livestream. Japanese/English continue normally.
-                self.indonesian = None
-                log.warning("CPU Indonesian Whisper unavailable (%s). Download "
-                            "the multilingual model first; JA/EN routing remains active.",
-                            exc)
 
     def _start_selector(self, layers):
         # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
@@ -141,58 +125,6 @@ class DualASR:
                 self.history.clear()
                 self.generation = generation
             self.history.append(text[:160])
-
-    def preflight_indonesian(self, utt, current=None):
-        """Independent CPU language gate before Nemotron's unsupported ID locale."""
-        if (self.indonesian is None or
-                utt.probe or utt.vad_confidence is None or
-                utt.vad_confidence < self.cfg.vad.threshold or
-                not len(utt.audio) or not np.isfinite(utt.audio).all() or
-                np.max(np.abs(utt.audio)) < 1e-5):
-            return None
-        # Avoid expensive CPU fallback if the live subtitle cannot be shown.
-        if self.live and self.deadline(utt) - time.monotonic() < 1.0:
-            return None
-        if current is not None and current() != utt.generation:
-            return None
-        try:
-            result = self.indonesian.transcribe_if_indonesian(
-                utt.audio,
-                min_probability=self.cfg.dual_asr.indonesian_min_confidence,
-                min_margin=self.cfg.dual_asr.indonesian_min_margin,
-                min_duration_s=self.cfg.dual_asr.indonesian_min_duration_s,
-            )
-        except Exception as exc:
-            self.indonesian_failures += 1
-            log.warning("Indonesian CPU Whisper failed; JA/EN fallback: %s", exc)
-            if self.indonesian_failures >= 3:
-                self.indonesian = None
-                log.warning("Disabling Indonesian route for this session after 3 errors")
-            return None
-        self.indonesian_failures = 0
-        if result is None or (current is not None and current() != utt.generation):
-            return None
-        append_comparison({
-            "session_id": self.session_id,
-            "generation": utt.generation,
-            "start_s": round(utt.start_s, 3),
-            "end_s": round(utt.end_s, 3),
-            "haas": None,
-            "nemotron": None,
-            "chosen": result.english,
-            "chosen_by": result.reason,
-            "detected_language": "id-ID",
-            "language_route": "indonesian_to_english",
-            "language_probability": result.confidence,
-            "haas_elapsed_s": None,
-            "nemotron_elapsed_s": None,
-            "indonesian_cpu_elapsed_s": round(result.elapsed_s, 3),
-            "selector_called": False,
-            "vad_confidence": utt.vad_confidence,
-        })
-        self.previous_english_end_s = None
-        self.previous_english_generation = None
-        return result
 
     def preflight_language(self, utt, current=None):
         """One fast auto-language Nemotron request before Japanese-only Haas.
@@ -382,6 +314,9 @@ class DualASR:
             })
 
         if not is_usable_transcript(secondary):
+            if not is_usable_transcript(primary):
+                record("", "both_unusable")
+                return ""
             record(primary, "haas_secondary_unusable")
             return None
         result = primary if is_usable_transcript(primary) else secondary
@@ -411,5 +346,11 @@ class DualASR:
                         selected_by = "nemotron" if result == secondary else "haas"
                 except Exception as exc:
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
+        from .quality_guard import transcript_problem, disagreement_unresolved
+        issue = transcript_problem(result, utt.end_s - utt.start_s)
+        if issue or disagreement_unresolved(primary, secondary, result, score, flags, selected_by):
+            log.warning("Suppressing unreliable dual ASR %.2fs: %s", utt.start_s, issue or "unresolved_disagreement")
+            record("", "abstain_" + (issue or "disagreement"), score, flags, selector_called)
+            return ""
         record(result, selected_by, score, flags, selector_called)
         return result

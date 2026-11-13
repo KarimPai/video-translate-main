@@ -1,0 +1,132 @@
+"""Conservative drop-only EN/Indonesian spoken-language filter.
+
+Classify original 16 kHz PCM BEFORE Japanese ASR. Never derive speech language
+from Japanese-forced transcripts; that text is unreliable for code-switching.
+
+An uncertain result is passed through to protect Japanese dialogue.
+"""
+import logging
+from dataclasses import dataclass
+
+import numpy as np
+
+from .config import LanguageFilterConfig
+from .types import SAMPLE_RATE
+
+log = logging.getLogger(__name__)
+
+_MODEL_REPO = "krut42/voice-lid-ecapa-voxlingua107"
+_MODEL_FILE = "lid-ecapa-voxlingua107.int8.onnx"
+_LABEL_FILE = "lid-labels.txt"
+_DROP_LANGS = frozenset(("en", "id"))
+
+
+@dataclass(frozen=True)
+class LanguageDecision:
+    language: str
+    probability: float
+    japanese_probability: float
+    drop: bool
+    reason: str
+
+
+class LanguageFilter:
+    """CPU-only ECAPA spoken-language ID, without another ASR/translator."""
+
+    def __init__(self, cfg: LanguageFilterConfig):
+        from huggingface_hub import hf_hub_download
+        import onnxruntime as ort
+
+        self.cfg = cfg
+        self.disabled = False
+        log.info(
+            "Initializing CPU-only VoxLingua107 language filter (first run "
+            "downloads a ~27 MB INT8 ONNX model and its language labels)"
+        )
+        model_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_MODEL_FILE)
+        label_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_LABEL_FILE)
+        with open(label_path, "r", encoding="utf-8-sig") as file:
+            self.labels = [line.strip().lower() for line in file if line.strip()]
+        if len(self.labels) != 107 or "ja" not in self.labels or not _DROP_LANGS.issubset(self.labels):
+            raise RuntimeError("VoxLingua107 label set is invalid or incomplete")
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 2
+        options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(
+            str(model_path),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
+        model_inputs = {item.name for item in self.session.get_inputs()}
+        model_outputs = {item.name for item in self.session.get_outputs()}
+        if "wav" not in model_inputs or "logp" not in model_outputs:
+            raise RuntimeError("Unexpected VoxLingua107 ONNX input/output schema")
+        self.japanese_idx = self.labels.index("ja")
+        log.info("CPU VoxLingua107 language filter ready; filtering only en/id")
+
+    def _predict(self, audio: np.ndarray) -> tuple[str, float, float, float]:
+        # The model takes raw mono 16k float32 PCM and internally extracts FBANKs.
+        x = np.ascontiguousarray(audio, dtype=np.float32).reshape(1, -1)
+        logp = np.asarray(
+            self.session.run(["logp"], {"wav": x})[0], dtype=np.float32
+        ).reshape(-1)
+        if logp.shape != (len(self.labels),) or not np.isfinite(logp).all():
+            raise RuntimeError("VoxLingua107 returned invalid class probabilities")
+        # Output is log-softmax, so exp gives normalized model probabilities.
+        probs = np.exp(logp)
+        top = int(np.argmax(probs))
+        second = float(np.partition(probs, -2)[-2])
+        return (
+            self.labels[top],
+            float(probs[top]),
+            float(probs[self.japanese_idx]),
+            float(probs[top]) - second,
+        )
+
+    def classify(self, audio: np.ndarray) -> LanguageDecision:
+        if self.disabled:
+            return LanguageDecision("unknown", 0., 0., False, "unavailable")
+        samples = len(audio)
+        duration = samples / SAMPLE_RATE
+        if duration < self.cfg.min_duration_s:
+            return LanguageDecision("unknown", 0., 0., False, "too_short")
+        if not np.isfinite(audio).all():
+            return LanguageDecision("unknown", 0., 0., False, "invalid_audio")
+
+        # Inspect both ends of long VAD utterances; mixed Japanese/English in a
+        # single long segment must NOT be dropped solely on its dominant language.
+        window = max(1, int(self.cfg.max_window_s * SAMPLE_RATE))
+        windows = [audio[:window]]
+        if samples > int(self.cfg.max_window_s * 1.5 * SAMPLE_RATE):
+            windows.append(audio[-window:])
+
+        try:
+            predicted = [self._predict(clip) for clip in windows]
+        except Exception as exc:
+            self.disabled = True
+            log.warning(
+                "Language filter disabled after CPU inference error; "
+                "preserving original Japanese pipeline: %s", exc,
+            )
+            return LanguageDecision("unknown", 0., 0., False, "inference_error")
+
+        # Require ALL windows to be strongly non-Japanese, and only when
+        # classifying an explicitly unwanted language (en/id). This avoids
+        # suppressing Japanese speech inside code-switched utterances.
+        strong = [
+            (lang in _DROP_LANGS and confidence >= self.cfg.drop_probability
+             and japanese <= self.cfg.max_japanese_probability
+             and margin >= self.cfg.min_top_margin)
+            for lang, confidence, japanese, margin in predicted
+        ]
+        first = predicted[0]
+        if all(strong):
+            return LanguageDecision(
+                first[0], min(p[1] for p in predicted),
+                max(p[2] for p in predicted), True, "confident_non_japanese",
+            )
+        return LanguageDecision(
+            first[0], first[1],
+            max(p[2] for p in predicted), False, "japanese_or_uncertain",
+        )

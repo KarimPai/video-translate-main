@@ -1,8 +1,10 @@
 """Offline regression for MPV VOD audio lead pacing and pause-safe health."""
 
 import threading
+import queue
 import time
 import unittest
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from auto_translate.ingest import Ingest
@@ -76,6 +78,57 @@ class PlaybackPacingTests(unittest.TestCase):
         self.assertTrue(output.is_manually_paused())
         output._manually_paused = False
         self.assertFalse(output.is_manually_paused())
+
+
+class YoutubeAudioRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def failed_vod_ingest():
+        ing = dummy_ingest()
+        ing.source.location = "https://www.youtube.com/watch?v=example"
+        ing._vod_audio_url = "https://googlevideo.invalid/signed"
+        ing._audio_client_fallback = False
+        ing._restart_at = None
+        return ing
+
+    def test_initial_vod_audio_failure_refreshes_even_without_prior_cache(self):
+        ing = self.failed_vod_ingest()
+        ing._vod_audio_url = None  # freshly resolved inside first _read_session
+        observed = []
+
+        def read(_q):
+            observed.append((ing._vod_audio_url, ing._audio_client_fallback))
+            return len(observed) < 3
+
+        outputs = queue.Queue()
+        with patch.object(ing, "_read_session", side_effect=read), patch(
+                "auto_translate.ingest.time.sleep", return_value=None):
+            ing.run(outputs)
+
+        self.assertEqual(len(observed), 3)
+        self.assertEqual([state[1] for state in observed], [False, False, True])
+        self.assertIsNone(ing._vod_audio_url)
+        self.assertIsNone(outputs.get_nowait())
+
+    def test_persistent_vod_audio_error_fails_visibly_after_bounded_retries(self):
+        ing = self.failed_vod_ingest()
+        outputs = queue.Queue()
+        with patch.object(ing, "_read_session", return_value=True) as reader, patch(
+                "auto_translate.ingest.time.sleep", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "audio inaccessible"):
+                ing.run(outputs)
+
+        self.assertEqual(reader.call_count, 3)
+        self.assertIsNone(outputs.get_nowait())
+
+    def test_mpv_drain_handles_closed_ipc_pipe(self):
+        output = object.__new__(MpvOutput)
+        output.stop = threading.Event()
+        output._proc = Mock()
+        output._proc.poll.return_value = None
+        output.ipc = Mock()
+        output.ipc.get.side_effect = BrokenPipeError(232, "The pipe is being closed")
+        output.drain()
+        output.ipc.get.assert_called_once_with("eof-reached")
 
 
 if __name__ == "__main__":

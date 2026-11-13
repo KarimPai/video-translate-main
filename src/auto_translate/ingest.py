@@ -885,7 +885,10 @@ class Ingest:
 
             with self._video_progress_lock:
                 media_advanced_at = self._video_progress_at
-            media_age = max(0.0, now - media_advanced_at)
+                has_media_clock = self._video_output_time_us is not None
+            # Some FFmpeg builds omit out_time_us; the on-disk playlist
+            # remains the authoritative progress signal in that case.
+            media_age = max(0.0, now - media_advanced_at) if has_media_clock else 0.0
             playlist_age = max(0.0, now - playlist_advanced_at)
             reason = self._video_stall_reason(media_age, playlist_age)
             if reason:

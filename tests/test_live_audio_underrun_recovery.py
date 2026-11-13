@@ -72,13 +72,24 @@ class LiveAudioUnderrunTests(unittest.TestCase):
         ingest._video_progress_at = 0.0
         return ingest
 
-    def test_missing_remote_audio_segment_triggers_recovery(self):
+    def test_single_missing_segment_does_not_interrupt_live_playback(self):
         ingest = self.video_writer()
         error = io.BytesIO(
             b"[in#1/hls] Failed to open segment 3423 of playlist 0\n"
         )
         ingest._read_stderr(
             error, 0, capture_pts=False, video_process=ingest._video_proc
+        )
+        self.assertFalse(ingest.video_failed.is_set())
+
+    def test_unrecoverable_playlist_write_failure_still_restarts(self):
+        ingest = self.video_writer()
+        ingest._read_stderr(
+            io.BytesIO(
+                b"Failed to rename index.m3u8.tmp to index.m3u8: "
+                b"Operation not permitted\n"
+            ),
+            0, capture_pts=False, video_process=ingest._video_proc,
         )
         self.assertTrue(ingest.video_failed.is_set())
 

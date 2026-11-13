@@ -58,6 +58,11 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertFalse(filt.classify(audio(12.0)).drop)
         self.assertEqual(filt._predict.call_count, 2)
 
+    def test_medium_length_code_switch_protects_japanese(self):
+        filt = make_filter([("id", .96, .01, .9), ("ja", .81, .81, .6)])
+        self.assertFalse(filt.classify(audio(6.0)).drop)
+        self.assertEqual(filt._predict.call_count, 2)
+
     def test_entire_long_segment_must_be_foreign(self):
         filt = make_filter([("en", .94, .02, .9), ("id", .90, .03, .8)])
         self.assertTrue(filt.classify(audio(12.0)).drop)

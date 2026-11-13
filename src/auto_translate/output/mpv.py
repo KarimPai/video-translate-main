@@ -443,7 +443,9 @@ class MpvOutput:
             # The local live HLS writer produces 2-second segments. MPV's
             # default 1-second refill after an underrun repeatedly resumed
             # with insufficient data, causing 1s play / 1s buffer cycles.
-            # Require 4s of packets before resuming; VOD stays unchanged.
+            # A 4s target prolonged stalls when the upstream audio rendition
+            # disappeared. Use 2s here, and recover the shared HLS session
+            # separately if MPV remains cache-paused for 10s. VOD is unchanged.
             *(["--cache-pause-wait=2"] if ingest.source.live else []),
             "--demuxer-readahead-secs=120",
             "--demuxer-max-bytes=1GiB",

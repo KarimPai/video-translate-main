@@ -701,12 +701,19 @@ class MpvOutput:
             self._buffer_condition.notify_all()
 
     def drain(self) -> None:
-        """Keep MPV open on the final frame until the user closes it."""
+        """Keep MPV open until closed, tolerating a player IPC disconnect."""
         while not self.stop.is_set():
             if self._proc.poll() is not None:
                 return
-
-            if self.ipc.get("eof-reached"):
+            try:
+                reached_eof = self.ipc.get("eof-reached")
+            except (ConnectionError, OSError, MpvError) as exc:
+                # The MPV process can exit between poll() and the IPC write.
+                # BrokenPipeError [WinError 232] is expected during shutdown,
+                # not an audio/transcription failure.
+                log.warning("MPV IPC closed during drain; exiting cleanly: %s", exc)
+                return
+            if reached_eof:
                 log.info(
                     "VOD playback finished; MPV will remain open until closed"
                 )

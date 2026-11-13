@@ -4,14 +4,7 @@ enabled = true
 # Nemotron detects JA/EN before Haas; confident English passes through untranslated.
 # Set false to restore the original Japanese-only ASR pipeline.
 language_routing = true
-# Nemotron does NOT support Indonesian; CPU Whisper multilingual Small fills that gap.
-# Pre-download ~500 MB once with the command in README; no extra GPU VRAM used.
-indonesian_routing = true
-indonesian_model = "small"
-indonesian_cpu_threads = 4
-indonesian_min_confidence = 0.65
-indonesian_min_margin = 0.20
-indonesian_min_duration_s = 1.2
+# Unsupported/uncertain languages are not force-translated.
 secondary_live_mode = "selective" # off, selective, all
 secondary_vod_mode = "all"
 live_timeout_s = 2.0

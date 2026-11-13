@@ -27,7 +27,7 @@ set "SETUP_RESULT=%ERRORLEVEL%"
 echo.
 if "%SETUP_RESULT%"=="0" (
     echo SETUP FINISHED. Double-click "Start translate.bat".
-    echo First start downloads PLaMo 3 Translate 2B Q4_K_M.
+    echo First start downloads PLaMo 3 and Whisper Large-v3 Turbo models.
 ) else (
     echo SETUP FAILED. Read the error above, then rerun Setup.bat.
 )

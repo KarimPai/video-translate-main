@@ -154,6 +154,27 @@ class QualityOptimizationsTests(unittest.TestCase):
         self.assertEqual(translator.translate("できない", []), "I can do it.")
         self.assertEqual(len(calls), 2)
 
+    def test_repeated_unproductive_first_person_retries_back_off(self):
+        # Three rejected attempts trigger five skipped retries; the ninth
+        # suspicious cue probes the model again, rather than permanently
+        # disabling first-person verification.
+        translator, calls = self.translator(["I went."] * 13)
+        for _ in range(9):
+            self.assertEqual(translator.translate("行った", []), "I went.")
+        self.assertEqual(len(calls), 13)
+        self.assertEqual(
+            translator.validation_stats["retry_skipped:first_person_cooldown"], 5
+        )
+
+    def test_negation_retry_not_blocked_by_first_person_cooldown(self):
+        translator, calls = self.translator(
+            ["I went."] * 6 + ["I can do it.", "I can't do it."]
+        )
+        for _ in range(3):
+            translator.translate("行った", [])
+        self.assertEqual(translator.translate("できない", []), "I can't do it.")
+        self.assertEqual(len(calls), 8)
+
     def test_retry_can_be_disabled(self):
         translator, calls = self.translator(["That's bad!"])
         translator.cfg.retry_suspicious = False

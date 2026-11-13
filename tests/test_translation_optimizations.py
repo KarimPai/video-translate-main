@@ -158,7 +158,9 @@ class QualityOptimizationsTests(unittest.TestCase):
         # Three rejected attempts trigger five skipped retries; the ninth
         # suspicious cue probes the model again, rather than permanently
         # disabling first-person verification.
+        from collections import Counter
         translator, calls = self.translator(["I went."] * 13)
+        translator.validation_stats = Counter()
         for _ in range(9):
             self.assertEqual(translator.translate("行った", []), "I went.")
         self.assertEqual(len(calls), 13)

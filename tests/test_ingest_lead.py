@@ -124,7 +124,7 @@ class YoutubeAudioRecoveryTests(unittest.TestCase):
         ing = self.failed_vod_ingest()
         ing.cfg = SimpleNamespace(ytdlp_format="bestaudio",
                                   cookies_from_browser="")
-        response = Mock(stdout="https://audio.example/test\\n")
+        response = Mock(stdout="https://audio.example/test")
         with patch("auto_translate.ingest.subprocess.run",
                    return_value=response) as run:
             self.assertEqual(ing._resolve_audio_url(), "https://audio.example/test")

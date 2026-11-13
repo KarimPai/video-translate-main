@@ -24,8 +24,12 @@ emergency_free_gb = 0.25
 sample_interval_s = 2.0
 
 [vad]
-# FireRedVAD stays the same model, now on CPU to avoid PyTorch CUDA overhead.
+# FireRedVAD stays on CPU to avoid PyTorch CUDA overhead.
 device = "cpu"
+# Opt-in A/B test for dense GTA conversations:
+# true = VOD soft 11s / hard 13s, seek natural pauses from 7.5s.
+# false (default) = VOD soft 14s / hard 16s; livestream unchanged.
+vod_short_segments = false
 
 [language_filter]
 # Drop confidently English or Indonesian VAD utterances BEFORE Japanese ASR.

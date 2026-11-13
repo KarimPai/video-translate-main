@@ -72,6 +72,47 @@ class PlaybackPacingTests(unittest.TestCase):
         ing.enable_vod_playback_pacing(75.0)
         self.assertEqual(ing._vod_max_audio_lead_s, 0.0)
 
+    def test_vod_resumes_without_audio_and_keeps_seek_target(self):
+        player = object.__new__(MpvOutput)
+        player.ingest = Mock(generation=1)
+        player.ingest.source.live = False
+        player.ingest.source.start_s = 0.0  # asynchronous restart still pending
+        player.ingest.video_failed.is_set.return_value = False
+        player._direct_video_loaded = True
+        player._session_start = 902.0
+        player.stop = threading.Event()
+        player._subtitle_ready = Mock()
+        player._translation_ready = Mock(return_value=False)
+        player.ipc = Mock()
+        player.ipc.get.side_effect = lambda name: True if name == "pause" else None
+        player.ipc.command.side_effect = lambda *args: player.stop.set()
+        player._replay_requested = lambda: False
+        player._jump_request = lambda: 0
+        player._check_vsr_health = lambda: None
+        player._lock = threading.Lock()
+        player._lines = []
+        with patch("auto_translate.output.mpv.time.monotonic", side_effect=[0, 0, 5]):
+            player._play_session(False)
+        player.ingest.first_pts_ready.wait.assert_not_called()
+        player.ipc.command.assert_called_once_with("set_property", "pause", False)
+        self.assertEqual(player._now, 902.0)
+
+    def test_remote_vod_retries_audio_only_load_once(self):
+        player = object.__new__(MpvOutput)
+        player.stop = threading.Event()
+        player.ingest = Mock(video_out=None)
+        player.ingest.source.live = False
+        player.ingest.source.start_s = 0
+        player.ingest.source.location = "https://www.youtube.com/watch?v=example"
+        player._direct_video_loaded = False
+        player._wait_for_event = Mock(return_value=True)
+        player.ipc = Mock()
+        player.ipc.get.return_value = [{"type": "audio"}]
+        player._play_session(True)
+        self.assertEqual(player.ipc.command.call_count, 2)
+        self.assertTrue(player.stop.is_set())
+        self.assertFalse(player._direct_video_loaded)
+
     def test_manual_pause_status_is_read_without_ipc_roundtrip(self):
         output = object.__new__(MpvOutput)
         output._manually_paused = True

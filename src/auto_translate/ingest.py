@@ -364,8 +364,8 @@ class Ingest:
             self._go.clear()
             self._playback_position_s = float(start_s)
             self._vod_pacing_waiting_generation = None
-            self._vod_audio_url = None  # signed YouTube URLs can expire between seeks
-            self._audio_client_fallback = False
+            # Reuse the same VOD audio URL across seeks. A failed read
+            # already refreshes expired URLs and retries the alternate client.
             self.first_pts = None
             self._restart_at = start_s
             self.first_pts_ready.clear()

@@ -262,7 +262,7 @@ class DualASR:
             selected_by = "whisper_turbo_completion"
         terms = self.glossary.find(primary + " " + secondary)
         score, flags = compare(primary, secondary, terms)
-        if score < 1 and primary:
+        if score < 1 and is_usable_transcript(primary):
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
             timeout = min(end - time.monotonic(), self.cfg.reconciler.live_timeout_s
                           if self.live else self.cfg.reconciler.vod_timeout_s)

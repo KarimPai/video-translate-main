@@ -55,6 +55,11 @@ def rejection_reason(text: str) -> str | None:
                     return None
                 return "repeated_kana_loop"
 
+    # Whisper Turbo can loop a complete kana phrase throughout a cue.
+    # Require six identical copies with no other words to preserve emphasis.
+    if len(compact) >= 24 and re.fullmatch(r"([ぁ-ヿ]{4,16})\1{5,}", compact):
+        return "repeated_kana_loop"
+
     # Filter long outputs containing no Japanese text only when they are
     # mostly punctuation/symbol noise. Legitimate English names are retained.
     visible = [ch for ch in compact if ch.isalnum()]

@@ -113,9 +113,14 @@ def _select_longform_cut(
     if lo >= hi:
         # Even a tiny custom max_utterance_s must have a finite hard limit.
         return max(1, count // 2) if hard and count >= 2 else None
-    rms = np.asarray([
-        float(np.sqrt(np.mean(frame * frame))) for frame in frames
-    ], dtype=np.float32)
+    # Only the search window, percentile lookback and convolution halo
+    # contribute to the cut. Keep offsets in the original frame timeline.
+    offset = max(0, lo - 20)
+    window = np.asarray(frames[offset:hi + 3], dtype=np.float32)
+    rms = np.sqrt(np.mean(window * window, axis=1))
+    probs = probs[offset:hi + 3]
+    lo -= offset
+    hi -= offset
     baseline = float(np.percentile(rms[max(0, lo - 20):hi], 75))
     if baseline > 1e-5:
         quiet = ((np.asarray(probs, dtype=np.float32) < negative_threshold)
@@ -134,7 +139,7 @@ def _select_longform_cut(
             runs.append((start, hi))
         if runs:
             first, last = max(runs, key=lambda run: run[1])
-            return (first + last) // 2
+            return offset + (first + last) // 2
     if not hard:
         return None
 
@@ -144,7 +149,7 @@ def _select_longform_cut(
     scale = max(1e-5, float(np.percentile(smooth[lo:hi], 75)))
     score = (np.asarray(probs[lo:hi], dtype=np.float32) * 0.5
              + np.minimum(smooth[lo:hi] / scale, 2) * 0.5)
-    return lo + int(np.argmin(score))
+    return offset + lo + int(np.argmin(score))
 
 
 class Segmenter:
@@ -182,6 +187,12 @@ class Segmenter:
 
     def _reset(self, next_sample: int, generation: int) -> None:
         """Fresh stream state, starting at sample `next_sample` (0 = take it from the first chunk)."""
+        self._soft_limit = self.max_frames
+        self._hard_limit = self.hard_max_frames
+        if generation > 0:
+            # Limit only the first utterance while rebuilding translation lead.
+            self._soft_limit = min(self.max_frames, _ms_to_frames(5000))
+            self._hard_limit = min(self.hard_max_frames, self._soft_limit + _ms_to_frames(1000))
         self._generation = generation
         self.vad.reset()
         self._leftover = np.zeros(0, dtype=np.float32)  # samples not yet a whole frame
@@ -301,11 +312,11 @@ class Segmenter:
             # the maximum chunk length. Include its trailing silence once;
             # no PCM is repeated or discarded across consecutive cues.
             self._emit(len(self._frames), keep_rest=False)
-        elif len(self._frames) >= self.max_frames:
+        elif len(self._frames) >= self._soft_limit:
             # Prefer a real sustained pause; extend at most 1s before
             # a smoothed-energy forced cut. Timestamped PCM remains contiguous.
-            hard = len(self._frames) >= self.hard_max_frames
-            if hard or len(self._frames) == self.max_frames or len(self._frames) % 5 == 0:
+            hard = len(self._frames) >= self._hard_limit
+            if hard or len(self._frames) == self._soft_limit or len(self._frames) % 5 == 0:
                 cut = _select_longform_cut(
                     self._frames, self._probs,
                     search_frames=self.split_search,
@@ -349,6 +360,8 @@ class Segmenter:
             utt.timings.audio_read = self._read_at - (processed_end - end) / SAMPLE_RATE
             utt.timings.segmented = time.monotonic()
             self._out.append(utt)
+            self._soft_limit = self.max_frames
+            self._hard_limit = self.hard_max_frames
 
         if keep_rest:
             self._frames, self._probs = rest_frames, rest_probs

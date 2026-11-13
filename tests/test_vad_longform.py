@@ -11,7 +11,7 @@ from auto_translate.vad import FRAME, Segmenter, _select_longform_cut
 
 class LongformBoundaryTests(unittest.TestCase):
     @staticmethod
-    def _process(pcm, probs, cfg=None):
+    def _process(pcm, probs, cfg=None, generation=0):
         class FakeVAD:
             def __call__(self, audio):
                 assert len(probs) == len(audio) // FRAME
@@ -20,7 +20,9 @@ class LongformBoundaryTests(unittest.TestCase):
                 pass
         with patch("auto_translate.vad.StreamingFireRedVAD", return_value=FakeVAD()):
             segmenter = Segmenter(cfg or VadConfig())
-            emitted = segmenter.feed(AudioChunk(0, pcm, 0.0))
+            if generation:
+                segmenter.feed(AudioChunk(0, pcm[:0], 0.0, reset=True, generation=generation))
+            emitted = segmenter.feed(AudioChunk(0, pcm, 0.0, generation=generation))
             emitted += segmenter.flush()
         return [x for x in emitted if not x.probe]
 
@@ -126,6 +128,13 @@ class LongformBoundaryTests(unittest.TestCase):
         self.assertLessEqual(result[0].end_s, 16.0)
         self.assertAlmostEqual(result[0].end_s, result[1].start_s, places=6)
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in result]), pcm))
+
+    def test_first_seek_cue_is_short_then_normal_context_returns(self):
+        pcm = np.full(2400 * FRAME, .3, dtype=np.float32)
+        result = self._process(pcm, np.full(2400, .95), generation=1)
+        self.assertLessEqual(result[0].end_s, 6.0)
+        self.assertGreater(result[1].end_s - result[1].start_s, 12.0)
+        np.testing.assert_array_equal(np.concatenate([u.audio for u in result]), pcm)
 
     def test_one_frame_dip_does_not_count_as_a_real_pause(self):
         frames = [np.full(FRAME, .3, dtype=np.float32) for _ in range(600)]

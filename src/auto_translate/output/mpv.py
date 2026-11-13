@@ -24,6 +24,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ..config import MpvConfig
 from .rtx_vsr import (
@@ -37,10 +38,10 @@ from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
 
-IPC_PATH = (
+IPC_PREFIX = (
     r"\\.\pipe\auto-translate-mpv"
     if sys.platform == "win32"
-    else "/tmp/auto-translate-mpv.sock"
+    else "/tmp/auto-translate-mpv"
 )
 WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
@@ -422,11 +423,12 @@ class MpvOutput:
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
 
+        ipc_path = f"{IPC_PREFIX}-{uuid4().hex}"
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
 
             "--pause",
-            f"--input-ipc-server={IPC_PATH}",
+            f"--input-ipc-server={ipc_path}",
 
             "--force-window=yes",
             "--title=auto-translate",
@@ -484,7 +486,7 @@ class MpvOutput:
                 )
 
         try:
-            self.ipc = MpvIpc(IPC_PATH)
+            self.ipc = MpvIpc(ipc_path)
 
             # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
@@ -813,9 +815,8 @@ class MpvOutput:
         # Load the video immediately; audio timestamp readiness must not
         # prevent MPV from opening the source. The audio pipeline can fail or
         # be delayed independently of video playback.
-        self._session_start = self.ingest.source.start_s
-
         if not self._direct_video_loaded:
+            self._session_start = self.ingest.source.start_s
             shared_live_hls = bool(
                 self.ingest.source.live and self.ingest.video_out
             )
@@ -835,16 +836,30 @@ class MpvOutput:
                     if not Path(video_url).exists()
                     else "loading local source in MPV"
                 )
+            remote_vod = not self.ingest.source.live and video_url.startswith(("https://", "http://"))
+            attempts = 2 if remote_vod else 1
             loaded = False
-            try:
-                self.ipc.command("loadfile", video_url, "replace")
-                started = self._wait_for_event("start-file", timeout_s=10.0)
-                loaded = (
-                    started
-                    and self._wait_for_event("file-loaded", timeout_s=30.0)
-                )
-            except (MpvError, ConnectionError, OSError):
-                log.exception("MPV rejected the original source")
+            for attempt in range(attempts):
+                try:
+                    self.ipc.command("loadfile", video_url, "replace")
+                    loaded = (
+                        self._wait_for_event("start-file", timeout_s=10.0)
+                        and self._wait_for_event("file-loaded", timeout_s=30.0)
+                    )
+                    if loaded and remote_vod:
+                        tracks = self.ipc.get("track-list")
+                        if isinstance(tracks, list) and not any(
+                            track.get("type") == "video" and not track.get("albumart")
+                            for track in tracks
+                        ):
+                            log.warning("YouTube VOD loaded without a video track")
+                            loaded = False
+                except (MpvError, ConnectionError, OSError):
+                    log.exception("MPV rejected the original source")
+                if loaded or self.stop.is_set():
+                    break
+                if attempt + 1 < attempts:
+                    log.warning("Retrying YouTube VOD load with fresh media URLs")
 
             if not loaded and shared_live_hls:
                 log.error(
@@ -906,15 +921,14 @@ class MpvOutput:
                         break
                     time.sleep(0.05)
 
-        while not self.ingest.first_pts_ready.wait(0.2):
-            if self.stop.is_set():
-                return
-
-        assert self.ingest.first_pts is not None
-
-        # Ingest updates source.start_s asynchronously after a restart. Never
-        # anchor a seek to the previous audio session's source.start_s.
-        self._session_start = self.ingest.source.start_s
+        if self.ingest.source.live:
+            while not self.ingest.first_pts_ready.wait(0.2):
+                if self.stop.is_set():
+                    return
+                if self.ingest.video_failed.is_set():
+                    self._recover_video_stream()
+                    return
+            self._session_start = self.ingest.source.start_s
 
         # MPV plays the original VOD timeline; FFmpeg independently extracts
         # audio for ASR. Anchor each audio generation to MPV's current position.
@@ -960,6 +974,7 @@ class MpvOutput:
             return
 
         paused = True
+        vod_wait_until = time.monotonic() + lead
 
         while not self.stop.is_set():
 
@@ -976,6 +991,9 @@ class MpvOutput:
 
             if paused and unpause_at is None:
                 should_unpause = self._translation_ready()
+                if not should_unpause and time.monotonic() >= vod_wait_until:
+                    log.info("VOD translation wait reached %.1fs; resuming video", lead)
+                    should_unpause = True
 
             # User input overrides the optional translation prebuffer. Never
             # force MPV back to pause immediately after its Play button is used.
@@ -1118,6 +1136,7 @@ class MpvOutput:
             self._direct_video_loaded = False
         self.reset_buffer(restart_at)
         self.ingest.go()
+        self._session_start = restart_at
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
         self._anchor_reason = "video-recovery"
@@ -1310,6 +1329,7 @@ class MpvOutput:
         with self._lock:
             self._lines.clear()
 
+        self._session_start = target
         self._clock_source_anchor = target
         self._mpv_anchor = None
         self._anchor_reason = "seek"
@@ -1363,6 +1383,10 @@ class MpvOutput:
                 except queue.Empty:
                     continue
 
+                if (name == "file-loaded" and ev.get("event") == "end-file"
+                        and ev.get("reason") == "error"):
+                    log.warning("MPV media load failed: %s", ev.get("file_error", "unknown error"))
+                    break
                 if ev.get("event") == name:
                     found = True
                     break
@@ -1443,6 +1467,8 @@ class MpvOutput:
                 z=10,
                 hidden=False,
             )
+            if text and not self._shown:
+                log.debug("MPV subtitle overlay accepted at %.3fs", now)
             self._shown = text
 
 

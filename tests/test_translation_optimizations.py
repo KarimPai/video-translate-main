@@ -170,11 +170,11 @@ class QualityOptimizationsTests(unittest.TestCase):
 
     def test_negation_retry_not_blocked_by_first_person_cooldown(self):
         translator, calls = self.translator(
-            ["I went."] * 6 + ["I can do it.", "I can't do it."]
+            ["I went."] * 6 + ["I can do it.", "Can't do it."]
         )
         for _ in range(3):
             translator.translate("行った", [])
-        self.assertEqual(translator.translate("できない", []), "I can't do it.")
+        self.assertEqual(translator.translate("できない", []), "Can't do it.")
         self.assertEqual(len(calls), 8)
 
     def test_retry_can_be_disabled(self):

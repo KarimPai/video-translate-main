@@ -101,8 +101,9 @@ def run_asr(
     dual=None,
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
+    language_filter=None,
 ) -> None:
-    """Transcribe utterances; retry only convincing VOD speech omissions."""
+    """Transcribe Japanese speech; drop only confident English/Indonesian audio."""
     while True:
         item = in_q.get()
 
@@ -146,6 +147,28 @@ def run_asr(
                 timings=utt.timings,
             ))
             continue
+
+        # Language is determined from ORIGINAL audio, not Japanese-forced ASR.
+        # Never send confidently English or Indonesian speech to Haas/Parakeet,
+        # PLaMo, terminal, web or MPV. No English/Indonesian subtitles exist.
+        if language_filter is not None:
+            verdict = language_filter.classify(utt.audio)
+            if verdict.drop:
+                log.info(
+                    "Filtered non-Japanese audio %.2f-%.2fs: %s "
+                    "(confidence=%.3f, Japanese=%.3f); no subtitle",
+                    utt.start_s, utt.end_s,
+                    verdict.language, verdict.probability,
+                    verdict.japanese_probability,
+                )
+                continue
+            if verdict.language in ("en", "id") or verdict.reason == "inference_error":
+                log.debug(
+                    "Language filter passed ambiguous cue %.2f-%.2fs: "
+                    "language=%s confidence=%.3f reason=%s",
+                    utt.start_s, utt.end_s, verdict.language,
+                    verdict.probability, verdict.reason,
+                )
 
         utt.timings.asr_start = time.monotonic()
         # Nemotron can identify confidently English speech *before* Haas
@@ -489,6 +512,7 @@ def run(
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
     dual=None,
+    language_filter=None,
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
 
@@ -552,6 +576,7 @@ def run(
                 dual,
                 cfg.mpv.live_late_window_s,
                 stop,
+                language_filter,
             ),
             name="asr",
             daemon=True,

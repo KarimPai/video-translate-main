@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
+from .asr.quality_guard import transcript_problem
 from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
@@ -162,7 +163,7 @@ def run_asr(
             continue
         if probe is not None and probe.route == "english":
             utt.timings.asr_end = time.monotonic()
-            if is_usable_transcript(probe.text):
+            if is_usable_transcript(probe.text) and not transcript_problem(probe.text, utt.end_s - utt.start_s):
                 log.info("English direct transcript %.2f-%.2fs: %r (skipped Haas, LFM, PLaMo)",
                          utt.start_s, utt.end_s, probe.text[:160])
                 out_q.put(Subtitle(
@@ -224,6 +225,10 @@ def run_asr(
             )
 
         if not text or not is_usable_transcript(text):
+            continue
+        quality_issue = transcript_problem(text, utt.end_s - utt.start_s)
+        if quality_issue:
+            log.warning("Suppressed suspect ASR at %.2f-%.2fs: %s", utt.start_s, utt.end_s, quality_issue)
             continue
 
         # Proper names must be repaired before translation and glossary lookup.

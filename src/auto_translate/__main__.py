@@ -237,6 +237,19 @@ def main() -> None:
         translator.close()
         raise
 
+    # Optional, CPU-only spoken-language gate. Failure is nonfatal: retain
+    # Japanese speech rather than suppressing cues on an unavailable model.
+    language_filter = None
+    if cfg.language_filter.enabled:
+        try:
+            from .language_filter import LanguageFilter
+            language_filter = LanguageFilter(cfg.language_filter)
+        except Exception as exc:
+            log.warning(
+                "Spoken-language filter unavailable; continuing without "
+                "English/Indonesian filtering: %s", exc,
+            )
+
     if use_mpv:
         from .output.mpv import MpvOutput
         try:
@@ -274,7 +287,8 @@ def main() -> None:
     # Japanese-only Parakeet has no multilingual language detection.
     # Do not report an Indonesian worker: that optional third-ASR feature was removed.
     print(f"ASR: Haas + {'Parakeet JA 0.6B' if dual.worker else 'no secondary'} | "
-          f"Language: Japanese only | "
+          f"Language: Japanese only (EN/ID audio filter: "
+          f"{'CPU ECAPA' if language_filter else 'off'}) | "
           f"Selector: {selector_status} | "
           f"PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
     budget.start(relieve_pressure)
@@ -290,6 +304,7 @@ def main() -> None:
             vod_title=vod_context,
             session_cache=subtitle_cache,
             dual=dual,
+            language_filter=language_filter,
         )
     finally:
         budget.close()

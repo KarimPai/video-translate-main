@@ -82,6 +82,38 @@ class SharedHlsRecoveryTests(unittest.TestCase):
         )
         self.assertIn("429,5xx", command)
 
+    def test_live_audio_pipeline_repairs_missing_aac_pts(self):
+        ing = object.__new__(Ingest)
+        ing.source = Source("https://youtube.invalid/live", live=True)
+        ing._inputs = ["https://example.org/video.m3u8",
+                       "https://example.org/audio.m3u8"]
+        ing.video_out = "temp/index.m3u8"
+        ing.burst_s = 0.
+        command = ing._video_command()
+        self.assertEqual(
+            command[command.index("-af") + 1],
+            "asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0",
+        )
+        self.assertEqual(command[command.index("-c:a") + 1], "aac")
+        self.assertEqual(command[command.index("-b:a") + 1], "128k")
+        self.assertNotIn("-bsf:a", command)
+        # Video may have missing PTS; keep its working synthesized clock.
+        self.assertEqual(
+            command[command.index("-vf") + 1], "setpts=N/(FRAME_RATE*TB)"
+        )
+
+    def test_vod_keeps_stream_copy_audio(self):
+        ing = object.__new__(Ingest)
+        ing.source = Source("https://youtube.invalid/watch?v=abc", live=False)
+        ing._inputs = ["https://example.org/video.m3u8",
+                       "https://example.org/audio.m3u8"]
+        ing.video_out = "temp/index.m3u8"
+        ing.burst_s = 0.
+        command = ing._video_command()
+        self.assertEqual(command[command.index("-c:a") + 1], "copy")
+        self.assertIn("-bsf:a", command)
+        self.assertNotIn("-af", command)
+
     def test_three_recovery_limit_is_time_bounded(self):
         output = object.__new__(MpvOutput)
         output._video_retries = 3

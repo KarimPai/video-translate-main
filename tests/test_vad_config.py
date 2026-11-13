@@ -66,7 +66,7 @@ class VadConfigurationTests(unittest.TestCase):
     def test_short_vod_profile_is_optional_in_config_toml(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            path.write_text("[vad]\\nvod_short_segments = true\\n",
+            path.write_text("[vad]\nvod_short_segments = true\n",
                             encoding="utf-8")
             cfg = load_config(path).vad
         self.assertTrue(cfg.vod_short_segments)

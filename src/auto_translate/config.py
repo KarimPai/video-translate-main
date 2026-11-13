@@ -64,7 +64,7 @@ class VadConfig:
     neg_threshold: float = 0.25
     min_silence_ms: int = 550  # wait for genuine phrase-ending silence
     speech_pad_ms: int = 400  # preserve soft/overlapped word starts and tails
-    min_speech_ms: int = 160  # capture short reactions; retain sustained-onset noise guard
+    min_speech_ms: int = 200  # keep short game-sfx rejection; strong short replies still survive
     short_reply_ms: int = 120
     short_reply_probability: float = 0.85
     onset_ms: int = 50  # recover quieter and short initial speech

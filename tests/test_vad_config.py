@@ -10,12 +10,12 @@ from auto_translate.config import VadConfig, load_config, vad_for_source
 class VadConfigurationTests(unittest.TestCase):
     def test_recommended_defaults(self):
         cfg = VadConfig()
-        self.assertEqual(cfg.threshold, 0.38)
+        self.assertEqual(cfg.threshold, 0.34)
         self.assertEqual(cfg.neg_threshold, 0.25)
-        self.assertEqual(cfg.speech_pad_ms, 320)
+        self.assertEqual(cfg.speech_pad_ms, 400)
         self.assertEqual(cfg.min_silence_ms, 550)
         self.assertEqual(cfg.min_speech_ms, 200)
-        self.assertEqual(cfg.onset_ms, 70)
+        self.assertEqual(cfg.onset_ms, 50)
         self.assertEqual(cfg.short_reply_ms, 120)
         self.assertEqual(cfg.short_reply_probability, 0.85)
         self.assertEqual(cfg.prob_smooth_frames, 5)
@@ -34,10 +34,10 @@ class VadConfigurationTests(unittest.TestCase):
             path.write_text("[vad]\nthreshold = 0.40\n", encoding="utf-8")
             cfg = load_config(path).vad
         self.assertEqual(cfg.threshold, 0.40)
-        self.assertEqual(cfg.speech_pad_ms, 320)
+        self.assertEqual(cfg.speech_pad_ms, 400)
         self.assertEqual(cfg.min_silence_ms, 550)
         self.assertEqual(cfg.min_speech_ms, 200)
-        self.assertEqual(cfg.onset_ms, 70)
+        self.assertEqual(cfg.onset_ms, 50)
         self.assertEqual(cfg.max_utterance_s, 14.0)
 
     def test_vod_vs_live_chunk_limits(self):
@@ -48,7 +48,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertIsNot(live, configured)
         self.assertEqual((vod.max_utterance_s, vod.max_split_extension_s), (14.0, 2.0))
         self.assertEqual((live.max_utterance_s, live.max_split_extension_s), (6.5, 1.0))
-        self.assertEqual((live.threshold, live.speech_pad_ms), (0.41, 320))
+        self.assertEqual((live.threshold, live.speech_pad_ms), (0.41, 400))
         self.assertEqual(configured.max_utterance_s, 14.0)
 
     def test_noise_probe_can_be_opted_in(self):

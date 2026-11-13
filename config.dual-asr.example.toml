@@ -1,9 +1,9 @@
 # Copy sections into your existing config.toml to override defaults.
 [dual_asr]
 enabled = true
-# Nemotron detects JA/EN before Haas; confident English passes through untranslated.
+# Parakeet JA does not support language identification or English passthrough.
 # Set false to restore the original Japanese-only ASR pipeline.
-language_routing = true
+language_routing = false
 # Unsupported/uncertain languages are not force-translated.
 secondary_live_mode = "selective" # off, selective, all
 secondary_vod_mode = "all"

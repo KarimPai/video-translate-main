@@ -171,28 +171,11 @@ def run_asr(
                 )
 
         utt.timings.asr_start = time.monotonic()
-        # Nemotron can identify confidently English speech *before* Haas
-        # forces it into Japanese phonemes. Unknown/mixed uses old JP path.
-        probe = None
-        if dual is not None:
-            identify = getattr(dual, "preflight_language", None)
-            if callable(identify):
-                candidate = identify(utt, get_generation)
-                if getattr(candidate, "route", None) in ("english", "japanese", "uncertain"):
-                    probe = candidate
+        # No English or Indonesian passthrough: only accepted Japanese speech
+        # proceeds to Haas and Whisper Turbo after the original-audio filter.
         if get_generation is not None and utt.generation != get_generation():
             continue
         if stop is not None and stop.is_set():
-            continue
-        if probe is not None and probe.route == "english":
-            utt.timings.asr_end = time.monotonic()
-            if is_usable_transcript(probe.text) and not transcript_problem(probe.text, utt.end_s - utt.start_s):
-                log.info("English direct transcript %.2f-%.2fs: %r (skipped Haas, LFM, PLaMo)",
-                         utt.start_s, utt.end_s, probe.text[:160])
-                out_q.put(Subtitle(
-                    utt.start_s, utt.end_s, "", probe.text, utt.timings,
-                    generation=utt.generation, speech_start_s=utt.speech_start_s,
-                ))
             continue
         text = asr.transcribe(utt.audio, utt.probe)
         primary_elapsed_s = time.monotonic() - utt.timings.asr_start
@@ -201,7 +184,7 @@ def run_asr(
                                                or out_q.qsize() > (1 if live else 5)), get_generation,
                                       getattr(asr, "last_stop", None),
                                       primary_elapsed_s,
-                                      probe)
+                                      None)
                   if dual is not None else None)
         if choice is not None:
             text = choice

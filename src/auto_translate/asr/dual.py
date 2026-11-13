@@ -20,7 +20,7 @@ SECONDARY = "parakeet-ja-0.6b"
 
 @dataclass(frozen=True)
 class LanguageProbe:
-    """One Parakeet auto-language transcript, reused for Japanese comparison."""
+    """Legacy optional language probe, unused by Japanese-only Parakeet."""
     text: str
     language: str | None
     route: str
@@ -126,7 +126,11 @@ class DualASR:
                 self.generation = generation
             self.history.append(text[:160])
 
-    def preflight_language(self, utt, current=None):\n        """Japanese-only model: no language routing."""\n        return None\n\n    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
+    def preflight_language(self, utt, current=None):
+        """Parakeet JA is Japanese-only; do not attempt language detection."""
+        return None
+
+    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):

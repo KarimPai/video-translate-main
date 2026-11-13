@@ -48,7 +48,7 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertEqual(
             (vad.threshold, vad.min_speech_ms, vad.min_silence_ms,
              vad.speech_pad_ms, vad.onset_ms),
-            (0.38, 200, 550, 320, 70),
+            (0.34, 200, 550, 400, 50),
         )
         self.assertEqual(vad.short_reply_ms, 120)
         self.assertEqual(vad.short_reply_probability, 0.85)

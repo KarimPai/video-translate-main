@@ -206,30 +206,15 @@ def run_asr(
             if verdict.drop:
                 continue
 
-        utt.timings.asr_start = time.monotonic()
-        # Nemotron can identify confidently English speech *before* Haas
-        # forces it into Japanese phonemes. Unknown/mixed uses old JP path.
+        # Strictly Japanese-only output: the legacy English passthrough
+        # path has been removed. Classified EN/ID audio is dropped above;
+        # uncertain speech remains in the Japanese recognition path.
         probe = None
-        if dual is not None:
-            identify = getattr(dual, "preflight_language", None)
-            if callable(identify):
-                candidate = identify(utt, get_generation)
-                if getattr(candidate, "route", None) in ("english", "japanese", "uncertain"):
-                    probe = candidate
         if get_generation is not None and utt.generation != get_generation():
             continue
         if stop is not None and stop.is_set():
             continue
-        if probe is not None and probe.route == "english":
-            utt.timings.asr_end = time.monotonic()
-            if is_usable_transcript(probe.text) and not transcript_problem(probe.text, utt.end_s - utt.start_s):
-                log.info("English direct transcript %.2f-%.2fs: %r (skipped Haas, LFM, PLaMo)",
-                         utt.start_s, utt.end_s, probe.text[:160])
-                out_q.put(Subtitle(
-                    utt.start_s, utt.end_s, "", probe.text, utt.timings,
-                    generation=utt.generation, speech_start_s=utt.speech_start_s,
-                ))
-            continue
+        utt.timings.asr_start = time.monotonic()
         text = asr.transcribe(utt.audio, utt.probe)
         primary_elapsed_s = time.monotonic() - utt.timings.asr_start
         # Inspect synced captions before reconciliation, so LFM abstentions

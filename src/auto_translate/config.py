@@ -107,7 +107,7 @@ class AsrConfig:
 @dataclass
 class DualAsrConfig:
     enabled: bool = True
-    language_routing: bool = True  # Nemotron auto-language English passthrough
+    language_routing: bool = False  # Parakeet JA is Japanese-only
     secondary_live_mode: str = "selective"
     secondary_vod_mode: str = "all"
     live_timeout_s: float = 2.0
@@ -299,7 +299,7 @@ def load_config(path: Path) -> Config:
         gpu_budget_data.pop(obsolete, None)
 
     return Config(
-        dual_asr=DualAsrConfig(**{k: v for k, v in data.get("dual_asr", {}).items() if not k.startswith("indonesian_")}),
+        dual_asr=DualAsrConfig(**{**{k: v for k, v in data.get("dual_asr", {}).items() if not k.startswith("indonesian_")}, "language_routing": False}),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),
         gpu_budget=GpuBudgetConfig(**gpu_budget_data),
         ingest=IngestConfig(**ingest_data),

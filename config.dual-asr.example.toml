@@ -26,3 +26,15 @@ sample_interval_s = 2.0
 [vad]
 # FireRedVAD stays the same model, now on CPU to avoid PyTorch CUDA overhead.
 device = "cpu"
+
+[language_filter]
+# Drop confidently English or Indonesian VAD utterances BEFORE Japanese ASR.
+# Uncertain/short and Japanese speech continue unchanged.
+# Uses CPU-only VoxLingua107 ECAPA INT8 (~27MB, auto-downloaded once).
+enabled = true
+min_duration_s = 2.5
+max_window_s = 5.0
+drop_probability = 0.80
+max_japanese_probability = 0.12
+min_top_margin = 0.45
+

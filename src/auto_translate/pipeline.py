@@ -205,16 +205,19 @@ def run_asr(
                           utt.start_s)
         utt.timings.asr_end = time.monotonic()
 
+        # Caption evidence can correct a proper name regardless of whether
+        # the reconciler selected Haas or Parakeet. Previously a non-None
+        # dual-ASR selection skipped ALL caption matching and name repairs.
         caption_match = (
             captions.match(utt.start_s, utt.end_s)
-            if choice is None and captions is not None
-            else None
+            if captions is not None else None
         )
         if text and caption_match is not None and caption_match.reliable:
             text = reconcile_caption(text, caption_match.text)
 
         if (
-            not text and caption_match is not None and caption_match.reliable
+            choice is None and not text and caption_match is not None
+            and caption_match.reliable
             and is_usable_transcript(caption_match.text)
         ):
             text = caption_match.text
@@ -231,26 +234,26 @@ def run_asr(
             log.warning("Suppressed suspect ASR at %.2f-%.2fs: %s", utt.start_s, utt.end_s, quality_issue)
             continue
 
-        # Proper names must be repaired before translation and glossary lookup.
-        # The VOD title is a stronger signal than kanji auto-caption spelling.
-        if choice is None:
-            corrected = correct_asr_name(
-                text,
-                vod_title=vod_title,
-                caption=caption_match.text if caption_match else "",
-            )
-            if corrected != text:
-                log.debug("Watame ASR name correction: %s -> %s", text, corrected)
-                text = corrected
+        # Corrections must apply to the FINAL selected Japanese hypothesis.
+        # These rules use explicit caption/video context and do not synthesize
+        # new speech; never repair phonetic Watanabe against an explicit caption.
+        corrected = correct_asr_name(
+            text,
+            vod_title=vod_title,
+            caption=caption_match.text if caption_match else "",
+        )
+        if corrected != text:
+            log.info("Watame ASR name correction: %s -> %s", text, corrected)
+            text = corrected
 
-            repaired = correct_known_asr_terms(
-                text,
-                video_context=vod_title,
-                caption=caption_match.text if caption_match and caption_match.reliable else "",
-            )
-            if repaired != text:
-                log.info("Verified context ASR term: %r -> %r", text, repaired)
-                text = repaired
+        repaired = correct_known_asr_terms(
+            text,
+            video_context=vod_title,
+            caption=caption_match.text if caption_match and caption_match.reliable else "",
+        )
+        if repaired != text:
+            log.info("Verified context ASR term: %r -> %r", text, repaired)
+            text = repaired
 
         if get_generation is not None and utt.generation != get_generation():
             continue

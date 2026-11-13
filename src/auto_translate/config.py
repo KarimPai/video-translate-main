@@ -105,6 +105,33 @@ class AsrConfig:
 
 
 @dataclass
+class LanguageFilterConfig:
+    """Drop only confidently English/Indonesian speech before Japanese ASR.
+
+    Ambiguous or very short utterances stay in the original Japanese path to
+    avoid losing Japanese speech during VTuber code-switching.
+    """
+    enabled: bool = True
+    min_duration_s: float = 2.5
+    max_window_s: float = 5.0
+    drop_probability: float = 0.80
+    max_japanese_probability: float = 0.12
+    min_top_margin: float = 0.45
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("language filter enabled must be boolean")
+        if not 1.0 <= self.min_duration_s <= 10.0:
+            raise ValueError("language filter min_duration_s must be 1..10 s")
+        if not self.min_duration_s <= self.max_window_s <= 15.0:
+            raise ValueError("language filter max_window_s must be >= minimum and <=15 s")
+        for name in ("drop_probability", "max_japanese_probability", "min_top_margin"):
+            value = getattr(self, name)
+            if type(value) not in (float, int) or not 0.0 <= value <= 1.0:
+                raise ValueError("language filter "+name+" must be between 0 and 1")
+
+
+@dataclass
 class DualAsrConfig:
     enabled: bool = True
     language_routing: bool = False  # Parakeet JA is Japanese-only
@@ -236,6 +263,7 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
 
 @dataclass
 class Config:
+    language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
     dual_asr: DualAsrConfig = field(default_factory=DualAsrConfig)
     reconciler: ReconcilerConfig = field(default_factory=ReconcilerConfig)
     gpu_budget: GpuBudgetConfig = field(default_factory=GpuBudgetConfig)
@@ -299,6 +327,7 @@ def load_config(path: Path) -> Config:
         gpu_budget_data.pop(obsolete, None)
 
     return Config(
+        language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
         dual_asr=DualAsrConfig(**{**{k: v for k, v in data.get("dual_asr", {}).items() if not k.startswith("indonesian_")}, "language_routing": False}),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),
         gpu_budget=GpuBudgetConfig(**gpu_budget_data),

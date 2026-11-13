@@ -6,6 +6,7 @@ usable, materially incompatible, and the selector abstains.
 """
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from .selection import normalize
 from ..text_filter import rejection_reason
 
@@ -32,6 +33,34 @@ def transcript_problem(text: str, duration_s: float) -> str | None:
         return "implausible_speech_rate"
     return None
 
+
+
+def caption_supported_hypothesis(primary: str, secondary: str, caption_match):
+    """Identify a hypothesis independently corroborated by aligned JP captions.
+
+    Strong similarity AND a clear margin over the other candidate are needed;
+    captions are timing-dependent and can themselves be incorrect or rolling.
+    Return (label, score, competing_score) or None. Never generate new text.
+    """
+    if (caption_match is None or not getattr(caption_match, "reliable", False)
+            or getattr(caption_match, "coverage", 0.0) < 0.80):
+        return None
+    caption = getattr(caption_match, "text", "")
+    if not _JA.search(caption):
+        return None
+    anchor = normalize(caption)
+    if len(anchor) < 4 or len(anchor) > 240:
+        return None
+    if (transcript_problem(primary, 15.0) is not None
+            or transcript_problem(secondary, 15.0) is not None):
+        return None
+    a = SequenceMatcher(None, normalize(primary), anchor, autojunk=False).ratio()
+    b = SequenceMatcher(None, normalize(secondary), anchor, autojunk=False).ratio()
+    if a >= 0.78 and a - b >= 0.20:
+        return ("haas", a, b)
+    if b >= 0.78 and b - a >= 0.20:
+        return ("parakeet", b, a)
+    return None
 
 def disagreement_unresolved(primary, secondary, selected, similarity, flags, selected_by):
     if selected_by == "uncertain":

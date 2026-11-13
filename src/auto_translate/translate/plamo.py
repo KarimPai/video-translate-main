@@ -314,7 +314,11 @@ class PlamoTranslator:
             unsupported_person_reference(ja, english)
             if self.cfg.neutral_subjects else None
         )
-        reason = pronoun_reason or suspicious_translation(ja, english, names=names)
+        # Semantic risks (negation, numbers, names, polarity) outrank
+        # subjective first-person attribution. A first-person retry cooldown
+        # must NEVER suppress a retry for a possible meaning reversal.
+        semantic_reason = suspicious_translation(ja, english, names=names)
+        reason = semantic_reason or pronoun_reason
         if reason:
             self._count_validation("flag:" + reason)
         if (reason and self.cfg.retry_suspicious
@@ -333,10 +337,16 @@ class PlamoTranslator:
                 self._record_retry_outcome(reason, accepted=False)
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
-                retry_reason = (
+                # Do not accept a semantic regression merely because the
+                # pronoun problem disappeared (and vice versa).
+                candidate_pronoun = (
                     unsupported_person_reference(ja, candidate)
                     if self.cfg.neutral_subjects else None
-                ) or suspicious_translation(ja, candidate, names=names)
+                )
+                retry_reason = (
+                    suspicious_translation(ja, candidate, names=names)
+                    or candidate_pronoun
+                )
                 if retry_reason is None:
                     english = candidate
                     self._count_validation("retry_accepted")

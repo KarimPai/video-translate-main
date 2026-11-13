@@ -147,32 +147,6 @@ def run_asr(
             continue
 
         utt.timings.asr_start = time.monotonic()
-        # Nemotron has no Indonesian locale; independent CPU Whisper detects
-        # and translates Indonesian before any JA/EN-only model sees the audio.
-        if dual is not None:
-            detect_id = getattr(dual, "preflight_indonesian", None)
-            if callable(detect_id):
-                indonesian = detect_id(utt, get_generation)
-                if indonesian is not None:
-                    if get_generation is not None and utt.generation != get_generation():
-                        continue
-                    if stop is not None and stop.is_set():
-                        continue
-                    utt.timings.asr_end = time.monotonic()
-                    if indonesian.english and is_usable_transcript(indonesian.english):
-                        log.info("Indonesian direct EN %.2f-%.2fs: %r "
-                                 "(skipped Haas, Nemotron, LFM and PLaMo)",
-                                 utt.start_s, utt.end_s, indonesian.english[:160])
-                        out_q.put(Subtitle(
-                            utt.start_s, utt.end_s, "", indonesian.english,
-                            utt.timings, generation=utt.generation,
-                            speech_start_s=utt.speech_start_s,
-                        ))
-                    else:
-                        log.warning("Indonesian speech at %.2f-%.2fs produced "
-                                    "no trustworthy English; refusing Japanese hallucination",
-                                    utt.start_s, utt.end_s)
-                    continue
         # Nemotron can identify confidently English speech *before* Haas
         # forces it into Japanese phonemes. Unknown/mixed uses old JP path.
         probe = None

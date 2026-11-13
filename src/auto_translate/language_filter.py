@@ -97,14 +97,23 @@ class LanguageFilter:
         if not np.isfinite(audio).all():
             return LanguageDecision("unknown", 0., 0., False, "invalid_audio")
 
-        # Inspect both ends of long VAD utterances; mixed Japanese/English in a
-        # single long segment must NOT be dropped solely on its dominant language.
+        # Check the middle of long cues as well as both ends. A 12-16s VAD
+        # chunk often contains multiple speakers/code switches; end-only
+        # sampling may miss a Japanese phrase in the middle and drop it.
+        # Nonoverlapping windows keep CPU inference bounded (at most three).
         window = max(1, int(self.cfg.max_window_s * SAMPLE_RATE))
-        if samples >= int(self.cfg.min_duration_s * 2 * SAMPLE_RATE):
-            # Inspect independent beginning/end halves even for medium 5-8s
-            # cues, where a speaker may switch English -> Japanese mid-phrase.
-            half_window = min(window, samples // 2)
-            windows = [audio[:half_window], audio[-half_window:]]
+        min_window = int(self.cfg.min_duration_s * SAMPLE_RATE)
+        if samples >= 3 * min_window:
+            width = min(window, samples // 3)
+            middle = (samples - width) // 2
+            windows = [
+                audio[:width],
+                audio[middle:middle + width],
+                audio[-width:],
+            ]
+        elif samples >= 2 * min_window:
+            width = min(window, samples // 2)
+            windows = [audio[:width], audio[-width:]]
         else:
             windows = [audio[:window]]
 

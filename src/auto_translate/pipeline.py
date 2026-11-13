@@ -12,7 +12,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
-from .asr.quality_guard import transcript_problem
+from .asr.quality_guard import (
+    foreign_audio_transcript_problem,
+    transcript_problem,
+)
 from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
@@ -151,6 +154,9 @@ def run_asr(
             continue
 
         # Language is determined from ORIGINAL audio, not Japanese-forced ASR.
+        # Preserve an independent acoustic verdict for a second, evidence-based
+        # guard after dual-ASR reconciliation; never infer EN/ID from text alone.
+        verdict = None
         # Never send confidently English or Indonesian speech to Haas/Parakeet,
         # PLaMo, terminal, web or MPV. No English/Indonesian subtitles exist.
         if language_filter is not None:
@@ -290,6 +296,21 @@ def run_asr(
         if quality_issue:
             log.warning("Suppressed suspect ASR at %.2f-%.2fs: %s", utt.start_s, utt.end_s, quality_issue)
             continue
+        # A majority-foreign acoustic verdict plus unmistakably broken
+        # Japanese-forced text is stronger evidence than ASR script alone.
+        # Preserve all cues with confident Japanese audio or JP captions.
+        acoustic_issue = foreign_audio_transcript_problem(
+            text, verdict, caption_match,
+        )
+        if acoustic_issue:
+            log.warning(
+                "Suppressed foreign-phonetic ASR %.2f-%.2fs: %s "
+                "(LID=%s confidence=%.3f; no translation)",
+                utt.start_s, utt.end_s, acoustic_issue,
+                getattr(verdict, "language", "?"),
+                getattr(verdict, "probability", 0.0),
+            )
+            continue
 
         # Corrections must apply to the FINAL selected Japanese hypothesis.
         # These rules use explicit caption/video context and do not synthesize
@@ -391,6 +412,16 @@ def run_translate(
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
             out_q.put(tr)
+            continue
+
+        # Guard the translation stage as well: imported/external Transcript
+        # objects must not bypass the existing deterministic ASR checks.
+        issue = transcript_problem(tr.ja, max(0., tr.end_s - tr.start_s))
+        if issue:
+            log.warning(
+                "Skipping PLaMo for invalid transcript %.2f-%.2fs: %s",
+                tr.start_s, tr.end_s, issue,
+            )
             continue
 
         tr.timings.mt_start = time.monotonic()

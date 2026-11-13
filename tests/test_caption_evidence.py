@@ -6,7 +6,10 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from auto_translate.asr.dual import DualASR
-from auto_translate.asr.quality_guard import caption_supported_hypothesis
+from auto_translate.asr.quality_guard import (
+    caption_supported_hypothesis,
+    disagreement_unresolved,
+)
 from auto_translate.captions import CaptionMatch
 from auto_translate.config import Config
 from auto_translate.glossary import Glossary
@@ -89,6 +92,19 @@ class CaptionEvidenceTests(unittest.TestCase):
         self.assertEqual(result, "")
         self.assertEqual(save.call_args.args[0]["chosen_by"],
                          "abstain_disagreement")
+
+    def test_lfm_abstention_blocks_unrelated_full_length_transcripts(self):
+        self.assertTrue(disagreement_unresolved(
+            "今日は病院の前で待っててください",
+            "警察署から連絡が来たんですけど",
+            "今日は病院の前で待っててください",
+            0.18, [], "uncertain",
+        ))
+
+    def test_short_unflagged_disagreement_remains_conservative(self):
+        self.assertFalse(disagreement_unresolved(
+            "はい", "うん", "はい", 0.12, [], "uncertain",
+        ))
 
     def test_pipeline_passes_matching_captions_to_dual(self):
         primary = Mock()

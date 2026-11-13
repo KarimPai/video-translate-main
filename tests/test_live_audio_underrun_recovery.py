@@ -24,6 +24,8 @@ class LiveAudioUnderrunTests(unittest.TestCase):
         }[key]
         player._live_cache_pause_since = None
         player._next_live_cache_check_at = 0.0
+        player._live_av_drift_since = None
+        player._next_live_av_check_at = 0.0
         return player
 
     def test_sustained_mpv_cache_pause_requests_shared_recovery(self):
@@ -56,6 +58,67 @@ class LiveAudioUnderrunTests(unittest.TestCase):
             self.assertFalse(player._check_live_cache_stall())
         with patch("auto_translate.output.mpv.time.monotonic", return_value=150.):
             self.assertFalse(player._check_live_cache_stall())
+        self.assertFalse(player.ingest.video_failed.is_set())
+
+    def test_persistent_av_drift_recovers_shared_live_stream(self):
+        player = self.player()
+        player.ipc.get.side_effect = lambda key: {
+            "pause": False, "paused-for-cache": False, "avsync": -2.0
+        }[key]
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=100.):
+            self.assertFalse(player._check_live_av_drift())
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=101.):
+            self.assertFalse(player._check_live_av_drift())
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=103.):
+            self.assertTrue(player._check_live_av_drift())
+        self.assertTrue(player.ingest.video_failed.is_set())
+
+    def test_brief_av_drift_resets_before_recovery(self):
+        player = self.player()
+        state = {"avsync": 1.0}
+        player.ipc.get.side_effect = lambda key: {
+            "pause": False, "paused-for-cache": False,
+            "avsync": state["avsync"],
+        }[key]
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=100.):
+            self.assertFalse(player._check_live_av_drift())
+        state["avsync"] = 0.03
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=101.):
+            self.assertFalse(player._check_live_av_drift())
+        self.assertIsNone(player._live_av_drift_since)
+        state["avsync"] = 2.0
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=103.):
+            self.assertFalse(player._check_live_av_drift())
+        self.assertFalse(player.ingest.video_failed.is_set())
+
+    def test_pausing_or_buffering_cancels_drift_watchdog(self):
+        player = self.player()
+        state = {"pause": False, "paused-for-cache": False}
+        player.ipc.get.side_effect = lambda key: {
+            **state, "avsync": 3.0,
+        }[key]
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=100.):
+            self.assertFalse(player._check_live_av_drift())
+        state["paused-for-cache"] = True
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=104.):
+            self.assertFalse(player._check_live_av_drift())
+        self.assertIsNone(player._live_av_drift_since)
+        state["paused-for-cache"] = False
+        state["pause"] = True
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=110.):
+            self.assertFalse(player._check_live_av_drift())
+        self.assertFalse(player.ingest.video_failed.is_set())
+
+    def test_unavailable_avsync_does_not_restart_or_affect_vod(self):
+        player = self.player()
+        player.ipc.get.side_effect = lambda key: {
+            "pause": False, "paused-for-cache": False, "avsync": None
+        }[key]
+        with patch("auto_translate.output.mpv.time.monotonic", return_value=100.):
+            self.assertFalse(player._check_live_av_drift())
+        self.assertIsNone(player._live_av_drift_since)
+        player.ingest.source.live = False
+        self.assertFalse(player._check_live_av_drift())
         self.assertFalse(player.ingest.video_failed.is_set())
 
     @staticmethod

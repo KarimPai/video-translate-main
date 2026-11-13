@@ -69,7 +69,7 @@ class CaptionEvidenceTests(unittest.TestCase):
                          "haas_caption_evidence")
 
     def test_lfm_uncertain_is_rescued_only_with_strong_caption(self):
-        dual = self.make_dual("今から行く", "今から行かない", "uncertain")
+        dual = self.make_dual("ここは危険です", "今から行かない", "uncertain")
         with patch("auto_translate.asr.dual.append_comparison") as save:
             result = dual.choose(
                 self.utterance(), "今から行かない", "ホロGTA", lambda: False,
@@ -80,7 +80,7 @@ class CaptionEvidenceTests(unittest.TestCase):
                          "haas_caption_evidence")
 
     def test_lfm_uncertain_without_evidence_still_abstains(self):
-        dual = self.make_dual("今から行く", "今から行かない", "uncertain")
+        dual = self.make_dual("ここは危険です", "今から行かない", "uncertain")
         with patch("auto_translate.asr.dual.append_comparison") as save:
             result = dual.choose(
                 self.utterance(), "今から行かない", "ホロGTA", lambda: False,

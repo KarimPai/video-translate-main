@@ -8,7 +8,7 @@ if exist "%LLAMA_PATH_FILE%" (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
     )
 )
-title Haas + Nemotron 3.5 + LFM + PLaMo
+title Haas + Parakeet JA + LFM + PLaMo
 cd /d "%~dp0"
 if errorlevel 1 (
     echo ERROR: Cannot enter the project directory.
@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 echo.
 echo ========================================
-echo   Haas + Nemotron Japanese Dual ASR
+echo   Haas + Parakeet JA Japanese Dual ASR
 echo ========================================
 echo.
 set "VIDEO_URL="
@@ -82,14 +82,23 @@ if errorlevel 1 (
     )
 )
 echo.
-echo Starting Haas + Nemotron 3.5 ASR, LFM reconciler, PLaMo 3 Translate...
-echo Original 16 kHz audio, FireRedVAD, Haas + budget-admitted Nemotron ASR, LFM reconciliation, PLaMo translation.
+echo Starting Haas + Parakeet JA ASR, LFM reconciler, PLaMo 3 Translate...
+echo Original 16 kHz audio, FireRedVAD, Haas + budget-admitted Parakeet JA ASR, LFM reconciliation, PLaMo translation.
 echo Active models, VRAM readings and fallback reasons: logs\run.log
-where nemo-speech >nul 2>nul
-if errorlevel 1 if not exist "%LOCALAPPDATA%\Programs\NeMoSpeech\bin\nemo-speech.exe" (
-    echo WARNING: NeMo-Speech.cpp not detected; secondary Nemotron will not run.
-    echo Install NVIDIA NeMo-Speech.cpp Windows release; see README.md.
-)
+if defined CRISPASR_EXE goto check_parakeet_model
+where crispasr >nul 2>nul
+if not errorlevel 1 goto check_parakeet_model
+if exist "tools\crispasr\crispasr.exe" goto check_parakeet_model
+echo WARNING: CrispASR Windows CUDA executable not found. Parakeet will be disabled.
+echo Download CrispASR and set CRISPASR_EXE, or extract it to tools\crispasr\.
+echo See PARAKEET_SETUP.md.
+:check_parakeet_model
+if defined PARAKEET_JA_MODEL goto parakeet_setup_complete
+if exist "models\parakeet-tdt-0.6b-ja-q8_0.gguf" goto parakeet_setup_complete
+echo WARNING: Parakeet JA GGUF model not found. Parakeet will be disabled.
+echo Download the Q8_0 model and set PARAKEET_JA_MODEL or place it in models\.
+echo See PARAKEET_SETUP.md.
+:parakeet_setup_complete
 echo.
 
 uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"

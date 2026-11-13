@@ -8,19 +8,19 @@ import urllib.error
 import numpy as np
 
 from ..text_filter import is_usable_transcript
-from .nemotron import NemotronASR, LanguageTranscript
+from .nemotron import ParakeetASR
 from .language_router import classify_language
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import compare
 
 log = logging.getLogger(__name__)
-SECONDARY = "nemotron-3.5"
+SECONDARY = "parakeet-ja-0.6b"
 
 
 @dataclass(frozen=True)
 class LanguageProbe:
-    """One Nemotron auto-language transcript, reused for Japanese comparison."""
+    """One Parakeet auto-language transcript, reused for Japanese comparison."""
     text: str
     language: str | None
     route: str
@@ -51,7 +51,7 @@ class DualASR:
             # Admission includes MPV, VAD, model scratch and Windows headroom.
             if not budget.admits(1.7):
                 raise RuntimeError("insufficient measured GPU headroom for secondary ASR")
-            self.worker = NemotronASR(device="cuda:0")
+            self.worker = ParakeetASR(device="cuda:0")
             if not budget.admits(0.5):
                 raise RuntimeError("secondary ASR exceeded its startup reservation")
             log.info("Secondary %s ready on CUDA0 (%s)", SECONDARY, self.mode)
@@ -126,83 +126,7 @@ class DualASR:
                 self.generation = generation
             self.history.append(text[:160])
 
-    def preflight_language(self, utt, current=None):
-        """One fast auto-language Nemotron request before Japanese-only Haas.
-
-        Fail closed: unknown/failed language ID never bypasses translation.
-        Does not launch another model or replace the Japanese LFM selector.
-        """
-        if (not self.cfg.dual_asr.enabled or
-                not self.cfg.dual_asr.language_routing or
-                not self.language_routing_supported or self.worker is None or
-                (self.pending is not None and self.pending.is_alive()) or
-                utt.probe or utt.vad_confidence is None or
-                utt.vad_confidence < self.cfg.vad.threshold or
-                not len(utt.audio) or not np.isfinite(utt.audio).all() or
-                np.max(np.abs(utt.audio)) < 1e-5 or
-                self.budget.pressure_level == "critical"):
-            return None
-        if self.live:
-            remaining = self.deadline(utt) - time.monotonic()
-            if remaining < 0.75:
-                return None
-            timeout = min(1.5, self.cfg.dual_asr.live_timeout_s, remaining)
-        else:
-            timeout = min(3.0, self.cfg.dual_asr.vod_timeout_s)
-        started = time.perf_counter()
-        try:
-            detected = self.worker.transcribe_with_language(utt.audio, timeout=timeout)
-            if not isinstance(detected, LanguageTranscript):
-                raise ValueError("auto-language response has no structured language metadata")
-        except Exception as exc:
-            self.language_failures += 1
-            if isinstance(exc, (urllib.error.HTTPError, ValueError)) or self.language_failures >= 3:
-                self.language_routing_supported = False
-                log.warning("Nemotron language-ID unsupported/unreliable; reverting to original Japanese route: %s", exc)
-            else:
-                log.warning("Nemotron language-ID attempt failed; Japanese fallback: %s", exc)
-            return None
-        self.language_failures = 0
-        if current is not None and utt.generation != current():
-            return None
-        elapsed = time.perf_counter() - started
-        contiguous_english = (
-            self.previous_english_generation == utt.generation and
-            self.previous_english_end_s is not None and
-            0 <= utt.start_s - self.previous_english_end_s <= 6.0
-        )
-        route = classify_language(
-            detected.language, detected.text, utt.end_s - utt.start_s,
-            previous_english=contiguous_english,
-        )
-        result = LanguageProbe(detected.text, detected.language, route, elapsed)
-        log.info("Nemotron auto language %.2f-%.2fs detected=%s route=%s duration=%.3fs",
-                 utt.start_s, utt.end_s, detected.language or "unknown", route, elapsed)
-        if route == "english":
-            self.previous_english_end_s = utt.end_s
-            self.previous_english_generation = utt.generation
-            append_comparison({
-                "session_id": self.session_id,
-                "generation": utt.generation,
-                "start_s": round(utt.start_s, 3),
-                "end_s": round(utt.end_s, 3),
-                "haas": None,
-                "nemotron": detected.text,
-                "chosen": detected.text,
-                "chosen_by": "english_passthrough",
-                "detected_language": detected.language,
-                "language_route": "english_passthrough",
-                "haas_elapsed_s": None,
-                "nemotron_elapsed_s": round(elapsed, 3),
-                "selector_called": False,
-                "vad_confidence": utt.vad_confidence,
-            })
-        elif route == "japanese":
-            self.previous_english_end_s = None
-            self.previous_english_generation = None
-        return result
-
-    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
+    def preflight_language(self, utt, current=None):\n        """Japanese-only model: no language routing."""\n        return None\n\n    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None or (self.pending and self.pending.is_alive()):
@@ -272,12 +196,12 @@ class DualASR:
                     and is_usable_transcript(prefetched.text)):
                 secondary = prefetched.text
                 secondary_elapsed_s = prefetched.elapsed_s
-                log.debug("Reusing Nemotron auto-Japanese transcript at %.2fs", utt.start_s)
+                log.debug("Reusing Parakeet auto-Japanese transcript at %.2fs", utt.start_s)
             else:
                 started = time.perf_counter()
                 secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
                 secondary_elapsed_s = time.perf_counter() - started
-            log.info("Nemotron ASR %.2f-%.2fs audio decoded in %.3fs",
+            log.info("Parakeet ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
@@ -285,7 +209,7 @@ class DualASR:
             return None
         if current and current() != utt.generation:
             return ""
-        log.debug("ASR generation=%d %.3f-%.3f Haas=%r Nemotron=%r",
+        log.debug("ASR generation=%d %.3f-%.3f Haas=%r Parakeet=%r",
                   utt.generation, utt.start_s, utt.end_s, primary, secondary)
         def record(selected_text, selected_by, score=None, flags=None, selector_called=False):
             append_comparison({
@@ -295,7 +219,7 @@ class DualASR:
                 "end_s": round(utt.end_s, 3),
                 "duration_s": round(utt.end_s - utt.start_s, 3),
                 "haas": primary,
-                "nemotron": secondary,
+                "parakeet": secondary,
                 "detected_language": getattr(prefetched, "language", None),
                 "language_route": ("japanese_reconciled" if getattr(prefetched, "route", None) == "japanese"
                                    else "uncertain_japanese_fallback" if prefetched is not None
@@ -304,12 +228,12 @@ class DualASR:
                 "chosen_by": selected_by,
                 "haas_elapsed_s": (round(primary_elapsed_s, 3)
                                    if primary_elapsed_s is not None else None),
-                "nemotron_elapsed_s": round(secondary_elapsed_s, 3),
+                "parakeet_elapsed_s": round(secondary_elapsed_s, 3),
                 "similarity": round(score, 4) if score is not None else None,
                 "flags": flags or [],
                 "selector_called": selector_called,
                 "haas_stop": primary_stop,
-                "nemotron_stop": worker.last_stop,
+                "parakeet_stop": worker.last_stop,
                 "vad_confidence": utt.vad_confidence,
             })
 
@@ -320,12 +244,12 @@ class DualASR:
             record(primary, "haas_secondary_unusable")
             return None
         result = primary if is_usable_transcript(primary) else secondary
-        selected_by = "haas" if is_usable_transcript(primary) else "nemotron_rescue"
+        selected_by = "haas" if is_usable_transcript(primary) else "parakeet_rescue"
         selector_called = False
         if (primary_stop == "model_limit" and worker.last_stop == "complete"
                 and secondary.startswith(primary) and len(secondary) > len(primary)):
             result = secondary
-            selected_by = "nemotron_completion"
+            selected_by = "parakeet_completion"
         terms = self.glossary.find(primary + " " + secondary)
         score, flags = compare(primary, secondary, terms)
         if score < 1 and primary:
@@ -342,8 +266,8 @@ class DualASR:
                     }, timeout)
                     selector_called = True
                     selected_by = getattr(selector, "last_choice", None)
-                    if selected_by not in ("haas", "nemotron", "uncertain"):
-                        selected_by = "nemotron" if result == secondary else "haas"
+                    if selected_by not in ("haas", "parakeet", "uncertain"):
+                        selected_by = "parakeet" if result == secondary else "haas"
                 except Exception as exc:
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
         from .quality_guard import transcript_problem, disagreement_unresolved

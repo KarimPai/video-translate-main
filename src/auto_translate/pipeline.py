@@ -104,6 +104,8 @@ def run_asr(
     language_filter=None,
 ) -> None:
     """Transcribe Japanese speech; drop only confident English/Indonesian audio."""
+    lid_checked = lid_dropped = lid_uncertain = 0
+    lid_total_s = 0.0
     while True:
         item = in_q.get()
 
@@ -152,23 +154,57 @@ def run_asr(
         # Never send confidently English or Indonesian speech to Haas/Parakeet,
         # PLaMo, terminal, web or MPV. No English/Indonesian subtitles exist.
         if language_filter is not None:
+            lid_started = time.perf_counter()
             verdict = language_filter.classify(utt.audio)
+            lid_elapsed = time.perf_counter() - lid_started
+            lid_checked += 1
+            lid_total_s += lid_elapsed
+            lid_dropped += int(verdict.drop)
+            windows = getattr(verdict, "windows", ())
+            votes = ",".join(
+                f"{lang}:{prob:.2f}/ja:{ja_prob:.2f}/margin:{margin:.2f}"
+                for lang, prob, ja_prob, margin in windows
+            ) or "none"
+            suspected_foreign = (
+                verdict.language in ("en", "id")
+                or any(lang in ("en", "id") for lang, *_ in windows)
+            )
+            if suspected_foreign and not verdict.drop:
+                lid_uncertain += 1
             if verdict.drop:
                 log.info(
                     "Filtered non-Japanese audio %.2f-%.2fs: %s "
-                    "(confidence=%.3f, Japanese=%.3f); no subtitle",
+                    "(confidence=%.3f, Japanese=%.3f, LID=%.3fs, "
+                    "windows=%s); no subtitle",
                     utt.start_s, utt.end_s,
                     verdict.language, verdict.probability,
-                    verdict.japanese_probability,
+                    verdict.japanese_probability, lid_elapsed, votes,
                 )
-                continue
-            if verdict.language in ("en", "id") or verdict.reason == "inference_error":
-                log.debug(
-                    "Language filter passed ambiguous cue %.2f-%.2fs: "
-                    "language=%s confidence=%.3f reason=%s",
+            elif suspected_foreign or verdict.reason in ("inference_error", "unavailable"):
+                log.info(
+                    "Language filter PASSED cue %.2f-%.2fs: "
+                    "language=%s confidence=%.3f Japanese=%.3f "
+                    "LID=%.3fs reason=%s windows=%s",
                     utt.start_s, utt.end_s, verdict.language,
-                    verdict.probability, verdict.reason,
+                    verdict.probability, verdict.japanese_probability,
+                    lid_elapsed, verdict.reason, votes,
                 )
+            else:
+                log.debug(
+                    "Language filter Japanese/short cue %.2f-%.2fs: "
+                    "language=%s LID=%.3fs reason=%s",
+                    utt.start_s, utt.end_s, verdict.language,
+                    lid_elapsed, verdict.reason,
+                )
+            if lid_checked % 25 == 0:
+                log.info(
+                    "Language filter summary: checked=%d dropped=%d "
+                    "foreign_or_mixed_passed=%d mean_LID=%.3fs",
+                    lid_checked, lid_dropped, lid_uncertain,
+                    lid_total_s / max(1, lid_checked),
+                )
+            if verdict.drop:
+                continue
 
         utt.timings.asr_start = time.monotonic()
         # Nemotron can identify confidently English speech *before* Haas

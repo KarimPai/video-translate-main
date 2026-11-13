@@ -191,6 +191,64 @@ class AsrComparisonTests(unittest.TestCase):
             self.assertTrue((Path(td) / "asr-comparison.previous.jsonl").exists())
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["haas"], "次")
 
+    def test_selected_parakeet_name_uses_matching_caption_evidence(self):
+        # Previously selecting secondary meant choice != None and skipped
+        # even exact aligned caption-based Watame name repair.
+        from auto_translate.captions import CaptionMatch
+        primary = Mock()
+        primary.transcribe.return_value = "渡辺、そこにいるの？"
+        dual = Mock()
+        dual.preflight_language.return_value = None
+        dual.select_segment.return_value = "渡辺、そこにいるの？"
+        caption = Mock()
+        caption.match.return_value = CaptionMatch(
+            "わため、そこにいるの？", overlap_s=1.0, coverage=1.0, reliable=True
+        )
+        input_q, output_q = queue.Queue(), queue.Queue()
+        input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32),
+                              vad_confidence=.9))
+        input_q.put(None)
+        run_asr(primary, input_q, output_q, captions=caption, dual=dual)
+        transcript = output_q.get_nowait()
+        self.assertEqual(transcript.ja, "わため、そこにいるの？")
+        self.assertIsNone(output_q.get_nowait())
+        caption.match.assert_called_once_with(2, 3)
+
+    def test_selected_parakeet_watame_name_uses_confirmed_video_context(self):
+        primary = Mock()
+        primary.transcribe.return_value = "渡辺、行こう"
+        dual = Mock()
+        dual.preflight_language.return_value = None
+        dual.select_segment.return_value = "渡辺、行こう"
+        input_q, output_q = queue.Queue(), queue.Queue()
+        input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32),
+                              vad_confidence=.9))
+        input_q.put(None)
+        run_asr(primary, input_q, output_q,
+                vod_title="角巻わため 配信", dual=dual)
+        self.assertEqual(output_q.get_nowait().ja, "わため、行こう")
+        self.assertIsNone(output_q.get_nowait())
+
+    def test_explicit_watanabe_caption_prevents_unfounded_name_change(self):
+        from auto_translate.captions import CaptionMatch
+        primary = Mock()
+        primary.transcribe.return_value = "渡辺さん"
+        dual = Mock()
+        dual.preflight_language.return_value = None
+        dual.select_segment.return_value = "渡辺さん"
+        captions = Mock()
+        captions.match.return_value = CaptionMatch(
+            "わたなべさん", overlap_s=1.0, coverage=1.0, reliable=True
+        )
+        input_q, output_q = queue.Queue(), queue.Queue()
+        input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32),
+                              vad_confidence=.9))
+        input_q.put(None)
+        run_asr(primary, input_q, output_q, captions=captions,
+                vod_title="角巻わため 配信", dual=dual)
+        self.assertEqual(output_q.get_nowait().ja, "渡辺さん")
+        self.assertIsNone(output_q.get_nowait())
+
     def test_invalid_secondary_is_recorded_without_changing_primary(self):
         from auto_translate.asr.dual import DualASR
         from auto_translate.glossary import Glossary

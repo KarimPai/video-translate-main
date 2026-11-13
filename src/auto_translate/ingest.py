@@ -202,6 +202,7 @@ class Ingest:
     ):
         self.source = source
         self._vod_audio_url: str | None = None
+        self._audio_client_fallback = False  # retry known 2026 YouTube client 403s
         self.cfg = cfg
         self.pitch_semitones = cfg.pitch_semitones
         self.video_format = video_format
@@ -363,6 +364,8 @@ class Ingest:
             self._go.clear()
             self._playback_position_s = float(start_s)
             self._vod_pacing_waiting_generation = None
+            self._vod_audio_url = None  # signed YouTube URLs can expire between seeks
+            self._audio_client_fallback = False
             self.first_pts = None
             self._restart_at = start_s
             self.first_pts_ready.clear()
@@ -939,6 +942,13 @@ class Ingest:
             self.cfg.ytdlp_format,
             "-g",
         ]
+        # Some signed URLs from the 2026 default YouTube client return
+        # HTTP 403 when opened by FFmpeg. Retry with an alternative client
+        # only after the default URL actually fails to provide PCM.
+        if self._audio_client_fallback and "youtu" in urlparse(self.source.location).netloc.lower():
+            resolve_cmd += [
+                "--extractor-args", "youtube:player_client=default,-web_embedded"
+            ]
         resolve_cmd += _cookie_args(self.cfg) + [self.source.location]
         audio_urls = subprocess.run(
             resolve_cmd,
@@ -976,24 +986,52 @@ class Ingest:
             while True:
                 with self._proc_lock:
                     generation = self._generation
-                    reuse_url = self._vod_audio_url is not None and not self.video_out
-                try:
-                    failed_to_open = self._read_session(out_q)
-                except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
-                    if not (self.source.live and self.video_out):
-                        raise
-                    log.warning("shared live HLS read failed: %s", exc)
-                    failed_to_open = True
-                with self._proc_lock:
-                    refresh = (
-                        reuse_url and failed_to_open and not self._stopped
-                        and self._restart_at is None and generation == self._generation
+                # A failure on the FIRST direct VOD URL must be retried too.
+                # The previous logic checked whether the URL was cached before
+                # the first read, so a fresh signed URL returning 403 stopped
+                # all ASR without ever refreshing it.
+                retries = 0
+                while True:
+                    try:
+                        failed_to_open = self._read_session(out_q)
+                    except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                        if not (self.source.live and self.video_out):
+                            raise
+                        log.warning("shared live HLS read failed: %s", exc)
+                        failed_to_open = True
+
+                    with self._proc_lock:
+                        remote_vod = (
+                            not self.source.live and not self.video_out
+                            and not Path(self.source.location).exists()
+                        )
+                        current = (
+                            not self._stopped and self._restart_at is None
+                            and generation == self._generation
+                        )
+                        refresh = remote_vod and current and failed_to_open and retries < 2
+                        if refresh:
+                            self._vod_audio_url = None
+                            # Attempt 1: fresh default URL; attempt 2:
+                            # alternative player client for persistent HTTP 403.
+                            self._audio_client_fallback = retries >= 1
+                        give_up = remote_vod and current and failed_to_open and not refresh
+                    if not refresh:
+                        break
+                    retries += 1
+                    log.warning(
+                        "YouTube VOD audio failed before any PCM; refreshing signed URL "
+                        "(retry %d/2, alternate client=%s)",
+                        retries, self._audio_client_fallback,
                     )
-                    if refresh:
-                        self._vod_audio_url = None
-                if refresh:
-                    log.info("cached VOD audio failed to open; resolving again")
-                    self._read_session(out_q)
+                    time.sleep(0.5)
+                if give_up:
+                    raise RuntimeError(
+                        "YouTube VOD audio inaccessible: FFmpeg could not decode any "
+                        "audio after URL refresh and alternate-client retry. "
+                        "Check HTTP 403 above, update yt-dlp, and try another "
+                        "YouTube client or browser cookies."
+                    )
 
                 if self.source.live and self.video_out:
                     self._wait_for_shared_live_restart()

@@ -391,6 +391,7 @@ class MpvOutput:
         self._job = None
         self._closed = False
         self._video_retries = 0
+        self._last_video_recovery_at: float | None = None
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
@@ -1088,11 +1089,19 @@ class MpvOutput:
             self._subtitle_ready.wait(max(0.005, wait_s))
 
     def _recover_video_stream(self) -> bool:
-        """Restart the shared fMP4 cache and audio reader at the current source position."""
+        """Restart shared video/audio with a bounded short-window retry policy."""
+        now = time.monotonic()
+        previous = self._last_video_recovery_at
+        # A five-hour livestream should not be terminated by three unrelated
+        # transient network faults over its entire lifetime. Limit only
+        # repeated recovery loops in a three-minute window.
+        if previous is None or now - previous >= 180.0:
+            self._video_retries = 0
         if self._video_retries >= 3:
-            log.error("fMP4 cache recovery stopped after 3 attempts")
+            log.error("fMP4 cache recovery stopped after 3 attempts within 3 minutes")
             self.stop.set()
             return False
+        self._last_video_recovery_at = now
 
         restart_at = self._now
         if restart_at is None:

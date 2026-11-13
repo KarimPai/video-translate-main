@@ -183,6 +183,11 @@ def run_asr(
         if choice is not None:
             text = choice
             if not text:
+                log.info(
+                    "VAD-detected speech %.2f-%.2fs omitted by dual-ASR quality selection "
+                    "(VAD confidence=%.2f)",
+                    utt.start_s, utt.end_s, utt.vad_confidence or 0.0,
+                )
                 continue
         # Do not re-decode music, low-confidence noise or live audio.
         # Edge silence sometimes helps Haas terminate an omitted short cue.
@@ -228,6 +233,11 @@ def run_asr(
             )
 
         if not text or not is_usable_transcript(text):
+            log.info(
+                "VAD-detected speech %.2f-%.2fs produced no usable Japanese transcript "
+                "(Haas/Parakeet/caption stage, VAD confidence=%.2f)",
+                utt.start_s, utt.end_s, utt.vad_confidence or 0.0,
+            )
             continue
         quality_issue = transcript_problem(text, utt.end_s - utt.start_s)
         if quality_issue:
@@ -390,6 +400,11 @@ def run_translate(
 
         tr.timings.mt_end = time.monotonic()
         if suppressed:
+            log.info(
+                "Translated cue %.2f-%.2fs suppressed by English output guard; "
+                "Japanese ASR recognized speech: %r",
+                tr.start_s, tr.end_s, tr.ja[:110],
+            )
             continue
 
         out_q.put(

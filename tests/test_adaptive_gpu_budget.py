@@ -47,7 +47,7 @@ class CpuVadTests(unittest.TestCase):
             seg = Segmenter(cfg)
             ctor.assert_called_once_with(cfg.threshold, "cpu")
             self.assertEqual(seg.min_silence, 55)
-            self.assertEqual(seg.pad, 32)
+            self.assertEqual(seg.pad, 40)  # 400 ms of audio at 10 ms/frame
 
     def test_cuda_is_still_opt_in(self):
         cfg = VadConfig(device="cuda")

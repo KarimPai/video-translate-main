@@ -58,6 +58,44 @@ jobs:
           assert window.seek_slider.maximum() == 5400
           assert window.seek_slider.value() == 1280
           assert window.time_label.text() == "21:20 / 1:30:00"
+
+          # Exercise real Qt mouse input, not only slider values set in code.
+          # A groove click formerly changed the slider without seeking MPV.
+          import json
+          from PySide6.QtCore import QProcess, Qt, QPoint
+          from PySide6.QtTest import QTest
+
+          class BackendProbe:
+              def __init__(self):
+                  self.commands = []
+              def state(self):
+                  return QProcess.ProcessState.Running
+              def write(self, data):
+                  self.commands.append(json.loads(bytes(data).decode().strip()))
+                  return len(data)
+
+          probe = BackendProbe()
+          window.process = probe
+          window.seek_slider.setFocus()
+          QTest.mouseClick(
+              window.seek_slider, Qt.MouseButton.LeftButton,
+              pos=QPoint(int(window.seek_slider.width() * 0.75),
+                         window.seek_slider.height() // 2),
+          )
+          app.processEvents()
+          assert probe.commands[-1]["action"] == "seek", probe.commands
+          assert 3300 < probe.commands[-1]["value"] < 4700, probe.commands
+
+          # Drag completion and keyboard control must dispatch too.
+          window.seek_slider.setSliderDown(True)
+          window.seek_slider.setValue(3400)
+          window.seek_slider.setSliderDown(False)
+          assert probe.commands[-1]["value"] == 3400
+          QTest.keyClick(window.seek_slider, Qt.Key.Key_Right)
+          assert probe.commands[-1]["value"] == window.seek_slider.value()
+          window._on_player_event({"event": "seek_ack", "accepted": True, "target": 3401})
+          assert window._pending_seek_target == 3401
+
           window.toggle_fullscreen()
           app.processEvents()
           assert window.isFullScreen()
@@ -84,6 +122,14 @@ jobs:
           assert window.video_controls.isVisible(), "Moving cursor must reveal seekbar"
           assert window.seek_slider.isVisible()
           assert window.fullscreen_button.isVisible()
+          # Groove clicking while fullscreen must use the same backend pipe.
+          QTest.mouseClick(
+              window.seek_slider, Qt.MouseButton.LeftButton,
+              pos=QPoint(int(window.seek_slider.width() * 0.6),
+                         window.seek_slider.height() // 2),
+          )
+          assert probe.commands[-1]["action"] == "seek"
+          assert 2600 < probe.commands[-1]["value"] < 3800
 
           # Do not hide the bar while the VOD seek slider is being dragged.
           window.seek_slider.setSliderDown(True)
@@ -110,6 +156,7 @@ jobs:
                                    "duration": None, "paused": False})
           assert not window.seek_slider.isEnabled()
           assert "LIVE" in window.time_label.text()
+          window.process = None
           window.close()
           '@ | Set-Content -LiteralPath gui_controls_smoke.py -Encoding utf8
           python gui_controls_smoke.py

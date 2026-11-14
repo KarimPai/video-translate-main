@@ -89,6 +89,17 @@ class PipelineSelectionTests(unittest.TestCase):
         self.assertEqual((result.ja, result.start_s, result.end_s), ("まだ行かない", 2, 3))
         self.assertIs(self.dual.worker.transcribe.call_args.args[0], self.utt.audio)
 
+    def test_legacy_name_hints_never_prompt_whisper(self):
+        self.cfg.dual_asr.whisper_name_hints = True
+        self.dual.worker.transcribe.return_value = "ラプラス"
+        self.assertEqual(
+            self.dual.choose(self.utt, "ラプラス", "ホロGTA 3日目",
+                             lambda: False, lambda: self.utt.generation),
+            "ラプラス",
+        )
+        self.dual.worker.transcribe.assert_called_once()
+        self.assertNotIn("initial_prompt", self.dual.worker.transcribe.call_args.kwargs)
+
     def test_whisper_loop_preserves_valid_haas_without_selector(self):
         primary = "大丈夫だろこれのろまって意味なの"
         result, = self.run_stage(primary, "ダイジョブ" * 8)

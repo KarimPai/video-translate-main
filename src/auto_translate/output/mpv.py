@@ -1218,6 +1218,7 @@ class MpvOutput:
     def _replay_requested(self) -> bool:
         """Return whether the user pressed Play/Space."""
         requested = False
+        deferred_jumps = []
         while not self.ipc.events.empty():
             ev = self.ipc.events.get()
             args = ev.get("args") or []
@@ -1234,9 +1235,12 @@ class MpvOutput:
                 ev.get("event") == "client-message"
                 and args[:1] == [JUMP_MESSAGE]
             ):
-                # Preserve seek requests for the normal jump handler.
-                self.ipc.events.put(ev)
-                break
+                # Defer jumps until the event scan ends. Previously the
+                # early break let _jump_request() swallow Esc/F11 events
+                # queued behind a seek, trapping embedded fullscreen.
+                deferred_jumps.append(ev)
+        for ev in deferred_jumps:
+            self.ipc.events.put(ev)
         return requested
 
     def _jump_request(self) -> float:

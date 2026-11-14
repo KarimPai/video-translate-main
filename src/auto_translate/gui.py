@@ -533,9 +533,8 @@ class VideoTranslateWindow(QMainWindow):
                     # The backend may clamp seeks near a VOD's end.
                     self._pending_seek_target = float(target)
                     self._pending_seek_until = time.monotonic() + 15.0
-                self.status.setText(
-                    f"MPV accepted seek to {self._format_time(target)}."
-                )
+                if not self._control_lost and not self._stopping:
+                    self.status.clear()
             else:
                 self._pending_seek_target = None
                 self.status.setText(
@@ -614,7 +613,6 @@ class VideoTranslateWindow(QMainWindow):
             f"{self._format_time(target)} / {self._format_time(self._duration_s)}"
         )
         self._write_console(f"GUI: seek requested to {self._format_time(target)}\n")
-        self.status.setText(f"Seeking to {self._format_time(target)}...")
 
     def _finish_seek(self):
         self._seeking = False

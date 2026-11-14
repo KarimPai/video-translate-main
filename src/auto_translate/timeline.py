@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import IngestConfig
+from .windows_subprocess import hidden_console_flags
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     try:
         raw = subprocess.run(
             cmd,
+            creationflags=hidden_console_flags(),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

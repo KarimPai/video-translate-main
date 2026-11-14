@@ -116,6 +116,7 @@ jobs:
           assert next_command()["value"] == window.seek_slider.value()
           window._on_player_event({"event": "seek_ack", "accepted": True, "target": 3401})
           assert window._pending_seek_target == 3401
+          assert not window.status.text()
 
           window.toggle_fullscreen()
           app.processEvents()

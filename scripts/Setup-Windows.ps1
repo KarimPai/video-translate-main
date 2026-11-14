@@ -124,64 +124,19 @@ try {
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
         $headers = @{ 'User-Agent' = 'HaasPLaMo-Setup'; 'Accept' = 'application/vnd.github+json' }
-        # llama.cpp's numbered bNNNNN releases are GitHub prereleases but include
-        # the official Windows CUDA builds. Only skip drafts; select BOTH files
-        # from one published release to avoid mismatched runtime binaries.
+        # Version-tag releases may not provide Windows assets. Find the newest with BOTH CUDA archives.
         $releases = @(Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=25' -Headers $headers)
         $build = $null
         $runtime = $null
-        $selectedReleaseTag = $null
         foreach ($release in $releases) {
             if ($release.draft) { continue }
-            $a = @($release.assets | Where-Object { $_.name -match '^llama-.*-bin-win-cuda-12\.4-x64\.zip
-        $downloadDir = Join-Path $env:TEMP ('haas-plamo-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
-        try {
-            $buildZip = Join-Path $downloadDir 'llama.zip'
-            $runtimeZip = Join-Path $downloadDir 'cudart.zip'
-            Fetch-Asset $build $buildZip
-            Fetch-Asset $runtime $runtimeZip
-            Expand-Archive -LiteralPath $buildZip -DestinationPath $llamaRoot -Force
-            Expand-Archive -LiteralPath $runtimeZip -DestinationPath $llamaRoot -Force
-        } finally { Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue }
-        $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File | Select-Object -First 1
-        if (-not $existingServer) { throw 'llama-server.exe missing after extracting official archives.' }
-    } else { Write-Host 'CUDA 12.4 llama-server.exe already downloaded.' }
-    $binDir = $existingServer.Directory.FullName
-    Set-Content -LiteralPath $pathFile -Value $binDir -Encoding ASCII
-    $env:Path = "$binDir;$env:Path"
-    & $existingServer.FullName --version
-    if ($LASTEXITCODE -ne 0) { throw 'llama-server.exe failed to launch. Update the NVIDIA driver or check CUDA runtime DLLs.' }
-
-    Step 'Checking Python environment'
-    Push-Location -LiteralPath $ProjectDir
-    try {
-        & uv run --no-sync python -c 'import numpy, fireredvad, auto_translate; print("Python dependency check OK")'
-        if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
-    } finally { Pop-Location }
-
-    Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host 'Haas downloaded; PLaMo 3 Translate 2B Q4_K_M (1.81 GB) downloads on first Start translate.bat run.'
-    Write-Host 'A CUDA-capable NVIDIA driver and working Vulkan0 device are required.'
-    exit 0
-} catch {
-    Write-Host "`nSETUP ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host 'Rerun Setup.bat after fixing this issue. Existing successful downloads are reused.'
-    exit 1
-}
- } | Select-Object -First 1)
+            $a = @($release.assets | Where-Object { $_.name -match '^llama-.*-bin-win-cuda-12\.4-x64\.zip$' } | Select-Object -First 1)
             $b = @($release.assets | Where-Object { $_.name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip' } | Select-Object -First 1)
-            if ($a.Count -and $b.Count) {
-                $build = $a[0]
-                $runtime = $b[0]
-                $selectedReleaseTag = $release.tag_name
-                break
-            }
+            if ($a.Count -and $b.Count) { $build = $a[0]; $runtime = $b[0]; break }
         }
         if (-not $build -or -not $runtime) {
-            throw 'No matching CUDA 12.4 llama.cpp Windows release with both archives was found in the newest 25 published releases. See https://github.com/ggml-org/llama.cpp/releases'
+            throw 'No matching CUDA 12.4 llama.cpp Windows release found. See https://github.com/ggml-org/llama.cpp/releases'
         }
-        Write-Host "Selected llama.cpp release $selectedReleaseTag (CUDA 12.4 binary and matching runtime)."
         $downloadDir = Join-Path $env:TEMP ('haas-plamo-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
         try {

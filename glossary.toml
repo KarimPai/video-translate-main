@@ -339,3 +339,27 @@
 "負け確" = "guaranteed loss"
 "GG" = "GG"
 "EZ" = "easy"
+
+# ASR-only homophone evidence. These never introduce speech not heard by
+# one of the recognizers. Scene repairs additionally require a GTA title,
+# aligned clause and a separate topic anchor.
+[[asr_rules.scene_pairs]]
+heard = "子宮"
+correct = "支給"
+anchors = ["装備", "備品", "制服", "配布", "支給品"]
+
+[[asr_rules.scene_pairs]]
+heard = "研究隊"
+correct = "救急隊"
+anchors = ["救急車", "搬送", "蘇生", "救助"]
+
+[[asr_rules.scene_pairs]]
+heard = "無銭"
+correct = "無線"
+anchors = ["通信", "周波数", "チャンネル", "連絡"]
+
+# Prevent one-sided isolated formal VTuber names from replacing unrelated
+# spoken audio. Short names and corroborated long names remain valid.
+[[asr_rules.name_guards]]
+full = 'ラプラス[・･]?ダークネス[。！？!?]*'
+mention = 'ラプラス|らぷらす|ラプ|らぷ'

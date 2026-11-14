@@ -10,12 +10,12 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QCursor, QFont, QTextCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-    QSlider, QTabWidget, QVBoxLayout, QWidget,
+    QSlider, QStyle, QStyleOptionSlider, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from auto_translate.gui_control import parse_event
@@ -46,6 +46,52 @@ QSlider::groove:horizontal { height: 5px; background: #384251; border-radius: 2p
 QSlider::sub-page:horizontal { background: #659be4; border-radius: 2px; }
 QSlider::handle:horizontal { width: 13px; margin: -5px 0; background: #c7d9f5; border-radius: 6px; }
 """
+
+
+class SeekSlider(QSlider):
+    """VOD timeline: clicking anywhere jumps, dragging the handle seeks on release.
+
+    QSlider's stock groove click only moves one page step and never emits
+    sliderReleased for the handle. That made ordinary seekbar clicks a no-op.
+    """
+    seekRequested = Signal(float)
+
+    def mousePressEvent(self, event):
+        if (self.isEnabled() and
+                event.button() == Qt.MouseButton.LeftButton):
+            option = QStyleOptionSlider()
+            self.initStyleOption(option)
+            handle = self.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider,
+                option, QStyle.SubControl.SC_SliderHandle, self,
+            )
+            if not handle.contains(event.position().toPoint()):
+                groove = self.style().subControlRect(
+                    QStyle.ComplexControl.CC_Slider,
+                    option, QStyle.SubControl.SC_SliderGroove, self,
+                )
+                travel = max(1, groove.width() - handle.width())
+                x = int(event.position().x() - groove.left() - handle.width() / 2)
+                target = QStyle.sliderValueFromPosition(
+                    self.minimum(), self.maximum(),
+                    max(0, min(travel, x)), travel, option.upsideDown,
+                )
+                self.setValue(target)
+                self.seekRequested.emit(float(target))
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        if (self.isEnabled() and not event.isAutoRepeat() and
+                event.key() in (
+                    Qt.Key.Key_Left, Qt.Key.Key_Right,
+                    Qt.Key.Key_Up, Qt.Key.Key_Down,
+                    Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+                    Qt.Key.Key_Home, Qt.Key.Key_End,
+                )):
+            self.seekRequested.emit(float(self.value()))
 
 
 class VideoTranslateWindow(QMainWindow):
@@ -163,11 +209,12 @@ class VideoTranslateWindow(QMainWindow):
         self.rewind_button.clicked.connect(lambda: self._send_player_command("seek_relative", -10))
         self.forward_button = QPushButton("+10s")
         self.forward_button.clicked.connect(lambda: self._send_player_command("seek_relative", 10))
-        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self.seek_slider = SeekSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 0)
         self.seek_slider.sliderPressed.connect(self._begin_seek)
         self.seek_slider.sliderReleased.connect(self._finish_seek)
         self.seek_slider.valueChanged.connect(self._seek_preview)
+        self.seek_slider.seekRequested.connect(self._request_seek)
         self.time_label = QLabel("--:-- / --:--")
         self.time_label.setMinimumWidth(112)
         self.fullscreen_button = QPushButton("Fullscreen")

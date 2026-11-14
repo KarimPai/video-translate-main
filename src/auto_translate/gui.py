@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QFont, QTextCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
     QSlider, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -109,6 +109,16 @@ class VideoTranslateWindow(QMainWindow):
             self.quality.addItem(f"{value}p", value)
         self.quality.setCurrentIndex(self.quality.findData(720))
         settings_row.addWidget(self.quality)
+        self.vsr_checkbox = QCheckBox("RTX VSR (480p → 1440p)")
+        self.vsr_checkbox.setChecked(False)
+        self.vsr_checkbox.setToolTip(
+            "Optional NVIDIA RTX Video Super Resolution. Requires an eligible "
+            "480p source, compatible MPV/D3D11, and RTX VSR enabled in "
+            "NVIDIA settings. 3× scaling is requested, not guaranteed."
+        )
+        settings_row.addWidget(self.vsr_checkbox)
+        self.quality.currentIndexChanged.connect(self._update_vsr_control)
+        self._update_vsr_control()
         settings_row.addStretch(1)
         self.start_button = QPushButton("Start Translation")
         self.start_button.setObjectName("start")
@@ -181,6 +191,20 @@ class VideoTranslateWindow(QMainWindow):
         footer.addWidget(self.stop_button)
         layout.addWidget(self.footer_panel)
 
+    def _update_vsr_control(self):
+        eligible = self.quality.currentData() == 480
+        self.vsr_checkbox.setEnabled(eligible)
+        if not eligible:
+            self.vsr_checkbox.setToolTip(
+                "Select 480p to enable optional NVIDIA RTX VSR (3× scaling)."
+            )
+        else:
+            self.vsr_checkbox.setToolTip(
+                "Request 480p → 1440p NVIDIA VSR. Requires compatible D3D11 "
+                "hardware decoding and RTX VSR enabled in NVIDIA settings. "
+                "The backend verifies the actual source and falls back safely."
+            )
+
     def paste_url(self):
         text = QApplication.clipboard().text().strip()
         if text:
@@ -222,6 +246,7 @@ class VideoTranslateWindow(QMainWindow):
             command, args = build_backend_command(
                 self.root, url, int(self.quality.currentData()), hwnd,
                 frozen=getattr(sys, "frozen", False),
+                rtx_vsr=bool(self.vsr_checkbox.isEnabled() and self.vsr_checkbox.isChecked()),
             )
             env = subprocess_environment(self.root)
             qenv = QProcessEnvironment()
@@ -251,6 +276,12 @@ class VideoTranslateWindow(QMainWindow):
         proc.setProgram(command)
         proc.setArguments(args)
         self._write_console("Starting translation backend...\n")
+        if "--rtx-vsr" in args:
+            self._write_console(
+                "RTX VSR requested: 480p source, 3x NVIDIA D3D11 scaling. "
+                "Actual activation requires MPV filter support and RTX VSR "
+                "enabled in NVIDIA settings.\n"
+            )
         # Keep the native video host visible while MPV attaches to its HWND.
         # The user can open Console during startup to inspect model logs.
         proc.start()

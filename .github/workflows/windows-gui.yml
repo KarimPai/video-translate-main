@@ -61,10 +61,23 @@ jobs:
           app.processEvents()
           assert window.isFullScreen()
           assert not window.tabs.tabBar().isVisible()
-          window.exit_fullscreen()
+          assert window.video_controls.isVisible(), "Fullscreen must retain playback bar"
+          assert window.seek_slider.isVisible(), "Fullscreen must retain VOD seekbar"
+          assert window.seek_slider.isEnabled()
+          assert window.fullscreen_button.isVisible(), "Fullscreen needs visible exit button"
+          assert window.fullscreen_button.text() == "Exit Fullscreen"
+          window.fullscreen_button.click()
           app.processEvents()
-          assert not window.isFullScreen()
+          assert not window.isFullScreen(), "Exit Fullscreen button must restore window"
           assert window.tabs.tabBar().isVisible()
+          assert window.video_controls.isVisible()
+          assert window.fullscreen_button.text() == "Fullscreen"
+          window.toggle_fullscreen()
+          app.processEvents()
+          assert window.isFullScreen()
+          window._on_player_event({"event": "exit_fullscreen"})
+          app.processEvents()
+          assert not window.isFullScreen(), "Esc forwarded from MPV must exit fullscreen"
           assert int(window.video_surface.winId()) == hwnd
           window._on_player_event({"event": "status", "live": True, "position": 30,
                                    "duration": None, "paused": False})

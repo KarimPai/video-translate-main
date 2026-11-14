@@ -33,7 +33,7 @@ jobs:
         run: |
           $env:PYTHONPATH = "src"
           $env:QT_QPA_PLATFORM = "offscreen"
-          python -c "from pathlib import Path; from PySide6.QtWidgets import QApplication; from auto_translate.gui import VideoTranslateWindow; app=QApplication([]); w=VideoTranslateWindow(Path.cwd()); w.show(); app.processEvents(); assert w.quality.currentData()==720; w._session_ready(); assert not w.setup_panel.isVisible(); w._session_finished('Stopped.'); assert w.setup_panel.isVisible(); w.close()"
+          python -c "from pathlib import Path; from PySide6.QtWidgets import QApplication; from auto_translate.gui import VideoTranslateWindow; app=QApplication([]); w=VideoTranslateWindow(Path.cwd()); w.show(); app.processEvents(); assert w.quality.currentData()==720; assert not w.vsr_checkbox.isEnabled(); assert not w.vsr_checkbox.isChecked(); w.quality.setCurrentIndex(w.quality.findData(480)); assert w.vsr_checkbox.isEnabled(); w.vsr_checkbox.setChecked(True); w.quality.setCurrentIndex(w.quality.findData(720)); assert not w.vsr_checkbox.isEnabled(); w.quality.setCurrentIndex(w.quality.findData(480)); assert w.vsr_checkbox.isChecked(); w._session_ready(); assert not w.setup_panel.isVisible(); w._session_finished('Stopped.'); assert w.setup_panel.isVisible(); w.close()"
       - name: Verify GUI seekbar and host fullscreen state
         shell: pwsh
         run: |

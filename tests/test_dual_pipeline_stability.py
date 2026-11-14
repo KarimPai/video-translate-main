@@ -175,19 +175,21 @@ class AsrComparisonTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from auto_translate.asr.diagnostics import append_comparison
+        from auto_translate.asr.diagnostics import append_comparison, flush_comparisons
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "asr-comparison.jsonl"
             append_comparison({
                 "haas": "行く", "whisper_turbo": "まだ行かない",
                 "chosen_by": "whisper_turbo", "selector_called": True,
             }, path=path)
+            self.assertTrue(flush_comparisons(3))
             payload = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(payload["haas"], "行く")
             self.assertEqual(payload["whisper_turbo"], "まだ行かない")
             self.assertEqual(payload["chosen_by"], "whisper_turbo")
             with patch("auto_translate.asr.diagnostics._MAX_FILE_BYTES", 1):
                 append_comparison({"haas": "次", "whisper_turbo": "次"}, path=path)
+                self.assertTrue(flush_comparisons(3))
             self.assertTrue((Path(td) / "asr-comparison.previous.jsonl").exists())
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["haas"], "次")
 

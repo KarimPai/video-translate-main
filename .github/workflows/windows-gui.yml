@@ -7,6 +7,7 @@ on:
     paths:
       - "src/auto_translate/gui.py"
       - "src/auto_translate/gui_runner.py"
+      - "src/auto_translate/gui_bootstrap.py"
       - "src/auto_translate/windows_subprocess.py"
       - "Start GUI.vbs"
       - "tests/test_gui_runner.py"
@@ -51,6 +52,19 @@ jobs:
           assert "GUI_PIPE_OK" in output and "ERROR_PIPE_OK" in output, output
           '@ | Set-Content -LiteralPath gui_pipe_smoke.py -Encoding utf8
           python gui_pipe_smoke.py
+      - name: Validate VBS launcher syntax and console-free Qt bootstrap
+        shell: pwsh
+        run: |
+          cscript.exe //nologo "Start GUI.vbs" --launcher-self-test
+          if ($LASTEXITCODE -ne 0) { throw "VBS launcher syntax check failed" }
+          $env:PYTHONPATH = "src"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:VIDEO_TRANSLATE_PROJECT_DIR = (Get-Location).Path
+          python -m venv --system-site-packages .venv
+          & ".venv/Scripts/pythonw.exe" -m auto_translate.gui_bootstrap --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "GUI bootstrap failed" }
+          $log = Get-Content "logs/gui-startup.log" -Raw
+          if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
       - name: Upload frontend artifact

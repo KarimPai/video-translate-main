@@ -2,6 +2,19 @@
 
 **Current branch:** `feature/haas-whisper-turbo-dual-asr-20261114`, based on the Japanese-only language-filter branch.
 
+## Windows GUI (recommended)
+
+**Double-click `Start GUI.vbs`** in the project folder to open the silent
+Windows app. It installs the PySide6 GUI dependency automatically if required.
+After the YouTube video loads, the URL controls hide; translations and logs
+remain visible under the **Console** tab.
+
+For a compiled frontend, use `dist\\VideoTranslate\\VideoTranslate.exe` from
+the **Windows GUI frontend build** workflow artifact (extract it inside the
+project folder first). `Setup.bat` is for first-time installation;
+`Start translate.bat` remains the optional CLI fallback. See [GUI_SETUP.md](GUI_SETUP.md).
+
+
 - Haas-ja-v1.0 (Vulkan) remains primary; Whisper Large-v3 Turbo (CTranslate2 `int8_float16` CUDA) replaces Parakeet and runs in a restartable subprocess.
 - Original 16 kHz Japanese speech goes to both ASRs. LFM2.5-JP selects A=Haas, B=Whisper Turbo, U=uncertain; PLaMo 3 Translate 2B generates English subtitles.
 - Whisper receives **no static Hololive name prompt** (even if an old `config.toml` says `whisper_name_hints = true`). One-sided isolated `ラプラス・ダークネス` claims are suppressed on strong dual-ASR disagreement; corroborated names are kept.

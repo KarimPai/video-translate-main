@@ -64,9 +64,15 @@ a native HWND.
 For **livestreams**, the seek slider and seek buttons are disabled to avoid
 breaking the delayed live subtitle alignment. Pause remains available.
 
-The GUI launches `pythonw.exe` and hides consoles from helper processes in GUI
-sessions only. Logs are still available under `logs\`, including `run.log`,
-`mpv.log`, and `asr-comparison.jsonl`.
+The GUI launches `pythonw.exe` and suppresses external console windows,
+including the embedded `mpv.exe`. In GUI mode, MPV uses `--no-terminal`
+and the Windows `CREATE_NO_WINDOW` flag. It still renders inside the Qt
+player and accepts IPC seeking/subtitle commands. The classic CLI is
+unchanged; logs remain in `logs/run.log`, `logs/mpv.log`, and other files.
+
+**No EXE download is needed for this particular console fix.** It changes
+the Python MPV backend. Update the existing Git branch, then reopen the
+already-installed `dist/VideoTranslate/VideoTranslate.exe`.
 
 ## Updating without downloading the entire GUI again
 

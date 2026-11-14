@@ -12,7 +12,7 @@ def normalize(text):
     return re.sub(r"(?<![0-9])[.,]|[.,](?![0-9])|[\s、。！？!?「」『』…]", "", value)
 
 
-def compare(a, b, terms):
+def compare(a, b, terms, scene_pairs=()):
     a, b = normalize(a), normalize(b)
     similarity = SequenceMatcher(None, a, b, autojunk=False).ratio()
     flags = []
@@ -25,7 +25,7 @@ def compare(a, b, terms):
     if any(tag == "replace" and a[i:j] in particles and b[k:l] in particles
            for tag, i, j, k, l in differences):
         flags.append("particle")
-    if any((x in a and y in b) or (y in a and x in b) for x, y, _ in _SCENE_PAIRS):
+    if any((x in a and y in b) or (y in a and x in b) for x, y, _ in scene_pairs):
         flags.append("confusable term")
     if any((normalize(t) in a) != (normalize(t) in b) for t, _ in terms):
         flags.append("glossary")
@@ -43,13 +43,7 @@ def selected(content, haas, secondary):
             else "selected original hypothesis"}
 
 
-# The spelling in the competing ASR must occupy the same clause and position.
-# Scene keywords alone cannot introduce a word neither recognizer heard.
-_SCENE_PAIRS = (
-    ("子宮", "支給", ("装備", "備品", "制服", "配布", "支給品")),
-    ("研究隊", "救急隊", ("救急車", "搬送", "蘇生", "救助")),
-    ("無銭", "無線", ("通信", "周波数", "チャンネル", "連絡")),
-)
+# Scene homophones are configurable via [asr_rules] in glossary.toml.
 _CLAUSE_END = re.compile(r"(?<=[。！？!?、])")
 
 
@@ -63,7 +57,7 @@ def clause_differences(haas, whisper):
             for op, i, j, k, l in matcher.get_opcodes() if op != "equal"][:4]
 
 
-def scene_repair(chosen, other, title, history):
+def scene_repair(chosen, other, title, history, scene_pairs=()):
     if chosen == other or not re.search(r"GTA|ＧＴＡ|ホロスサントス", title, re.I):
         return chosen, []
     clauses = _CLAUSE_END.split(chosen)
@@ -72,7 +66,7 @@ def scene_repair(chosen, other, title, history):
         return chosen, []
     evidence = []
     for i, (clause, peer) in enumerate(zip(clauses, peers)):
-        for heard, term, anchors in _SCENE_PAIRS:
+        for heard, term, anchors in scene_pairs:
             if clause.count(heard) != 1 or term in clause:
                 continue
             candidate = clause.replace(heard, term, 1)

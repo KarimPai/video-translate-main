@@ -93,6 +93,18 @@ jobs:
           output = bytes(proc.readAllStandardOutput()).decode("utf-8")
           assert proc.exitCode() == 0, (proc.exitCode(), output)
           assert "GUI_PIPE_OK" in output and "ERROR_PIPE_OK" in output, output
+
+          # Confirm a windowless Python backend can receive Qt seek commands.
+          receiver = QProcess()
+          receiver.start(str(pyw), [
+              "-u", "-c",
+              "import sys; line=sys.stdin.buffer.readline(); sys.stdout.buffer.write(line); sys.stdout.buffer.flush()"
+          ])
+          assert receiver.waitForStarted(15000), receiver.errorString()
+          expected = b'{"action":"seek","value":42}\n'
+          assert receiver.write(expected) == len(expected)
+          assert receiver.waitForFinished(15000), receiver.errorString()
+          assert bytes(receiver.readAllStandardOutput()) == expected
           '@ | Set-Content -LiteralPath gui_pipe_smoke.py -Encoding utf8
           python gui_pipe_smoke.py
       - name: Validate VBS launcher syntax and console-free Qt bootstrap

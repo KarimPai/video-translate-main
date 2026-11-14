@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import subprocess
+
+from .windows_subprocess import hidden_console_flags
 import tempfile
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
@@ -217,6 +219,7 @@ def download_vod_captions(
                 errors="replace",
                 timeout=90,
                 check=False,
+                creationflags=hidden_console_flags(),
             )
             candidates = sorted(Path(temp_dir).glob("*.vtt"))
             if result.returncode != 0 and not candidates:

@@ -249,6 +249,7 @@ class MpvConfig:
     port: int = 9137
     hwdec: str = "auto-safe"
     rtx_vsr: bool = False  # optional RTX 480p NVIDIA enhancement (Windows/D3D11)
+    window_id: int | None = None  # optional native Qt HWND for MPV embedding
     live_late_window_s: float = 7.0  # reject extremely stale spoken cues
     ytdlp_format: str = (
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"

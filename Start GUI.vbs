@@ -2,7 +2,8 @@
 ' Errors display a Windows dialog and are logged under logs\gui-startup.log.
 Option Explicit
 Dim shell, fso, root, pythonw, python, quote, env
-Dim checkCommand, installCommand, launchCommand, result, failure, detail
+Dim checkCommand, installCommand, launchCommand, result, failure, detail, smoke
+smoke = False
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
@@ -11,6 +12,7 @@ If WScript.Arguments.Count > 0 Then
         WScript.Echo "GUI VBS launcher syntax OK"
         WScript.Quit 0
     End If
+    If LCase(WScript.Arguments(0)) = "--smoke-test" Then smoke = True
 End If
 
 root = fso.GetParentFolderName(WScript.ScriptFullName)
@@ -71,6 +73,7 @@ End If
 
 ' Wait without a visible console; the GUI bootstrap reports startup exceptions.
 launchCommand = quote & pythonw & quote & " -m auto_translate.gui_bootstrap"
+If smoke Then launchCommand = launchCommand & " --smoke-test"
 On Error Resume Next
 Err.Clear
 result = shell.Run(launchCommand, 0, True)

@@ -27,6 +27,21 @@ or translation models. Installation may require internet access.
    transcripts, English translations, and backend logs.
 6. Choose **Stop Translation** to restore the setup controls; the URL is retained.
 
+## Playback controls
+
+The **Player** tab has a complete **VOD timeline** showing the current playback
+position and video duration. Drag the slider to seek, or use **-10s / +10s** to
+jump. Seeking goes to the backend's MPV scheduler, which synchronizes the audio
+reader and English subtitles (and reuses RAM-backed translations when possible).
+
+Select **Fullscreen** to expand the embedded MPV player across the screen.
+Use the same button before entering fullscreen, or press **F11**, **F**,
+or double-click the video; press **Esc** to return to the window. The fullscreen
+switch belongs to the Qt host, since MPV is embedded through a native HWND.
+
+For **livestreams**, the seek slider and seek buttons are disabled to avoid
+breaking the delayed live subtitle alignment. Pause remains available.
+
 The GUI launches `pythonw.exe` and hides consoles from helper processes in GUI
 sessions only. Logs are still available under `logs\`, including `run.log`,
 `mpv.log`, and `asr-comparison.jsonl`.

@@ -70,8 +70,13 @@ class VideoTranslateWindow(QMainWindow):
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
         self._build_ui()
-        QShortcut(QKeySequence("F11"), self).activated.connect(self.toggle_fullscreen)
-        QShortcut(QKeySequence("Escape"), self).activated.connect(self.exit_fullscreen)
+        # Application-level shortcuts also work when focus is on the seekbar
+        # or other Qt controls. Native MPV keys are forwarded through IPC.
+        for key, callback in (("F11", self.toggle_fullscreen),
+                              ("Escape", self.exit_fullscreen)):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(callback)
 
     def _build_ui(self):
         central = QWidget(self)
@@ -425,7 +430,12 @@ class VideoTranslateWindow(QMainWindow):
         self.setup_panel.hide()
         self.tabs.tabBar().hide()
         self.footer_panel.hide()
-        self.video_controls.hide()
+        # Leave playback controls visible and clickable in fullscreen.
+        # Hiding this bar previously removed both the VOD seekbar and the
+        # only mouse-accessible way to exit fullscreen.
+        self.video_controls.show()
+        self.fullscreen_button.setText("Exit Fullscreen")
+        self.fullscreen_button.setToolTip("Return to the window (Esc or F11)")
         self.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
         self.centralWidget().layout().setSpacing(0)
         self.player_tab.layout().setContentsMargins(0, 0, 0, 0)
@@ -446,11 +456,12 @@ class VideoTranslateWindow(QMainWindow):
         self.tabs.tabBar().show()
         self.footer_panel.show()
         self.video_controls.show()
+        self.fullscreen_button.setText("Fullscreen")
+        self.fullscreen_button.setToolTip("Fullscreen player (F11, F or double-click MPV; Esc exits)")
         self.centralWidget().layout().setContentsMargins(14, 12, 14, 12)
         self.centralWidget().layout().setSpacing(10)
         self.player_tab.layout().setContentsMargins(5, 5, 5, 5)
         self.tabs.setStyleSheet("")
-        self.fullscreen_button.setText("Fullscreen")
 
     def stop_translation(self):
         self.exit_fullscreen()

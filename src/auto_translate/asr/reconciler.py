@@ -4,6 +4,8 @@ import logging
 import shutil
 import socket
 import subprocess
+
+from ..windows_subprocess import hidden_console_flags
 import time
 import urllib.request
 from pathlib import Path
@@ -30,7 +32,8 @@ class Reconciler:
         Path("logs").mkdir(exist_ok=True)
         with Path("logs/reconciler.log").open("a", encoding="utf8") as output:
             self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                            stdout=output, stderr=subprocess.STDOUT)
+                                            stdout=output, stderr=subprocess.STDOUT,
+                                            creationflags=hidden_console_flags())
         try:
             until = time.monotonic() + 300
             while self.process.poll() is None and time.monotonic() < until:

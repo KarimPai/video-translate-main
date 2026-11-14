@@ -66,20 +66,31 @@ The GUI launches `pythonw.exe` and hides consoles from helper processes in GUI
 sessions only. Logs are still available under `logs\`, including `run.log`,
 `mpv.log`, and `asr-comparison.jsonl`.
 
-## Obtain the compiled EXE
+## Updating without downloading the entire GUI again
 
-The repository's **Windows GUI frontend build** GitHub Actions workflow builds
-and uploads the `VideoTranslate-Windows-GUI` artifact.
+For an existing EXE installation, the **Windows GUI frontend build** GitHub
+Actions workflow now uploads two choices:
 
-1. Open the latest successful Windows GUI frontend build run in GitHub Actions.
-2. Download the `VideoTranslate-Windows-GUI` artifact.
-3. Extract the artifact into the project as
-   `C:\Games\video-translate-dual-asr\dist\VideoTranslate\`.
-4. Open `VideoTranslate.exe`.
+- **`VideoTranslate-EXE-Only`**: small incremental download containing only
+  `VideoTranslate.exe`. Use for ordinary GUI code changes; keep the existing
+  `_internal` folder untouched.
+- **`VideoTranslate-Windows-GUI`**: complete package containing EXE and Qt
+  runtime. Use for first installation, missing/corrupt `_internal`, or when
+  the workflow announces an incompatible runtime/dependency update.
+
+Update the existing Git branch first so the Python backend source is current.
+Close VideoTranslate, download and extract the EXE-only artifact into
+`C:\Games\video-translate-dual-asr\dist\VideoTranslate\`, and overwrite only
+`VideoTranslate.exe`. Start the EXE normally. **Do not delete `_internal`.**
+
+The GUI build pins the Python, PySide6 and PyInstaller versions to match the
+existing November 14 full-runtime release. EXE-only patches require an
+already-working compatible full install, not just the EXE file. If it fails,
+download the full artifact instead.
 
 The EXE is **not a standalone model bundle**. It uses the original project's
 `.venv`, installed MPV/speech.cpp/llama.cpp, shared model caches, and
-`config.toml`. Do not move only the EXE outside the project.
+`config.toml`.
 
 ## Troubleshooting
 

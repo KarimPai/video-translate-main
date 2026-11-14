@@ -391,6 +391,7 @@ class MpvOutput:
         self._source_finished = False
         self._job = None
         self._closed = False
+        self._gui_ready_emitted = False
         self._video_retries = 0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
@@ -431,6 +432,7 @@ class MpvOutput:
             f"--input-ipc-server={ipc_path}",
 
             "--force-window=yes",
+            *([f"--wid={cfg.window_id}"] if cfg.window_id else []),
             "--title=auto-translate",
             "--keep-open=yes",
             "--idle=yes",
@@ -912,6 +914,12 @@ class MpvOutput:
 
             self._uses_original_timeline = loaded and not self.ingest.source.live
             self._direct_video_loaded = True
+            # The GUI must not hide URL controls until MPV has actually
+            # loaded a video and the running pipeline owns its output.
+            if self.cfg.window_id and not self._gui_ready_emitted:
+                from ..gui_runner import READY_MARKER
+                print(READY_MARKER, flush=True)
+                self._gui_ready_emitted = True
             if self._session_start > 0 and not self.ingest.source.live:
                 self.ipc.command("seek", self._session_start, "absolute+exact")
                 deadline = time.monotonic() + 10.0

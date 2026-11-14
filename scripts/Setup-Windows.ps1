@@ -159,8 +159,11 @@ try {
     Step 'Checking Python environment'
     Push-Location -LiteralPath $ProjectDir
     try {
-        & uv run --no-sync python -c 'import numpy, fireredvad, auto_translate; print("Python dependency check OK")'
+        # Avoid embedded quotes in Python -c: Windows PowerShell can strip them
+        # when forwarding native command arguments, causing a SyntaxError.
+        & uv run --no-sync python -c 'import numpy; import fireredvad; import auto_translate'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
+        Write-Host 'Python dependency check OK' -ForegroundColor Green
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green

@@ -17,15 +17,41 @@ function Require-Command([string]$Command, [string]$Hint) {
         throw "Cannot find $Command. $Hint. Restart Windows Terminal and rerun Setup.bat."
     }
 }
+function Test-MpvAvailable {
+    # shinchiro.mpv normally installs here without adding mpv.exe to PATH.
+    # The application also checks this same location when launching MPV.
+    if (Get-Command mpv -ErrorAction SilentlyContinue) { return $true }
+    return (Test-Path -LiteralPath 'C:\Program Files\MPV Player\mpv.exe' -PathType Leaf)
+}
 function Install-Winget([string]$Command, [string]$PackageId) {
     Refresh-Path
-    if (Get-Command $Command -ErrorAction SilentlyContinue) {
+    if ($Command -eq 'mpv') {
+        if (Test-MpvAvailable) {
+            Write-Host 'Already installed: MPV (PATH or C:\Program Files\MPV Player\mpv.exe)'
+            return
+        }
+    } elseif (Get-Command $Command -ErrorAction SilentlyContinue) {
         Write-Host "Already installed: $Command"
         return
     }
     Step "Installing $PackageId using WinGet"
     & winget install --source winget --exact --id $PackageId --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) { throw "WinGet installation failed: $PackageId (exit $LASTEXITCODE)" }
+    $wingetExitCode = $LASTEXITCODE
+    # WinGet returns APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE for an
+    # already-installed, up-to-date package. It is not an installation failure.
+    if ($wingetExitCode -eq -1978335189) {
+        Write-Host "WinGet reports $PackageId is already installed and up to date."
+    } elseif ($wingetExitCode -ne 0) {
+        throw "WinGet installation failed: $PackageId (exit $wingetExitCode)"
+    }
+    Refresh-Path
+    if ($Command -eq 'mpv') {
+        if (Test-MpvAvailable) {
+            Write-Host 'MPV executable found (PATH or C:\Program Files\MPV Player\mpv.exe).'
+            return
+        }
+        throw 'MPV is reported installed but mpv.exe was not found. Check C:\Program Files\MPV Player\mpv.exe or add its folder to PATH, then rerun Setup.bat.'
+    }
     Require-Command $Command "WinGet should have installed $PackageId"
 }
 function Fetch-Asset([object]$Asset, [string]$Destination) {

@@ -135,7 +135,24 @@ jobs:
           if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
-      - name: Upload frontend artifact
+      - name: Check incremental GUI patch
+        shell: pwsh
+        run: |
+          $exe = Get-Item "dist/VideoTranslate/VideoTranslate.exe"
+          $full = (Get-ChildItem "dist/VideoTranslate" -File -Recurse | Measure-Object Length -Sum).Sum
+          if (-not (Test-Path "dist/VideoTranslate/_internal")) { throw "Missing packaged Qt runtime" }
+          if ($exe.Length -lt 10000) { throw "Packaged frontend EXE unexpectedly small" }
+          Write-Host "Incremental GUI EXE size: $([math]::Round($exe.Length / 1MB, 2)) MiB"
+          Write-Host "Complete GUI runtime size: $([math]::Round($full / 1MB, 2)) MiB"
+      - name: Upload small EXE-only update
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoTranslate-EXE-Only
+          path: dist/VideoTranslate/VideoTranslate.exe
+          compression-level: 9
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload full GUI (new installs)
         uses: actions/upload-artifact@v4
         with:
           name: VideoTranslate-Windows-GUI

@@ -12,14 +12,12 @@ _LAPLUS_JA = ("ラプラス", "らぷらす")
 
 
 def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None:
-    """Bias Whisper only for a known HoloGTA scene, with few proper nouns.
+    """Legacy compatibility hook. Never seed Whisper with unspoken names.
 
-    No free-form instruction is fed to Whisper; these are Japanese spellings.
-    Its no-speech and language filters remain unchanged.
+    Existing configs can still contain whisper_name_hints; the dual-ASR
+    pipeline no longer calls this hook or supplies an initial name prompt.
     """
-    if not enabled or not _HOLOGTA.search(video_title):
-        return None
-    return "はあちゃま。ラプラス・ダークネス。さくらみこ。"
+    return None
 
 
 def canonicalize_english_names(japanese: str, english: str, video_title: str = "") -> str:
@@ -32,5 +30,11 @@ def canonicalize_english_names(japanese: str, english: str, video_title: str = "
             "Haachama", english, flags=re.I,
         )
     if any(name in japanese for name in _LAPLUS_JA):
-        english = re.sub(r"\bLaplace\b", "Laplus", english, flags=re.I)
+        # Prefer the short spoken name in English; do not expand it to a
+        # full stage name, and do not introduce names absent from the JP.
+        english = re.sub(
+            r"(?<![A-Za-z])(?:La\s*\+|La\s+plus|Laplus|Laplace)"
+            r"(?:[\s·・-]+Darkness+)?(?![A-Za-z])",
+            "Laplus", english, flags=re.I,
+        )
     return english

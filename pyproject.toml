@@ -18,6 +18,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Lightweight frontend; CLI installs do not require Qt.
+gui = ["PySide6>=6.8,<7"]
 # Install only the heavy runtime packages for features you actually enable.
 separation = [
     "audio-separator>=0.48.0",

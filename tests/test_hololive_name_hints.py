@@ -18,6 +18,10 @@ class HololiveNameHintsTests(unittest.TestCase):
             self.assertIn(en, [target for _, target in glossary.find(jp)])
         self.assertIn(("ラプラス", "Laplus"),
                       _current_glossary_matches("ラプラスが来た", "ホロGTA", glossary))
+        self.assertIn(("ラプラス・ダークネス", "Laplus"),
+                      _current_glossary_matches("ラプラス・ダークネス。", "ホロGTA", glossary))
+        self.assertIn(("ラプラスダークネス", "Laplus"),
+                      _current_glossary_matches("ラプラスダークネス。", "ホロGTA", glossary))
 
     def test_title_gated_name_correction_preserves_caption_conflict(self):
         ja = "確かはやちゃまは捕まってない"
@@ -31,8 +35,9 @@ class HololiveNameHintsTests(unittest.TestCase):
         )
 
     def test_whisper_prompt_not_global(self):
-        self.assertEqual(whisper_name_prompt("ホロGTA 3日目"),
-                         "はあちゃま。ラプラス・ダークネス。さくらみこ。")
+        # No static name seed may bias Whisper for unrelated dialogue.
+        self.assertIsNone(whisper_name_prompt("ホロGTA 3日目"))
+        self.assertIsNone(whisper_name_prompt("ホロGTA 3日目", enabled=True))
         self.assertIsNone(whisper_name_prompt("普通のニュース放送"))
         self.assertIsNone(whisper_name_prompt("ホロGTA", enabled=False))
 
@@ -49,8 +54,25 @@ class HololiveNameHintsTests(unittest.TestCase):
             canonicalize_english_names("ラプラスラプラス", "Laplace, Laplace!", "ホロGTA"),
             "Laplus, Laplus!",
         )
+        for original in (
+            "La+ Darknesss.", "La+ Darkness.", "Laplus Darknesss.",
+            "Laplace Darknesss.", "La Plus Darknesss.", "Laplus.",
+        ):
+            with self.subTest(original=original):
+                self.assertEqual(
+                    canonicalize_english_names("ラプラス・ダークネス。", original, "ホロGTA"),
+                    "Laplus.",
+                )
+        self.assertEqual(
+            canonicalize_english_names("ラプラスが来た", "La+ Darknesss arrived!", "ホロGTA"),
+            "Laplus arrived!",
+        )
         self.assertEqual(
             canonicalize_english_names("ラプラスだ", "Laplace.", "math lecture"), "Laplace.",
+        )
+        self.assertEqual(
+            canonicalize_english_names("今日は晴れ", "La+ Darknesss.", "ホロGTA"),
+            "La+ Darknesss.",
         )
         self.assertEqual(
             canonicalize_english_names("今日は晴れ", "Laplace.", "ホロGTA"), "Laplace.",

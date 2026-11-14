@@ -34,26 +34,17 @@ def transcript_problem(text: str, duration_s: float) -> str | None:
 
 
 def disagreement_unresolved(primary, secondary, selected, similarity, flags, selected_by):
-    if selected_by == "uncertain":
-        return similarity < 0.45 and bool(flags)
-    # A deterministic fallback is not independent evidence for a transcript.
-    if selected_by in ("haas", "whisper_turbo_rescue", "haas_secondary_unusable"):
-        return False
-    return False
+    # Deterministic fallbacks cannot turn weak agreement into an abstention.
+    return selected_by == "uncertain" and similarity < 0.45 and bool(flags)
 
 
-_FULL_LAPLUS_ONLY = re.compile(r"ラプラス[・･]?ダークネス[。！？!?]*")
-_LAPLUS_MENTION = re.compile(r"ラプラス|らぷらす|ラプ|らぷ")
+def uncorroborated_full_name(chosen: str, other: str, name_guards=()) -> bool:
+    """Flag a standalone long name only if the peer has no short-name evidence.
 
-
-def uncorroborated_laplus_full_name(chosen: str, other: str) -> bool:
-    """Flag a standalone formal name that the independent ASR did not hear.
-
-    Never reject sentences merely mentioning Laplus, or one model saying the
-    short name while the other says the long name. This is not audio proof.
+    Patterns are configured in glossary.toml; ordinary name mentions are safe.
     """
-    return (bool(_FULL_LAPLUS_ONLY.fullmatch(chosen.strip()))
-            and not _LAPLUS_MENTION.search(other))
+    return any(full.fullmatch(chosen.strip()) and not mention.search(other)
+               for full, mention in name_guards)
 
 
 def suspicious_phonetics(text):

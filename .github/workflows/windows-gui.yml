@@ -61,8 +61,8 @@ jobs:
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:VIDEO_TRANSLATE_PROJECT_DIR = (Get-Location).Path
           python -m venv --system-site-packages .venv
-          $gui = Start-Process -FilePath ".venv/Scripts/pythonw.exe" -ArgumentList @("-m", "auto_translate.gui_bootstrap", "--smoke-test") -PassThru -Wait
-          if ($gui.ExitCode -ne 0) { throw "GUI bootstrap failed (exit $($gui.ExitCode))" }
+          cscript.exe //nologo "Start GUI.vbs" --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "VBS to pythonw GUI bootstrap failed" }
           $log = Get-Content "logs/gui-startup.log" -Raw
           if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE

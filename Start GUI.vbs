@@ -1,19 +1,25 @@
-' Primary Windows GUI launcher. No command prompt is shown.
-' First-time Qt installation is handled here, without changing ASR models.
+' Primary silent Windows launcher for Video Translate.
+' Errors display a Windows dialog and are logged under logs\gui-startup.log.
 Option Explicit
-
 Dim shell, fso, root, pythonw, python, quote, env
-Dim command, result, failure, uvCommand
-
+Dim checkCommand, installCommand, launchCommand, result, failure, detail
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
+
+If WScript.Arguments.Count > 0 Then
+    If LCase(WScript.Arguments(0)) = "--launcher-self-test" Then
+        WScript.Echo "GUI VBS launcher syntax OK"
+        WScript.Quit 0
+    End If
+End If
+
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 pythonw = fso.BuildPath(root, ".venv\Scripts\pythonw.exe")
 python = fso.BuildPath(root, ".venv\Scripts\python.exe")
 quote = Chr(34)
 
 If Not fso.FileExists(pythonw) Or Not fso.FileExists(python) Then
-    MsgBox "Python environment missing. Double-click Setup.bat once, then open Start GUI.vbs.", vbExclamation, "Video Translate"
+    MsgBox "Python environment missing in " & root & vbCrLf & "Run Setup.bat first.", vbExclamation, "Video Translate"
     WScript.Quit 1
 End If
 
@@ -21,39 +27,63 @@ shell.CurrentDirectory = root
 Set env = shell.Environment("PROCESS")
 env("PYTHONPATH") = fso.BuildPath(root, "src")
 env("PYTHONUTF8") = "1"
+env("VIDEO_TRANSLATE_PROJECT_DIR") = root
 
-' Verify the actual Qt widgets dependency (not just the namespace import).
-command = quote & pythonw & quote & " -c " & quote & "from PySide6.QtWidgets import QApplication" & quote
+' Qt import preflight: a working interpreter alone does not imply PySide6 is installed.
+checkCommand = quote & pythonw & quote & " -c " & quote & "from PySide6.QtWidgets import QApplication" & quote
 On Error Resume Next
 Err.Clear
-result = shell.Run(command, 0, True)
+result = shell.Run(checkCommand, 0, True)
 failure = Err.Number
+detail = Err.Description
 Err.Clear
 On Error GoTo 0
 If failure <> 0 Then
-    MsgBox "Unable to check the GUI Python environment. Re-run Setup.bat.", vbExclamation, "Video Translate"
+    MsgBox "Unable to check the GUI runtime: " & detail, vbCritical, "Video Translate"
     WScript.Quit 1
 End If
 
 If result <> 0 Then
-    MsgBox "First launch: PySide6 GUI components need installation. Click OK to install them using uv. No translation models will be reinstalled.", vbInformation, "Video Translate"
-    uvCommand = "uv pip install --python " & quote & python & quote & " " & quote & "PySide6>=6.8,<7" & quote
+    result = MsgBox("PySide6 is not installed or cannot import." & vbCrLf & _
+       "Install GUI dependencies now? Existing CUDA and model packages will not be reinstalled.", _
+       vbYesNo + vbQuestion, "Video Translate")
+    If result <> vbYes Then WScript.Quit 1
+    installCommand = "uv pip install --python " & quote & python & quote & _
+                     " " & quote & "PySide6>=6.8,<7" & quote
     On Error Resume Next
     Err.Clear
-    result = shell.Run(uvCommand, 0, True)
+    result = shell.Run(installCommand, 0, True)
     failure = Err.Number
+    detail = Err.Description
     Err.Clear
     On Error GoTo 0
     If failure <> 0 Or result <> 0 Then
-        MsgBox "Could not install PySide6. Check that uv is installed and internet is available. Then run Start GUI.vbs again.", vbCritical, "Video Translate"
+        MsgBox "PySide6 installation failed. Check uv and internet access." & vbCrLf & _
+               detail, vbCritical, "Video Translate"
         WScript.Quit 1
     End If
-    result = shell.Run(command, 0, True)
+    result = shell.Run(checkCommand, 0, True)
     If result <> 0 Then
-        MsgBox "Qt installation did not complete correctly. Check the Python environment.", vbCritical, "Video Translate"
+        MsgBox "PySide6 still cannot import. Check the Python environment.", vbCritical, "Video Translate"
         WScript.Quit 1
     End If
 End If
 
-' The backend uses pythonw.exe; translation logs remain in the GUI Console tab.
-shell.Run quote & pythonw & quote & " -m auto_translate.gui", 0, False
+' Wait without a visible console; the GUI bootstrap reports startup exceptions.
+launchCommand = quote & pythonw & quote & " -m auto_translate.gui_bootstrap"
+On Error Resume Next
+Err.Clear
+result = shell.Run(launchCommand, 0, True)
+failure = Err.Number
+detail = Err.Description
+Err.Clear
+On Error GoTo 0
+If failure <> 0 Then
+    MsgBox "Failed to launch the GUI: " & detail, vbCritical, "Video Translate"
+    WScript.Quit 1
+End If
+If result <> 0 Then
+    MsgBox "The application exited with code " & result & "." & vbCrLf & _
+           "See " & fso.BuildPath(root, "logs\gui-startup.log"), vbExclamation, "Video Translate"
+End If
+WScript.Quit result

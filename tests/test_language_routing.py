@@ -1,30 +1,28 @@
-"""Japanese-only Whisper Turbo does not attempt English language routing."""
+"""Japanese-only Whisper Turbo: legacy routing fields are ignored."""
+import tempfile
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+
 from auto_translate.asr.dual import DualASR
 from auto_translate.asr.whisper_turbo import WhisperTurboASR
 from auto_translate.config import Config, load_config
-from auto_translate.glossary import Glossary
-from auto_translate.types import Utterance
-import numpy as np
 
 
 class JapaneseOnlyRoutingTests(unittest.TestCase):
-    def test_default_disables_language_routing(self):
-        self.assertFalse(Config().dual_asr.language_routing)
+    def test_legacy_routing_option_is_absent(self):
+        self.assertFalse(hasattr(Config().dual_asr, "language_routing"))
+        self.assertFalse(hasattr(DualASR, "preflight_language"))
 
     def test_whisper_turbo_is_transcription_only(self):
         self.assertFalse(hasattr(WhisperTurboASR, "transcribe_with_language"))
 
-    def test_no_preflight_even_if_legacy_flag_enabled(self):
-        cfg = Config()
-        cfg.dual_asr.enabled = False
-        dual = DualASR(cfg, Mock(), Glossary({}), False)
-        dual.worker = Mock()
-        cfg.dual_asr.language_routing = True
-        utt = Utterance(2, 3, np.ones(16000, dtype=np.float32), vad_confidence=.95)
-        self.assertIsNone(dual.preflight_language(utt))
-        dual.worker.transcribe_with_language.assert_not_called()
+    def test_old_configs_still_load_without_reintroducing_language_routing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.toml"
+            path.write_text("[dual_asr]\nlanguage_routing = true\n", encoding="utf-8")
+            cfg = load_config(path)
+        self.assertTrue(cfg.dual_asr.enabled)
+        self.assertFalse(hasattr(cfg.dual_asr, "language_routing"))
 
 
 if __name__ == "__main__":

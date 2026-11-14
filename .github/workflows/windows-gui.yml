@@ -7,6 +7,10 @@ on:
     paths:
       - "src/auto_translate/gui.py"
       - "src/auto_translate/gui_runner.py"
+      - "src/auto_translate/gui_control.py"
+      - "src/auto_translate/output/mpv.py"
+      - "src/auto_translate/output/mpv_gui_input.conf"
+      - "tests/test_gui_player_controls.py"
       - "src/auto_translate/gui_bootstrap.py"
       - "src/auto_translate/windows_subprocess.py"
       - "Start GUI.vbs"
@@ -30,6 +34,45 @@ jobs:
           $env:PYTHONPATH = "src"
           $env:QT_QPA_PLATFORM = "offscreen"
           python -c "from pathlib import Path; from PySide6.QtWidgets import QApplication; from auto_translate.gui import VideoTranslateWindow; app=QApplication([]); w=VideoTranslateWindow(Path.cwd()); w.show(); app.processEvents(); assert w.quality.currentData()==720; w._session_ready(); assert not w.setup_panel.isVisible(); w._session_finished('Stopped.'); assert w.setup_panel.isVisible(); w.close()"
+      - name: Verify GUI seekbar and host fullscreen state
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          @'
+          from pathlib import Path
+          from PySide6.QtWidgets import QApplication
+          from auto_translate.gui import VideoTranslateWindow
+
+          app = QApplication([])
+          window = VideoTranslateWindow(Path.cwd())
+          window.show()
+          app.processEvents()
+          hwnd = int(window.video_surface.winId())
+          window._session_ready()
+          window._on_player_event({"event": "ready", "live": False, "duration": 5400.0})
+          window._on_player_event({"event": "status", "live": False, "duration": 5400.0,
+                                   "position": 1280.2, "paused": False})
+          assert window.seek_slider.isEnabled()
+          assert window.seek_slider.maximum() == 5400
+          assert window.seek_slider.value() == 1280
+          assert window.time_label.text() == "21:20 / 1:30:00"
+          window.toggle_fullscreen()
+          app.processEvents()
+          assert window.isFullScreen()
+          assert not window.tabs.tabBar().isVisible()
+          window.exit_fullscreen()
+          app.processEvents()
+          assert not window.isFullScreen()
+          assert window.tabs.tabBar().isVisible()
+          assert int(window.video_surface.winId()) == hwnd
+          window._on_player_event({"event": "status", "live": True, "position": 30,
+                                   "duration": None, "paused": False})
+          assert not window.seek_slider.isEnabled()
+          assert "LIVE" in window.time_label.text()
+          window.close()
+          '@ | Set-Content -LiteralPath gui_controls_smoke.py -Encoding utf8
+          python gui_controls_smoke.py
       - name: Verify pythonw remains windowless with working Qt output pipes
         shell: pwsh
         run: |

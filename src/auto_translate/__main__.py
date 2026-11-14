@@ -283,13 +283,22 @@ def main() -> None:
                 def gui_command_reader():
                     # QProcess stdin is an owned pipe. Blocking readline happens
                     # only on this daemon thread, never in the ASR/MPV scheduler.
-                    while not stop.is_set():
-                        line = sys.stdin.buffer.readline()
-                        if not line:
-                            return
-                        command = parse_command(line.decode("utf-8", errors="replace"))
-                        if command is not None:
+                    log.info("GUI player command channel ready")
+                    try:
+                        while not stop.is_set():
+                            line = sys.stdin.buffer.readline()
+                            if not line:
+                                log.warning("GUI player command pipe closed")
+                                return
+                            command = parse_command(
+                                line.decode("utf-8", errors="replace")
+                            )
+                            if command is None:
+                                log.warning("GUI player rejected malformed command")
+                                continue
                             player.queue_gui_command(*command)
+                    except (OSError, ValueError) as exc:
+                        log.error("GUI player command pipe failed: %s", exc)
 
                 threading.Thread(
                     target=gui_command_reader, name="gui-command-reader", daemon=True,

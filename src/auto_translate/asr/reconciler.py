@@ -26,7 +26,7 @@ class Reconciler:
                    "-c", "2048", "-b", "256", "-ub", "128", "-np", "1", "-ngl", str(gpu_layers), "--jinja",
                    "--reasoning", "off", "--no-mmproj"]
         if not gpu_layers:
-            command.extend(["--device", "none", "--no-kv-offload"])
+            command.extend(["--device", "none", "--no-kv-offload", "-t", "2", "-tb", "2"])
         Path("logs").mkdir(exist_ok=True)
         with Path("logs/reconciler.log").open("a", encoding="utf8") as output:
             self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL,

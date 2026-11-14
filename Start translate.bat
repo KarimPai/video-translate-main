@@ -88,7 +88,7 @@ echo Active models, VRAM readings and fallback reasons: logs\run.log
 echo Whisper Turbo model downloads automatically on first launch ^(~1.6 GB^).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"
+uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --shared-gpu-playback --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%EXIT_CODE%"=="0" (

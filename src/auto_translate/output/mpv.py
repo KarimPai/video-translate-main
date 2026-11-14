@@ -440,8 +440,8 @@ class MpvOutput:
             # YouTube video stream.
             "--cache=yes",
             "--demuxer-readahead-secs=120",
-            "--demuxer-max-bytes=1GiB",
-            "--demuxer-max-back-bytes=1GiB",
+            "--demuxer-max-bytes=1GiB" if ingest.source.live else "--demuxer-max-bytes=128MiB",
+            "--demuxer-max-back-bytes=1GiB" if ingest.source.live else "--demuxer-max-back-bytes=32MiB",
             # Start near the HLS live edge, matching FFmpeg's normal -3.
             # Index 0 started MPV at an older segment than the ASR audio.
             *(

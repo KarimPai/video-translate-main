@@ -249,6 +249,7 @@ class RecoveryTests(unittest.TestCase):
         cfg.dual_asr.enabled = False
         dual = DualASR(cfg, Mock(used=3., cfg=cfg.gpu_budget), Glossary({}), True)
         dual.worker = Mock()
+        original_worker = dual.worker
         started, resume = threading.Event(), threading.Event()
 
         def stalled(audio, timeout, cancel_event=None):
@@ -263,7 +264,7 @@ class RecoveryTests(unittest.TestCase):
             self.assertTrue(started.is_set())
             self.assertTrue(dual.pending.is_alive())
             self.assertIsNone(dual.select_segment(utt, "行く", "", lambda: False, lambda: 0))
-            dual.worker.transcribe.assert_called_once()
+            original_worker.transcribe.assert_called_once()
         finally:
             resume.set()
             dual.pending.join(2)
@@ -306,7 +307,7 @@ class RecoveryTests(unittest.TestCase):
         worker._lock = threading.Lock()
         worker.last_stop = "unknown"
         process, connection = Mock(), Mock()
-        process.is_alive.side_effect = [True, True, False]
+        process.is_alive.side_effect = [True, True, True, False]
         cancelled = threading.Event()
         def poll(_):
             cancelled.set()

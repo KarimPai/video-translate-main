@@ -43,7 +43,7 @@ def _writer_loop():
         if item[0] is None:
             item[1].set()
             _QUEUE.task_done()
-            break
+            continue
         batch = [item]
         end_after_batch = None
         # Bound per-write size and flush shortly after the first record.
@@ -64,7 +64,7 @@ def _writer_loop():
         if end_after_batch is not None:
             end_after_batch[1].set()
             _QUEUE.task_done()
-            break
+            continue
 
 
 def _start_writer():
@@ -102,8 +102,7 @@ def flush_comparisons(timeout=3.0):
         _QUEUE.put((None, done), timeout=timeout)
     except queue.Full:
         return False
-    # The writer exits on the sentinel: only call when no further writes are
-    # expected (tests and shutdown). New sessions start a new Python process.
+    # Flush markers do not terminate the writer; later cues can still log.
     return done.wait(timeout)
 
 

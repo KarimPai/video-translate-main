@@ -13,7 +13,7 @@ from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import clause_differences, compare, scene_repair
 from .quality_guard import (transcript_problem, disagreement_unresolved,
-                            suspicious_phonetics, uncorroborated_laplus_full_name)
+                            suspicious_phonetics, uncorroborated_full_name)
 
 log = logging.getLogger(__name__)
 SECONDARY = "whisper-large-v3-turbo"
@@ -84,9 +84,10 @@ class DualASR:
             self.worker = None
             if self._decoding_worker is worker:
                 self._decoding_worker = None
+        # Defer before close so no new worker races the old CUDA teardown.
+        self._defer_restart(reason)
         # Close outside lock: multiprocessing join can take seconds on Windows.
         worker.close()
-        self._defer_restart(reason)
 
     def _maybe_restart(self):
         """Restart asynchronously: model startup must never block live playback."""
@@ -375,7 +376,7 @@ class DualASR:
             result = secondary
             selected_by = "whisper_turbo_completion"
         terms = self.glossary.find(primary + " " + secondary)
-        score, flags = compare(primary, secondary, terms)
+        score, flags = compare(primary, secondary, terms, self.glossary.scene_pairs)
         if score < 1 and primary_ok and selected_by != "whisper_turbo_completion":
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
             timeout = min(end - time.monotonic(), self.cfg.reconciler.live_timeout_s
@@ -410,16 +411,16 @@ class DualASR:
             return ""
         if score < 1 and primary_ok and result in (primary, secondary):
             other = secondary if result == primary else primary
-            result, edits = scene_repair(result, other, title, context)
+            result, edits = scene_repair(result, other, title, context, self.glossary.scene_pairs)
         # A title/glossary match is not acoustic evidence. In a strong dual-ASR
         # disagreement, reject an isolated *full* stage name that only one
         # recognizer heard. Keep valid short-name calls and supported names.
         other = secondary if result == primary else primary
         if (primary_ok and score < 0.45
-                and uncorroborated_laplus_full_name(result, other)):
+                and uncorroborated_full_name(result, other, self.glossary.name_guards)):
             flags.append("uncorroborated_full_name")
             fallback_reason = "isolated_full_name_only_one_asr"
-            log.warning("Suppressing one-sided formal Laplus name at %.2fs", utt.start_s)
+            log.warning("Suppressing one-sided uncorroborated full name at %.2fs", utt.start_s)
             record("", "abstain_uncorroborated_full_name", score, flags, selector_called)
             return ""
         if suspicious_phonetics(result) and not terms and score < .45:

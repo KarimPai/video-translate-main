@@ -1,45 +1,57 @@
-# Video Translate Windows GUI (first iteration)
+# Video Translate Windows GUI
 
-A PySide6 frontend for the existing Haas + Whisper Large-v3 Turbo + LFM +
-PLaMo backend. No model, playback timing, HLS or translation logic is replaced.
+The PySide6 frontend controls the existing Haas + Whisper Large-v3 Turbo +
+LFM + PLaMo backend. Model inference, MPV subtitles and translation timing
+are unchanged.
 
-## Run it
+## What to double-click
 
-1. Keep the project in its existing folder, e.g. `C:\Games\video-translate-dual-asr`.
-2. Run `Setup.bat` once if the backend is not installed.
-3. For a **CMD-free launch**, double-click **Start GUI.vbs**, or use the compiled `VideoTranslate.exe`. If PySide6 is not installed yet, run **Start GUI.bat** once to install it; the batch launcher may briefly open a console while checking dependencies.
-4. Paste a direct YouTube watch/live link, choose 360/480/720/1080p, then Start.
-5. The Console tab captures real-time JP and EN subtitle lines and backend logs.
-6. When **MPV successfully loads the video**, the URL/quality controls disappear.
-   Stop or playback failure restores them, with the previous URL retained.
+- **Start GUI.vbs** in the project root is the primary silent launcher.
+- **VideoTranslate.exe** in `dist\VideoTranslate\` is an optional packaged
+  launcher; only present after downloading the GitHub Actions build artifact.
+- **Setup.bat** is for initial runtime installation or repairing dependencies.
+- **Start translate.bat** remains an optional command-line fallback for
+  troubleshooting and comparisons.
 
-The Player tab hosts the same MPV application via `--wid=<Qt HWND>` on Windows.
-MPV's native OSC, translation timing, VOD seeking, stream buffering and playback
-hardware decode remain owned by the existing backend. Window resizing uses Qt.
+`Start GUI.vbs` automatically installs PySide6 using `uv` on first launch if
+needed. It preserves existing Python dependencies and does not redownload ASR
+or translation models. Installation may require internet access.
 
-## Build the GUI executable
+## GUI operation
 
-Double-click **Build GUI EXE.bat** (Windows only).
+1. Open `C:\Games\video-translate-dual-asr\Start GUI.vbs`.
+2. Paste a YouTube live or VOD URL, select 360p, 480p, 720p (default), or 1080p.
+3. Choose **Start Translation**.
+4. Once MPV confirms the video is loaded, the URL and quality controls hide.
+5. Use the **Player** tab for embedded MPV and the **Console** tab for Japanese
+   transcripts, English translations, and backend logs.
+6. Choose **Stop Translation** to restore the setup controls; the URL is retained.
 
-The resulting launcher is `dist\VideoTranslate\VideoTranslate.exe`.
-It is **not** a fully portable/self-contained translation engine: run it from
-the original repository folder under `dist`. The existing
-`.venv\Scripts\python.exe`, setup-installed mpv/speech.cpp/llama-server,
-CUDA libraries, model cache and `config.toml` are still required. This
-deliberately prevents duplicating GBs of models or interfering with CUDA
-multiprocessing and model-update workflows.
+The GUI launches `pythonw.exe` and hides consoles from helper processes in GUI
+sessions only. Logs are still available under `logs\`, including `run.log`,
+`mpv.log`, and `asr-comparison.jsonl`.
 
-The GUI starts the backend through `pythonw.exe` without a console window;\nASR/FFmpeg/yt-dlp/LFM helper processes use `CREATE_NO_WINDOW` only for GUI\nsessions. The **Console** tab still captures Japanese/English output and errors.\n\nThe classic **Start translate.bat** continues to work unchanged.
+## Obtain the compiled EXE
 
-## Diagnostics and limitations
+The repository's **Windows GUI frontend build** GitHub Actions workflow builds
+and uploads the `VideoTranslate-Windows-GUI` artifact.
 
-- Session output is visible in Console and saved in `logs\run.log`. The player
-  still writes to `logs\mpv.log` and the ASR comparison log.
-- During model initialization, the URL box remains visible (disabled), and the\n  embedded MPV video host remains the default visible tab.
-  It hides only after the MPV `file-loaded` signal reaches the GUI.
-- If embedded MPV doesn't display video, inspect `logs\mpv.log`. Native
-  `--wid` rendering is Windows-specific and needs local testing on the GPU.
-- Stop first requests backend termination, then force-kills it after 4 seconds
-  if it is stuck; the existing Windows Job Object should terminate descendants.
-- This first iteration uses MPV's own on-screen controller instead of
-  replicating timeline/seek logic inside Qt.
+1. Open the latest successful Windows GUI frontend build run in GitHub Actions.
+2. Download the `VideoTranslate-Windows-GUI` artifact.
+3. Extract the artifact into the project as
+   `C:\Games\video-translate-dual-asr\dist\VideoTranslate\`.
+4. Open `VideoTranslate.exe`.
+
+The EXE is **not a standalone model bundle**. It uses the original project's
+`.venv`, installed MPV/speech.cpp/llama.cpp, shared model caches, and
+`config.toml`. Do not move only the EXE outside the project.
+
+## Troubleshooting
+
+- If the launcher reports a missing Python environment, run `Setup.bat`.
+- If Qt installation fails, ensure `uv` is installed and internet is available,
+  then open `Start GUI.vbs` again.
+- If the player remains blank, inspect `logs\mpv.log` and `logs\run.log`.
+- Embedded MPV and RTX 3070 GPU translation still require testing on the
+  actual Windows machine. CI verifies GUI startup and EXE packaging, not
+  local video rendering.

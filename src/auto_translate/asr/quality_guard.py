@@ -42,7 +42,7 @@ def disagreement_unresolved(primary, secondary, selected, similarity, flags, sel
     return False
 
 
-_FULL_LAPLUS_ONLY = re.compile(r"ラプラス[・･]?ダークネス[。！？!?]*\\Z")
+_FULL_LAPLUS_ONLY = re.compile(r"ラプラス[・･]?ダークネス[。！？!?]*")
 _LAPLUS_MENTION = re.compile(r"ラプラス|らぷらす|ラプ|らぷ")
 
 

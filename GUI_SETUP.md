@@ -49,6 +49,12 @@ The EXE is **not a standalone model bundle**. It uses the original project's
 ## Troubleshooting
 
 - If the launcher reports a missing Python environment, run `Setup.bat`.
+- If double-clicking `Start GUI.vbs` opens no window, inspect
+  `logs\\gui-startup.log`. The launcher now shows errors from
+  `auto_translate.gui_bootstrap` in a Windows dialog.
+- To diagnose without the silent launcher, open CMD in the project folder and run:
+  `set PYTHONPATH=%CD%\\src && .venv\\Scripts\\python.exe -m auto_translate.gui_bootstrap`.
+  Any startup traceback also goes to `logs\\gui-startup.log`.
 - If Qt installation fails, ensure `uv` is installed and internet is available,
   then open `Start GUI.vbs` again.
 - If the player remains blank, inspect `logs\mpv.log` and `logs\run.log`.

@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QCursor, QFont, QTextCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -142,7 +142,27 @@ class VideoTranslateWindow(QMainWindow):
                               ("Escape", self.exit_fullscreen)):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.setAutoRepeat(False)
             shortcut.activated.connect(callback)
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, widget, event):
+        kind = event.type()
+        if (kind in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+                and self._ready and not self._stopping
+                and isinstance(widget, QWidget) and widget.window() is self
+                and self.tabs.currentWidget() is self.player_tab
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier
+                and event.key() in (Qt.Key.Key_F, Qt.Key.Key_Space)):
+            # Consume the release too: a focused QPushButton activates on Space.
+            event.accept()
+            if kind == QEvent.Type.KeyPress and not event.isAutoRepeat():
+                if event.key() == Qt.Key.Key_F:
+                    self.toggle_fullscreen()
+                else:
+                    self._send_player_command("pause")
+            return True
+        return super().eventFilter(widget, event)
 
     def _build_ui(self):
         central = QWidget(self)
@@ -215,6 +235,7 @@ class VideoTranslateWindow(QMainWindow):
         playback_row.setContentsMargins(3, 3, 3, 3)
         playback_row.setSpacing(8)
         self.pause_button = QPushButton("Pause")
+        self.pause_button.setToolTip("Play / pause (Space)")
         self.pause_button.clicked.connect(lambda: self._send_player_command("pause"))
         self.rewind_button = QPushButton("-10s")
         self.rewind_button.clicked.connect(lambda: self._send_player_command("seek_relative", -10))
@@ -656,7 +677,7 @@ class VideoTranslateWindow(QMainWindow):
         # only mouse-accessible way to exit fullscreen.
         self.video_controls.show()
         self.fullscreen_button.setText("Exit Fullscreen")
-        self.fullscreen_button.setToolTip("Exit fullscreen (Esc or F11). Move mouse to reveal controls.")
+        self.fullscreen_button.setToolTip("Exit fullscreen (F, F11 or Esc). Move mouse to reveal controls.")
         self.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
         self.centralWidget().layout().setSpacing(0)
         self.player_tab.layout().setContentsMargins(0, 0, 0, 0)

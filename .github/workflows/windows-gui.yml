@@ -118,7 +118,8 @@ jobs:
           assert window._pending_seek_target == 3401
           assert not window.status.text()
 
-          window.toggle_fullscreen()
+          window.fullscreen_button.setFocus()
+          QTest.keyClick(window.fullscreen_button, Qt.Key.Key_F)
           app.processEvents()
           assert window.isFullScreen()
           assert not window.tabs.tabBar().isVisible()
@@ -128,6 +129,23 @@ jobs:
           assert window.fullscreen_button.isVisible(), "Fullscreen needs visible exit button"
           assert window.fullscreen_button.text() == "Exit Fullscreen"
           assert window._fullscreen_controls_timer.isActive()
+
+          # Space must never activate a focused Exit Fullscreen button.
+          from PySide6.QtCore import QEvent
+          from PySide6.QtGui import QKeyEvent
+          for control in (window.fullscreen_button, window.seek_slider, window.pause_button):
+              control.setFocus()
+              QTest.keyClick(control, Qt.Key.Key_Space)
+              assert next_command()["action"] == "pause"
+              assert window.isFullScreen()
+          for key in (Qt.Key.Key_F, Qt.Key.Key_Space):
+              app.sendEvent(window.fullscreen_button, QKeyEvent(
+                  QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True, 1))
+          assert window.isFullScreen()
+          QTest.keyClick(window.fullscreen_button, Qt.Key.Key_F)
+          assert not window.isFullScreen()
+          QTest.keyClick(window.seek_slider, Qt.Key.Key_F)
+          assert window.isFullScreen()
 
           # No pointer movement: controls hide after the inactivity timeout.
           # Direct tick keeps this test deterministic and fast.

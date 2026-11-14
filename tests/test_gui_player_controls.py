@@ -99,6 +99,15 @@ class GuiPlayerProtocolTests(unittest.TestCase):
         self.assertEqual(emit.call_args_list[0].args, ("toggle_fullscreen",))
         self.assertEqual(emit.call_args_list[1].args, ("exit_fullscreen",))
 
+    def test_esc_is_not_lost_when_seek_event_was_already_queued(self):
+        player = mock_player()
+        player.ipc.events.put({"event": "client-message", "args": ["auto-translate-jump", "10"]})
+        player.ipc.events.put({"event": "client-message", "args": [EXIT_FULLSCREEN_MESSAGE]})
+        with patch("auto_translate.output.mpv.emit_event") as emit:
+            self.assertFalse(player._replay_requested())
+        emit.assert_called_once_with("exit_fullscreen")
+        self.assertEqual(player._jump_request(), 10.0)
+
     def test_time_status_uses_source_timeline(self):
         player = mock_player(live=False, duration=7200.0)
         with patch("auto_translate.output.mpv.emit_event") as emit:

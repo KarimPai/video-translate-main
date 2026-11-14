@@ -147,6 +147,38 @@ jobs:
           assert bytes(receiver.readAllStandardOutput()) == expected
           '@ | Set-Content -LiteralPath gui_pipe_smoke.py -Encoding utf8
           python gui_pipe_smoke.py
+      - name: Confirm Windows helper processes create no console
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          @'
+          import os
+          import subprocess
+          import sys
+
+          from auto_translate.windows_subprocess import hidden_console_flags
+
+          os.environ["VIDEO_TRANSLATE_GUI"] = "1"
+          flags = hidden_console_flags()
+          assert flags == subprocess.CREATE_NO_WINDOW, flags
+          probe = subprocess.run(
+              [sys.executable, "-c",
+               "import ctypes; print(int(ctypes.windll.kernel32.GetConsoleWindow()))"],
+              stdin=subprocess.DEVNULL,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              creationflags=flags,
+              text=True,
+              timeout=15,
+              check=True,
+          )
+          assert probe.stdout.strip() == "0", (
+              "Console window unexpectedly created for a GUI child", probe.stdout, probe.stderr
+          )
+          os.environ.pop("VIDEO_TRANSLATE_GUI")
+          assert hidden_console_flags() == 0
+          '@ | Set-Content -LiteralPath no_console_smoke.py -Encoding utf8
+          python no_console_smoke.py
       - name: Validate VBS launcher syntax and console-free Qt bootstrap
         shell: pwsh
         run: |

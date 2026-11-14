@@ -13,12 +13,20 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo Installing/verifying GUI requirements (first launch downloads PySide6)...
-uv sync --extra gui
-if errorlevel 1 (
-    echo ERROR: GUI environment setup failed. Run Setup.bat, then retry.
+if not exist ".venv\Scripts\python.exe" (
+    echo ERROR: Backend environment missing. Run Setup.bat first.
     pause
     exit /b 1
+)
+".venv\Scripts\python.exe" -c "import PySide6" >nul 2>nul
+if errorlevel 1 (
+    echo Installing only the PySide6 GUI package, preserving current backend dependencies...
+    uv pip install --python ".venv\Scripts\python.exe" "PySide6>=6.8,<7"
+    if errorlevel 1 (
+        echo ERROR: GUI dependency install failed.
+        pause
+        exit /b 1
+    )
 )
 set "PYTHONPATH=%CD%\src"
 ".venv\Scripts\python.exe" -m auto_translate.gui

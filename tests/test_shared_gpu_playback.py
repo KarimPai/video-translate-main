@@ -29,6 +29,7 @@ class SharedGpuPlaybackTests(unittest.TestCase):
                     main()
                 self.assertEqual((cfg.asr.haas_device, cfg.reconciler.gpu_layers,
                                   cfg.ingest.vod_max_audio_lead_s),
-                                 ("cpu", 0, 30) if enabled else original)
+                                 ("Vulkan0", 99, 30) if enabled else original)
+                self.assertFalse(cfg.asr.haas_decode_on_cpu)
                 self.assertTrue(cfg.dual_asr.enabled)
                 self.assertEqual(cfg.dual_asr.secondary_device, "cuda")

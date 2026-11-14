@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--shared-gpu-playback", action="store_true",
-                        help="run Haas and the selector on CPU to reduce GPU contention during playback")
+                        help="limit VOD inference read-ahead during dual-ASR playback")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
     parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
@@ -82,11 +82,9 @@ def main() -> None:
 
     log = logging.getLogger("auto_translate")
     if args.shared_gpu_playback and cfg.dual_asr.enabled:
-        cfg.asr.haas_device = "cpu"
-        cfg.asr.haas_decode_on_cpu = True
-        cfg.reconciler.gpu_layers = 0
         cfg.ingest.vod_max_audio_lead_s = min(cfg.ingest.vod_max_audio_lead_s, 30.0)
-        log.info("Shared GPU playback: Haas and selector on CPU; VOD audio lead at most 30s")
+        log.info("Shared GPU playback: VOD audio lead capped at %.1fs",
+                 cfg.ingest.vod_max_audio_lead_s)
     source = resolve_source(
         args.source,
         args.mode,

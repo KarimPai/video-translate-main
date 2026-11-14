@@ -47,8 +47,13 @@ actual 480p source; fallback to lower-quality video may produce less than 1440p.
 ## Playback controls
 
 The **Player** tab has a complete **VOD timeline** showing the current playback
-position and video duration. Drag the slider to seek, or use **-10s / +10s** to
-jump. Seeking goes to the backend's MPV scheduler, which synchronizes the audio
+position and video duration. Click anywhere on the timeline for an instant
+jump, drag the slider handle and release to seek, or use **-10s / +10s** to
+jump. Keyboard arrow, Page Up/Down, Home and End actions on the focused
+slider also seek. The Console tab logs `GUI: seek requested` when a command
+is sent, `GUI player command queued` when received, and `GUI seek command`
+when MPV starts processing it; the Player status reports the acknowledgement.
+Seeking goes to the backend's MPV scheduler, which synchronizes the audio
 reader and English subtitles (and reuses RAM-backed translations when possible).
 
 Select **Fullscreen** to expand the embedded MPV player across the screen.

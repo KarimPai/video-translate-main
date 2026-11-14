@@ -42,3 +42,11 @@ drop_probability = 0.80
 max_japanese_probability = 0.12
 min_top_margin = 0.45
 
+
+[translate]
+# Accuracy-first OverlaySubs-style context. Use legacy to restore previous behavior.
+context_profile = "compact" # compact, legacy
+context_lines = 3
+memory_lines = 0
+# Only split long multi-sentence Japanese at reliable written punctuation.
+sentence_context = true

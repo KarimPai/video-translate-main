@@ -216,9 +216,11 @@ class TranslateConfig:
     max_tokens: int = 192  # prevent truncation of longer, complete JP utterances
     timeout_s: float = 30.0  # more time for full translation, not a delay target
     load_timeout_s: float = 300.0
-    context_lines: int = 4  # shorter trusted dialogue history; avoid EN error carryover
-    # Only Japanese scene history and verified glossary terms belong in memory.
-    memory_lines: int = 8  # bounded scene context; no speculative EN term hints
+    context_lines: int = 3  # OverlaySubs-style bounded dialogue exchange
+    # Prefer reliable recent bilingual pairs to speculative long-term scene memory.
+    memory_lines: int = 0
+    context_profile: str = "compact"  # compact (accuracy-first) or legacy
+    sentence_context: bool = True  # translate clearly separated completed sentences sequentially
     glossary: str = "glossary.toml"
     remove_fillers: bool = True
     collapse_repetitions: bool = True

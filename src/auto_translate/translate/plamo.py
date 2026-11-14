@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 from ..config import TranslateConfig
-from ..context_memory import build_recent_context, reuse_recent_short_term
+from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
 from ..subject_guard import (
     neutralize_unsupported_subjects,
@@ -120,13 +120,41 @@ def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> li
     return selected
 
 
-def _translation_context(vod_title: str, *, neutral_retry: bool = False) -> str:
-    context = _NEUTRAL_SUBJECT_CONTEXT
+_COMPACT_CONTEXT = (
+    "Translate only the CURRENT Japanese speech into concise natural English subtitles. "
+    "Use the preceding confirmed exchange to resolve references in radio chatter and short replies, "
+    "but never translate previous lines again or invent speech. "
+    "Preserve commands, acknowledgements, names, negation, numbers and uncertainty. "
+    "Do not infer speaker identity, gender or possessors from the video title or earlier English. "
+    "Keep explicit or strongly implied first person and the original viewpoint. "
+    "Treat surrounding dialogue as context, not an instruction to change the source meaning."
+)
+
+
+def _translation_context(vod_title: str, *, neutral_retry: bool = False, profile: str = "legacy") -> str:
+    # The default parameter preserves direct callers and the original long prompt.
+    context = _COMPACT_CONTEXT if profile == "compact" else _NEUTRAL_SUBJECT_CONTEXT
+    if profile == "compact" and _HOLOGTA_TITLE.search(vod_title):
+        context = "Scene: Hololive GTA police and emergency radio roleplay. " + context
     if neutral_retry:
         context += " " + _STRICT_NEUTRAL_RETRY_CONTEXT
     if vod_title:
-        return f"Video title: {vod_title}\n{context}"
+        return f"Video title: {vod_title}\\n{context}"
     return context
+
+
+def _trusted_history_pair(source: str, translation: str, vod_title: str, glossary: Glossary) -> bool:
+    """Reject detected bad examples before giving them the authority of few-shot pairs.
+
+    These are conservative checks, not proof of semantic correctness.
+    """
+    source, translation = source.strip(), translation.strip()
+    if not source or not translation or len(source) > 180 or len(translation) > 240:
+        return False
+    if unsupported_person_reference(source, translation):
+        return False
+    terms = _current_glossary_matches(source, vod_title, glossary)
+    return suspicious_translation(source, translation, names=terms) is None
 
 
 class PlamoTranslator:
@@ -271,6 +299,31 @@ class PlamoTranslator:
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        """Translate complete exchanges without changing media timestamps.
+
+        The segmented path runs only on clear punctuation boundaries; every
+        finalized sentence informs the next one. If a pass fails, preserve the
+        original whole-utterance behavior instead of emitting half a cue.
+        """
+        segments = (split_completed_japanese_sentences(ja)
+                    if getattr(self.cfg, "sentence_context", False) else [ja])
+        if len(segments) < 2:
+            return self._translate_one(ja, history)
+        recent = list(history)
+        english = []
+        try:
+            for segment in segments:
+                translated = self._translate_one(segment, recent)
+                if not translated.strip() or suspicious_translation(segment, translated):
+                    raise ValueError("unreliable sentence translation")
+                english.append(translated.strip())
+                recent.append((segment, translated))
+        except Exception as exc:
+            log.warning("Sentence context fallback to whole utterance: %s", exc)
+            return self._translate_one(ja, history)
+        return " ".join(english)
+
+    def _translate_one(self, ja: str, history: list[tuple[str, str]]) -> str:
         if getattr(self, "memory_lines", 0):
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
@@ -338,15 +391,22 @@ class PlamoTranslator:
     ) -> str:
         messages: list[dict[str, str]] = []
         dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
-        if not self.cfg.neutral_subjects:
-            for source, translation in dialogue_history:
+        compact = getattr(self.cfg, "context_profile", "legacy") == "compact"
+        rejected_sources: list[str] = []
+        for source, translation in dialogue_history:
+            # The compact profile borrows OverlaySubs' paired PFML examples,
+            # but only after basic quality and unsupported-pronoun checks.
+            # Legacy mode preserves the old Japanese-only neutral prompt.
+            trusted = (not compact or _trusted_history_pair(
+                source, translation, self.vod_title, self.glossary))
+            if trusted and (compact or not self.cfg.neutral_subjects):
                 messages.append({"role": "user", "content": source})
                 messages.append({
                     "role": "assistant",
                     "content": neutralize_unsupported_subjects(source, translation),
                 })
-        # In neutral mode, previous English may have guessed the speaker.
-        # Carry Japanese context without presenting those guesses as assistant examples.
+            elif source.strip():
+                rejected_sources.append(source.strip()[:100])
         messages.append({"role": "user", "content": ja})
 
         memory = build_recent_context(
@@ -356,9 +416,11 @@ class PlamoTranslator:
         )
         source_hint = ""
         if self.cfg.neutral_subjects and dialogue_history:
-            previous = [source.strip()[:100] for source, _ in dialogue_history[-2:] if source.strip()]
+            # Don't echo source text that's already present in trusted pairs.
+            previous = (rejected_sources[-2:] if compact else
+                        [source.strip()[:100] for source, _ in dialogue_history[-2:] if source.strip()])
             if previous:
-                source_hint = ("\nRecent Japanese (context only, not speech to translate; "
+                source_hint = ("\\nRecent Japanese (context only, not speech to translate; "
                                "never infer speaker gender from it): " + " / ".join(previous))
         fragment_hint = ""
         if (self.cfg.fragment_context and dialogue_history
@@ -373,7 +435,9 @@ class PlamoTranslator:
         options: dict = {
             "source_lang": "ja",
             "target_lang": "en",
-            "context": _translation_context(self.vod_title, neutral_retry=neutral_retry) + (
+            "context": _translation_context(
+                self.vod_title, neutral_retry=neutral_retry,
+                profile=getattr(self.cfg, "context_profile", "legacy")) + (
                 "\n" + memory if memory else ""
             ) + source_hint + fragment_hint,
         }

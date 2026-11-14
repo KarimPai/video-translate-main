@@ -163,6 +163,45 @@ def reuse_recent_short_term(
     return None
 
 
+def split_completed_japanese_sentences(text: str, *, min_chars: int = 8, max_parts: int = 3) -> list[str]:
+    """Split only at explicit terminal punctuation, never infer a speaker turn.
+
+    Keep short reactions attached to their following clause. Avoid splitting
+    inside quoted dialogue and require substantial text on both sides.
+    Output keeps the original words and punctuation unchanged.
+    """
+    source = text.strip()
+    if not source:
+        return []
+    boundaries = []
+    beginning = 0
+    closers = '」』”’\'"'
+    terminals = "。！？"
+    for i, char in enumerate(source):
+        if char not in terminals:
+            continue
+        following = source[i + 1:i + 2]
+        if following and (following in closers or following in terminals):
+            continue
+        current = source[beginning:i + 1].strip()
+        remainder = source[i + 1:].strip()
+        if len(current) < min_chars or len(remainder) < min_chars:
+            continue
+        boundaries.append(i + 1)
+        beginning = i + 1
+        if len(boundaries) >= max_parts:
+            return [source]  # do not generate excessive translation requests
+    if not boundaries:
+        return [source]
+    result = []
+    start = 0
+    for boundary in boundaries:
+        result.append(source[start:boundary].strip())
+        start = boundary
+    result.append(source[start:].strip())
+    return result
+
+
 def build_recent_context(
     history: list[tuple[str, str]],
     glossary,

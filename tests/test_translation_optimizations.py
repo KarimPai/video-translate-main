@@ -176,8 +176,10 @@ class QualityOptimizationsTests(unittest.TestCase):
         body = json.loads(req.data.decode("utf-8"))
         self.assertIn({"source":"副署長","target":"Deputy Police Chief"},
                       body["chat_template_kwargs"]["glossary"])
-        self.assertEqual(body["messages"], [{"role": "user", "content": "副署長"}])
-        self.assertNotIn("I crashed", body["chat_template_kwargs"]["context"])
+        self.assertEqual(body["messages"][-1], {"role": "user", "content": "副署長"})
+        self.assertIn({"role": "assistant", "content": "No"}, body["messages"])
+        self.assertIn({"role": "assistant", "content": "Huh"}, body["messages"])
+        self.assertNotIn("I crashed", json.dumps(body, ensure_ascii=False))
         self.assertIn("Recent Japanese", body["chat_template_kwargs"]["context"])
         self.assertIn("Video title", body["chat_template_kwargs"]["context"])
         self.assertNotIn("署長", [x["source"] for x in body["chat_template_kwargs"]["glossary"]

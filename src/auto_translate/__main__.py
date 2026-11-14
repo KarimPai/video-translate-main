@@ -35,6 +35,8 @@ def main() -> None:
                         help="YouTube maximum playback height; lower-quality fallback")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV hardware decode mode")
+    parser.add_argument("--mpv-wid", type=int, metavar="HWND",
+                        help="embed MPV into the supplied Windows native widget handle")
     parser.add_argument("--rtx-vsr", action="store_true",
                         help="request NVIDIA RTX VSR for <=480p source video; enable High in NVIDIA App")
     parser.add_argument("--diagnostics", action="store_true",
@@ -79,6 +81,10 @@ def main() -> None:
         cfg.mpv.hwdec = args.hwdec
     if args.rtx_vsr:
         cfg.mpv.rtx_vsr = True
+    if args.mpv_wid is not None:
+        if sys.platform != "win32" or args.mpv_wid <= 0:
+            parser.error("--mpv-wid requires a positive Windows HWND")
+        cfg.mpv.window_id = args.mpv_wid
 
     log = logging.getLogger("auto_translate")
     if args.shared_gpu_playback and cfg.dual_asr.enabled:

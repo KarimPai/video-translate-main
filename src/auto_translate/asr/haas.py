@@ -5,6 +5,8 @@ import queue
 import threading
 import shutil
 import subprocess
+
+from ..windows_subprocess import hidden_console_flags
 import time
 
 import numpy as np
@@ -44,6 +46,7 @@ class HaasASR:
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=None, text=True, encoding="utf-8", bufsize=1,
+                creationflags=hidden_console_flags(),
             )
         except OSError as exc:
             raise RuntimeError(f"Could not start speech.cpp worker: {exc}") from exc

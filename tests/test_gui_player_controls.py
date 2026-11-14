@@ -74,6 +74,37 @@ class GuiPlayerProtocolTests(unittest.TestCase):
         self.assertTrue(player._handle_gui_commands())
         self.assertEqual(called, [190.0])
 
+    def test_seek_while_rebuffering_is_retried_when_mpv_clock_returns(self):
+        player = mock_player()
+        player._now = None
+        called = []
+        player._jump = lambda delta: called.append(delta) or True
+        player.queue_gui_command("seek", 340.0)
+        with patch("auto_translate.output.mpv.emit_event") as emit:
+            self.assertFalse(player._handle_gui_commands())
+            emit.assert_not_called()
+            self.assertEqual(player._gui_commands.qsize(), 1)
+            player._now = 150.0
+            self.assertTrue(player._handle_gui_commands())
+            emit.assert_called_once_with("seek_ack", accepted=True, target=340.0)
+        self.assertEqual(called, [190.0])
+
+    def test_cached_seek_reports_success_without_audio_restart(self):
+        player = mock_player()
+        player._jump = lambda delta: False  # cached seek path
+        player.queue_gui_command("seek", 260.0)
+        with patch("auto_translate.output.mpv.emit_event") as emit:
+            self.assertFalse(player._handle_gui_commands())
+        emit.assert_called_once_with("seek_ack", accepted=True, target=260.0)
+
+    def test_seek_is_clamped_to_end_of_vod_for_ack(self):
+        player = mock_player(duration=600.0)
+        player._jump = lambda delta: True
+        player.queue_gui_command("seek", 599.0)
+        with patch("auto_translate.output.mpv.emit_event") as emit:
+            self.assertTrue(player._handle_gui_commands())
+        emit.assert_called_once_with("seek_ack", accepted=True, target=595.0)
+
     def test_relative_seek_cache_path_continues_scheduler(self):
         player = mock_player()
         called = []

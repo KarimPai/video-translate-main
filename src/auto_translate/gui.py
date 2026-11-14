@@ -415,6 +415,18 @@ class VideoTranslateWindow(QMainWindow):
         if action == "exit_fullscreen":
             self.exit_fullscreen()
             return
+        if action == "seek_ack":
+            target = event.get("target")
+            if event.get("accepted"):
+                self.status.setText(
+                    f"MPV accepted seek to {self._format_time(target)}."
+                )
+            else:
+                self._pending_seek_target = None
+                self.status.setText(
+                    "Seek could not be completed; check the Console tab."
+                )
+            return
         if action not in ("ready", "status"):
             return
         self._live = bool(event.get("live", self._live))
@@ -446,14 +458,21 @@ class VideoTranslateWindow(QMainWindow):
                             f"{self._format_time(position)} / {self._format_time(self._duration_s)}"
                         )
 
-    def _send_player_command(self, action: str, value: float | None = None):
+    def _send_player_command(self, action: str, value: float | None = None) -> bool:
         if (not self._ready or self.process is None or
                 self.process.state() != QProcess.ProcessState.Running):
-            return
+            self.status.setText("Player command unavailable: translation backend is not ready.")
+            return False
         message = {"action": action}
         if value is not None:
             message["value"] = float(value)
-        self.process.write((json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8"))
+        written = self.process.write(
+            (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        )
+        if written < 0:
+            self.status.setText("Could not send command to translation backend; check Console.")
+            return False
+        return True
 
     def _begin_seek(self):
         self._seeking = True
@@ -466,16 +485,30 @@ class VideoTranslateWindow(QMainWindow):
                 f"{self._format_time(value)} / {self._format_time(self._duration_s)}"
             )
 
+    def _request_seek(self, value: float):
+        """Submit a completed timeline action; never seek live streams."""
+        if self._fullscreen:
+            self.video_controls.show()
+            self._fullscreen_activity_at = time.monotonic()
+        if self._live or self._duration_s is None or not self._ready:
+            self.status.setText("Seeking unavailable for live or uninitialized playback.")
+            return
+        target = min(max(float(value), 0.0), self._duration_s)
+        if not self._send_player_command("seek", target):
+            return
+        self._pending_seek_target = target
+        self._pending_seek_until = time.monotonic() + 15.0
+        self.time_label.setText(
+            f"{self._format_time(target)} / {self._format_time(self._duration_s)}"
+        )
+        self._write_console(f"GUI: seek requested to {self._format_time(target)}\n")
+        self.status.setText(f"Seeking to {self._format_time(target)}...")
+
     def _finish_seek(self):
         self._seeking = False
         if self._fullscreen:
             self._fullscreen_activity_at = time.monotonic()
-        if self._live or self._duration_s is None:
-            return
-        target = float(self.seek_slider.value())
-        self._pending_seek_target = target
-        self._pending_seek_until = time.monotonic() + 8.0
-        self._send_player_command("seek", target)
+        self._request_seek(float(self.seek_slider.value()))
 
     def _fullscreen_controls_tick(self):
         """Reveal on pointer movement; hide after 3s of fullscreen inactivity."""

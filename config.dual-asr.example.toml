@@ -1,10 +1,8 @@
 # Copy sections into your existing config.toml to override defaults.
 [dual_asr]
 enabled = true
-# Whisper Turbo is locked to Japanese transcription; only the CPU filter detects other languages.
-# Set false to restore the original Japanese-only ASR pipeline.
-language_routing = false
-# Unsupported/uncertain languages are not force-translated.
+# Whisper Turbo is Japanese-only; the independent CPU filter drops confident EN/ID audio.
+# There is no secondary language-routing toggle.
 secondary_model = "h2oai/faster-whisper-large-v3-turbo"
 secondary_device = "cuda"
 secondary_compute_type = "int8_float16"
@@ -14,7 +12,7 @@ whisper_name_hints = false
 secondary_live_mode = "selective" # off, selective, all
 secondary_vod_mode = "all"
 live_timeout_s = 5.0
-vod_timeout_s = 25.0
+vod_timeout_s = 25.0 # Retained for accuracy; discarded cues interrupt the worker early.
 
 [reconciler]
 enabled = true

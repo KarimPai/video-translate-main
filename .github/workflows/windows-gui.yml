@@ -67,12 +67,38 @@ jobs:
           assert window.seek_slider.isEnabled()
           assert window.fullscreen_button.isVisible(), "Fullscreen needs visible exit button"
           assert window.fullscreen_button.text() == "Exit Fullscreen"
+          assert window._fullscreen_controls_timer.isActive()
+
+          # No pointer movement: controls hide after the inactivity timeout.
+          # Direct tick keeps this test deterministic and fast.
+          from PySide6.QtCore import QPoint
+          from PySide6.QtGui import QCursor
+          window._fullscreen_cursor_pos = QCursor.pos()
+          window._fullscreen_activity_at -= window.FULLSCREEN_CONTROLS_TIMEOUT_S + 0.1
+          window._fullscreen_controls_tick()
+          assert not window.video_controls.isVisible(), "Idle fullscreen controls must auto-hide"
+          # MPV owns the native video surface; polling global cursor movement
+          # must reveal the controls without Qt mouseMove events.
+          window._fullscreen_cursor_pos = QPoint(-50000, -50000)
+          window._fullscreen_controls_tick()
+          assert window.video_controls.isVisible(), "Moving cursor must reveal seekbar"
+          assert window.seek_slider.isVisible()
+          assert window.fullscreen_button.isVisible()
+
+          # Do not hide the bar while the VOD seek slider is being dragged.
+          window.seek_slider.setSliderDown(True)
+          window._fullscreen_cursor_pos = QCursor.pos()
+          window._fullscreen_activity_at -= window.FULLSCREEN_CONTROLS_TIMEOUT_S + 0.1
+          window._fullscreen_controls_tick()
+          assert window.video_controls.isVisible(), "Seeking must suspend auto-hide"
+          window.seek_slider.setSliderDown(False)
           window.fullscreen_button.click()
           app.processEvents()
           assert not window.isFullScreen(), "Exit Fullscreen button must restore window"
           assert window.tabs.tabBar().isVisible()
           assert window.video_controls.isVisible()
           assert window.fullscreen_button.text() == "Fullscreen"
+          assert not window._fullscreen_controls_timer.isActive(), "Fullscreen timer must stop on exit"
           window.toggle_fullscreen()
           app.processEvents()
           assert window.isFullScreen()

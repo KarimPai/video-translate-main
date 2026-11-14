@@ -4,6 +4,7 @@ Keep CUDA allocations isolated from Haas Vulkan and llama.cpp. The parent can
 enforce a deadline and release VRAM without leaving a timed-out decode running.
 """
 import logging
+from concurrent.futures import CancelledError
 import multiprocessing as mp
 import threading
 import time
@@ -129,22 +130,40 @@ class WhisperTurboASR:
             self.close()
             raise
 
-    def transcribe(self, audio, timeout=None, initial_prompt=None):
+    def transcribe(self, audio, timeout=None, initial_prompt=None, cancel_event=None):
+        """Decode one chunk; terminate the subprocess on timeout or cancellation.
+
+        Poll in short intervals so a discarded live/VOD cue cannot occupy the
+        single-flight worker for the full per-request timeout.
+        """
         samples = _audio16(audio)
         if timeout is None:
             timeout = 25.0
         if timeout <= 0:
             raise TimeoutError("Whisper Turbo deadline exceeded")
-        if self.process is None or not self.process.is_alive() or self.connection is None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError("Whisper Turbo request already cancelled")
+        connection, process = self.connection, self.process
+        if process is None or not process.is_alive() or connection is None:
             raise RuntimeError("Whisper Turbo worker unavailable")
+        deadline = time.monotonic() + timeout
         try:
             command = ({"audio": samples, "initial_prompt": initial_prompt}
                        if initial_prompt else samples)
-            self.connection.send(command)
-            if not self.connection.poll(timeout):
-                self.close()  # Kill a stalled CUDA inference, not only the waiting thread.
-                raise TimeoutError("Whisper Turbo transcription timed out")
-            response = self.connection.recv()
+            connection.send(command)
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    self.close()
+                    raise CancelledError("Whisper Turbo transcription cancelled")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise TimeoutError("Whisper Turbo transcription timed out")
+                if connection.poll(min(0.05, remaining)):
+                    break
+                if not process.is_alive():
+                    raise RuntimeError("Whisper Turbo worker exited during decode")
+            response = connection.recv()
         except (EOFError, BrokenPipeError, OSError) as exc:
             self.close()
             raise RuntimeError("Whisper Turbo worker communication failed") from exc
@@ -153,6 +172,10 @@ class WhisperTurboASR:
             raise RuntimeError("Whisper Turbo worker error: " + response.get("message", "unknown"))
         self.last_stop = response.get("stop", "unknown")
         return response["text"]
+
+    def cancel(self):
+        """Force-stop a blocked IPC send/decode from a separate watchdog thread."""
+        self.close()
 
     def close(self):
         with self._lock:

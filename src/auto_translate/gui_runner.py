@@ -78,7 +78,7 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             "--mode", "auto", "--mpv", "--shared-gpu-playback",
             "--no-web", "--hwdec", "auto-safe",
             "--video-quality", str(quality), "--mpv-wid", str(hwnd),
-            "--simple-terminal"]
+            "--gui-control", "--simple-terminal"]
     return str(python), args
 
 

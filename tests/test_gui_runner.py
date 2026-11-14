@@ -51,6 +51,25 @@ class GuiRunnerTests(unittest.TestCase):
             self.assertEqual(argv0, str(venv.with_name("pythonw.exe") if sys.platform == "win32" else venv))
             self.assertEqual(args[args.index("--mpv-wid") + 1], "24680")
             self.assertEqual(args[args.index("--video-quality") + 1], "720")
+            self.assertIn("--no-rtx-vsr", args)
+            self.assertNotIn("--rtx-vsr", args)
+            _, vsr_args = build_backend_command(
+                root, "https://www.youtube.com/watch?v=jd7Bp0prwiI",
+                480, 24680, rtx_vsr=True, frozen=True,
+            )
+            self.assertIn("--rtx-vsr", vsr_args)
+            self.assertNotIn("--no-rtx-vsr", vsr_args)
+            _, off_args = build_backend_command(
+                root, "https://www.youtube.com/watch?v=jd7Bp0prwiI",
+                480, 24680, rtx_vsr=False, frozen=True,
+            )
+            self.assertIn("--no-rtx-vsr", off_args)
+            for unavailable in (360, 720, 1080):
+                with self.assertRaisesRegex(ValueError, "480p"):
+                    build_backend_command(
+                        root, "https://www.youtube.com/watch?v=jd7Bp0prwiI",
+                        unavailable, 24680, rtx_vsr=True, frozen=True,
+                    )
             for flag in ("-u", "--mpv", "--no-web", "--shared-gpu-playback",
                          "--simple-terminal", "--hwdec", "--gui-control"):
                 self.assertIn(flag, args)

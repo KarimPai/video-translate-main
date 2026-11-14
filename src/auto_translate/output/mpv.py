@@ -1098,7 +1098,7 @@ class MpvOutput:
 
                 self._render(self._now)
 
-            if self.cfg.window_id:
+            if getattr(getattr(self, "cfg", None), "window_id", None):
                 self._emit_gui_status()
                 if self._handle_gui_commands():
                     return
@@ -1226,9 +1226,9 @@ class MpvOutput:
                 and args[:1] == ["auto-translate-replay"]
             ):
                 requested = True
-            elif self.cfg.window_id and ev.get("event") == "client-message" and args[:1] == [FULLSCREEN_MESSAGE]:
+            elif getattr(getattr(self, "cfg", None), "window_id", None) and ev.get("event") == "client-message" and args[:1] == [FULLSCREEN_MESSAGE]:
                 emit_event("toggle_fullscreen")
-            elif self.cfg.window_id and ev.get("event") == "client-message" and args[:1] == [EXIT_FULLSCREEN_MESSAGE]:
+            elif getattr(getattr(self, "cfg", None), "window_id", None) and ev.get("event") == "client-message" and args[:1] == [EXIT_FULLSCREEN_MESSAGE]:
                 emit_event("exit_fullscreen")
             elif (
                 ev.get("event") == "client-message"

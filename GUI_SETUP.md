@@ -7,7 +7,7 @@ PLaMo backend. No model, playback timing, HLS or translation logic is replaced.
 
 1. Keep the project in its existing folder, e.g. `C:\Games\video-translate-dual-asr`.
 2. Run `Setup.bat` once if the backend is not installed.
-3. Double-click **Start GUI.bat**. The first launch installs PySide6 with `uv sync --extra gui`; future launches reuse downloads.
+3. Double-click **Start GUI.bat**. It installs **only** PySide6 if missing; it does not resync/reinstall the existing CUDA backend.
 4. Paste a direct YouTube watch/live link, choose 360/480/720/1080p, then Start.
 5. The Console tab captures real-time JP and EN subtitle lines and backend logs.
 6. When **MPV successfully loads the video**, the URL/quality controls disappear.
@@ -35,7 +35,7 @@ The classic **Start translate.bat** continues to work unchanged.
 
 - Session output is visible in Console and saved in `logs\run.log`. The player
   still writes to `logs\mpv.log` and the ASR comparison log.
-- During model initialization, the URL box remains visible (disabled).
+- During model initialization, the URL box remains visible (disabled), and the\n  embedded MPV video host remains the default visible tab.
   It hides only after the MPV `file-loaded` signal reaches the GUI.
 - If embedded MPV doesn't display video, inspect `logs\mpv.log`. Native
   `--wid` rendering is Windows-specific and needs local testing on the GPU.

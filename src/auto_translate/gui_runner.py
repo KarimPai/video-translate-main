@@ -68,6 +68,12 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
     if not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Embedded MPV requires a valid native window handle.")
     python = backend_python(root, frozen=frozen, executable=executable)
+    if os.name == "nt":
+        # pythonw.exe is a GUI-subsystem interpreter: no transient CMD window
+        # while QProcess still owns captured stdout/stderr pipes.
+        python = python.with_name("pythonw.exe")
+        if not python.is_file():
+            raise FileNotFoundError("Windowless Python runtime missing from .venv/Scripts/pythonw.exe")
     args = ["-u", "-m", "auto_translate", url.strip(),
             "--mode", "auto", "--mpv", "--shared-gpu-playback",
             "--no-web", "--hwdec", "auto-safe",
@@ -89,6 +95,7 @@ def subprocess_environment(root: Path, original: dict[str, str] | None = None) -
     env["PYTHONPATH"] = str(root / "src") + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONUTF8"] = "1"
+    env["VIDEO_TRANSLATE_GUI"] = "1"
     extra = []
     if os.name == "nt":
         local = Path(env.get("LOCALAPPDATA", ""))

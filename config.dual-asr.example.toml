@@ -9,6 +9,7 @@ secondary_model = "h2oai/faster-whisper-large-v3-turbo"
 secondary_device = "cuda"
 secondary_compute_type = "int8_float16"
 secondary_beam_size = 6
+whisper_name_hints = true
 secondary_live_mode = "selective" # off, selective, all
 secondary_vod_mode = "all"
 live_timeout_s = 5.0
@@ -50,3 +51,6 @@ context_lines = 3
 memory_lines = 0
 # Only split long multi-sentence Japanese at reliable written punctuation.
 sentence_context = true
+
+# Optional Whisper prompt for known HoloGTA talent names. Disable if it biases unrelated dialogue.
+# Set this under [dual_asr], not below [translate] in your local config.

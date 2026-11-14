@@ -139,6 +139,7 @@ class DualAsrConfig:
     secondary_device: str = "cuda"
     secondary_compute_type: str = "int8_float16"
     secondary_beam_size: int = 6
+    whisper_name_hints: bool = True  # conservative HoloGTA-only recognition prompt
     secondary_live_mode: str = "selective"
     secondary_vod_mode: str = "all"
     live_timeout_s: float = 5.0

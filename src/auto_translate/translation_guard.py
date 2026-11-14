@@ -68,7 +68,7 @@ def _number_values(text: str, japanese: bool) -> Counter:
     return counts
 # Only distinctive entity names. Ordinary descriptive glossary terms can be
 # rendered naturally and should not trigger unnecessary retries.
-_GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "subaru"})
+_GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "subaru", "haachama", "laplus"})
 
 
 def suspicious_translation(

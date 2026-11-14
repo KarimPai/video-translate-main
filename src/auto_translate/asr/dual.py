@@ -9,6 +9,7 @@ import urllib.error
 import numpy as np
 
 from ..text_filter import is_usable_transcript
+from ..name_hints import whisper_name_prompt
 from .whisper_turbo import WhisperTurboASR
 from .language_router import classify_language
 from .diagnostics import append_comparison
@@ -228,7 +229,11 @@ class DualASR:
                 log.debug("Reusing Whisper Turbo auto-Japanese transcript at %.2fs", utt.start_s)
             else:
                 started = time.perf_counter()
-                secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
+                prompt = whisper_name_prompt(
+                    title, enabled=getattr(self.cfg.dual_asr, "whisper_name_hints", True))
+                secondary = (worker.transcribe(
+                    utt.audio, timeout=secondary_budget, initial_prompt=prompt)
+                    if prompt else worker.transcribe(utt.audio, timeout=secondary_budget))
                 secondary_elapsed_s = time.perf_counter() - started
             log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)

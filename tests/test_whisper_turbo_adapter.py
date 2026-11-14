@@ -34,6 +34,17 @@ class WhisperTurboAdapterTests(unittest.TestCase):
         self.assertFalse(kwargs["condition_on_previous_text"])
         self.assertEqual(kwargs["beam_size"], 6)
 
+    def test_japanese_name_hint_is_bounded_and_optional(self):
+        model = Mock()
+        model.transcribe.return_value = (
+            iter([SimpleNamespace(text="ラプラスだよ", no_speech_prob=.1, avg_logprob=-.2)]), None
+        )
+        hint = "はあちゃま。ラプラス・ダークネス。"
+        self.assertEqual(_decode(model, np.ones(16000, dtype=np.float32), 6, hint), "ラプラスだよ")
+        kwargs = model.transcribe.call_args.kwargs
+        self.assertEqual(kwargs["initial_prompt"], hint)
+        self.assertFalse(kwargs["condition_on_previous_text"])
+
     def test_low_evidence_hallucination_is_dropped(self):
         model = Mock()
         model.transcribe.return_value = (

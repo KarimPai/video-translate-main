@@ -23,7 +23,7 @@ def _audio16(audio):
     return np.ascontiguousarray(np.clip(samples, -1, 1))
 
 
-def _decode(model, samples, beam_size):
+def _decode(model, samples, beam_size, initial_prompt=None):
     """Never let Whisper auto-detect English or choose the translation task."""
     segments, _ = model.transcribe(
         samples,
@@ -32,7 +32,7 @@ def _decode(model, samples, beam_size):
         beam_size=beam_size,
         temperature=0.0,
         condition_on_previous_text=False,
-        initial_prompt=None,
+        initial_prompt=initial_prompt,
         vad_filter=False,  # FireRedVAD has already segmented original audio.
         no_speech_threshold=0.6,
         log_prob_threshold=-1.0,
@@ -68,8 +68,13 @@ def _worker_main(connection, model_name, device, compute_type, beam_size):
             if command is None:
                 break
             try:
-                samples = _audio16(command)
-                transcript = _decode(model, samples, beam_size)
+                if isinstance(command, dict):
+                    samples = _audio16(command["audio"])
+                    prompt = command.get("initial_prompt")
+                else:
+                    samples = _audio16(command)
+                    prompt = None
+                transcript = _decode(model, samples, beam_size, initial_prompt=prompt)
                 connection.send({"type": "transcript", "text": transcript,
                                  "stop": "complete" if transcript else "unknown"})
             except Exception as exc:
@@ -124,7 +129,7 @@ class WhisperTurboASR:
             self.close()
             raise
 
-    def transcribe(self, audio, timeout=None):
+    def transcribe(self, audio, timeout=None, initial_prompt=None):
         samples = _audio16(audio)
         if timeout is None:
             timeout = 25.0
@@ -133,7 +138,9 @@ class WhisperTurboASR:
         if self.process is None or not self.process.is_alive() or self.connection is None:
             raise RuntimeError("Whisper Turbo worker unavailable")
         try:
-            self.connection.send(samples)
+            command = ({"audio": samples, "initial_prompt": initial_prompt}
+                       if initial_prompt else samples)
+            self.connection.send(command)
             if not self.connection.poll(timeout):
                 self.close()  # Kill a stalled CUDA inference, not only the waiting thread.
                 raise TimeoutError("Whisper Turbo transcription timed out")

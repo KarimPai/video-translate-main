@@ -28,4 +28,9 @@ def correct_known_asr_terms(
         updated = _GTA_ALIASES.sub("ホロライブGTA", updated)
     if "フォロメン" not in caption:
         updated = _HOLOMEM_ALIAS.sub("ホロメン", updated)
+    # In Hololive videos these precise phonetic variants are established
+    # nicknames, not free-form fuzzy matching. A conflicting aligned caption wins.
+    if not any(term in caption for term in ("はやちゃま", "はーちゃま", "はぁちゃま", "ハーチャマ")):
+        for alias in ("はやちゃま", "はーちゃま", "はぁちゃま", "ハーチャマ"):
+            updated = updated.replace(alias, "はあちゃま")
     return updated

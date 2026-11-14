@@ -16,6 +16,7 @@ from pathlib import Path
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
+from ..name_hints import canonicalize_english_names
 from ..subject_guard import (
     neutralize_unsupported_subjects,
     unsupported_person_reference,
@@ -341,6 +342,7 @@ class PlamoTranslator:
 
         def normalized(raw: str) -> str:
             translated = correct_translation(ja, _clean(raw))
+            translated = canonicalize_english_names(ja, translated, self.vod_title)
             return neutralize_unsupported_subjects(ja, translated)
 
         english = normalized(self._chat(ja, history, timeout=self.cfg.timeout_s))

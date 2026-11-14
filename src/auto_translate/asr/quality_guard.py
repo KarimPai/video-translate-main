@@ -42,6 +42,20 @@ def disagreement_unresolved(primary, secondary, selected, similarity, flags, sel
     return False
 
 
+_FULL_LAPLUS_ONLY = re.compile(r"ラプラス[・･]?ダークネス[。！？!?]*\\Z")
+_LAPLUS_MENTION = re.compile(r"ラプラス|らぷらす|ラプ|らぷ")
+
+
+def uncorroborated_laplus_full_name(chosen: str, other: str) -> bool:
+    """Flag a standalone formal name that the independent ASR did not hear.
+
+    Never reject sentences merely mentioning Laplus, or one model saying the
+    short name while the other says the long name. This is not audio proof.
+    """
+    return (bool(_FULL_LAPLUS_ONLY.fullmatch(chosen.strip()))
+            and not _LAPLUS_MENTION.search(other))
+
+
 def suspicious_phonetics(text):
     """Only a review signal on its own: katakana can be a real name."""
     return re.fullmatch(r"[ァ-ヺー]{6,}[。！？!?]?", text.strip()) is not None

@@ -1177,6 +1177,7 @@ class MpvOutput:
         """Accept a parsed GUI command without touching MPV from the stdin thread."""
         if not self.cfg.window_id:
             return
+        log.info("GUI player command queued: %s value=%s", action, value)
         try:
             self._gui_commands.put_nowait((action, value))
         except queue.Full:
@@ -1206,7 +1207,12 @@ class MpvOutput:
         )
 
     def _handle_gui_commands(self) -> bool:
-        """Run seek on MPV's scheduler thread to preserve ASR timeline resets."""
+        """Apply GUI commands on MPV's scheduler, preserving ASR seek resets.
+
+        An earlier implementation silently dropped seeks while the MPV
+        position was momentarily unavailable during buffering or a restart.
+        Retain the latest request until the source clock becomes available.
+        """
         while not self._gui_commands.empty():
             try:
                 action, value = self._gui_commands.get_nowait()
@@ -1216,15 +1222,30 @@ class MpvOutput:
                 self.ipc.command("cycle", "pause")
                 continue
             if self.ingest.source.live:
-                log.info("GUI seek ignored: live playback is not seekable")
+                log.info("GUI seek rejected: livestream")
+                emit_event("seek_ack", accepted=False, target=value)
                 continue
-            if self._now is None or value is None:
-                log.info("GUI seek ignored: MPV is rebuffering")
+            if self._now is None:
+                # Queue again and wait for the video clock to become available.
+                # Return now to avoid spinning through the same request forever.
+                self._gui_commands.put_nowait((action, value))
+                return False
+            if value is None:
+                emit_event("seek_ack", accepted=False, target=None)
                 continue
             delta = value - self._now if action == "seek" else value
-            if action in ("seek", "seek_relative") and abs(delta) >= 0.5:
-                if self._jump(delta):
-                    return True
+            target = max(0.0, self._now + delta)
+            if self.ingest.source.duration:
+                target = min(target, max(0.0, self.ingest.source.duration - 5))
+            if abs(delta) < 0.5:
+                emit_event("seek_ack", accepted=True, target=target)
+                continue
+            log.info("GUI seek command: %s %+.2fs -> %.2fs", action, delta, target)
+            if self._jump(delta):
+                emit_event("seek_ack", accepted=True, target=target)
+                return True
+            # A cached-subtitle seek completes without restarting translation.
+            emit_event("seek_ack", accepted=True, target=target)
         return False
 
     def _replay_requested(self) -> bool:

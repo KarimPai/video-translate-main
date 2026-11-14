@@ -156,8 +156,8 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
     # High-confidence polarity inversions in common police radio commands
     # must not be learned as authoritative examples.
     inversions = (
-        (r"待って|待て", r"\\b(?:don't|do not|never)\\s+wait\\b"),
-        (r"止まって|止まれ", r"\\b(?:don't|do not|never)\\s+stop\\b"),
+        (r"待って|待て", r"\b(?:don't|do not|never)\s+wait\b"),
+        (r"止まって|止まれ", r"\b(?:don't|do not|never)\s+stop\b"),
     )
     if any(re.search(jp, source) and re.search(en, translation, re.I)
            for jp, en in inversions):

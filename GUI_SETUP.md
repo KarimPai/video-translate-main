@@ -52,10 +52,12 @@ jump. Seeking goes to the backend's MPV scheduler, which synchronizes the audio
 reader and English subtitles (and reuses RAM-backed translations when possible).
 
 Select **Fullscreen** to expand the embedded MPV player across the screen.
-**The playback bar and full-duration VOD seekbar remain visible** in fullscreen.
-The button becomes **Exit Fullscreen**, so a mouse click can always restore the
-normal window even if embedded MPV holds keyboard focus. You can also press
-**F11**, **F**, or double-click the video to toggle; **Esc** exits fullscreen.
+**The playback bar and full-duration VOD seekbar auto-hide after 3 seconds**
+without mouse movement, expanding the video. **Move the mouse anywhere over
+the embedded video to reveal them again**. The bar stays visible while dragging
+the seek slider. The button becomes **Exit Fullscreen**, so you can click it
+after moving the mouse; **F11**, **F**, double-clicking the video, or **Esc**
+also switch/exit fullscreen. Outside fullscreen, the controls remain visible.
 The fullscreen switch belongs to the Qt host, since MPV is embedded through
 a native HWND.
 

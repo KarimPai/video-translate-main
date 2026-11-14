@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtGui import QCloseEvent, QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
@@ -145,7 +145,7 @@ class VideoTranslateWindow(QMainWindow):
     def _write_console(self, text: str):
         if not text:
             return
-        self.console.moveCursor(self.console.textCursor().MoveOperation.End)
+        self.console.moveCursor(QTextCursor.MoveOperation.End)
         self.console.insertPlainText(text)
         self.console.ensureCursorVisible()
         if self._log_stream:
@@ -206,7 +206,8 @@ class VideoTranslateWindow(QMainWindow):
         proc.setProgram(command)
         proc.setArguments(args)
         self._write_console("Starting translation backend...\n")
-        self.tabs.setCurrentWidget(self.console_tab)
+        # Keep the native video host visible while MPV attaches to its HWND.
+        # The user can open Console during startup to inspect model logs.
         proc.start()
 
     def _on_output(self):

@@ -27,6 +27,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..config import MpvConfig
+from ..gui_control import emit_event, FULLSCREEN_MESSAGE, EXIT_FULLSCREEN_MESSAGE
 from .rtx_vsr import (
     VSR_FILTER, VSR_LABEL, VsrPerformanceGuard,
     filter_present, launch_options, source_eligible,
@@ -46,6 +47,7 @@ IPC_PREFIX = (
 WINDOWS_DEFAULT = Path(r"C:\Program Files\MPV Player\mpv.exe")
 OVERLAY_ID = 1
 INPUT_CONF = Path(__file__).with_name("mpv_input.conf")
+GUI_INPUT_CONF = Path(__file__).with_name("mpv_gui_input.conf")
 
 JUMP_MESSAGE = "auto-translate-jump"
 
@@ -392,6 +394,8 @@ class MpvOutput:
         self._job = None
         self._closed = False
         self._gui_ready_emitted = False
+        self._gui_commands: queue.Queue[tuple[str, float | None]] = queue.Queue(maxsize=16)
+        self._last_gui_status_at = 0.0
         self._video_retries = 0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
@@ -469,7 +473,7 @@ class MpvOutput:
             "--osc=yes",
             "--osd-on-seek=no",
             "--no-input-default-bindings",
-            f"--input-conf={INPUT_CONF}",
+            f"--input-conf={GUI_INPUT_CONF if cfg.window_id else INPUT_CONF}",
 
             # Hardware video decoding.
             f"--hwdec={cfg.hwdec}",
@@ -919,6 +923,8 @@ class MpvOutput:
             if self.cfg.window_id and not self._gui_ready_emitted:
                 from ..gui_runner import READY_MARKER
                 print(READY_MARKER, flush=True)
+                emit_event("ready", live=bool(self.ingest.source.live),
+                           duration=self.ingest.source.duration)
                 self._gui_ready_emitted = True
             if self._session_start > 0 and not self.ingest.source.live:
                 self.ipc.command("seek", self._session_start, "absolute+exact")
@@ -1092,6 +1098,11 @@ class MpvOutput:
 
                 self._render(self._now)
 
+            if self.cfg.window_id:
+                self._emit_gui_status()
+                if self._handle_gui_commands():
+                    return
+
             if self._replay_requested():
                 if self._now is not None and self.ipc.get("eof-reached"):
                     log.info("replay requested after VOD end; restarting from beginning")
@@ -1150,6 +1161,60 @@ class MpvOutput:
         self._anchor_reason = "video-recovery"
         return True
 
+    def queue_gui_command(self, action: str, value: float | None) -> None:
+        """Accept a parsed GUI command without touching MPV from the stdin thread."""
+        if not self.cfg.window_id:
+            return
+        try:
+            self._gui_commands.put_nowait((action, value))
+        except queue.Full:
+            # Keep the latest seek position if the user drags repeatedly.
+            try:
+                self._gui_commands.get_nowait()
+            except queue.Empty:
+                pass
+            self._gui_commands.put_nowait((action, value))
+        self._subtitle_ready.set()
+
+    def _emit_gui_status(self) -> None:
+        """Publish the source timeline, not raw live-HLS MPV timestamps."""
+        now = time.monotonic()
+        if now - self._last_gui_status_at < 0.5:
+            return
+        self._last_gui_status_at = now
+        live = bool(self.ingest.source.live)
+        duration = None if live else self.ingest.source.duration
+        if duration is None and not live:
+            duration = self.ipc.get("duration")
+        emit_event(
+            "status", live=live,
+            position=round(self._now, 2) if self._now is not None else None,
+            duration=duration,
+            paused=self.ipc.get("pause") is True,
+        )
+
+    def _handle_gui_commands(self) -> bool:
+        """Run seek on MPV's scheduler thread to preserve ASR timeline resets."""
+        while not self._gui_commands.empty():
+            try:
+                action, value = self._gui_commands.get_nowait()
+            except queue.Empty:
+                break
+            if action == "pause":
+                self.ipc.command("cycle", "pause")
+                continue
+            if self.ingest.source.live:
+                log.info("GUI seek ignored: live playback is not seekable")
+                continue
+            if self._now is None or value is None:
+                log.info("GUI seek ignored: MPV is rebuffering")
+                continue
+            delta = value - self._now if action == "seek" else value
+            if action in ("seek", "seek_relative") and abs(delta) >= 0.5:
+                if self._jump(delta):
+                    return True
+        return False
+
     def _replay_requested(self) -> bool:
         """Return whether the user pressed Play/Space."""
         requested = False
@@ -1161,6 +1226,10 @@ class MpvOutput:
                 and args[:1] == ["auto-translate-replay"]
             ):
                 requested = True
+            elif self.cfg.window_id and ev.get("event") == "client-message" and args[:1] == [FULLSCREEN_MESSAGE]:
+                emit_event("toggle_fullscreen")
+            elif self.cfg.window_id and ev.get("event") == "client-message" and args[:1] == [EXIT_FULLSCREEN_MESSAGE]:
+                emit_event("exit_fullscreen")
             elif (
                 ev.get("event") == "client-message"
                 and args[:1] == [JUMP_MESSAGE]

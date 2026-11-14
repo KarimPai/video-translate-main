@@ -418,6 +418,9 @@ class VideoTranslateWindow(QMainWindow):
         if action == "seek_ack":
             target = event.get("target")
             if event.get("accepted"):
+                if isinstance(target, (int, float)):
+                    # The backend may clamp seeks near a VOD's end.
+                    self._pending_seek_target = float(target)
                 self.status.setText(
                     f"MPV accepted seek to {self._format_time(target)}."
                 )

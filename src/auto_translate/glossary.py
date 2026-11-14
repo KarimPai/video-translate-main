@@ -1,21 +1,35 @@
 """JA → EN fixed terms from glossary.toml."""
 
 import tomllib
+import re
 from functools import lru_cache
 from pathlib import Path
 
 
 class Glossary:
-    def __init__(self, terms: dict[str, str]) -> None:
+    def __init__(self, terms: dict[str, str], *, scene_pairs=(), name_guards=()) -> None:
         # Longest first, so "てぇてぇ" is matched before any shorter term inside it.
         self.terms = sorted(terms.items(), key=lambda kv: len(kv[0]), reverse=True)
+        # Optional ASR-only rules: acoustic peer comparison, not inferred words.
+        self.scene_pairs = tuple(
+            (rule["heard"], rule["correct"], tuple(rule.get("anchors", ())))
+            for rule in scene_pairs
+        )
+        self.name_guards = tuple(
+            (re.compile(rule["full"]), re.compile(rule["mention"]))
+            for rule in name_guards
+        )
 
     @classmethod
     def load(cls, path: Path) -> "Glossary":
         if not path.exists():
             return cls({})
         with path.open("rb") as f:
-            return cls(tomllib.load(f).get("terms", {}))
+            data = tomllib.load(f)
+            rules = data.get("asr_rules", {})
+            return cls(data.get("terms", {}),
+                       scene_pairs=rules.get("scene_pairs", ()),
+                       name_guards=rules.get("name_guards", ()))
 
     def find(self, ja: str) -> list[tuple[str, str]]:
         """Entries that appear in `ja` (non-overlapping, longest match wins)."""

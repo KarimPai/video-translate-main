@@ -26,8 +26,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Setup-Wind
 set "SETUP_RESULT=%ERRORLEVEL%"
 echo.
 if "%SETUP_RESULT%"=="0" (
-    echo SETUP FINISHED. Double-click "Start translate.bat".
-    echo First start downloads PLaMo 3 and Whisper Large-v3 Turbo models.
+    echo SETUP FINISHED. Double-click "Start GUI.vbs" to launch the app.
+    echo The first GUI launch installs PySide6 if necessary.
+    echo First translation downloads PLaMo 3 and Whisper Large-v3 Turbo models.
 ) else (
     echo SETUP FAILED. Read the error above, then rerun Setup.bat.
 )

@@ -33,8 +33,25 @@ jobs:
       - name: Verify pythonw remains windowless with working Qt output pipes
         shell: pwsh
         run: |
-          $env:QT_QPA_PLATFORM = "offscreen"
-          python -c "import sys; from pathlib import Path; from PySide6.QtCore import QCoreApplication, QProcess; app=QCoreApplication([]); p=QProcess(); p.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels); p.start(str(Path(sys.executable).with_name('pythonw.exe')), ['-u','-c', 'import sys; print(\"GUI_PIPE_OK\", flush=True); print(\"ERROR_PIPE_OK\", file=sys.stderr, flush=True)']); assert p.waitForFinished(15000),p.errorString(); out=bytes(p.readAllStandardOutput()).decode('utf-8'); assert p.exitCode()==0,(p.exitCode(),out); assert 'GUI_PIPE_OK' in out and 'ERROR_PIPE_OK' in out,out"
+          @'
+          import sys
+          from pathlib import Path
+          from PySide6.QtCore import QCoreApplication, QProcess
+
+          app = QCoreApplication([])
+          proc = QProcess()
+          proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+          pyw = Path(sys.executable).with_name("pythonw.exe")
+          proc.start(str(pyw), [
+              "-u", "-c",
+              "import sys; print('GUI_PIPE_OK', flush=True); print('ERROR_PIPE_OK', file=sys.stderr, flush=True)"
+          ])
+          assert proc.waitForFinished(15000), proc.errorString()
+          output = bytes(proc.readAllStandardOutput()).decode("utf-8")
+          assert proc.exitCode() == 0, (proc.exitCode(), output)
+          assert "GUI_PIPE_OK" in output and "ERROR_PIPE_OK" in output, output
+          '@ | Set-Content -LiteralPath gui_pipe_smoke.py -Encoding utf8
+          python gui_pipe_smoke.py
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
       - name: Upload frontend artifact

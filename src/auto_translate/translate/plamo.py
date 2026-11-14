@@ -338,7 +338,8 @@ class PlamoTranslator:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
-                return reused
+                # Cached subtitles must obey current short-name policy too.
+                return canonicalize_english_names(ja, reused, self.vod_title)
 
         def normalized(raw: str) -> str:
             translated = correct_translation(ja, _clean(raw))

@@ -1,4 +1,8 @@
 import json
+import tempfile
+import threading
+from concurrent.futures import CancelledError
+from pathlib import Path
 import queue
 import subprocess
 import time
@@ -65,7 +69,7 @@ class PipelineSelectionTests(unittest.TestCase):
         self.cfg = Config()
         self.cfg.dual_asr.enabled = False
         self.budget = Mock(used=4., cfg=self.cfg.gpu_budget)
-        self.dual = DualASR(self.cfg, self.budget, Glossary({"わため": "Watame"}), False)
+        self.dual = DualASR(self.cfg, self.budget, Glossary.load(Path(__file__).resolve().parents[1] / "glossary.toml"), False)
         self.dual.worker = Mock()
         self.dual.selector = Mock()
         self.utt = Utterance(2, 3, np.full(16000, .1, np.float32), vad_confidence=.91)
@@ -247,7 +251,7 @@ class RecoveryTests(unittest.TestCase):
         dual.worker = Mock()
         started, resume = threading.Event(), threading.Event()
 
-        def stalled(audio, timeout):
+        def stalled(audio, timeout, cancel_event=None):
             started.set()
             resume.wait(2)
             return "まだ行かない"
@@ -265,6 +269,67 @@ class RecoveryTests(unittest.TestCase):
             dual.pending.join(2)
         dual.playback_position = lambda: 13.
         self.assertLess(dual.deadline(utt), time.monotonic())
+
+
+    @patch("auto_translate.asr.dual.WhisperTurboASR")
+    def test_secondary_failure_recovers_without_releasing_selector(self, constructor):
+        cfg = Config()
+        cfg.dual_asr.enabled = False
+        budget = Mock()
+        budget.pressure_level = "normal"
+        budget.admits.return_value = True
+        dual = DualASR(cfg, budget, Glossary({}), False)
+        first, replacement, selector = Mock(), Mock(), Mock()
+        first.transcribe.side_effect = TimeoutError("transient CUDA hiccup")
+        dual.worker, dual.selector = first, selector
+        utt = Utterance(1, 2, np.ones(16000, np.float32), vad_confidence=.95)
+        self.assertIsNone(dual.choose(utt, "行こう", "", lambda: False, lambda: 0))
+        self.assertIsNone(dual.worker)
+        self.assertIs(dual.selector, selector)
+        first.close.assert_called_once()
+        selector.close.assert_not_called()
+        self.assertGreater(dual.retry_at, time.monotonic())
+        constructor.return_value = replacement
+        dual.retry_at = 0
+        dual._maybe_restart()
+        dual._restart_thread.join(2)
+        self.assertIs(dual.worker, replacement)
+        self.assertEqual(dual.failures, 0)
+        self.assertIs(dual.selector, selector)
+        dual.release()
+        replacement.close.assert_called_once()
+        selector.close.assert_called_once()
+
+    def test_cancelled_ipc_decode_kills_worker_without_waiting_for_timeout(self):
+        from auto_translate.asr.whisper_turbo import WhisperTurboASR
+        worker = object.__new__(WhisperTurboASR)
+        worker._lock = threading.Lock()
+        worker.last_stop = "unknown"
+        process, connection = Mock(), Mock()
+        process.is_alive.side_effect = [True, True, False]
+        cancelled = threading.Event()
+        def poll(_):
+            cancelled.set()
+            return False
+        connection.poll.side_effect = poll
+        worker.process, worker.connection = process, connection
+        with self.assertRaises(CancelledError):
+            worker.transcribe(np.ones(100, np.float32), timeout=25,
+                              cancel_event=cancelled)
+        self.assertIsNone(worker.process)
+        process.terminate.assert_called_once()
+        connection.close.assert_called_once()
+
+    def test_diagnostics_flushes_between_cues(self):
+        from auto_translate.asr.diagnostics import append_comparison, flush_comparisons
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "asr-comparison.jsonl"
+            append_comparison({"stage": "asr_fallback", "chosen": "行く"}, path)
+            self.assertTrue(flush_comparisons(3))
+            append_comparison({"stage": "translation", "chosen": "go"}, path)
+            self.assertTrue(flush_comparisons(3))
+            records = [json.loads(line) for line in path.read_text(encoding="utf8").splitlines()]
+            self.assertEqual([r["stage"] for r in records], ["asr_fallback", "translation"])
 
 class SelectorPlacementTests(unittest.TestCase):
     @patch("auto_translate.asr.dual.Reconciler")

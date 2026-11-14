@@ -60,11 +60,16 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
 
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
-                          *, frozen: bool = False, executable: str | None = None):
+                          *, rtx_vsr: bool = False, frozen: bool = False,
+                          executable: str | None = None):
     if not valid_youtube_url(url):
         raise ValueError("Enter a valid YouTube video or livestream URL.")
     if quality not in QUALITY_OPTIONS:
         raise ValueError("Unsupported video quality.")
+    if not isinstance(rtx_vsr, bool):
+        raise ValueError("RTX VSR selection must be a boolean.")
+    if rtx_vsr and quality != 480:
+        raise ValueError("RTX VSR is available in the GUI only at 480p.")
     if not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Embedded MPV requires a valid native window handle.")
     python = backend_python(root, frozen=frozen, executable=executable)
@@ -78,6 +83,7 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             "--mode", "auto", "--mpv", "--shared-gpu-playback",
             "--no-web", "--hwdec", "auto-safe",
             "--video-quality", str(quality), "--mpv-wid", str(hwnd),
+            "--rtx-vsr" if rtx_vsr else "--no-rtx-vsr",
             "--gui-control", "--simple-terminal"]
     return str(python), args
 

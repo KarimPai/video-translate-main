@@ -1,4 +1,5 @@
 import queue
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -23,17 +24,18 @@ del _BoundaryHelper
 
 class AccuracyTests(unittest.TestCase):
     def test_peer_clause_and_topic_required(self):
+        rules = Glossary.load(Path(__file__).resolve().parents[1] / "glossary.toml").scene_pairs
         for before, after, anchor in [("子宮", "支給", "制服"), ("研究隊", "救急隊", "搬送"),
                                       ("無銭", "無線", "周波数")]:
             a = f"{before}じゃないね。あと2個。"
             b = f"{after}じゃないね。あと3個。"
             wanted = f"{after}じゃないね。あと2個。"
-            repaired, edits = scene_repair(a, b, "ホロGTA", [anchor])
+            repaired, edits = scene_repair(a, b, "ホロGTA", [anchor], rules)
             self.assertEqual(repaired, wanted)
             self.assertEqual(edits[0]["peer_clause"], b.split("。")[0] + "。")
             for peer, title, history in [(a, "ホロGTA", [anchor]), (b, "健康相談", [anchor]),
                                           (b, "ホロGTA", []), (b.replace("じゃない", "だ"), "GTA", [anchor])]:
-                self.assertEqual(scene_repair(a, peer, title, history), (a, []))
+                self.assertEqual(scene_repair(a, peer, title, history, rules), (a, []))
 
     def test_clause_alignment_and_protected_details(self):
         self.assertEqual(clause_differences("待って。戻る。", "待って。無線で。戻る。"),
@@ -82,7 +84,8 @@ class AccuracyTests(unittest.TestCase):
     def test_stage_provenance_and_presentation_timestamps(self):
         cfg = Config()
         cfg.dual_asr.enabled = False
-        d = DualASR(cfg, Mock(pressure_level="normal"), Glossary({}), False)
+        d = DualASR(cfg, Mock(pressure_level="normal"),
+                    Glossary.load(Path(__file__).resolve().parents[1] / "glossary.toml"), False)
         d.worker = Mock(last_stop="complete")
         d.selector = Mock(last_choice="haas")
         a = "制服は子宮じゃないね。あと2個。"

@@ -164,6 +164,9 @@ class WhisperTurboASR:
                 if not process.is_alive():
                     raise RuntimeError("Whisper Turbo worker exited during decode")
             response = connection.recv()
+        except TimeoutError:
+            # TimeoutError inherits OSError; preserve the real failure type.
+            raise
         except (EOFError, BrokenPipeError, OSError) as exc:
             self.close()
             raise RuntimeError("Whisper Turbo worker communication failed") from exc

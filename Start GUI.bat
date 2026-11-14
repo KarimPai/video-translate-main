@@ -28,11 +28,11 @@ if errorlevel 1 (
         exit /b 1
     )
 )
-set "PYTHONPATH=%CD%\src"
-".venv\Scripts\python.exe" -m auto_translate.gui
+echo Launching the GUI without a console window...
+wscript.exe "%~dp0Start GUI.vbs"
 if errorlevel 1 (
-    echo ERROR: GUI exited with an error.
+    echo ERROR: Could not launch GUI. Check the launcher and Python environment.
     pause
     exit /b 1
 )
-endlocal
+exit /b 0

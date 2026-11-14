@@ -39,8 +39,11 @@ def main() -> None:
                         help="accept validated Qt player controls from stdin and publish status")
     parser.add_argument("--mpv-wid", type=int, metavar="HWND",
                         help="embed MPV into the supplied Windows native widget handle")
-    parser.add_argument("--rtx-vsr", action="store_true",
-                        help="request NVIDIA RTX VSR for <=480p source video; enable High in NVIDIA App")
+    vsr_option = parser.add_mutually_exclusive_group()
+    vsr_option.add_argument("--rtx-vsr", action="store_true",
+                            help="request NVIDIA RTX VSR for <=480p source video; enable High in NVIDIA App")
+    vsr_option.add_argument("--no-rtx-vsr", action="store_true",
+                            help="disable RTX VSR even when enabled in config.toml")
     parser.add_argument("--diagnostics", action="store_true",
                         help="log additional pipeline metrics")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -83,6 +86,8 @@ def main() -> None:
         cfg.mpv.hwdec = args.hwdec
     if args.rtx_vsr:
         cfg.mpv.rtx_vsr = True
+    elif args.no_rtx_vsr:
+        cfg.mpv.rtx_vsr = False
     if args.gui_control and not args.mpv_wid:
         parser.error("--gui-control requires --mpv-wid")
     if args.mpv_wid is not None:

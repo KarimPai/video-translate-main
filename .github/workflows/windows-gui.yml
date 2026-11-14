@@ -9,7 +9,6 @@ on:
       - "src/auto_translate/gui_runner.py"
       - "src/auto_translate/windows_subprocess.py"
       - "Start GUI.vbs"
-      - "Start GUI.bat"
       - "tests/test_gui_runner.py"
       - ".github/workflows/windows-gui.yml"
 

@@ -35,6 +35,8 @@ def main() -> None:
                         help="YouTube maximum playback height; lower-quality fallback")
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV hardware decode mode")
+    parser.add_argument("--gui-control", action="store_true",
+                        help="accept validated Qt player controls from stdin and publish status")
     parser.add_argument("--mpv-wid", type=int, metavar="HWND",
                         help="embed MPV into the supplied Windows native widget handle")
     parser.add_argument("--rtx-vsr", action="store_true",
@@ -81,6 +83,8 @@ def main() -> None:
         cfg.mpv.hwdec = args.hwdec
     if args.rtx_vsr:
         cfg.mpv.rtx_vsr = True
+    if args.gui_control and not args.mpv_wid:
+        parser.error("--gui-control requires --mpv-wid")
     if args.mpv_wid is not None:
         if sys.platform != "win32" or args.mpv_wid <= 0:
             parser.error("--mpv-wid requires a positive Windows HWND")
@@ -268,6 +272,23 @@ def main() -> None:
             player = MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache)
             outputs.append(player)
             dual.playback_position = player.playback_position
+            if args.gui_control:
+                from .gui_control import parse_command
+
+                def gui_command_reader():
+                    # QProcess stdin is an owned pipe. Blocking readline happens
+                    # only on this daemon thread, never in the ASR/MPV scheduler.
+                    while not stop.is_set():
+                        line = sys.stdin.buffer.readline()
+                        if not line:
+                            return
+                        command = parse_command(line.decode("utf-8", errors="replace"))
+                        if command is not None:
+                            player.queue_gui_command(*command)
+
+                threading.Thread(
+                    target=gui_command_reader, name="gui-command-reader", daemon=True,
+                ).start()
         except BaseException:
             dual.release()
             ingest.stop()

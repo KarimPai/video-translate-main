@@ -49,16 +49,17 @@ def main() -> int:
         if "--smoke-test" in sys.argv:
             from PySide6.QtCore import QTimer
             from PySide6.QtWidgets import QApplication
-            # Use the regular startup, with a tiny scheduled exit. The Qt
-            # event loop is still exercised by the real GUI entry point.
-            original_exec = QApplication.exec
-
-            def short_exec(self):
-                QTimer.singleShot(150, self.quit)
-                return original_exec(self)
-
-            QApplication.exec = short_exec
-        result = start_gui()
+            from auto_translate.gui import VideoTranslateWindow
+            from auto_translate.gui_runner import discover_project_root
+            app = QApplication([])
+            window = VideoTranslateWindow(discover_project_root())
+            window.show()
+            QTimer.singleShot(250, app.quit)
+            result = app.exec()
+            window.close()
+            record("GUI offscreen smoke test completed")
+        else:
+            result = start_gui()
         record(f"Qt application exited: {result}")
         return int(result)
     except BaseException:

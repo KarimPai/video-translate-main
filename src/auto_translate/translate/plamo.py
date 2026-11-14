@@ -139,7 +139,7 @@ def _translation_context(vod_title: str, *, neutral_retry: bool = False, profile
     if neutral_retry:
         context += " " + _STRICT_NEUTRAL_RETRY_CONTEXT
     if vod_title:
-        return f"Video title: {vod_title}\\n{context}"
+        return f"Video title: {vod_title}\n{context}"
     return context
 
 
@@ -152,6 +152,15 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
     if not source or not translation or len(source) > 180 or len(translation) > 240:
         return False
     if unsupported_person_reference(source, translation):
+        return False
+    # High-confidence polarity inversions in common police radio commands
+    # must not be learned as authoritative examples.
+    inversions = (
+        (r"待って|待て", r"\\b(?:don't|do not|never)\\s+wait\\b"),
+        (r"止まって|止まれ", r"\\b(?:don't|do not|never)\\s+stop\\b"),
+    )
+    if any(re.search(jp, source) and re.search(en, translation, re.I)
+           for jp, en in inversions):
         return False
     terms = _current_glossary_matches(source, vod_title, glossary)
     return suspicious_translation(source, translation, names=terms) is None
@@ -420,7 +429,7 @@ class PlamoTranslator:
             previous = (rejected_sources[-2:] if compact else
                         [source.strip()[:100] for source, _ in dialogue_history[-2:] if source.strip()])
             if previous:
-                source_hint = ("\\nRecent Japanese (context only, not speech to translate; "
+                source_hint = ("\nRecent Japanese (context only, not speech to translate; "
                                "never infer speaker gender from it): " + " / ".join(previous))
         fragment_hint = ""
         if (self.cfg.fragment_context and dialogue_history

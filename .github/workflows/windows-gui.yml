@@ -54,28 +54,49 @@ jobs:
           window._on_player_event({"event": "ready", "live": False, "duration": 5400.0})
           window._on_player_event({"event": "status", "live": False, "duration": 5400.0,
                                    "position": 1280.2, "paused": False})
-          assert window.seek_slider.isEnabled()
+          assert not window.seek_slider.isEnabled()
+          assert not window.pause_button.isEnabled()
           assert window.seek_slider.maximum() == 5400
           assert window.seek_slider.value() == 1280
           assert window.time_label.text() == "21:20 / 1:30:00"
 
-          # Exercise real Qt mouse input, not only slider values set in code.
-          # A groove click formerly changed the slider without seeking MPV.
           import json
-          from PySide6.QtCore import QProcess, Qt, QPoint
+          import subprocess
+          import sys
+          import time
+          from PySide6.QtCore import Qt, QPoint
           from PySide6.QtTest import QTest
+          from auto_translate.gui_control import parse_event
 
-          class BackendProbe:
-              def __init__(self):
-                  self.commands = []
-              def state(self):
-                  return QProcess.ProcessState.Running
-              def write(self, data):
-                  self.commands.append(json.loads(bytes(data).decode().strip()))
-                  return len(data)
-
-          probe = BackendProbe()
-          window.process = probe
+          # Use the real windowless backend reader with deliberately closed stdin.
+          options = window._listen_for_control()
+          receiver = subprocess.Popen([
+              str(Path(sys.executable).with_name("pythonw.exe")), "-u", "-c",
+              "import sys; from auto_translate.gui_control import read_control_socket; "
+              "import json; read_control_socket(int(sys.argv[1]), sys.argv[2], "
+              "lambda a,v: print(json.dumps(dict(action=a,value=v)), flush=True))",
+              options[1], options[3],
+          ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+          import queue
+          import threading
+          lines = queue.Queue()
+          def collect_output():
+              for line in receiver.stdout:
+                  lines.put(line)
+          threading.Thread(target=collect_output, daemon=True).start()
+          def wait_until(predicate):
+              deadline = time.monotonic() + 8
+              while not predicate():
+                  assert time.monotonic() < deadline, "GUI control handshake timed out"
+                  app.processEvents()
+                  time.sleep(.01)
+          wait_until(lambda: window._control_socket is not None)
+          ready = parse_event(lines.get(timeout=5).strip())
+          assert ready == {"event": "control_ready"}
+          window._on_player_event(ready)
+          assert window.seek_slider.isEnabled() and window.pause_button.isEnabled()
+          def next_command():
+              return json.loads(lines.get(timeout=5))
           window.seek_slider.setFocus()
           QTest.mouseClick(
               window.seek_slider, Qt.MouseButton.LeftButton,
@@ -83,16 +104,16 @@ jobs:
                          window.seek_slider.height() // 2),
           )
           app.processEvents()
-          assert probe.commands[-1]["action"] == "seek", probe.commands
-          assert 3300 < probe.commands[-1]["value"] < 4700, probe.commands
+          cmd = next_command()
+          assert cmd["action"] == "seek" and 3300 < cmd["value"] < 4700, cmd
 
           # Drag completion and keyboard control must dispatch too.
           window.seek_slider.setSliderDown(True)
           window.seek_slider.setValue(3400)
           window.seek_slider.setSliderDown(False)
-          assert probe.commands[-1]["value"] == 3400
+          assert next_command()["value"] == 3400
           QTest.keyClick(window.seek_slider, Qt.Key.Key_Right)
-          assert probe.commands[-1]["value"] == window.seek_slider.value()
+          assert next_command()["value"] == window.seek_slider.value()
           window._on_player_event({"event": "seek_ack", "accepted": True, "target": 3401})
           assert window._pending_seek_target == 3401
 
@@ -128,8 +149,8 @@ jobs:
               pos=QPoint(int(window.seek_slider.width() * 0.6),
                          window.seek_slider.height() // 2),
           )
-          assert probe.commands[-1]["action"] == "seek"
-          assert 2600 < probe.commands[-1]["value"] < 3800
+          cmd = next_command()
+          assert cmd["action"] == "seek" and 2600 < cmd["value"] < 3800, cmd
 
           # Do not hide the bar while the VOD seek slider is being dragged.
           window.seek_slider.setSliderDown(True)
@@ -156,7 +177,16 @@ jobs:
                                    "duration": None, "paused": False})
           assert not window.seek_slider.isEnabled()
           assert "LIVE" in window.time_label.text()
-          window.process = None
+          window._on_player_event({"event": "status", "live": False, "duration": 18000})
+          window._request_seek(17190)
+          # Releasing the handle earlier can have queued another seek.
+          while next_command() != {"action": "seek", "value": 17190}:
+              pass
+          receiver.terminate()
+          receiver.wait(timeout=5)
+          wait_until(lambda: not window._control_ready)
+          assert not window.seek_slider.isEnabled() and not window.pause_button.isEnabled()
+          assert "channel lost" in window.status.text()
           window.close()
           '@ | Set-Content -LiteralPath gui_controls_smoke.py -Encoding utf8
           python gui_controls_smoke.py
@@ -181,17 +211,6 @@ jobs:
           assert proc.exitCode() == 0, (proc.exitCode(), output)
           assert "GUI_PIPE_OK" in output and "ERROR_PIPE_OK" in output, output
 
-          # Confirm a windowless Python backend can receive Qt seek commands.
-          receiver = QProcess()
-          receiver.start(str(pyw), [
-              "-u", "-c",
-              "import sys; line=sys.stdin.buffer.readline(); sys.stdout.buffer.write(line); sys.stdout.buffer.flush()"
-          ])
-          assert receiver.waitForStarted(15000), receiver.errorString()
-          expected = b'{"action":"seek","value":42}\n'
-          assert receiver.write(expected) == len(expected)
-          assert receiver.waitForFinished(15000), receiver.errorString()
-          assert bytes(receiver.readAllStandardOutput()) == expected
           '@ | Set-Content -LiteralPath gui_pipe_smoke.py -Encoding utf8
           python gui_pipe_smoke.py
       - name: Confirm Windows helper processes create no console

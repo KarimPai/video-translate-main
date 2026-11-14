@@ -36,7 +36,9 @@ def main() -> None:
     parser.add_argument("--hwdec", choices=("no", "auto-safe"),
                         help="MPV hardware decode mode")
     parser.add_argument("--gui-control", action="store_true",
-                        help="accept validated Qt player controls from stdin and publish status")
+                        help="accept validated Qt player controls over loopback")
+    parser.add_argument("--gui-control-port", type=int)
+    parser.add_argument("--gui-control-token")
     parser.add_argument("--mpv-wid", type=int, metavar="HWND",
                         help="embed MPV into the supplied Windows native widget handle")
     vsr_option = parser.add_mutually_exclusive_group()
@@ -88,6 +90,9 @@ def main() -> None:
         cfg.mpv.rtx_vsr = True
     elif args.no_rtx_vsr:
         cfg.mpv.rtx_vsr = False
+    if args.gui_control and not (args.gui_control_token and args.gui_control_port
+                                 and 0 < args.gui_control_port <= 65535):
+        parser.error("GUI control socket missing. Update the GUI launcher and backend together.")
     if args.gui_control and not args.mpv_wid:
         parser.error("--gui-control requires --mpv-wid")
     if args.mpv_wid is not None:
@@ -278,30 +283,11 @@ def main() -> None:
             outputs.append(player)
             dual.playback_position = player.playback_position
             if args.gui_control:
-                from .gui_control import parse_command
-
-                def gui_command_reader():
-                    # QProcess stdin is an owned pipe. Blocking readline happens
-                    # only on this daemon thread, never in the ASR/MPV scheduler.
-                    log.info("GUI player command channel ready")
-                    try:
-                        while not stop.is_set():
-                            line = sys.stdin.buffer.readline()
-                            if not line:
-                                log.warning("GUI player command pipe closed")
-                                return
-                            command = parse_command(
-                                line.decode("utf-8", errors="replace")
-                            )
-                            if command is None:
-                                log.warning("GUI player rejected malformed command")
-                                continue
-                            player.queue_gui_command(*command)
-                    except (OSError, ValueError) as exc:
-                        log.error("GUI player command pipe failed: %s", exc)
-
+                from .gui_control import read_control_socket
                 threading.Thread(
-                    target=gui_command_reader, name="gui-command-reader", daemon=True,
+                    target=read_control_socket,
+                    args=(args.gui_control_port, args.gui_control_token, player.queue_gui_command),
+                    name="gui-command-reader", daemon=True,
                 ).start()
         except BaseException:
             dual.release()

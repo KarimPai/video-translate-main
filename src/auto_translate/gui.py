@@ -6,6 +6,9 @@ Python backend used by Start translate.bat and native MPV renders into a HWND.
 import codecs
 import json
 import logging
+import secrets
+import select
+import socket
 import sys
 import time
 from pathlib import Path
@@ -119,6 +122,14 @@ class VideoTranslateWindow(QMainWindow):
         self.setWindowTitle("Video Translate - Dual ASR")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
+        self._control_server = None
+        self._control_socket = None
+        self._control_peers = {}
+        self._control_ready = False
+        self._control_lost = False
+        self._control_timer = QTimer(self)
+        self._control_timer.setInterval(50)
+        self._control_timer.timeout.connect(self._poll_control)
         self._build_ui()
         # Qt mouse events never reach the host while embedded native MPV owns
         # its HWND. Poll the global pointer instead of relying on enter/move.
@@ -284,6 +295,94 @@ class VideoTranslateWindow(QMainWindow):
             except OSError:
                 pass
 
+    def _listen_for_control(self):
+        self._close_control()
+        self._control_lost = False
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            server.bind(("127.0.0.1", 0))
+            server.listen(4)
+            server.setblocking(False)
+        except OSError:
+            server.close()
+            raise
+        self._control_server = server
+        self._control_token = secrets.token_hex(32)
+        self._control_timer.start()
+        return ["--gui-control-port", str(server.getsockname()[1]),
+                "--gui-control-token", self._control_token]
+
+    def _close_control(self):
+        self._control_timer.stop()
+        for peer in self._control_peers:
+            peer.close()
+        self._control_peers.clear()
+        for sock in (self._control_socket, self._control_server):
+            if sock is not None:
+                sock.close()
+        self._control_socket = self._control_server = None
+        self._control_ready = False
+
+    def _control_disconnected(self):
+        self._close_control()
+        self._pending_seek_target = None
+        self._update_seek_buttons()
+        if not self._control_lost and not self._stopping:
+            self._control_lost = True
+            self.status.setText("Seek channel lost. See Console.")
+            self._write_console("GUI: seek channel lost. Restart translation to reconnect.\n")
+
+    def _poll_control(self):
+        # Nonblocking sockets keep Qt responsive and reuse the packaged Qt runtime.
+        try:
+            if self._control_socket is not None:
+                if select.select([self._control_socket], [], [], 0)[0]:
+                    # Backend-to-GUI events use stdout. Readability here means
+                    # EOF or unexpected protocol data.
+                    self._control_disconnected()
+                return
+            server = self._control_server
+            if server is None:
+                return
+            if select.select([server], [], [], 0)[0]:
+                peer, _ = server.accept()
+                peer.setblocking(False)
+                if len(self._control_peers) >= 8:
+                    peer.close()
+                else:
+                    self._control_peers[peer] = (b"", time.monotonic() + 5)
+            for peer, (data, deadline) in list(self._control_peers.items()):
+                if time.monotonic() < deadline:
+                    try:
+                        chunk = peer.recv(128)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        chunk = b""
+                    data += chunk
+                    if chunk and b"\n" not in data and len(data) <= 64:
+                        self._control_peers[peer] = (data, deadline)
+                        continue
+                    if secrets.compare_digest(data, self._control_token.encode() + b"\n"):
+                        try:
+                            peer.sendall(b"OK\n")
+                        except OSError:
+                            pass
+                        else:
+                            del self._control_peers[peer]
+                            self._control_socket = peer
+                            server.close()
+                            self._control_server = None
+                            for other in self._control_peers:
+                                other.close()
+                            self._control_peers.clear()
+                            return
+                del self._control_peers[peer]
+                peer.close()
+        except OSError as exc:
+            self._write_console(f"GUI control socket error: {exc}\n")
+            self._control_disconnected()
+
     def _new_process(self) -> QProcess:
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -313,6 +412,7 @@ class VideoTranslateWindow(QMainWindow):
             qenv = QProcessEnvironment()
             for key, value in env.items():
                 qenv.insert(key, value)
+            args.extend(self._listen_for_control())
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Cannot start translation", str(exc))
             return
@@ -371,10 +471,10 @@ class VideoTranslateWindow(QMainWindow):
         self._ready = True
         self.setup_panel.setVisible(False)
         self.tabs.setCurrentWidget(self.player_tab)
-        self.pause_button.setEnabled(True)
         self.fullscreen_button.setEnabled(True)
         self._update_seek_buttons()
-        self.status.setText("Running. MPV is embedded; translations appear in Console.")
+        if not self._control_lost:
+            self.status.setText("Running." if self._control_ready else "Waiting for player controls...")
 
     @staticmethod
     def _format_time(value: float | None) -> str:
@@ -400,7 +500,8 @@ class VideoTranslateWindow(QMainWindow):
         self.pause_button.setText("Pause")
 
     def _update_seek_buttons(self):
-        seekable = bool(self._ready and not self._live and
+        self.pause_button.setEnabled(self._ready and self._control_ready)
+        seekable = bool(self._ready and self._control_ready and not self._live and
                         self._duration_s is not None and self._duration_s > 0)
         for widget in (self.rewind_button, self.forward_button, self.seek_slider):
             widget.setEnabled(seekable)
@@ -409,6 +510,16 @@ class VideoTranslateWindow(QMainWindow):
 
     def _on_player_event(self, event: dict):
         action = event.get("event")
+        if action == "control_ready":
+            if self._control_socket is not None:
+                self._control_ready = True
+                self._update_seek_buttons()
+                if self._ready:
+                    self.status.setText("Running.")
+            return
+        if action == "control_closed":
+            self._control_disconnected()
+            return
         if action == "toggle_fullscreen":
             self.toggle_fullscreen()
             return
@@ -463,18 +574,15 @@ class VideoTranslateWindow(QMainWindow):
                         )
 
     def _send_player_command(self, action: str, value: float | None = None) -> bool:
-        if (not self._ready or self.process is None or
-                self.process.state() != QProcess.ProcessState.Running):
-            self.status.setText("Player command unavailable: translation backend is not ready.")
+        if not (self._ready and self._control_ready and self._control_socket is not None):
             return False
         message = {"action": action}
         if value is not None:
             message["value"] = float(value)
-        written = self.process.write(
-            (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
-        )
-        if written < 0:
-            self.status.setText("Could not send command to translation backend; check Console.")
+        try:
+            self._control_socket.sendall((json.dumps(message) + "\n").encode("utf-8"))
+        except OSError:
+            self._control_disconnected()
             return False
         return True
 
@@ -622,6 +730,7 @@ class VideoTranslateWindow(QMainWindow):
         self._session_finished(reason)
 
     def _session_finished(self, reason: str):
+        self._close_control()
         if self.process is not None:
             self.process.deleteLater()
             self.process = None
@@ -639,6 +748,7 @@ class VideoTranslateWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self._closing = True
+        self._close_control()
         if self.process is not None:
             self.process.kill()
             self.process.waitForFinished(3000)

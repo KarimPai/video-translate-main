@@ -52,7 +52,7 @@ class GuiRunnerTests(unittest.TestCase):
             self.assertEqual(args[args.index("--mpv-wid") + 1], "24680")
             self.assertEqual(args[args.index("--video-quality") + 1], "720")
             for flag in ("-u", "--mpv", "--no-web", "--shared-gpu-playback",
-                         "--simple-terminal", "--hwdec"):
+                         "--simple-terminal", "--hwdec", "--gui-control"):
                 self.assertIn(flag, args)
             self.assertEqual(args[3], "https://www.youtube.com/live/jd7Bp0prwiI?si=x")
             for bad in (0, -1):

@@ -17,6 +17,8 @@ import queue
 import re
 import shutil
 import subprocess
+
+from .windows_subprocess import hidden_console_flags
 import tempfile
 import threading
 import time
@@ -487,6 +489,7 @@ class Ingest:
                 cwd=str(Path(self.video_playlist).parent),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                creationflags=hidden_console_flags(),
             )
 
             self._video_proc = proc
@@ -746,6 +749,7 @@ class Ingest:
                     capture_output=True,
                     text=True,
                     check=True,
+                    creationflags=hidden_console_flags(),
                 ).stdout.split()
         return self._inputs
 
@@ -955,6 +959,7 @@ class Ingest:
             capture_output=True,
             text=True,
             check=True,
+            creationflags=hidden_console_flags(),
         ).stdout.split()
         if not audio_urls:
             raise RuntimeError("yt-dlp did not return an audio stream URL")
@@ -1118,6 +1123,7 @@ class Ingest:
                         stdin=stdin,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE if self.video_out else None,
+                        creationflags=hidden_console_flags(),
                     )
 
                     procs.append(p)

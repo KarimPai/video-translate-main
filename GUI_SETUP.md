@@ -27,6 +27,23 @@ or translation models. Installation may require internet access.
    transcripts, English translations, and backend logs.
 6. Choose **Stop Translation** to restore the setup controls; the URL is retained.
 
+## RTX Video Super Resolution (VSR)
+
+In the quality selector, choose **480p** to enable the optional **RTX VSR
+(480p → 1440p)** checkbox. VSR is **off by default**. If enabled, the GUI
+passes `--rtx-vsr` to the existing backend; if unchecked or another quality is
+selected, it explicitly passes `--no-rtx-vsr` (also overrides a prior
+`config.toml` preference for the GUI session).
+
+The existing MPV D3D11 path requests **3× NVIDIA scaling** only if the actual
+source is confirmed at **480p or lower**. Enable NVIDIA RTX VSR and choose
+**High** in NVIDIA's video settings separately. MPV accepting the filter does
+**not prove** the NVIDIA driver applied VSR; see the **Console** tab and
+`logs/mpv.log` / `logs/run.log` for diagnostics. MPV falls back to normal
+scaling if the source or filtering prerequisites fail, without changing
+translation, seeking or live subtitle alignment. The 1440p target assumes an
+actual 480p source; fallback to lower-quality video may produce less than 1440p.
+
 ## Playback controls
 
 The **Player** tab has a complete **VOD timeline** showing the current playback

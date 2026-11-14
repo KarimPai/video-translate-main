@@ -4,6 +4,8 @@
 
 - Haas-ja-v1.0 (Vulkan) remains primary; Whisper Large-v3 Turbo (CTranslate2 `int8_float16` CUDA) replaces Parakeet and runs in a restartable subprocess.
 - Original 16 kHz Japanese speech goes to both ASRs. LFM2.5-JP selects A=Haas, B=Whisper Turbo, U=uncertain; PLaMo 3 Translate 2B generates English subtitles.
+- Whisper receives **no static Hololive name prompt** (even if an old `config.toml` says `whisper_name_hints = true`). One-sided isolated `ラプラス・ダークネス` claims are suppressed on strong dual-ASR disagreement; corroborated names are kept.
+- For Hololive subtitles, `ラプラス`, `ラプラス・ダークネス`, and `ラプラスダークネス` are rendered simply **Laplus** in English. English post-processing also shortens stray `La+ Darknesss` variants when the Japanese contains Laplus; it does not add names based on title alone.
 - CPU VoxLingua107 still drops only high-confidence English and Indonesian audio before either ASR; it does **not** translate or display either spoken language. Ambiguous code-switching continues as Japanese.
 - Physical GPU headroom gating is retained, with no artificial 7.5-GB ceiling. LFM GPU offload falls back to CPU, and a failed secondary gracefully falls back to Haas. PLaMo remains capped at 12 GPU layers on RTX 3070-class cards.
 - Download: the public HF CTranslate2 checkpoint `h2oai/faster-whisper-large-v3-turbo` (~1.6 GB) is fetched automatically once. No CrispASR executable or Parakeet GGUF is needed. Logs: `logs/run.log`, `logs/whisper-turbo.log`, `logs/asr-comparison.jsonl`, `logs/reconciler.log`.

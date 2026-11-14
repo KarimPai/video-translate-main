@@ -7,6 +7,10 @@ on:
     paths:
       - "src/auto_translate/gui.py"
       - "src/auto_translate/gui_runner.py"
+      - "src/auto_translate/windows_subprocess.py"
+      - "Start GUI.vbs"
+      - "Start GUI.bat"
+      - "tests/test_gui_runner.py"
       - ".github/workflows/windows-gui.yml"
 
 jobs:
@@ -26,6 +30,11 @@ jobs:
           $env:PYTHONPATH = "src"
           $env:QT_QPA_PLATFORM = "offscreen"
           python -c "from pathlib import Path; from PySide6.QtWidgets import QApplication; from auto_translate.gui import VideoTranslateWindow; app=QApplication([]); w=VideoTranslateWindow(Path.cwd()); w.show(); app.processEvents(); assert w.quality.currentData()==720; w._session_ready(); assert not w.setup_panel.isVisible(); w._session_finished('Stopped.'); assert w.setup_panel.isVisible(); w.close()"
+      - name: Verify pythonw remains windowless with working Qt output pipes
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python -c "import sys; from pathlib import Path; from PySide6.QtCore import QCoreApplication, QProcess; app=QCoreApplication([]); p=QProcess(); p.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels); p.start(str(Path(sys.executable).with_name('pythonw.exe')), ['-u','-c', 'import sys; print(\"GUI_PIPE_OK\", flush=True); print(\"ERROR_PIPE_OK\", file=sys.stderr, flush=True)']); assert p.waitForFinished(15000),p.errorString(); out=bytes(p.readAllStandardOutput()).decode('utf-8'); assert p.exitCode()==0,(p.exitCode(),out); assert 'GUI_PIPE_OK' in out and 'ERROR_PIPE_OK' in out,out"
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
       - name: Upload frontend artifact

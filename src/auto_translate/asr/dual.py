@@ -3,14 +3,12 @@ import re
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
-import urllib.error
+from concurrent.futures import CancelledError
 
 import numpy as np
 
 from ..text_filter import is_usable_transcript
 from .whisper_turbo import WhisperTurboASR
-from .language_router import classify_language
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import clause_differences, compare, scene_repair
@@ -19,15 +17,6 @@ from .quality_guard import (transcript_problem, disagreement_unresolved,
 
 log = logging.getLogger(__name__)
 SECONDARY = "whisper-large-v3-turbo"
-
-
-@dataclass(frozen=True)
-class LanguageProbe:
-    """Legacy optional language probe, unused by Japanese-only Whisper Turbo."""
-    text: str
-    language: str | None
-    route: str
-    elapsed_s: float
 
 
 class DualASR:
@@ -44,32 +33,98 @@ class DualASR:
         self.pending = None
         self.playback_position = lambda: None
         self.session_id = str(time.time_ns())
-        self.language_routing_supported = True
-        self.language_failures = 0
-        self.previous_english_end_s = None
-        self.previous_english_generation = None
+        self.closed = False
+        self.failures = 0
+        self.retry_at = 0.0
+        self._restart_thread = None
+        self._decoding_worker = None
         if not cfg.dual_asr.enabled or self.mode == "off":
             return
         try:
-            # Admission includes MPV, VAD, model scratch and Windows headroom.
-            if cfg.dual_asr.secondary_device == "cuda" and not budget.admits(1.9):
-                raise RuntimeError("insufficient measured GPU headroom for secondary ASR")
-            self.worker = WhisperTurboASR(
-                model=cfg.dual_asr.secondary_model,
-                device=cfg.dual_asr.secondary_device,
-                compute_type=cfg.dual_asr.secondary_compute_type,
-                beam_size=cfg.dual_asr.secondary_beam_size,
-            )
-            if cfg.dual_asr.secondary_device == "cuda" and not budget.admits(0.3):
-                raise RuntimeError("secondary ASR exceeded its startup reservation")
-            log.info("Secondary %s ready on %s (%s)", SECONDARY,
-                     cfg.dual_asr.secondary_device, self.mode)
+            self.worker = self._create_worker()
         except Exception as exc:
-            log.warning("Haas + PLaMo fallback: %s", exc)
-            self.release()
+            # A cold-start OOM or transient CUDA failure is not permanent.
+            self._defer_restart(exc)
             return
+        log.info("Secondary %s ready on %s (%s)", SECONDARY,
+                 cfg.dual_asr.secondary_device, self.mode)
         if cfg.reconciler.enabled:
             self._start_selector(cfg.reconciler.gpu_layers)
+
+    def _create_worker(self):
+        # Admission includes MPV, VAD, model scratch and Windows headroom.
+        if self.cfg.dual_asr.secondary_device == "cuda" and not self.budget.admits(1.9):
+            raise RuntimeError("insufficient measured GPU headroom for secondary ASR")
+        worker = WhisperTurboASR(
+            model=self.cfg.dual_asr.secondary_model,
+            device=self.cfg.dual_asr.secondary_device,
+            compute_type=self.cfg.dual_asr.secondary_compute_type,
+            beam_size=self.cfg.dual_asr.secondary_beam_size,
+        )
+        if self.cfg.dual_asr.secondary_device == "cuda" and not self.budget.admits(0.3):
+            worker.close()
+            raise RuntimeError("secondary ASR exceeded its startup reservation")
+        return worker
+
+    def _defer_restart(self, reason):
+        with self.lock:
+            if self.closed:
+                return
+            self.failures += 1
+            delay = min(2 ** min(self.failures, 6), 60)
+            self.retry_at = time.monotonic() + delay
+        log.warning("Secondary ASR unavailable (%s); will retry after %ss (failure %d)",
+                    reason, delay, self.failures)
+
+    def _retire_worker(self, worker, reason):
+        """Retire only the failed/cancelled Whisper process, not the selector."""
+        with self.lock:
+            if self.closed or self.worker is not worker:
+                return
+            self.worker = None
+            if self._decoding_worker is worker:
+                self._decoding_worker = None
+        # Close outside lock: multiprocessing join can take seconds on Windows.
+        worker.close()
+        self._defer_restart(reason)
+
+    def _maybe_restart(self):
+        """Restart asynchronously: model startup must never block live playback."""
+        with self.lock:
+            if (self.closed or self.worker is not None or
+                    (self._restart_thread and self._restart_thread.is_alive()) or
+                    time.monotonic() < self.retry_at):
+                return
+            self._restart_thread = threading.Thread(
+                target=self._restart_worker, name="whisper-turbo-restart", daemon=True)
+            self._restart_thread.start()
+
+    def _restart_worker(self):
+        try:
+            worker = self._create_worker()
+        except Exception as exc:
+            self._defer_restart(exc)
+            return
+        with self.lock:
+            closed = self.closed
+            if not closed:
+                self.worker = worker
+                self.failures = 0
+                self.retry_at = 0.0
+        if closed:
+            worker.close()
+            return
+        log.info("Secondary Whisper Turbo recovered; dual ASR enabled")
+        if self.cfg.reconciler.enabled and self.selector is None and not self.closed:
+            self._start_selector(self.cfg.reconciler.gpu_layers)
+
+    def _interrupt_decode(self):
+        """Kill a discarded in-flight decode without waiting on the ASR thread."""
+        with self.lock:
+            worker = self._decoding_worker
+        if worker is not None:
+            threading.Thread(target=self._retire_worker, args=(worker, "cancelled cue"),
+                             name="whisper-turbo-cancel", daemon=True).start()
 
     def _start_selector(self, layers):
         # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
@@ -107,9 +162,12 @@ class DualASR:
         selector.close()
 
     def release(self):
+        """Permanent shutdown, reserved for GPU pressure or session exit."""
         with self.lock:
+            self.closed = True
             worker, selector = self.worker, self.selector
             self.worker = self.selector = None
+            self._decoding_worker = None
         if worker or selector:
             log.warning("Releasing optional models for the rest of this session")
         try:
@@ -135,10 +193,6 @@ class DualASR:
                 self.generation = generation
             self.history.append(text[:160])
 
-    def preflight_language(self, utt, current=None):
-        """Whisper Turbo JA is Japanese-only; do not attempt language detection."""
-        return None
-
     def log_fallback(self, utt, primary, elapsed, reason):
         append_comparison(dict(stage="asr_fallback", session_id=self.session_id,
                                generation=utt.generation, start_s=round(utt.start_s, 3),
@@ -149,8 +203,12 @@ class DualASR:
     def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
-        if self.worker is None or (self.pending and self.pending.is_alive()):
-            self.log_fallback(utt, primary, primary_elapsed_s, "secondary_unavailable" if self.worker is None else "worker_busy")
+        if self.worker is None:
+            self._maybe_restart()
+            self.log_fallback(utt, primary, primary_elapsed_s, "secondary_restarting")
+            return None
+        if self.pending and self.pending.is_alive():
+            self.log_fallback(utt, primary, primary_elapsed_s, "worker_busy")
             return None
         # Backpressure must not extend an otherwise usable primary transcript.
         # Still allow rescue when Haas missed speech entirely.
@@ -168,7 +226,7 @@ class DualASR:
 
         def recognize():
             try:
-                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, prefetched)
+                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, prefetched, cancel_event=cancelled)
             except Exception:
                 log.exception("Optional recognition failed at %.3fs", utt.start_s)
             finally:
@@ -185,12 +243,13 @@ class DualASR:
             if (time.monotonic() >= deadline or generation() != utt.generation
                     or (backlog() and (self.live or is_usable_transcript(primary)))):
                 cancelled.set()
+                self._interrupt_decode()
                 self.log_fallback(utt, primary, primary_elapsed_s, "deadline_generation_or_backlog")
                 return None
         self.pending.join()
         return result[0]
 
-    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
+    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None, cancel_event=None):
         """Return corroborated Japanese, an abstention, or None for the Haas path."""
         worker, selector = self.worker, self.selector
         duration = utt.end_s - utt.start_s
@@ -231,15 +290,27 @@ class DualASR:
                 started = time.perf_counter()
                 # Never seed short audio with talent names: this can turn unrelated
                 # speech into a plausible but unspoken character name.
-                secondary = worker.transcribe(utt.audio, timeout=secondary_budget)
+                with self.lock:
+                    self._decoding_worker = worker
+                try:
+                    secondary = worker.transcribe(utt.audio, timeout=secondary_budget,
+                                                  cancel_event=cancel_event)
+                finally:
+                    with self.lock:
+                        if self._decoding_worker is worker:
+                            self._decoding_worker = None
                 secondary_elapsed_s = time.perf_counter() - started
             log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
+        except CancelledError:
+            self._retire_worker(worker, "cancelled cue")
+            return None
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)
-            self.release()
+            self._retire_worker(worker, exc)
             return fallback("secondary_failure")
-        if current and current() != utt.generation:
+        if (cancel_event is not None and cancel_event.is_set()) or (
+                current and current() != utt.generation):
             return ""
         log.debug("ASR generation=%d %.3f-%.3f Haas=%r Whisper Turbo=%r",
                   utt.generation, utt.start_s, utt.end_s, primary, secondary)

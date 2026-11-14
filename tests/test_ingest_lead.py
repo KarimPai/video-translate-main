@@ -86,12 +86,13 @@ class PlaybackPacingTests(unittest.TestCase):
         player.ipc = Mock()
         player.ipc.get.side_effect = lambda name: True if name == "pause" else None
         player.ipc.command.side_effect = lambda *args: player.stop.set()
-        player._replay_requested = lambda: False
-        player._jump_request = lambda: 0
+        player._read_player_events = lambda: (False, 0.0)
+        player._pending_seek = None
+        player._native_seek_at = None
         player._check_vsr_health = lambda: None
         player._lock = threading.Lock()
         player._lines = []
-        with patch("auto_translate.output.mpv.time.monotonic", side_effect=[0, 0, 5]):
+        with patch("auto_translate.output.mpv.time.monotonic", side_effect=[0, 5, 5]):
             player._play_session(False)
         player.ingest.first_pts_ready.wait.assert_not_called()
         player.ipc.command.assert_called_once_with("set_property", "pause", False)

@@ -52,6 +52,7 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     try:
         raw = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=True,

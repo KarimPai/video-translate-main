@@ -421,6 +421,7 @@ class VideoTranslateWindow(QMainWindow):
                 if isinstance(target, (int, float)):
                     # The backend may clamp seeks near a VOD's end.
                     self._pending_seek_target = float(target)
+                    self._pending_seek_until = time.monotonic() + 15.0
                 self.status.setText(
                     f"MPV accepted seek to {self._format_time(target)}."
                 )

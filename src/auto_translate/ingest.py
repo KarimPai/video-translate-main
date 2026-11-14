@@ -746,6 +746,7 @@ class Ingest:
 
                 self._inputs = subprocess.run(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     check=True,
@@ -956,6 +957,7 @@ class Ingest:
         resolve_cmd += _cookie_args(self.cfg) + [self.source.location]
         audio_urls = subprocess.run(
             resolve_cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=True,

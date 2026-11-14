@@ -188,6 +188,8 @@ def run_asr(
             continue
         text = asr.transcribe(utt.audio, utt.probe)
         primary_elapsed_s = time.monotonic() - utt.timings.asr_start
+        if get_generation is not None and utt.generation != get_generation():
+            continue
         choice = (dual.select_segment(utt, text, vod_title,
                                       lambda: (in_q.qsize() > (1 if live else 5)
                                                or out_q.qsize() > (1 if live else 5)), get_generation,

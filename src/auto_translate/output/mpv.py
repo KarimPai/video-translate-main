@@ -406,8 +406,8 @@ class MpvOutput:
         # derive a new offset from the restarted FFmpeg audio reader on seek.
         # Local fMP4 fallback retains its separate anchored timeline.
         self._uses_original_timeline = False
-        self._last_direct_pos: float | None = None
-        self._last_direct_sample_at = 0.0
+        self._pending_seek: tuple[float, float, bool] | None = None
+        self._native_seek_at: float | None = None
         self._last_live_mpv_pos: float | None = None
         self._last_live_sample_at: float | None = None
         self._manually_paused = False
@@ -474,8 +474,8 @@ class MpvOutput:
                 else []
             ),
 
-            # Use MPV's built-in native on-screen controller.
-            "--osc=yes",
+            # The embedded player already has a Qt timeline.
+            "--osc=no" if cfg.window_id else "--osc=yes",
             "--osd-on-seek=no",
             "--no-input-default-bindings",
             f"--input-conf={GUI_INPUT_CONF if cfg.window_id else INPUT_CONF}",
@@ -969,11 +969,6 @@ class MpvOutput:
         # Do not anchor live captions to that unstable startup sample.
         if current_pos is not None and not self.ingest.source.live:
             self._mpv_anchor = float(current_pos)
-        self._last_direct_pos = (
-            float(current_pos) if current_pos is not None else None
-        )
-        self._last_direct_sample_at = time.monotonic()
-
         if self.ingest.source.live:
             unpause_at = (
                 self.ingest.first_pts_at
@@ -1024,7 +1019,8 @@ class MpvOutput:
             # User input overrides the optional translation prebuffer. Never
             # force MPV back to pause immediately after its Play button is used.
             # Once manually playing, do not auto-pause for low translation lead.
-            if paused and self.ipc.get("pause") is False:
+            mpv_paused = self.ipc.get("pause")
+            if paused and mpv_paused is False:
                 paused = False
                 unpause_at = None
                 log.info(
@@ -1041,6 +1037,7 @@ class MpvOutput:
                 )
 
                 paused = False
+                mpv_paused = False
                 unpause_at = None
 
                 log.info(
@@ -1049,41 +1046,19 @@ class MpvOutput:
                 )
 
             self._manually_paused = (
-                not paused and self.ipc.get("pause") is True
+                not paused and mpv_paused is True
             )
-            if (pos := self.ipc.get("time-pos")) is not None:
+            replay, delta = self._read_player_events()
+            if replay and self._now is not None and self.ipc.get("eof-reached"):
+                self._jump(-self._now)
+            if delta:
+                self._jump(delta)
+            pos = self.ipc.get("time-pos")
+            if not self.ingest.source.live and self._settle_seek(pos):
+                return
+            if pos is not None:
                 if self.ingest.source.live:
                     self._sample_live_clock(float(pos), time.monotonic())
-                if self._direct_video_loaded and not self.ingest.source.live:
-                    sampled_at = time.monotonic()
-                    if self._last_direct_pos is not None:
-                        raw_step = float(pos) - self._last_direct_pos
-                        elapsed = sampled_at - self._last_direct_sample_at
-                        if (
-                            abs(raw_step) >= 2.0
-                            and abs(raw_step - elapsed) >= 1.5
-                        ):
-                            log.info(
-                                "native MPV seek detected: %.3fs -> %.3fs",
-                                self._last_direct_pos,
-                                float(pos),
-                            )
-                            source_target = self._source_time_from_mpv(float(pos))
-                            if self._cached_seek_ready(source_target):
-                                log.info(
-                                    "native MPV seek %.3fs: using cached translations "
-                                    "without restarting audio",
-                                    source_target,
-                                )
-                            else:
-                                self._restart_audio_at(
-                                    source_target,
-                                    seek_video=False,
-                                )
-                                return
-                    self._last_direct_pos = float(pos)
-                    self._last_direct_sample_at = sampled_at
-
                 if self._mpv_anchor is None:
                     self._mpv_anchor = float(pos)
                     record_session_anchor(
@@ -1111,18 +1086,8 @@ class MpvOutput:
                 self._render(self._now)
 
             if getattr(getattr(self, "cfg", None), "window_id", None):
-                self._emit_gui_status()
-                if self._handle_gui_commands():
-                    return
-
-            if self._replay_requested():
-                if self._now is not None and self.ipc.get("eof-reached"):
-                    log.info("replay requested after VOD end; restarting from beginning")
-                    if self._jump(self.ingest.source.start_s - self._now):
-                        return
-
-            if (delta := self._jump_request()) and self._jump(delta):
-                return
+                self._emit_gui_status(mpv_paused is True)
+                self._handle_gui_commands()
 
             self._check_vsr_health()
 
@@ -1189,7 +1154,7 @@ class MpvOutput:
             self._gui_commands.put_nowait((action, value))
         self._subtitle_ready.set()
 
-    def _emit_gui_status(self) -> None:
+    def _emit_gui_status(self, paused: bool) -> None:
         """Publish the source timeline, not raw live-HLS MPV timestamps."""
         now = time.monotonic()
         if now - self._last_gui_status_at < 0.5:
@@ -1203,10 +1168,10 @@ class MpvOutput:
             "status", live=live,
             position=round(self._now, 2) if self._now is not None else None,
             duration=duration,
-            paused=self.ipc.get("pause") is True,
+            paused=paused,
         )
 
-    def _handle_gui_commands(self) -> bool:
+    def _handle_gui_commands(self) -> None:
         """Apply GUI commands on MPV's scheduler, preserving ASR seek resets.
 
         An earlier implementation silently dropped seeks while the MPV
@@ -1229,7 +1194,7 @@ class MpvOutput:
                 # Queue again and wait for the video clock to become available.
                 # Return now to avoid spinning through the same request forever.
                 self._gui_commands.put_nowait((action, value))
-                return False
+                return
             if value is None:
                 emit_event("seek_ack", accepted=False, target=None)
                 continue
@@ -1237,24 +1202,24 @@ class MpvOutput:
             target = max(0.0, self._now + delta)
             if self.ingest.source.duration:
                 target = min(target, max(0.0, self.ingest.source.duration - 5))
-            if abs(delta) < 0.5:
+            if target == self._now and self._pending_seek is None:
                 emit_event("seek_ack", accepted=True, target=target)
                 continue
             log.info("GUI seek command: %s %+.2fs -> %.2fs", action, delta, target)
-            if self._jump(delta):
-                emit_event("seek_ack", accepted=True, target=target)
-                return True
-            # A cached-subtitle seek completes without restarting translation.
-            emit_event("seek_ack", accepted=True, target=target)
-        return False
+            self._jump(delta, gui=True)
 
-    def _replay_requested(self) -> bool:
-        """Return whether the user pressed Play/Space."""
+    def _read_player_events(self) -> tuple[bool, float]:
+        """Consume each IPC event once, including events arriving during a seek."""
         requested = False
-        deferred_jumps = []
-        while not self.ipc.events.empty():
-            ev = self.ipc.events.get()
+        delta = 0.0
+        while True:
+            try:
+                ev = self.ipc.events.get_nowait()
+            except queue.Empty:
+                break
             args = ev.get("args") or []
+            if ev.get("event") == "seek" and not self.ingest.source.live:
+                self._native_seek_at = time.monotonic()
             if (
                 ev.get("event") == "client-message"
                 and args[:1] == ["auto-translate-replay"]
@@ -1268,31 +1233,11 @@ class MpvOutput:
                 ev.get("event") == "client-message"
                 and args[:1] == [JUMP_MESSAGE]
             ):
-                # Defer jumps until the event scan ends. Previously the
-                # early break let _jump_request() swallow Esc/F11 events
-                # queued behind a seek, trapping embedded fullscreen.
-                deferred_jumps.append(ev)
-        for ev in deferred_jumps:
-            self.ipc.events.put(ev)
-        return requested
-
-    def _jump_request(self) -> float:
-        """Collect jump-key requests from mpv."""
-        delta = 0.0
-
-        while not self.ipc.events.empty():
-            ev = self.ipc.events.get()
-            args = ev.get("args") or []
-
-            if ev.get("event") != "client-message" or not args:
-                continue
-            if args[0] == JUMP_MESSAGE:
                 delta += float(args[1])
+        return requested, delta
 
-        return delta
-
-    def _jump(self, delta: float) -> bool:
-        """Restart ingest and mpv at the requested VOD position."""
+    def _jump(self, delta: float, *, gui: bool = False) -> None:
+        """Submit a video seek. Audio follows the position MPV actually reaches."""
         src = self.ingest.source
 
         if src.live:
@@ -1301,10 +1246,10 @@ class MpvOutput:
                 "Jumping only works for VODs",
                 2000,
             )
-            return False
+            return
 
         if self._now is None:
-            return False
+            return
 
         target = max(0.0, self._now + delta)
 
@@ -1312,11 +1257,47 @@ class MpvOutput:
             target = min(target, max(0.0, src.duration - 5))
 
         log.info("jump %+.0fs -> %s", delta, fmt_hms(target))
-        if self._jump_to_cached(target):
-            # Already seeking/playing from RAM-backed subtitles. Returning
-            # False keeps the current scheduler alive; True restarts it.
+        mpv_target = self._mpv_time_from_source(target)
+        try:
+            self.ipc.command("seek", mpv_target, "absolute+exact")
+        except (MpvError, TimeoutError) as exc:
+            log.warning("MPV seek to %.3fs failed: %s", target, exc)
+            if gui:
+                emit_event("seek_ack", accepted=False, target=target)
+            return
+        self._pending_seek = (mpv_target, time.monotonic() + 5.0, gui)
+        self._native_seek_at = None
+
+    def _settle_seek(self, pos: float | None) -> bool:
+        """Confirm once per tick so controls stay responsive during remote seeks."""
+        now = time.monotonic()
+        pending = self._pending_seek
+        if pending is None:
+            if self._native_seek_at is None or now - self._native_seek_at < 0.3:
+                return False
+            if pos is None or self.ipc.get("seeking") is not False:
+                return False
+        else:
+            target, deadline, gui = pending
+            landed = (self._native_seek_at is not None and pos is not None
+                      and abs(pos - target) <= 0.75
+                      and self.ipc.get("seeking") is False)
+            if not landed and now < deadline:
+                return False
+            self._pending_seek = None
+            if gui:
+                emit_event("seek_ack", accepted=landed, target=self._source_time_from_mpv(target))
+            if not landed:
+                log.warning("MPV seek position not confirmed at %.3fs", target)
+                # Preserve any native event so a late landing still resyncs audio.
+                return False
+
+        self._native_seek_at = None
+        source_target = self._source_time_from_mpv(float(pos))
+        if self._cached_seek_ready(source_target):
             return False
-        return self._restart_audio_at(target, seek_video=True)
+        self._restart_audio_at(source_target)
+        return True
 
     def _sample_live_clock(self, mpv_pos: float, sampled_at: float) -> None:
         """Keep PCM-relative live subtitle time continuous across HLS PTS jumps.
@@ -1385,53 +1366,9 @@ class MpvOutput:
             and cache.covered_until(target) >= target + self.PAUSE_LEAD_SECONDS
         )
 
-    def _jump_to_cached(self, target: float) -> bool:
-        """Seek within translated VOD audio without pausing or restarting ASR.
-
-        Repeated short rewinds can use subtitles already stored in RAM while
-        the ingestion/translation workers continue running further ahead.
-        """
-        if not self._cached_seek_ready(target):
-            return False
-
-        mpv_target = self._mpv_time_from_source(target)
-        self.ipc.command("seek", mpv_target, "absolute+exact")
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not self.stop.is_set():
-            landed = self.ipc.get("time-pos")
-            if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
-                # Mark the new position as the native-seek detector's baseline.
-                # Otherwise the next scheduler tick sees a sudden -10s step
-                # and unnecessarily restarts the audio reader.
-                self._last_direct_pos = float(landed)
-                self._last_direct_sample_at = time.monotonic()
-                self._now = target
-                self._render(target)
-                log.info(
-                    "cached VOD seek to %.3fs: subtitles replayed without "
-                    "pausing MPV or restarting translation",
-                    target,
-                )
-                return True
-            time.sleep(0.05)
-        log.warning(
-            "cached VOD seek position not confirmed at %.3fs; "
-            "using normal audio restart",
-            mpv_target,
-        )
-        return False
-
-    def _restart_audio_at(self, target: float, *, seek_video: bool) -> bool:
-        """Restart translation audio at a source timestamp without reloading video."""
-        src = self.ingest.source
-        target = max(0.0, target)
-        if src.duration:
-            target = min(target, max(0.0, src.duration - 1.0))
-
+    def _restart_audio_at(self, target: float) -> None:
+        """Buffer translation at the confirmed video position."""
         self.ipc.command("set_property", "pause", True)
-        if seek_video:
-            mpv_target = self._mpv_time_from_source(target)
-            self.ipc.command("seek", mpv_target, "absolute+exact")
         self._now = None
         self._shown = ""
         self.ipc.command(
@@ -1452,32 +1389,11 @@ class MpvOutput:
         self.reset_buffer(target)
         self.ingest.go()
 
-        if seek_video:
-            # MPV acknowledges seek before it necessarily reaches that time.
-            # Sampling the prior time-pos here would corrupt the new anchor.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and not self.stop.is_set():
-                landed = self.ipc.get("time-pos")
-                if landed is not None and abs(float(landed) - mpv_target) <= 0.75:
-                    break
-                time.sleep(0.05)
-            else:
-                log.warning(
-                    "MPV seek position not confirmed at %.3fs; "
-                    "rechecking the playback anchor",
-                    mpv_target,
-                )
-
-        landed = self.ipc.get("time-pos")
-        self._last_direct_pos = float(landed) if landed is not None else None
-        self._last_direct_sample_at = time.monotonic()
-
         # Previously translated captions should be visible immediately, even
         # while FFmpeg restarts audio extraction for uncached sections.
         if getattr(self, "_subtitle_cache", None) is not None:
             self._now = target
             self._render(target)
-        return True
 
     def _wait_for_event(
         self,

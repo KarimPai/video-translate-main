@@ -134,7 +134,6 @@ class LanguageFilterConfig:
 @dataclass
 class DualAsrConfig:
     enabled: bool = True
-    language_routing: bool = False  # Language filtering happens before either Japanese ASR.
     secondary_model: str = "h2oai/faster-whisper-large-v3-turbo"
     secondary_device: str = "cuda"
     secondary_compute_type: str = "int8_float16"
@@ -146,8 +145,6 @@ class DualAsrConfig:
     vod_timeout_s: float = 25.0
 
     def __post_init__(self):
-        if type(self.language_routing) is not bool:
-            raise ValueError("language routing flags must be boolean")
         if not self.secondary_model.strip():
             raise ValueError("secondary model identifier must be nonempty")
         if self.secondary_device not in ("cuda", "cpu"):
@@ -343,9 +340,13 @@ def load_config(path: Path) -> Config:
                      "emergency_threshold_gb", "maximum_gb"):
         gpu_budget_data.pop(obsolete, None)
 
+    dual_data = dict(data.get("dual_asr", {}))
+    dual_data.pop("language_routing", None)  # ignore legacy option
+    dual_data = {k: v for k, v in dual_data.items() if not k.startswith("indonesian_")}
+
     return Config(
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
-        dual_asr=DualAsrConfig(**{**{k: v for k, v in data.get("dual_asr", {}).items() if not k.startswith("indonesian_")}, "language_routing": False}),
+        dual_asr=DualAsrConfig(**dual_data),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),
         gpu_budget=GpuBudgetConfig(**gpu_budget_data),
         ingest=IngestConfig(**ingest_data),

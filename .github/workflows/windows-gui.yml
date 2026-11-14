@@ -1,0 +1,37 @@
+name: Windows GUI frontend build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/haas-whisper-turbo-dual-asr-20261114]
+    paths:
+      - "src/auto_translate/gui.py"
+      - "src/auto_translate/gui_runner.py"
+      - ".github/workflows/windows-gui.yml"
+
+jobs:
+  windows-gui:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install frontend-only build tools
+        run: python -m pip install "PySide6>=6.8,<7" "pyinstaller>=6,<7"
+      - name: GUI offscreen startup and control-state smoke test
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python -c "from pathlib import Path; from PySide6.QtWidgets import QApplication; from auto_translate.gui import VideoTranslateWindow; app=QApplication([]); w=VideoTranslateWindow(Path.cwd()); w.show(); app.processEvents(); assert w.quality.currentData()==720; w._session_ready(); assert not w.setup_panel.isVisible(); w._session_finished('Stopped.'); assert w.setup_panel.isVisible(); w.close()"
+      - name: Build Qt frontend EXE
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoTranslate-Windows-GUI
+          path: dist/VideoTranslate/
+          retention-days: 30
+          if-no-files-found: error

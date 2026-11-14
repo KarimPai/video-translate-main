@@ -27,6 +27,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..config import MpvConfig
+from ..windows_subprocess import hidden_console_flags
 from ..gui_control import emit_event, FULLSCREEN_MESSAGE, EXIT_FULLSCREEN_MESSAGE
 from .rtx_vsr import (
     VSR_FILTER, VSR_LABEL, VsrPerformanceGuard,
@@ -433,6 +434,10 @@ class MpvOutput:
             find_mpv(cfg.path),
 
             "--pause",
+            # MPV is a console-subsystem application on some Windows builds;
+            # opening it under pythonw can still flash a separate CMD window.
+            # Embedded GUI playback uses only MPV IPC and file logging.
+            *([] if not cfg.window_id else ["--no-terminal"]),
             f"--input-ipc-server={ipc_path}",
 
             "--force-window=yes",
@@ -481,7 +486,14 @@ class MpvOutput:
 
             f"--log-file={mpv_log}",
             "--msg-level=all=warn",
-        ])
+        ],
+            # Suppress MPV console creation in GUI sessions, preserving the
+            # embedded --wid render window and original CLI behavior.
+            creationflags=hidden_console_flags(),
+            stdin=subprocess.DEVNULL if cfg.window_id else None,
+            stdout=subprocess.DEVNULL if cfg.window_id else None,
+            stderr=subprocess.DEVNULL if cfg.window_id else None,
+        )
 
         if sys.platform == "win32":
             try:

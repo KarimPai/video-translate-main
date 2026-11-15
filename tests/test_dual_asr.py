@@ -104,6 +104,15 @@ class PipelineSelectionTests(unittest.TestCase):
         self.dual.worker.transcribe.assert_called_once()
         self.assertNotIn("initial_prompt", self.dual.worker.transcribe.call_args.kwargs)
 
+    def test_lap_peer_hint_preserves_uncertain_selection(self):
+        self.dual.selector.last_choice = "uncertain"
+        self.dual.selector.choose.return_value = "ラップ様どこ"
+        result, = self.run_stage("ラップ様どこ", "ラプ様どこ")
+        evidence = self.dual.selector.choose.call_args.args[2]
+        self.assertEqual(evidence["corroborated_nickname_reading"], "ラプ様どこ")
+        self.assertIn(("ラプ様", "Lap-sama"), evidence["glossary"])
+        self.assertEqual(result.ja, "ラップ様どこ")
+
     def test_one_sided_isolated_formal_laplus_is_suppressed(self):
         self.dual.selector.choose.return_value = "ラプラス・ダークネス。"
         self.assertEqual(self.run_stage("無線を確認して", "ラプラス・ダークネス。"), [])

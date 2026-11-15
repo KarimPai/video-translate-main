@@ -9,6 +9,7 @@ import unicodedata
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 
+from .name_hints import SPOKEN_NAME_FORMS
 from .subtitle_clean import has_generation_loop, looks_like_prompt_echo
 
 _SHORT_POSITIVE_JA = re.compile(
@@ -105,7 +106,7 @@ def suspicious_translation(
         return "numeric_mismatch"
 
     for source, target in (names or []):
-        if target.casefold() in _GUARDED_NAMES and source in jp:
+        if (target in SPOKEN_NAME_FORMS or target.casefold() in _GUARDED_NAMES) and source in jp:
             if not re.search(r"(?<![a-z])" + re.escape(target) + r"(?![a-z])", en, re.I):
                 return "proper_name_mismatch"
     return None

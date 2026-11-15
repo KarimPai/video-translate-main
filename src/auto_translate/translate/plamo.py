@@ -18,7 +18,7 @@ from pathlib import Path
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
-from ..name_hints import canonicalize_english_names
+from ..name_hints import canonicalize_english_names, preserve_spoken_names
 from ..subject_guard import (
     neutralize_unsupported_subjects,
     unsupported_person_reference,
@@ -105,13 +105,16 @@ def _needs_fragment_context(ja: str) -> bool:
     )
 
 
-def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary) -> list[tuple[str, str]]:
+def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previous_ja: str = "") -> list[tuple[str, str]]:
     """Longest-first, non-overlapping current-source matches (never future guesses)."""
     scene = (
         [(source, target) for source, target in _HOLOGTA_TERMS.items() if source in ja]
         if _HOLOGTA_TITLE.search(vod_title) else []
     )
-    candidates = sorted(scene + glossary.find(ja), key=lambda item: len(item[0]), reverse=True)
+    miko_context = bool(re.search(r"ホロ|holo|さくらみこ|Sakura Miko", vod_title, re.I)
+                        or re.search(r"みこち|さくらみこ", previous_ja + " " + ja))
+    terms = glossary.find(ja, previous_ja=previous_ja, miko_context=miko_context)
+    candidates = sorted(scene + terms, key=lambda item: len(item[0]), reverse=True)
     remaining = ja
     selected: list[tuple[str, str]] = []
     for source, target in candidates:
@@ -377,19 +380,27 @@ class PlamoTranslator:
         return " ".join(english)
 
     def _translate_one(self, ja: str, history: list[tuple[str, str]]) -> str:
+        previous = history[-1][0] if history else ""
+        names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous)
+
+        def normalize_names(english: str) -> str:
+            if any(target in ("Haachama", "Laplus") for _, target in names):
+                english = canonicalize_english_names(ja, english, self.vod_title)
+            return preserve_spoken_names(ja, english, names)
+
         if getattr(self, "memory_lines", 0):
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 # Cached subtitles must obey current short-name policy too.
-                return canonicalize_english_names(ja, reused, self.vod_title)
+                return normalize_names(reused)
 
         def normalized(raw: str) -> str:
-            translated = correct_translation(ja, _clean(raw))
-            translated = canonicalize_english_names(ja, translated, self.vod_title)
-            return neutralize_unsupported_subjects(ja, translated)
+            translated = _clean(raw)
+            if any(target in ("Watame", "Watamee", "Tsunomaki Watame") for _, target in names):
+                translated = correct_translation(ja, translated)
+            return neutralize_unsupported_subjects(ja, normalize_names(translated))
 
-        names = _current_glossary_matches(ja, self.vod_title, self.glossary)
         try:
             raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
         except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
@@ -505,6 +516,9 @@ class PlamoTranslator:
             ) + source_hint + fragment_hint,
         }
         hits = names if names is not None else _current_glossary_matches(ja, self.vod_title, self.glossary)
+        if any(self.glossary.nicknames.get(source) == target for source, target in hits):
+            options["context"] += (" Keep each spoken nickname at its supplied length, "
+                                   "including spoken honorifics. Do not expand it to a stage name.")
         if hits:
             options["glossary"] = [
                 {"source": source, "target": target}

@@ -7,6 +7,7 @@ from concurrent.futures import CancelledError
 
 import numpy as np
 
+from ..asr_correction import lap_spelling_from_peer
 from ..text_filter import is_usable_transcript
 from .whisper_turbo import WhisperTurboASR
 from .diagnostics import append_comparison
@@ -366,7 +367,7 @@ class DualASR:
                 and secondary.startswith(primary) and len(secondary) > len(primary)):
             result = secondary
             selected_by = "whisper_turbo_completion"
-        terms = self.glossary.find(primary + " " + secondary)
+        terms = list(dict.fromkeys(self.glossary.find(primary) + self.glossary.find(secondary)))
         score, flags = compare(primary, secondary, terms, self.glossary.scene_pairs)
         if score < 1 and primary_ok and selected_by != "whisper_turbo_completion":
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
@@ -377,8 +378,13 @@ class DualASR:
                 started = time.perf_counter()
                 try:
                     selector_called = True
+                    lap_evidence = {}
+                    for heard, peer in ((primary, secondary), (secondary, primary)):
+                        if lap_spelling_from_peer(heard, peer, recent=context) != heard:
+                            lap_evidence["corroborated_nickname_reading"] = peer
+                            break
                     selected = selector.choose(primary, secondary, {
-                        "title_channel": title[:200], "recent_ja": context,
+                        **lap_evidence, "title_channel": title[:200], "recent_ja": context,
                         "glossary": terms[:12], "vad_probability": utt.vad_confidence,
                         "haas_stop": primary_stop, "secondary_stop": worker.last_stop,
                         "similarity": score, "disagreement": flags,
@@ -414,7 +420,12 @@ class DualASR:
             log.warning("Suppressing one-sided uncorroborated full name at %.2fs", utt.start_s)
             record("", "abstain_uncorroborated_full_name", score, flags, selector_called)
             return ""
-        if suspicious_phonetics(result) and not terms and score < .45:
+        # A nickname heard on just one side of a strong disagreement
+        # must not disable the weak-phonetics abstention.
+        corroborating_terms = any(source not in self.glossary.nicknames
+                                  or (source in primary and source in secondary)
+                                  for source, _ in terms)
+        if suspicious_phonetics(result) and not corroborating_terms and score < .45:
             flags.append("uncorroborated_phonetics")
             if selected_by == "uncertain" and utt.vad_confidence < .6:
                 record("", "abstain_weak_phonetics", score, flags, selector_called)

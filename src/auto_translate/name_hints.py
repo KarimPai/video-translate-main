@@ -20,6 +20,67 @@ def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None
     return None
 
 
+# Only substitute an existing English mention. Family membership is also
+# used to avoid collapsing two different spoken forms in the same cue.
+_FAMILIES = {
+    "Lap": ("Lap Laplus Lap-sama Lap-chan Lap-san", r"(?:La\s*\+|La plus|Laplus|Laplace)(?:[ ·-]+Darkness+)?|Lap"),
+    "Miko": ("Miko Mikochi Miko-chan", r"(?:Sakura )?Miko(?:chi)?"),
+    "Watame": ("Watame Watamee", r"(?:Tsunomaki )?Watamee?"),
+    "Marine": ("Senchou", r"(?:Houshou )?Marine|Senchou"),
+    "Suisei": ("Sui-chan", r"(?:Hoshimachi )?Suisei|Sui"),
+    "Pekora": ("Peko-chan Pekoora", r"(?:Usada )?Pekora|Pekoora|Peko"),
+    "Fubuki": ("Fubu-chan", r"(?:Shirakami )?Fubuki|Fubu"),
+    "Korone": ("Koro-san", r"(?:Inugami )?Korone|Koro"),
+    "Okayu": ("Okayun", r"(?:Nekomata )?Okayun?"),
+    "Botan": ("Shishiron", r"(?:Shishiro )?Botan|Shishiron"),
+    "Towa": ("Towa-sama", r"(?:Tokoyami )?Towa"),
+    "Kanata": ("Kanatan", r"(?:Amane )?Kanatan?"),
+    "Nene": ("Nenechi", r"(?:Momosuzu )?Nene(?:chi)?"),
+    "Polka": ("Polpol", r"(?:Omaru )?Polka|Polpol"),
+    "Koyori": ("Koyo-chan", r"(?:Hakui )?Koyori|Koyo"),
+    "Lui": ("Lui-nee", r"(?:Takane )?Lui"),
+    "Haachama": ("Haachama", r"Akai Haato|Haachama"),
+    "Aqua": ("Akutan", r"(?:Minato )?Aqua|Akutan"),
+    "Fuwawa": ("Fuwawa", r"Fuwawa(?: Abyssgard)?"),
+    "Iofi": ("Iofi", r"(?:Airani )?Iofifteen|Iofi"),
+}
+
+
+SPOKEN_NAME_FORMS = {form for forms, _ in _FAMILIES.values() for form in forms.split()}
+
+
+def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -> str:
+    """Change one unambiguous output span per evidenced name family."""
+    targets = {target for _, target in names}
+    for family, (forms, aliases) in _FAMILIES.items():
+        spoken = targets.intersection(forms.split())
+        if len(spoken) != 1 or any(
+            family.lower() in other.lower() for other in targets - spoken
+        ):
+            continue
+        target = spoken.pop()
+        source = next(source for source, en in names if en == target)
+        if family == "Lap":
+            # A common English word needs an identifiable name slot. Avoid
+            # touching any rap vocabulary in mixed music/name dialogue.
+            if not re.search(r"ラップ|らっぷ|歌|音楽|曲|韻|包", ja):
+                aliases += r"|rap(?=(?:[ -](?:sama|chan|san))?\s+(?:is here|came|arrived)\b)"
+                if ja.strip(" 。！？!?") == source or "どこ" in ja:
+                    aliases += r"|rap(?=(?:[ -](?:sama|san|chan))?[.!?, '’]*$)"
+                if ja.strip(" 。！？!?") == source and re.fullmatch(r"rapping[.!?]?", english, re.I):
+                    aliases += r"|rapping"
+        if family == "Miko" and not re.search(r"神社|巫女", ja):
+            aliases += r"|(?:the )?shrine maiden"
+        if family == "Marine" and "マリン" not in ja:
+            aliases += r"|(?:the )?captain"
+        pattern = re.compile(r"(?<![\w-])(?:" + aliases + r")(?:[ -](?:chan|san|sama|nee))?(?![\w-])", re.I)
+        hits = list(pattern.finditer(english))
+        if len(hits) == 1:
+            hit = hits[0]
+            english = english[:hit.start()] + target + english[hit.end():]
+    return english
+
+
 def canonicalize_english_names(japanese: str, english: str, video_title: str = "") -> str:
     """Correct only strongly evidenced, known English name misspellings."""
     if not _HOLO.search(video_title) or not japanese or not english:

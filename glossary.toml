@@ -51,8 +51,6 @@
 "事故る" = "mess up"
 "ポン" = "clumsy"
 "ぺこら" = "Pekora"
-"みこち" = "Miko"
-"船長" = "Marine"
 "こより" = "Koyori"
 "助手くん" = "Assistant-kun"
 "野うさぎ" = "Nousagi"
@@ -95,8 +93,6 @@
 "白銀ノエル" = "Shirogane Noel"
 "天音かなた" = "Amane Kanata"
 "角巻わため" = "Tsunomaki Watame"
-"わため" = "Watame"
-"ワタメ" = "Watame"
 "角巻ワタメ" = "Tsunomaki Watame"
 "常闇トワ" = "Tokoyami Towa"
 "姫森ルーナ" = "Himemori Luna"
@@ -105,8 +101,6 @@
 "獅白ぼたん" = "Shishiro Botan"
 "尾丸ポルカ" = "Omaru Polka"
 "ラプラス・ダークネス" = "Laplus"
-"ラプラス" = "Laplus"
-"らぷらす" = "Laplus"
 "鷹嶺ルイ" = "Takane Lui"
 "博衣こより" = "Hakui Koyori"
 "沙花叉クロヱ" = "Sakamata Chloe"
@@ -339,6 +333,46 @@
 "負け確" = "guaranteed loss"
 "GG" = "GG"
 "EZ" = "easy"
+
+# Reviewed spoken forms. English styling follows the subtitle conventions.
+# Japanese usage: https://w.atwiki.jp/mishiro/pages/62.html
+# Lap-sama clip: https://www.youtube.com/watch?v=qrEl4NjGjQk
+# ID: https://hololive.hololivepro.com/talents/airani-iofifteen/
+# EN: https://hololive.hololivepro.com/talents/fuwawa-abyssgard/
+[nicknames]
+"ラプ" = "Lap"
+"らぷ" = "Lap"
+"らぷ様" = "Lap-sama"
+"らぷちゃん" = "Lap-chan"
+"らぷさん" = "Lap-san"
+"ラプ様" = "Lap-sama"
+"ラプちゃん" = "Lap-chan"
+"ラプさん" = "Lap-san"
+"ラプラス" = "Laplus"
+"らぷらす" = "Laplus"
+"みこ" = "Miko"
+"みこちゃん" = "Miko-chan"
+"みこち" = "Mikochi"
+"すいちゃん" = "Sui-chan"
+"ぺこちゃん" = "Peko-chan"
+"ぺこーら" = "Pekoora"
+"フブちゃん" = "Fubu-chan"
+"ころさん" = "Koro-san"
+"おかゆん" = "Okayun"
+"ししろん" = "Shishiron"
+"わため" = "Watame"
+"ワタメ" = "Watame"
+"わためぇ" = "Watamee"
+"トワ様" = "Towa-sama"
+"かなたん" = "Kanatan"
+"ねねち" = "Nenechi"
+"ポルポル" = "Polpol"
+"こよちゃん" = "Koyo-chan"
+"ルイ姉" = "Lui-nee"
+"あくたん" = "Akutan"
+"船長" = "Senchou"
+"フワワ" = "Fuwawa"
+"イオフィ" = "Iofi"
 
 # ASR-only homophone evidence. These never introduce speech not heard by
 # one of the recognizers. Scene repairs additionally require a GTA title,

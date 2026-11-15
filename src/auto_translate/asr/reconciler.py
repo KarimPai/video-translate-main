@@ -67,6 +67,7 @@ class Reconciler:
                   "numbers, names, commands, radio acknowledgements, omitted speech and missing "
                   "sentence-ending verbs. Prefer complete audio-supported words, never conversational "
                   "plausibility alone; title and prior dialogue are weak context, not proof. "
+                  "Glossary spellings are not acoustic evidence. Preserve short names and genuine rap or wrapping. "
                   "Reply A for Haas, B for Whisper Turbo, or U if evidence is insufficient.")
         payload = {"model": "jp-selector", "temperature": 0, "seed": 0, "max_tokens": 4,
                    "grammar": "root ::= [ABU]",

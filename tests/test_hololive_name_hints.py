@@ -38,6 +38,14 @@ class HololiveNameHintsTests(unittest.TestCase):
             ("ラプちゃん", "La+ Darkness", "Lap-chan"),
             ("ラプラスが来た", "Laplace is here.", "Laplus is here."),
             ("ラップが上手い", "Good at rapping.", "Good at rapping."),
+            ("まつりが来た", "The festival arrived.", "Matsuri arrived."),
+            ("祭りちゃんどこ？", "Where is Festivals?", "Where is Matsuri-chan?"),
+            ("マツリさん", "Natsuiro Matsuri", "Matsuri-san"),
+            ("まつり", "Festivals!", "Matsuri!"),
+            ("まつりちゃんと夏祭りに行く", "Going to the summer festival with Matsuri-chan.",
+             "Going to the summer festival with Matsuri-chan."),
+            ("お祭りに行く", "Going to the festival.", "Going to the festival."),
+            ("夏祭りが来た", "The summer festival is here.", "The summer festival is here."),
             ("みこちゃん", "Sakura Miko", "Miko-chan"),
             ("みこが来た", "The shrine maiden arrived.", "Miko arrived."),
             ("みこち", "sakura miko", "Mikochi"),
@@ -65,6 +73,10 @@ class HololiveNameHintsTests(unittest.TestCase):
                      "申しこみこみ", "みこと", "みこし", "わためいと", "今日は晴れ"):
             with self.subTest(word=word):
                 self.assertFalse(glossary.nicknames.keys() & hits(word).keys())
+        self.assertFalse(hits("祭り", title="ホロライブ"))
+        self.assertFalse(hits("まつり", prior="神社の屋台の話", title="ホロライブ"))
+        self.assertEqual(hits("祭り", prior="夏色まつりのことだよ", title="")["祭り"], "Matsuri")
+        self.assertEqual(hits("夏色まつり")["夏色まつり"], "Natsuiro Matsuri")
         self.assertNotIn("船長", hits("船長", title="宝鐘マリン ホロライブ"))
         self.assertEqual(hits("船長", "宝鐘マリンだよ")["船長"], "Senchou")
         self.assertEqual(hits("船長が出航する", "宝鐘マリンだよ")["船長"], "captain")

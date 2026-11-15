@@ -11,6 +11,33 @@ _HAACHAMA_JA = ("はあちゃま", "はぁちゃま", "はーちゃま", "はや
 _LAPLUS_JA = ("ラプラス", "らぷらす")
 
 
+_MATSURI = re.compile(r"(夏色)?(まつり|マツリ|祭り)(ちゃん|さん|様|さま)?")
+_MATSURI_EVENT = re.compile(r"お祭|おまつり|夏祭|秋祭|祭典|文化祭|学園祭|神社|屋台|縁日|花火大会|開催|フェス")
+_MATSURI_PERSON = re.compile(r"(?:が|は|も)?(?:来た|来ない|いる|いた|喋|しゃべ|言っ|歌っ|配信して|ログイン)|と(?:話|遊|通話)|の(?:配信|声|視点|チャンネル)")
+_HONORIFIC = {"ちゃん": "-chan", "さん": "-san", "様": "-sama", "さま": "-sama"}
+
+
+def matsuri_matches(ja, title, previous):
+    matches = []
+    for mention in _MATSURI.finditer(ja):
+        full, spelling, suffix = mention.groups()
+        before, after = ja[:mention.start()], ja[mention.end():]
+        if not full and before.endswith(("お", "御", "夏", "秋", "春", "冬", "ひな", "雛", "血", "雪")):
+            continue
+        if not (full or suffix) and _MATSURI_EVENT.search(ja):
+            continue
+        if not (full or suffix or _MATSURI_PERSON.match(after)):
+            isolated = ja.strip(" 。、！？!?「」") == spelling or after.startswith(("どこ", "はどこ"))
+            name_context = _HOLO.search(title) or re.search(r"夏色まつり|Natsuiro Matsuri", title, re.I)
+            prior_name = re.search(r"夏色まつり|(?:まつり|マツリ|祭り)(?:ちゃん|さん|様)", previous)
+            if not (isolated and (prior_name or (name_context and spelling != "祭り"))
+                    and not _MATSURI_EVENT.search(previous)):
+                continue
+        target = ("Natsuiro Matsuri" if full else "Matsuri") + _HONORIFIC.get(suffix, "")
+        matches.append((mention[0], target))
+    return matches
+
+
 def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None:
     """Legacy compatibility hook. Never seed Whisper with unspoken names.
 
@@ -24,6 +51,7 @@ def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None
 # used to avoid collapsing two different spoken forms in the same cue.
 _FAMILIES = {
     "Lap": ("Lap Laplus Lap-sama Lap-chan Lap-san", r"(?:La\s*\+|La plus|Laplus|Laplace)(?:[ ·-]+Darkness+)?|Lap"),
+    "Matsuri": ("Matsuri Matsuri-chan Matsuri-san Matsuri-sama", r"(?:Natsuiro )?Matsuri"),
     "Miko": ("Miko Mikochi Miko-chan", r"(?:Sakura )?Miko(?:chi)?"),
     "Watame": ("Watame Watamee", r"(?:Tsunomaki )?Watamee?"),
     "Marine": ("Senchou", r"(?:Houshou )?Marine|Senchou"),
@@ -60,6 +88,11 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -
             continue
         target = spoken.pop()
         source = next(source for source, en in names if en == target)
+        if family == "Matsuri":
+            # Avoid replacing a real event elsewhere in a mixed name/event cue.
+            rest = ja.replace(source, "", 1)
+            if not (_MATSURI.search(rest) or _MATSURI_EVENT.search(rest) or "祭" in rest):
+                aliases += r"|(?:the |a )?festivals?"
         if family == "Lap":
             # A common English word needs an identifiable name slot. Avoid
             # touching any rap vocabulary in mixed music/name dialogue.

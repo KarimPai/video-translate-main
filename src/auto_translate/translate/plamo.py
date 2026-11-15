@@ -20,7 +20,7 @@ from pathlib import Path
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
-from ..name_hints import canonicalize_english_names, preserve_spoken_names
+from ..name_hints import canonicalize_english_names, matsuri_matches, preserve_spoken_names
 from ..subject_guard import (
     neutralize_unsupported_subjects,
     unsupported_person_reference,
@@ -121,7 +121,7 @@ def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previ
     miko_context = bool(re.search(r"ホロ|holo|さくらみこ|Sakura Miko", vod_title, re.I)
                         or re.search(r"みこち|さくらみこ", previous_ja + " " + ja))
     terms = glossary.find(ja, previous_ja=previous_ja, miko_context=miko_context)
-    candidates = sorted(scene + terms, key=lambda item: len(item[0]), reverse=True)
+    candidates = sorted(scene + matsuri_matches(ja, vod_title, previous_ja) + terms, key=lambda item: len(item[0]), reverse=True)
     remaining = ja
     selected: list[tuple[str, str]] = []
     for source, target in candidates:
@@ -406,7 +406,7 @@ class PlamoTranslator:
                 english = canonicalize_english_names(ja, english, self.vod_title)
             return preserve_spoken_names(ja, english, names)
 
-        if getattr(self, "memory_lines", 0) and not _KUSA.search(ja):
+        if getattr(self, "memory_lines", 0) and not _KUSA.search(ja) and "マツリ" not in ja:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)

@@ -69,14 +69,10 @@ def _worker_main(connection, model_name, device, compute_type, beam_size):
             if command is None:
                 break
             try:
-                if isinstance(command, dict):
-                    samples = _audio16(command["audio"])
-                    prompt = command.get("initial_prompt")
-                else:
-                    samples = _audio16(command)
-                    prompt = None
+                samples = _audio16(command["audio"])
+                prompt = command.get("initial_prompt")
                 transcript = _decode(model, samples, beam_size, initial_prompt=prompt)
-                connection.send({"type": "transcript", "text": transcript,
+                connection.send({"type": "transcript", "text": transcript, "id": command["id"],
                                  "stop": "complete" if transcript else "unknown"})
             except Exception as exc:
                 logging.exception("Whisper Turbo decode failed")
@@ -100,6 +96,7 @@ class WhisperTurboASR:
                  beam_size=6, startup_timeout=600):
         self.last_stop = "unknown"
         self._lock = threading.Lock()
+        self._request_id = 0
         self.process = None
         self.connection = None
         context = mp.get_context("spawn")
@@ -131,11 +128,7 @@ class WhisperTurboASR:
             raise
 
     def transcribe(self, audio, timeout=None, initial_prompt=None, cancel_event=None):
-        """Decode one chunk; terminate the subprocess on timeout or cancellation.
-
-        Poll in short intervals so a discarded live/VOD cue cannot occupy the
-        single-flight worker for the full per-request timeout.
-        """
+        """Drain one tagged reply even when its caller has moved on."""
         samples = _audio16(audio)
         if timeout is None:
             timeout = 25.0
@@ -146,33 +139,30 @@ class WhisperTurboASR:
         connection, process = self.connection, self.process
         if process is None or not process.is_alive() or connection is None:
             raise RuntimeError("Whisper Turbo worker unavailable")
+        self._request_id += 1
+        request_id = self._request_id
         deadline = time.monotonic() + timeout
+        # The optional caller can leave at its soft deadline. A separate hard
+        # limit also covers a blocked pipe send, before polling can begin.
+        watchdog = threading.Timer(timeout + 30.0, self.close)
+        watchdog.daemon = True
+        watchdog.start()
         try:
-            command = ({"audio": samples, "initial_prompt": initial_prompt}
-                       if initial_prompt else samples)
-            connection.send(command)
-            while True:
-                if cancel_event is not None and cancel_event.is_set():
-                    self.close()
-                    raise CancelledError("Whisper Turbo transcription cancelled")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self.close()
-                    raise TimeoutError("Whisper Turbo transcription timed out")
-                if connection.poll(min(0.05, remaining)):
-                    break
+            connection.send({"id": request_id, "audio": samples, "initial_prompt": initial_prompt})
+            while not connection.poll(0.1):
                 if not process.is_alive():
                     raise RuntimeError("Whisper Turbo worker exited during decode")
             response = connection.recv()
-        except TimeoutError:
-            # TimeoutError inherits OSError; preserve the real failure type.
-            raise
         except (EOFError, BrokenPipeError, OSError) as exc:
-            self.close()
             raise RuntimeError("Whisper Turbo worker communication failed") from exc
-        if response.get("type") != "transcript":
-            self.close()
-            raise RuntimeError("Whisper Turbo worker error: " + response.get("message", "unknown"))
+        finally:
+            watchdog.cancel()
+            watchdog.join()
+        if response.get("type") != "transcript" or response.get("id") != request_id:
+            raise RuntimeError("Whisper Turbo worker error: " + response.get("message", "unexpected reply"))
+        if time.monotonic() >= deadline or (cancel_event is not None and cancel_event.is_set()):
+            log.info("Discarded obsolete Whisper reply request=%d", request_id)
+            raise CancelledError("Whisper Turbo reply no longer needed")
         self.last_stop = response.get("stop", "unknown")
         return response["text"]
 

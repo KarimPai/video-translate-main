@@ -119,14 +119,6 @@ class DualASR:
         if self.cfg.reconciler.enabled and self.selector is None and not self.closed:
             self._start_selector(self.cfg.reconciler.gpu_layers)
 
-    def _interrupt_decode(self):
-        """Kill a discarded in-flight decode without waiting on the ASR thread."""
-        with self.lock:
-            worker = self._decoding_worker
-        if worker is not None:
-            threading.Thread(target=self._retire_worker, args=(worker, "cancelled cue"),
-                             name="whisper-turbo-cancel", daemon=True).start()
-
     def _start_selector(self, layers):
         # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
         # and MPV/VAD allocations that may arrive after model startup.
@@ -244,11 +236,10 @@ class DualASR:
             if (time.monotonic() >= deadline or generation() != utt.generation
                     or (backlog() and (self.live or is_usable_transcript(primary)))):
                 cancelled.set()
-                self._interrupt_decode()
                 self.log_fallback(utt, primary, primary_elapsed_s, "deadline_generation_or_backlog")
                 return None
         self.pending.join()
-        return result[0]
+        return result[0] if generation() == utt.generation else None
 
     def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None, cancel_event=None):
         """Return corroborated Japanese, an abstention, or None for the Haas path."""
@@ -304,7 +295,7 @@ class DualASR:
             log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
         except CancelledError:
-            self._retire_worker(worker, "cancelled cue")
+            log.debug("Discarded Whisper cue generation=%d", utt.generation)
             return None
         except Exception as exc:
             log.warning("Secondary ASR failed at %.2fs: %s", utt.start_s, exc)

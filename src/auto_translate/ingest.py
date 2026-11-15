@@ -727,11 +727,13 @@ class Ingest:
         """
         receiver_gone = False
 
+        last_output_time = None
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
 
             # FFmpeg emits a progress heartbeat when transcoding fallback video.
-            if not capture_pts and line.startswith("progress="):
+            if not capture_pts and line.startswith("out_time_us=") and line != last_output_time:
+                last_output_time = line
                 with self._video_progress_lock:
                     self._video_progress_at = time.monotonic()
                 continue
@@ -789,6 +791,12 @@ class Ingest:
                 continue
 
             stalled_for = time.monotonic() - progress_at
+            if stalled_for >= 60.0 and self.source.live:
+                with self._proc_lock:
+                    if self._video_proc is proc and not self._stopped:
+                        log.error("Live HLS output stalled for %.1fs", stalled_for)
+                        self._video_failed.set()
+                return
             if stalled_for >= 12.0 and not warned:
                 with self._proc_lock:
                     current = self._video_proc is proc
@@ -926,11 +934,13 @@ class Ingest:
         # MpvOutput responds by calling request_restart(), which replaces the
         # playlist and audio generation together. Do not independently reopen
         # an older rolling HLS segment while MPV continues the old stream.
-        while True:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
             with self._proc_lock:
                 if self._stopped or self._restart_at is not None:
                     return
             time.sleep(0.1)
+        raise RuntimeError("MPV did not restart the failed shared live session within 60s")
 
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
@@ -1149,6 +1159,22 @@ class Ingest:
         sample = first
         input_frames = 0
 
+        # Arm only during a blocking PCM read. Queue backpressure and pauses
+        # between reads are intentional and must never trigger recovery.
+        read_deadline = None
+        finished = threading.Event()
+        def watch_pcm():
+            while not finished.wait(1.0):
+                with self._proc_lock:
+                    if read_deadline is not None and time.monotonic() >= read_deadline:
+                        if generation == self._generation and not self._stopped:
+                            log.error("Live PCM read stalled for 60s; restarting shared session")
+                            self._video_failed.set()
+                            procs[-1].kill()
+                        return
+        if self.source.live and self.video_out:
+            threading.Thread(target=watch_pcm, name="live-pcm-watch", daemon=True).start()
+
         worker = None
         deepfilter_worker = None
         pending = b""
@@ -1200,11 +1226,13 @@ class Ingest:
                 if not self._wait_for_vod_lead(reader_sample, generation):
                     break
 
+                read_deadline = time.monotonic() + 60.0
                 if worker:
                     data = stdout.read(SEPARATION_READ_FRAMES * 4)
                 else:
                     data = stdout.read(CHUNK_SAMPLES * 2)
 
+                read_deadline = None
                 if not data:
                     break
 
@@ -1295,6 +1323,7 @@ class Ingest:
                 )
 
         finally:
+            finished.set()
             try:
                 if worker:
                     worker.close()

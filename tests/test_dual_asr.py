@@ -301,25 +301,29 @@ class RecoveryTests(unittest.TestCase):
         replacement.close.assert_called_once()
         selector.close.assert_called_once()
 
-    def test_cancelled_ipc_decode_kills_worker_without_waiting_for_timeout(self):
+    def test_cancelled_reply_is_drained_before_reusing_worker(self):
         from auto_translate.asr.whisper_turbo import WhisperTurboASR
         worker = object.__new__(WhisperTurboASR)
         worker._lock = threading.Lock()
         worker.last_stop = "unknown"
         process, connection = Mock(), Mock()
-        process.is_alive.side_effect = [True, True, True, False]
+        worker._request_id = 0
+        process.is_alive.return_value = True
+        connection.recv.side_effect = [{"type": "transcript", "id": 1, "text": "old"},
+                                       {"type": "transcript", "id": 2, "text": "new"}]
         cancelled = threading.Event()
         def poll(_):
             cancelled.set()
-            return False
+            return True
         connection.poll.side_effect = poll
         worker.process, worker.connection = process, connection
         with self.assertRaises(CancelledError):
             worker.transcribe(np.ones(100, np.float32), timeout=25,
                               cancel_event=cancelled)
-        self.assertIsNone(worker.process)
-        process.terminate.assert_called_once()
-        connection.close.assert_called_once()
+        self.assertIs(worker.process, process)
+        self.assertEqual(worker.transcribe(np.ones(100)), "new")
+        process.terminate.assert_not_called()
+        connection.close.assert_not_called()
 
     def test_diagnostics_flushes_between_cues(self):
         from auto_translate.asr.diagnostics import append_comparison, flush_comparisons

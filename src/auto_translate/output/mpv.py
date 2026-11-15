@@ -860,9 +860,8 @@ class MpvOutput:
                 # The ingest worker starts the shared fMP4 writer. MPV must
                 # open its existing playlist, not a separately resolved YouTube
                 # live rendition that may begin at another HLS segment.
-                while not self.ingest.video_ready.wait(0.25):
-                    if self.stop.is_set():
-                        return
+                if not self._wait_live_ready(self.ingest.video_ready, "playlist", 155.0):
+                    return
                 log.info("MPV live: loading same local HLS playlist as ASR")
             video_url = _mpv_media_url(self.ingest)
             if not shared_live_hls:
@@ -965,12 +964,8 @@ class MpvOutput:
                     time.sleep(0.05)
 
         if self.ingest.source.live:
-            while not self.ingest.first_pts_ready.wait(0.2):
-                if self.stop.is_set():
-                    return
-                if self.ingest.video_failed.is_set():
-                    self._recover_video_stream()
-                    return
+            if not self._wait_live_ready(self.ingest.first_pts_ready, "audio PTS", 60.0):
+                return
             self._session_start = self.ingest.source.start_s
 
         # MPV plays the original VOD timeline; FFmpeg independently extracts
@@ -1012,6 +1007,7 @@ class MpvOutput:
             return
 
         paused = True
+        healthy_position = None
         vod_wait_until = time.monotonic() + lead
 
         while not self.stop.is_set():
@@ -1075,6 +1071,11 @@ class MpvOutput:
                 return
             if pos is not None:
                 if self.ingest.source.live:
+                    if self._video_retries and not mpv_paused:
+                        if healthy_position is None or not 0 <= float(pos) - healthy_position <= 65:
+                            healthy_position = float(pos)
+                        elif float(pos) - healthy_position >= 60:
+                            self._video_retries = 0
                     self._sample_live_clock(float(pos), time.monotonic())
                 if self._mpv_anchor is None:
                     self._mpv_anchor = float(pos)
@@ -1117,6 +1118,17 @@ class MpvOutput:
                             if self._now < boundary < self._now + wait_s:
                                 wait_s = boundary - self._now
             self._subtitle_ready.wait(max(0.005, wait_s))
+
+    def _wait_live_ready(self, event, name, timeout):
+        deadline = time.monotonic() + timeout
+        while not self.stop.is_set():
+            if event.wait(0.2):
+                return True
+            if self.ingest.video_failed.is_set() or time.monotonic() >= deadline:
+                log.warning("Shared live %s unavailable, requesting recovery", name)
+                self._recover_video_stream()
+                break
+        return False
 
     def _recover_video_stream(self) -> bool:
         """Restart the shared fMP4 cache and audio reader at the current source position."""

@@ -56,3 +56,20 @@ class SharedLiveHlsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveReadinessDeadlineTests(unittest.TestCase):
+    def test_stalled_event_recovers_and_stop_interrupts(self):
+        from unittest.mock import Mock
+        from auto_translate.output.mpv import MpvOutput
+        import threading
+        player = object.__new__(MpvOutput)
+        player.stop = threading.Event()
+        player._recover_video_stream = Mock()
+        player.ingest = Mock(video_failed=threading.Event())
+        event = Mock()
+        event.wait.return_value = False
+        self.assertFalse(player._wait_live_ready(event, "playlist", 0))
+        player.stop.set()
+        self.assertFalse(player._wait_live_ready(event, "playlist", 60))
+        player._recover_video_stream.assert_called_once()

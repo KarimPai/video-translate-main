@@ -129,7 +129,7 @@ class QualityOptimizationsTests(unittest.TestCase):
         calls = []
         responses = iter(responses)
 
-        def fake_chat(ja, history, timeout, *, neutral_retry=False):
+        def fake_chat(ja, history, timeout, *, neutral_retry=False, names=None):
             calls.append((ja, list(history), timeout))
             return next(responses)
 
@@ -165,15 +165,12 @@ class QualityOptimizationsTests(unittest.TestCase):
         translator.glossary = Glossary({"ホロライブ": "Hololive"})
         translator.url = "http://127.0.0.1:8000/v1/chat/completions"
         history = [("昔", "I crashed"), ("いや", "No"), ("え", "Huh")]
-        answer = MagicMock()
-        answer.__enter__.return_value.read.return_value = json.dumps(
-            {"choices":[{"message":{"content":"the deputy chief"}}]}
-        ).encode("utf-8")
-        with patch("auto_translate.translate.plamo.urllib.request.urlopen", return_value=answer) as post:
+        translator.client = MagicMock()
+        translator.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "the deputy chief"}}]}
+        with patch.object(translator.client, "post", wraps=translator.client.post) as post:
             text = PlamoTranslator._chat(translator, "副署長", history, timeout=1.0)
         self.assertEqual(text, "the deputy chief")
-        req = post.call_args[0][0]
-        body = json.loads(req.data.decode("utf-8"))
+        body = post.call_args.kwargs["json"]
         self.assertIn({"source":"副署長","target":"Deputy Police Chief"},
                       body["chat_template_kwargs"]["glossary"])
         self.assertEqual(body["messages"][-1], {"role": "user", "content": "副署長"})

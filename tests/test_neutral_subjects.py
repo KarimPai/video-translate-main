@@ -171,7 +171,7 @@ class NeutralSubjectTests(unittest.TestCase):
         responses = iter(outputs)
         calls = []
 
-        def chat(ja, history, timeout, *, neutral_retry=False):
+        def chat(ja, history, timeout, *, neutral_retry=False, names=None):
             calls.append({"ja": ja, "history": list(history), "neutral_retry": neutral_retry})
             return next(responses)
 

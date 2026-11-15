@@ -13,10 +13,10 @@ class SharedGpuPlaybackTests(unittest.TestCase):
         self.assertIn("--mpv --shared-gpu-playback", launcher)
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
-                cfg = load_config(Path("config.dual-asr.example.toml"))
+                cfg = load_config(Path("config.example.toml"))
                 original = (cfg.asr.haas_device, cfg.reconciler.gpu_layers,
                             cfg.ingest.vod_max_audio_lead_s)
-                argv = ["auto-translate", "video", "--mpv"]
+                argv = ["auto-translate", "https://example.org/video", "--mpv"]
                 if enabled:
                     argv.append("--shared-gpu-playback")
                 with (patch.object(sys, "argv", argv),

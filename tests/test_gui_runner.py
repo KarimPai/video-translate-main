@@ -83,7 +83,7 @@ class GuiRunnerTests(unittest.TestCase):
     def test_start_config_is_non_destructive(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root / "config.dual-asr.example.toml").write_text("[mpv]\n", encoding="utf8")
+            (root / "config.example.toml").write_text("[mpv]\n", encoding="utf8")
             prepare_project(root)
             self.assertEqual((root / "config.toml").read_text(), "[mpv]\n")
             (root / "config.toml").write_text("custom = true\n")

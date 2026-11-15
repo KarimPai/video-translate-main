@@ -448,7 +448,7 @@ class VideoTranslateWindow(QMainWindow):
         self.stop_button.setEnabled(True)
         self.status.setText("Initializing models and loading video... See Console for progress.")
         try:
-            self._log_stream = (self.root / "logs" / "run.log").open("w", encoding="utf-8")
+            self._log_stream = (self.root / "logs" / "run.log").open("a", encoding="utf-8")
         except OSError:
             self._log_stream = None
         proc = self._new_process()

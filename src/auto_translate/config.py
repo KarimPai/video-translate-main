@@ -1,7 +1,9 @@
 """Load config.toml into typed dataclasses (missing keys fall back to defaults)."""
 
+import logging
+import math
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 
@@ -34,6 +36,10 @@ class IngestConfig:
     cookies_from_browser: str = ""
     pitch_semitones: float = 0.0
     vod_max_audio_lead_s: float = 75.0  # MPV VOD only: limit idle audio read-ahead
+
+    def __post_init__(self):
+        if not math.isfinite(self.vod_max_audio_lead_s) or self.vod_max_audio_lead_s < 0:
+            raise ValueError("vod_max_audio_lead_s must be nonnegative")
 
 
 @dataclass
@@ -85,6 +91,16 @@ class VadConfig:
     fallback_min_db: float = -50.0
 
     def __post_init__(self):
+        if not 0 <= self.neg_threshold <= self.threshold <= 1 or not 0 <= self.short_reply_probability <= 1:
+            raise ValueError("Invalid VAD probability thresholds")
+        for key in ("min_speech_ms", "min_silence_ms", "short_reply_ms", "onset_ms", "prob_smooth_frames",
+                    "max_utterance_s", "live_max_utterance_s", "adaptive_split_s", "live_adaptive_split_s",
+                    "adaptive_pause_ms", "split_pause_min_ms", "fallback_min_s"):
+            if not getattr(self, key) > 0:
+                raise ValueError(f"vad.{key} must be positive")
+        for key in ("speech_pad_ms", "split_context_ms", "max_split_extension_s", "live_max_split_extension_s", "fallback_s"):
+            if not getattr(self, key) >= 0:
+                raise ValueError(f"vad.{key} must be nonnegative")
         if self.device not in ("cpu", "cuda"):
             raise ValueError("VAD device must be cpu or cuda")
 
@@ -97,11 +113,19 @@ class AsrConfig:
     blocklist: list[str] = field(default_factory=list)
     response_timeout_s: float = 24.0  # per-utterance VOD recognition watchdog
     live_response_timeout_s: float = 12.0  # prevent stalled Vulkan decode from delaying live cues
-    startup_timeout_s: float = 45.0  # model cold starts may take longer than decode
+    startup_timeout_s: float = 120.0  # model cold starts may take longer than decode
     retry_empty_speech: bool = True  # VOD only; no music-only speculative decoding
     retry_min_confidence: float = 0.80
     retry_min_duration_s: float = 0.6
     retry_max_duration_s: float = 10.0
+
+    def __post_init__(self):
+        if not isinstance(self.blocklist, list) or any(not isinstance(x, str) or not x.strip() for x in self.blocklist):
+            raise ValueError("asr.blocklist requires nonempty strings")
+        if not 0 <= self.retry_min_confidence <= 1 or not 0 < self.retry_min_duration_s <= self.retry_max_duration_s:
+            raise ValueError("Invalid ASR retry thresholds")
+        if min(self.startup_timeout_s, self.response_timeout_s, self.live_response_timeout_s) <= 0:
+            raise ValueError("ASR timeouts must be positive")
 
 
 @dataclass
@@ -229,6 +253,11 @@ class TranslateConfig:
     retry_timeout_s: float = 15.0  # upper bound for the optional second pass
     fragment_context: bool = True  # Japanese-only previous cue for ambiguous fragments
 
+    def __post_init__(self):
+        for value in (self.timeout_s, self.load_timeout_s, self.retry_timeout_s):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError("Translation timeouts must be finite and positive")
+
 
 @dataclass
 class OutputConfig:
@@ -255,9 +284,18 @@ class MpvConfig:
         "bv*[height<=1080][vcodec^=avc1][protocol^=m3u8]+ba[protocol^=m3u8]"
         "/b[height<=1080][protocol^=m3u8]/bv*[height<=1080]+ba/b[height<=1080]"
     )
+    live_forward_cache_mib: int = 1024
+    live_back_cache_mib: int = 1024
     en_size: int = 28
     ja_size: int = 0
     max_subtitle_rows: int = 3
+
+    def __post_init__(self):
+        for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("MPV timing values must be finite and nonnegative")
+        if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
+            raise ValueError("Invalid MPV live cache size")
 
 
 def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
@@ -292,6 +330,10 @@ class Config:
     mpv: MpvConfig = field(default_factory=MpvConfig)
     stats_interval_s: float = 30.0
 
+    def __post_init__(self):
+        if not math.isfinite(self.stats_interval_s) or self.stats_interval_s <= 0:
+            raise ValueError("stats_interval_s must be finite and positive")
+
 
 def load_config(path: Path) -> Config:
     if not path.exists():
@@ -300,63 +342,37 @@ def load_config(path: Path) -> Config:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
+    for section in fields(Config):
+        if section.name not in data or section.name == "stats_interval_s":
+            continue
+        values = data[section.name]
+        if not isinstance(values, dict):
+            raise ValueError(f"[{section.name}] must be a TOML table")
+        allowed = {option.name for option in fields(section.type)}
+        for key in values.keys() - allowed:
+            logging.getLogger(__name__).warning("Ignoring unknown config key %s.%s", section.name, key)
+            del values[key]
+    for key in data.keys() - {section.name for section in fields(Config)}:
+        logging.getLogger(__name__).warning("Ignoring unknown config section %s", key)
+
     # Ignore legacy fields so existing config.toml files remain compatible.
     ingest_data = dict(data.get("ingest", {}))
     # Older configs may contain a -3 semitone ASR pitch workaround. Natural pitch
     # is the default for Haas Japanese recognition; ignore that legacy override.
     ingest_data.pop("pitch_semitones", None)
 
-    asr_data = dict(data.get("asr", {}))
-    for key in (
-        "backend", "model", "device", "compute_type", "beam_size",
-        "initial_prompt", "no_speech_threshold", "log_prob_threshold",
-        "probe_no_speech_max", "probe_log_prob_min",
-        "qwen_model", "qwen_python", "parakeet_model", "parakeet_threads",
-    ):
-        asr_data.pop(key, None)
-
-    mpv_data = dict(data.get("mpv", {}))
-    # Ignore removed playback and speaker settings in older configs.
-    for obsolete in (
-        "start_delay_s", "min_display_s", "hold_s", "speaker_diarization",
-        "speaker_similarity_threshold", "speaker_device", "max_speakers",
-    ):
-        mpv_data.pop(obsolete, None)
-
-    # Older local config.toml files may still have an engine selector and
-    # settings from removed translation paths. Ignore those keys so an
-    # existing installation automatically uses PLaMo without manual edits.
-    translate_data = dict(data.get("translate", {}))
-    for obsolete in (
-        "backend", "model", "base_url", "temperature",
-        "min_request_interval_s", "extra_body", "presets", "preset",
-        "mpv_delay_s", "api_key_env",
-    ):
-        translate_data.pop(obsolete, None)
-
-    # Old config.toml files may contain hard VRAM thresholds; ignore them.
-    # The current policy uses real NVIDIA total/free memory, with no forced stop.
-    gpu_budget_data = dict(data.get("gpu_budget", {}))
-    for obsolete in ("target_gb", "optimization_threshold_gb",
-                     "emergency_threshold_gb", "maximum_gb"):
-        gpu_budget_data.pop(obsolete, None)
-
-    dual_data = dict(data.get("dual_asr", {}))
-    dual_data.pop("language_routing", None)  # ignore legacy option
-    dual_data = {k: v for k, v in dual_data.items() if not k.startswith("indonesian_")}
-
     return Config(
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
-        dual_asr=DualAsrConfig(**dual_data),
+        dual_asr=DualAsrConfig(**data.get("dual_asr", {})),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),
-        gpu_budget=GpuBudgetConfig(**gpu_budget_data),
+        gpu_budget=GpuBudgetConfig(**data.get("gpu_budget", {})),
         ingest=IngestConfig(**ingest_data),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),
-        asr=AsrConfig(**asr_data),
-        translate=TranslateConfig(**translate_data),
+        asr=AsrConfig(**data.get("asr", {})),
+        translate=TranslateConfig(**data.get("translate", {})),
         output=OutputConfig(**data.get("output", {})),
-        mpv=MpvConfig(**mpv_data),
+        mpv=MpvConfig(**data.get("mpv", {})),
         stats_interval_s=data.get("stats_interval_s", 30.0),
     )

@@ -26,7 +26,7 @@ class SessionSubtitleCache:
 
     def add(self, sub: Subtitle) -> bool:
         """Save one translated cue, keeping the first result for a timestamp."""
-        if not sub.en.strip() or sub.en == "[translation failed]":
+        if not sub.en.strip():
             return False
         if sub.end_s <= sub.start_s:
             return False

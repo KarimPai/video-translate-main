@@ -11,6 +11,7 @@ A scheduler polls mpv's time-pos over JSON IPC (~10x/s) and draws subtitles
 using osd-overlay.
 """
 import ctypes
+import os
 import json
 import logging
 import queue
@@ -249,6 +250,8 @@ class MpvIpc:
 
         self._lock = threading.Lock()
         self._next_id = 0
+        self._properties = {}
+        self._reader_failure = None
         self.events: queue.Queue[dict] = queue.Queue()
         self._responses: queue.Queue[dict] = queue.Queue()
         self._reader = threading.Thread(
@@ -267,11 +270,14 @@ class MpvIpc:
                     raise ConnectionError("mpv closed the IPC connection")
 
                 msg = json.loads(line)
-                if "event" in msg:
+                if msg.get("event") == "property-change":
+                    self._properties[msg["name"]] = msg.get("data")
+                elif "event" in msg:
                     self.events.put(msg)
                 elif "request_id" in msg:
                     self._responses.put(msg)
         except (OSError, ValueError, ConnectionError) as exc:
+            self._reader_failure = exc
             self._responses.put({"_reader_error": str(exc)})
 
     def command(self, *args: Any, **named: Any) -> Any:
@@ -317,6 +323,10 @@ class MpvIpc:
     def get(self, prop: str) -> Any:
         """Return a property's value, or None if unavailable."""
         try:
+            if self._reader_failure is not None:
+                raise ConnectionError("mpv IPC reader stopped") from self._reader_failure
+            if prop in self._properties:
+                return self._properties[prop]
             return self.command("get_property", prop)
         except MpvError:
             return None
@@ -429,7 +439,7 @@ class MpvOutput:
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
 
-        ipc_path = f"{IPC_PREFIX}-{uuid4().hex}"
+        ipc_path = f"{IPC_PREFIX}-{os.getpid()}-{uuid4().hex}"
         self._proc = subprocess.Popen([
             find_mpv(cfg.path),
 
@@ -451,8 +461,8 @@ class MpvOutput:
             # YouTube video stream.
             "--cache=yes",
             "--demuxer-readahead-secs=120",
-            "--demuxer-max-bytes=1GiB" if ingest.source.live else "--demuxer-max-bytes=128MiB",
-            "--demuxer-max-back-bytes=1GiB" if ingest.source.live else "--demuxer-max-back-bytes=32MiB",
+            f"--demuxer-max-bytes={cfg.live_forward_cache_mib}MiB" if ingest.source.live else "--demuxer-max-bytes=128MiB",
+            f"--demuxer-max-back-bytes={cfg.live_back_cache_mib}MiB" if ingest.source.live else "--demuxer-max-back-bytes=32MiB",
             # Start near the HLS live edge, matching FFmpeg's normal -3.
             # Index 0 started MPV at an older segment than the ASR audio.
             *(
@@ -506,6 +516,8 @@ class MpvOutput:
         try:
             self.ipc = MpvIpc(ipc_path)
 
+            for observer, prop in enumerate(("time-pos", "pause", "eof-reached"), start=1):
+                self.ipc.command("observe_property", observer, prop)
             # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
 
@@ -825,6 +837,12 @@ class MpvOutput:
                     )
                 self.stop.set()
 
+        except Exception as exc:
+            if not self.stop.is_set():
+                self.scheduler_failure = exc
+                log.exception("MPV scheduler crashed")
+                self.stop.set()
+
     def _play_session(self, show_hint: bool) -> None:
         """Buffer before start/seeks; never stutter-pause during playback."""
 
@@ -842,10 +860,9 @@ class MpvOutput:
                 # The ingest worker starts the shared fMP4 writer. MPV must
                 # open its existing playlist, not a separately resolved YouTube
                 # live rendition that may begin at another HLS segment.
-                if not self.ingest.wait_video_ready():
-                    log.error("shared live HLS playlist unavailable; stopping")
-                    self.stop.set()
-                    return
+                while not self.ingest.video_ready.wait(0.25):
+                    if self.stop.is_set():
+                        return
                 log.info("MPV live: loading same local HLS playlist as ASR")
             video_url = _mpv_media_url(self.ingest)
             if not shared_live_hls:

@@ -38,13 +38,15 @@ echo   2. 480p
 echo   3. 720p ^(default^)
 echo   4. 1080p
 set /p "QUALITY_CHOICE=Enter choice [3]: "
+setlocal EnableDelayedExpansion
 if not defined QUALITY_CHOICE set "QUALITY_CHOICE=3"
-if "%QUALITY_CHOICE%"=="1" set "VIDEO_QUALITY=360"
-if "%QUALITY_CHOICE%"=="2" set "VIDEO_QUALITY=480"
-if "%QUALITY_CHOICE%"=="3" set "VIDEO_QUALITY=720"
-if "%QUALITY_CHOICE%"=="4" set "VIDEO_QUALITY=1080"
+if "!QUALITY_CHOICE!"=="1" set "VIDEO_QUALITY=360"
+if "!QUALITY_CHOICE!"=="2" set "VIDEO_QUALITY=480"
+if "!QUALITY_CHOICE!"=="3" set "VIDEO_QUALITY=720"
+if "!QUALITY_CHOICE!"=="4" set "VIDEO_QUALITY=1080"
 if not defined VIDEO_QUALITY (
     echo Invalid choice. Enter 1, 2, 3, or 4.
+    endlocal
     goto select_quality
 )
 echo YouTube video quality: up to %VIDEO_QUALITY%p (lower if unavailable)
@@ -55,7 +57,7 @@ echo.
 echo NVIDIA App ^> System ^> Video: enable RTX Video Super Resolution and select High quality.
 set "RTX_VSR_CHOICE="
 set /p "RTX_VSR_CHOICE=Enable optional RTX VSR 480p-to-1440p enhancement? [y/N]: "
-if /I "%RTX_VSR_CHOICE%"=="Y" set "RTX_VSR_ARG=--rtx-vsr"
+if /I "!RTX_VSR_CHOICE!"=="Y" set "RTX_VSR_ARG=--rtx-vsr"
 :vsr_choice_complete
 if defined RTX_VSR_ARG (
     echo RTX VSR requested: 3x scaling; NVIDIA App controls enhancement quality.
@@ -63,7 +65,7 @@ if defined RTX_VSR_ARG (
     echo RTX VSR off ^(standard MPV playback^).
 )
 
-if not exist "config.toml" copy /y "config.dual-asr.example.toml" "config.toml" >nul
+if not exist "config.toml" copy /y "config.example.toml" "config.toml" >nul
 if exist "%LOCALAPPDATA%\Programs\speech.cpp\current\speech.exe" set "PATH=%LOCALAPPDATA%\Programs\speech.cpp\current;%PATH%"
 if not exist "logs" mkdir "logs"
 if defined PYTHONPATH (
@@ -74,7 +76,7 @@ if defined PYTHONPATH (
 uv run --no-sync python -c "import numpy, fireredvad, faster_whisper, auto_translate" >nul 2>nul
 if errorlevel 1 (
     echo Installing Haas + PLaMo pipeline Python dependencies...
-    uv sync
+    uv sync --locked
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.
         pause
@@ -88,7 +90,8 @@ echo Active models, VRAM readings and fallback reasons: logs\run.log
 echo Whisper Turbo model downloads automatically on first launch ^(~1.6 GB^).
 echo.
 
-uv run --no-sync python -m auto_translate "%VIDEO_URL%" --mode auto --mpv --shared-gpu-playback --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal 2>"logs\run.log"
+set "VIDEO_TRANSLATE_CLI_LOG=1"
+uv run --no-sync python -m auto_translate --mode auto --mpv --shared-gpu-playback --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%EXIT_CODE%"=="0" (

@@ -9,13 +9,13 @@ different timestamp origins.
 import json
 import logging
 import os
-import subprocess
+from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import IngestConfig
-from .windows_subprocess import hidden_console_flags
+from .ytdlp import cache_key, extract
 
 log = logging.getLogger(__name__)
 
@@ -23,13 +23,6 @@ _FORMAT_FIELDS = (
     "format_id", "protocol", "ext", "width", "height", "fps",
     "vcodec", "acodec", "tbr", "format_note",
 )
-
-
-def _cookie_args(cfg: IngestConfig) -> list[str]:
-    return (
-        ["--cookies-from-browser", cfg.cookies_from_browser]
-        if cfg.cookies_from_browser else []
-    )
 
 
 def _cache_dir() -> Path:
@@ -40,37 +33,7 @@ def _cache_dir() -> Path:
 
 def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
     """Fetch VOD metadata, persist a safe summary, and return its timeline."""
-    cmd = [
-        "yt-dlp",
-        "--no-warnings",
-        "--no-call-home",
-        "--remote-components", "ejs:github",
-        "--skip-download",
-        "--dump-single-json",
-    ]
-    cmd += _cookie_args(cfg) + [url]
-
-    try:
-        raw = subprocess.run(
-            cmd,
-            creationflags=hidden_console_flags(),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    except subprocess.CalledProcessError as exc:
-        # Previously stderr was captured and hidden by the generic traceback,
-        # making YouTube access and JS challenge failures impossible to diagnose.
-        details = (exc.stderr or exc.stdout or "").strip()
-        if details:
-            details = "\n".join(details.splitlines()[-5:])[-1600:]
-        else:
-            details = "yt-dlp exited without an error message"
-        raise RuntimeError(
-            f"yt-dlp metadata fetch failed (exit {exc.returncode}):\n{details}"
-        ) from exc
-
+    raw = extract(cfg, url, ["--skip-download", "--dump-single-json"]).stdout
     data = json.loads(raw)
 
     duration = data.get("duration")
@@ -120,8 +83,8 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
 
     directory = _cache_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{video_id}.json"
-    temporary = path.with_suffix(".json.tmp")
+    path = directory / f"{cache_key(video_id)}.json"
+    temporary = path.with_suffix(f".{uuid4().hex}.tmp")
     temporary.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -167,7 +130,8 @@ def record_session_anchor(
             "reason": str(reason),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         })
-        temporary = path.with_suffix(".json.tmp")
+        del sessions[:-64]
+        temporary = path.with_suffix(f".{uuid4().hex}.tmp")
         temporary.write_text(
             json.dumps(stored, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

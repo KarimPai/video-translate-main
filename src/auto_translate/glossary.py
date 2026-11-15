@@ -2,6 +2,7 @@
 
 import tomllib
 import re
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,6 +24,7 @@ class Glossary:
     @classmethod
     def load(cls, path: Path) -> "Glossary":
         if not path.exists():
+            logging.getLogger(__name__).warning("Glossary missing: %s", path)
             return cls({})
         with path.open("rb") as f:
             data = tomllib.load(f)

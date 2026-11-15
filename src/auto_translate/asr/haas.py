@@ -59,8 +59,7 @@ class HaasASR:
         )
         self._reader.start()
         try:
-            response = self._read_response(self.cfg.startup_timeout_s)
-            status = json.loads(response)
+            status = self._read_message(time.monotonic() + self.cfg.startup_timeout_s)
         except Exception as exc:
             self.close()
             raise RuntimeError(
@@ -94,6 +93,18 @@ class HaasASR:
             code = self.process.poll() if self.process is not None else None
             raise RuntimeError(f"Haas speech.cpp worker closed stdout (exit code {code})")
         return response
+
+    def _read_message(self, deadline):
+        while (remaining := deadline - time.monotonic()) > 0:
+            response = self._read_response(remaining)
+            try:
+                message = json.loads(response)
+            except json.JSONDecodeError:
+                log.debug("Ignoring speech.cpp output: %r", response[:200])
+                continue
+            if isinstance(message, dict):
+                return message
+        raise TimeoutError("speech.cpp response deadline expired")
 
     def close(self) -> None:
         process = getattr(self, "process", None)
@@ -152,8 +163,7 @@ class HaasASR:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("speech.cpp recognition deadline expired")
-            response = self._read_response(remaining)
-            result = json.loads(response)
+            result = self._read_message(deadline)
             if result.get("id") != request_id:
                 continue
             if result.get("type") == "error":

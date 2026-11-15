@@ -92,7 +92,7 @@ def prepare_project(root: Path):
     """Ensure config/log folders exist without resetting existing settings."""
     cfg = root / "config.toml"
     if not cfg.exists():
-        shutil.copyfile(root / "config.dual-asr.example.toml", cfg)
+        shutil.copyfile(root / "config.example.toml", cfg)
     (root / "logs").mkdir(exist_ok=True)
 
 

@@ -16,7 +16,7 @@ def dummy_ingest(*, live=False):
     ing = object.__new__(Ingest)
     ing.source = SimpleNamespace(live=live, start_s=0.0)
     ing.video_out = None
-    ing._proc_lock = threading.Lock()
+    ing._proc_lock = threading.Condition()
     ing._stopped = False
     ing._generation = 0
     ing._vod_max_audio_lead_s = 0.0
@@ -59,6 +59,7 @@ class PlaybackPacingTests(unittest.TestCase):
         time.sleep(0.20)
         with ing._proc_lock:
             ing._generation = 1
+            ing._proc_lock.notify_all()
             ing._playback_position_s = 90.0
         t.join(timeout=2.0)
         if t.is_alive():
@@ -166,7 +167,7 @@ class YoutubeAudioRecoveryTests(unittest.TestCase):
         ing = self.failed_vod_ingest()
         ing.cfg = SimpleNamespace(ytdlp_format="bestaudio",
                                   cookies_from_browser="")
-        response = Mock(stdout="https://audio.example/test")
+        response = Mock(returncode=0, stdout="https://audio.example/test")
         with patch("auto_translate.ingest.subprocess.run",
                    return_value=response) as run:
             self.assertEqual(ing._resolve_audio_url(), "https://audio.example/test")

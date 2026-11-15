@@ -1,8 +1,11 @@
 name: Offline quality regression tests
 
+permissions:
+  contents: read
+
 on:
   push:
-    branches: [main, feature/haas-plamo-quality-reliability-20261112, feature/haas-dual-asr-reconciliation, feature/haas-whisper-turbo-dual-asr-20261114]
+    branches: [main, feature/haas-whisper-turbo-dual-asr-20261114]
   pull_request:
 
 jobs:
@@ -10,15 +13,43 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - name: Install lightweight CPU test dependencies
-        run: python -m pip install "numpy>=1.26"
-      - name: Compile all Python files
-        run: python -m compileall -q src tests scripts
-      - name: Run offline regression tests
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked --only-group ci
+      - run: uv run --no-sync ruff check --select E9,F63,F7,F82 src tests scripts
+      - run: uv run --no-sync python -m compileall -q src tests scripts
+      - run: uv run --no-sync python -m unittest discover -s tests -v
         env:
           PYTHONPATH: src
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  windows-scripts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: true
+      - run: uv sync --locked --only-group ci --python 3.12
+      - run: uv run --no-sync python -m unittest discover -s tests -p test_failure_paths.py -v
+        env:
+          PYTHONPATH: src
+      - name: Parse PowerShell and exercise batch launchers
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            $errors = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+            if ($errors) { throw ($errors | Out-String) }
+          }
+          # Exercise CMD parsing without installing software or loading models.
+          "" | cmd /d /c 'call "Start translate.bat"' | Out-String -OutVariable output
+          if ($LASTEXITCODE -ne 1 -or $output -notmatch 'No URL entered') { throw 'CLI preflight failed' }
+          Copy-Item Setup.bat $env:TEMP
+          cmd /d /c "call `"$env:TEMP\Setup.bat`" <nul" | Out-String -OutVariable output
+          if ($LASTEXITCODE -ne 1 -or $output -notmatch 'is missing') { throw 'Setup preflight failed' }
+          exit 0

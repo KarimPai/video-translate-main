@@ -1,6 +1,7 @@
 """PLaMo 3 Translate with an automatically managed local llama.cpp server."""
 
 import atexit
+import httpx
 from collections import Counter
 import json
 import logging
@@ -180,8 +181,9 @@ class PlamoTranslator:
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.process: subprocess.Popen | None = None
         self._server_log = None
-        self._start_server()
+        self.client = httpx.Client(trust_env=False)
         try:
+            self._start_server()
             # Warm up before ingest starts so first subtitles do not pay load cost.
             self._warmup()
         except Exception:
@@ -190,7 +192,14 @@ class PlamoTranslator:
 
     def _start_server(self) -> None:
         """Reuse a responding local server; otherwise launch and own one."""
-        if _server_responds(self.base_url):
+        deadline = time.monotonic() + self.cfg.load_timeout_s
+        state = _server_state(self.base_url, self.cfg.plamo_model)
+        while state == "loading":
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Existing PLaMo server is still loading")
+            time.sleep(0.5)
+            state = _server_state(self.base_url, self.cfg.plamo_model)
+        if state == "ready":
             log.info("Using existing llama.cpp server at %s", self.base_url)
             return
 
@@ -204,9 +213,11 @@ class PlamoTranslator:
         parsed = urllib.parse.urlparse(self.base_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        from ..plamo_model import model_arguments
+        model_args = model_arguments(self.cfg.plamo_hf_model)
         command = [
             executable,
-            "-hf", self.cfg.plamo_hf_model,
+            *model_args,
             "-c", str(self.cfg.plamo_context),
             "--host", host,
             "--port", str(port),
@@ -252,7 +263,7 @@ class PlamoTranslator:
                 raise RuntimeError(
                     "llama-server exited during startup. See logs\\plamo-server.log."
                 )
-            if _server_responds(self.base_url):
+            if _server_state(self.base_url, self.cfg.plamo_model) == "ready":
                 log.info("PLaMo server is ready at %s", self.base_url)
                 return
             time.sleep(0.5)
@@ -276,8 +287,8 @@ class PlamoTranslator:
             try:
                 self._chat("こんにちは", [], timeout=min(10.0, remaining))
                 return
-            except urllib.error.HTTPError as exc:
-                if exc.code != 503:
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 503:
                     raise
                 log.info("PLaMo model is still loading; retrying warm-up...")
             time.sleep(min(1.0, max(0.0, remaining)))
@@ -306,6 +317,7 @@ class PlamoTranslator:
         if self._server_log is not None:
             self._server_log.close()
             self._server_log = None
+        self.client.close()
         atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
@@ -346,8 +358,15 @@ class PlamoTranslator:
             translated = canonicalize_english_names(ja, translated, self.vod_title)
             return neutralize_unsupported_subjects(ja, translated)
 
-        english = normalized(self._chat(ja, history, timeout=self.cfg.timeout_s))
         names = _current_glossary_matches(ja, self.vod_title, self.glossary)
+        try:
+            raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                raise
+            log.warning("Retrying transient PLaMo request failure: %s", exc)
+            raw = self._chat(ja, history, timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s), names=names)
+        english = normalized(raw)
         pronoun_reason = (
             unsupported_person_reference(ja, english)
             if self.cfg.neutral_subjects else None
@@ -363,7 +382,7 @@ class PlamoTranslator:
                 # unsupported person/gender references. No new model is loaded.
                 candidate = normalized(self._chat(
                     ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
-                    neutral_retry=bool(pronoun_reason),
+                    neutral_retry=bool(pronoun_reason), names=names,
                 ))
             except Exception as exc:
                 self._count_validation("retry_unavailable")
@@ -399,6 +418,7 @@ class PlamoTranslator:
         history: list[tuple[str, str]],
         timeout: float,
         *,
+        names=None,
         neutral_retry: bool = False,
     ) -> str:
         messages: list[dict[str, str]] = []
@@ -453,7 +473,8 @@ class PlamoTranslator:
                 "\n" + memory if memory else ""
             ) + source_hint + fragment_hint,
         }
-        if hits := _current_glossary_matches(ja, self.vod_title, self.glossary):
+        hits = names if names is not None else _current_glossary_matches(ja, self.vod_title, self.glossary)
+        if hits:
             options["glossary"] = [
                 {"source": source, "target": target}
                 for source, target in hits
@@ -468,26 +489,29 @@ class PlamoTranslator:
             "chat_template_kwargs": options,
             "stream": False,
         }
-        req = urllib.request.Request(
-            self.url,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
-        return data["choices"][0]["message"]["content"]
+        response = self.client.post(self.url, json=body, timeout=timeout)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
 
 
-def _server_responds(base_url: str) -> bool:
-    """Check the OpenAI-compatible models endpoint without sending inference."""
+_LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _server_state(base_url: str, alias: str) -> str:
     try:
-        with urllib.request.urlopen(base_url + "/models", timeout=1.0):
-            return True
-    except urllib.error.HTTPError:
-        # llama.cpp can return 503 while the model is still loading.
-        return False
-    except (OSError, urllib.error.URLError):
-        return False
+        with _LOCAL.open(base_url + "/models", timeout=1.0) as response:
+            models = json.load(response)["data"]
+    except urllib.error.HTTPError as exc:
+        if exc.code == 503:
+            return "loading"
+        raise RuntimeError(f"Unexpected model service at {base_url}: HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ConnectionRefusedError):
+            return "absent"
+        raise
+    if not any(model.get("id") == alias for model in models):
+        raise RuntimeError(f"Service at {base_url} does not advertise required model {alias}")
+    return "ready"
 
 
 def _clean(text: str) -> str:
@@ -495,7 +519,7 @@ def _clean(text: str) -> str:
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     if not lines:
         return ""
-    line = lines[0]
+    line = " ".join(lines)
     if line.upper().startswith(("EN:", "ENGLISH:")):
         line = line.split(":", 1)[1].strip()
     return line.strip('"“”「」')

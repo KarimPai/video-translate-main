@@ -33,7 +33,7 @@ from .types import (
     Transcript,
     Utterance,
 )
-from .vad import run_segmenter
+from .vad import Segmenter, run_segmenter
 
 log = logging.getLogger(__name__)
 
@@ -366,7 +366,7 @@ def run_translate(
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.
         if isinstance(tr, Subtitle):
-            if tr.ja and tr.en and tr.en != "[translation failed]":
+            if tr.ja and tr.en:
                 history.append((tr.ja, tr.en))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
@@ -390,12 +390,12 @@ def run_translate(
                 en = translator.translate(tr.ja, list(history))
             except Exception as e:
                 log.error("translation failed: %s", e)
-                en = "[translation failed]"
+                suppressed = True
 
             if get_generation is not None and tr.generation != get_generation():
                 continue
 
-            if en and en != "[translation failed]":
+            if en:
                 tcfg = getattr(translator, "cfg", None)
                 if (getattr(tcfg, "suppress_runaway_loops", True)
                         and (has_generation_loop(en) or looks_like_prompt_echo(en))):
@@ -413,7 +413,7 @@ def run_translate(
                     if not en:
                         suppressed = True
 
-            if en and en != "[translation failed]":
+            if en:
                 history.append((tr.ja, en))
 
             if not en.strip() and not suppressed:
@@ -525,6 +525,7 @@ def run(
     session_cache: SessionSubtitleCache | None = None,
     dual=None,
     language_filter=None,
+    segmenter=None,
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
 
@@ -568,7 +569,7 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("vad", run_segmenter, failures, vad_cfg, audio_q, utt_q,
+            args=("vad", run_segmenter, failures, segmenter if segmenter is not None else Segmenter(vad_cfg), audio_q, utt_q,
                   lambda: ingest.generation),
             name="vad",
             daemon=True,
@@ -765,6 +766,10 @@ def run(
                         )
 
 
+        for output in outputs:
+            failure = getattr(output, "scheduler_failure", None)
+            if isinstance(failure, Exception):
+                raise RuntimeError("MPV scheduler crashed") from failure
     except KeyboardInterrupt:
         log.info("stopping (Ctrl+C)")
 

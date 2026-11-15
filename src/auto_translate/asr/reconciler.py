@@ -13,6 +13,7 @@ from pathlib import Path
 from .selection import selected
 
 log = logging.getLogger(__name__)
+_LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MODEL = "LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M"
 
 
@@ -38,7 +39,7 @@ class Reconciler:
             until = time.monotonic() + 300
             while self.process.poll() is None and time.monotonic() < until:
                 try:
-                    with urllib.request.urlopen(self.url + "/v1/models", timeout=1) as resp:
+                    with _LOCAL.open(self.url + "/v1/models", timeout=1) as resp:
                         if any(m["id"] == "jp-selector" for m in json.load(resp)["data"]):
                             return
                 except OSError:
@@ -67,7 +68,7 @@ class Reconciler:
                                      data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json"})
         started = time.monotonic()
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with _LOCAL.open(req, timeout=timeout) as response:
             answer = json.load(response)["choices"][0]["message"]["content"]
         record = selected(answer, haas, secondary)
         self.last_choice = record["selection"]

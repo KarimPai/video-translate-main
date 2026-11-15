@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parents[3] / "web"  # repo/web (src/auto_translate/output → repo)
 BACKLOG = 50  # lines kept for (re)connecting clients
+MAX_CLIENTS = 16
 PING_S = 15.0  # keep-alive comment so proxies / phones don't drop an idle connection
 
 
@@ -37,13 +38,17 @@ class WebOutput:
         self._backlog: deque[_Event] = deque(maxlen=BACKLOG)
         self._clients: set[queue.Queue[_Event]] = set()
 
+        self._closed = threading.Event()
+        if host == "0.0.0.0":
+            log.warning("Unauthenticated subtitle viewer exposed on all network interfaces")
+
         hub = self  # the handler class below needs to reach this object
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
                 if self.path.split("?")[0] in ("/", "/index.html"):
                     self._send_file(WEB_DIR / "index.html", "text/html; charset=utf-8")
-                elif self.path == "/events":
+                elif self.path.partition("?")[0] == "/events":
                     hub._serve_events(self)
                 else:
                     self.send_error(404)
@@ -73,31 +78,44 @@ class WebOutput:
             self._next_id += 1
             self._backlog.append(event)
             for client in self._clients:
-                client.put(event)
+                if client.full():
+                    try:
+                        client.get_nowait()
+                    except queue.Empty:
+                        pass
+                client.put_nowait(event)
 
     def drain(self) -> None:
         pass
 
     def close(self) -> None:
+        self._closed.set()
         self._server.shutdown()
+        self._server.server_close()
 
     def _serve_events(self, handler: BaseHTTPRequestHandler) -> None:
         """Runs on the server's per-connection thread for as long as the browser is connected."""
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/event-stream")
-        handler.send_header("Cache-Control", "no-cache")
-        handler.end_headers()
-
-        last_id = int(handler.headers.get("Last-Event-ID") or 0)
-        client: queue.Queue[_Event] = queue.Queue()
+        try:
+            last_id = max(0, int(handler.headers.get("Last-Event-ID") or 0))
+        except ValueError:
+            last_id = 0
+        client = queue.Queue(maxsize=BACKLOG)
         with self._lock:
+            if len(self._clients) >= MAX_CLIENTS:
+                handler.send_error(503, "Viewer limit reached")
+                return
             # New viewer: the last few lines. Reconnecting viewer: whatever it missed.
             missed = [e for e in self._backlog if e.id > last_id]
             for event in missed[-BACKLOG if last_id else -3:]:
-                client.put(event)
+                client.put_nowait(event)
             self._clients.add(client)
         try:
-            while True:
+            handler.connection.settimeout(PING_S)
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/event-stream")
+            handler.send_header("Cache-Control", "no-cache")
+            handler.end_headers()
+            while not self._closed.is_set():
                 try:
                     event = client.get(timeout=PING_S)
                     msg = f"id: {event.id}\ndata: {event.data}\n\n"

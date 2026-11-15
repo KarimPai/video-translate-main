@@ -40,11 +40,14 @@ class StreamingFireRedVAD:
             raise RuntimeError("FireRedVAD requested CUDA, but CUDA is unavailable")
 
         assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad"
+        revision = "7990aaccc6b7aec1e527743bd30201f2c4a03b8c"
+        assets = assets / revision
         model_dir = assets / "Stream-VAD"
         if not (model_dir / "cmvn.ark").is_file() or not (model_dir / "model.pth.tar").is_file():
             log.info("Downloading FireRedVAD streaming model from Hugging Face...")
             snapshot_download(
                 repo_id="FireRedTeam/FireRedVAD",
+                revision=revision,
                 allow_patterns=["Stream-VAD/*"],
                 local_dir=str(assets),
             )
@@ -416,19 +419,12 @@ class Segmenter:
 
 
 def run_segmenter(
-    cfg: VadConfig,
+    seg: Segmenter,
     in_q: "queue.Queue[AudioChunk | AudioProgress | None]",
     out_q: "queue.Queue[Utterance | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
 ) -> None:
     """Thread body."""
-    try:
-        seg = Segmenter(cfg)
-    except Exception:
-        log.exception("Could not initialize the FireRed VAD segmenter")
-        out_q.put(None)
-        return
-
     awaiting_first_utterance = False
 
     while True:

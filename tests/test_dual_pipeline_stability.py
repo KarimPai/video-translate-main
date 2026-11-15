@@ -335,7 +335,7 @@ class ShutdownOrderingTests(unittest.TestCase):
         translator = Mock()
         asr.close.side_effect = lambda: self.assertTrue(asr_done.is_set())
         translator.close.side_effect = lambda: self.assertTrue(mt_done.is_set())
-        with patch("auto_translate.pipeline.run_segmenter", side_effect=fake_vad), \
+        with patch("auto_translate.pipeline.Segmenter"), patch("auto_translate.pipeline.run_segmenter", side_effect=fake_vad), \
              patch("auto_translate.pipeline.run_asr", side_effect=fake_asr), \
              patch("auto_translate.pipeline.run_translate", side_effect=fake_translate):
             run(ingest, cfg, asr, translator, [], stop)

@@ -116,13 +116,11 @@ class PLaMoQualityTests(unittest.TestCase):
         translator.vod_title = "Example"
         translator.url = "http://127.0.0.1:8000/v1/chat/completions"
         translator.memory_lines = 0
-        with patch("auto_translate.translate.plamo.urllib.request.urlopen") as urlopen:
-            urlopen.return_value.__enter__.return_value = io.BytesIO(
-                json.dumps({"choices": [{"message": {"content": "That one."}}]}).encode()
-            )
-            translator._chat("それは", [("赤い車がある", "There's a red car")], 2.0)
-            request = urlopen.call_args.args[0]
-        body = json.loads(request.data.decode("utf-8"))
+        from unittest.mock import MagicMock
+        translator.client = MagicMock()
+        translator.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "That one."}}]}
+        translator._chat("それは", [("赤い車がある", "There's a red car")], 2.0)
+        body = translator.client.post.call_args.kwargs["json"]
         self.assertIn("Immediately preceding Japanese", body["chat_template_kwargs"]["context"])
         self.assertIn("赤い車がある", body["chat_template_kwargs"]["context"])
         self.assertTrue(body["messages"][-1]["content"] == "それは")

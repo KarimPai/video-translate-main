@@ -50,16 +50,17 @@ function Find-Mpv {
     Get-ChildItem -Path "$packages\shinchiro.mpv_*\*" -Filter mpv.exe -Recurse -File -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty FullName
 }
-function Fetch-Asset([object]$Asset, [string]$Destination) {
+function Fetch-Asset([object]$Asset, [string]$Destination, [string]$PinnedDigest) {
     Write-Host "Downloading $($Asset.name)..."
     Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $Destination -UseBasicParsing
     if ($Asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
         $expected = $Matches[1]
+        if ($expected -ine $PinnedDigest) { throw "Release digest differs from pinned SHA256 for $($Asset.name)" }
         $actual = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
         if ($actual -ine $expected) { throw "SHA256 mismatch for $($Asset.name)" }
         Write-Host "SHA256 verified: $($Asset.name)"
     } else {
-        Write-Warning "No SHA256 published for $($Asset.name); using official GitHub release download."
+        throw "Missing SHA256 for $($Asset.name)"
     }
 }
 
@@ -80,6 +81,7 @@ try {
     Require-Command winget 'Install Microsoft App Installer from Microsoft Store'
     Install-Winget uv 'astral-sh.uv'
     Install-Winget 'yt-dlp' 'yt-dlp.yt-dlp'
+    Install-Winget deno 'DenoLand.Deno'
     Install-Winget ffmpeg 'yt-dlp.FFmpeg'
     $mpv = Find-Mpv
     if (-not $mpv) {
@@ -109,10 +111,13 @@ try {
         ((& speech --version) -join '') -notlike 'speech.cpp 0.10.1,*') {
         $speechScript = Join-Path $env:TEMP ('speech-install-' + [guid]::NewGuid().ToString('N') + '.ps1')
         try {
-            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nyosegawa/speech.cpp/v0.10.1/install.ps1' -OutFile $speechScript -UseBasicParsing
+            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nyosegawa/speech.cpp/03555100287c118b41d1b475044e5ab1e07baa8c/install.ps1' -OutFile $speechScript -UseBasicParsing
+            if ((Get-FileHash -LiteralPath $speechScript -Algorithm SHA256).Hash -ine '5fe606f8dd49e6faf8e5a00b1d08ee620a2992e3b3f0e5d59539584820588c09') {
+                throw 'speech.cpp installer SHA256 mismatch'
+            }
             & $speechScript -Version 0.10.1
-            $env:Path = "$env:LOCALAPPDATA\Programs\speech.cpp\current;$env:Path"
             if (-not $?) { throw 'speech.cpp installer failed.' }
+            $env:Path = "$env:LOCALAPPDATA\Programs\speech.cpp\current;$env:Path"
         } finally { Remove-Item -LiteralPath $speechScript -Force -ErrorAction SilentlyContinue }
     } else { Write-Host 'speech.cpp already installed.' }
     Require-Command speech 'Check the speech.cpp Windows Vulkan installer'
@@ -146,8 +151,8 @@ try {
         try {
             $buildZip = Join-Path $downloadDir 'llama.zip'
             $runtimeZip = Join-Path $downloadDir 'cudart.zip'
-            Fetch-Asset $build $buildZip
-            Fetch-Asset $runtime $runtimeZip
+            Fetch-Asset $build $buildZip 20281408c618dcd13080bc0b3deed250c413bbe6541421a1c989acf5a376e684
+            Fetch-Asset $runtime $runtimeZip 8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6
             Expand-Archive -LiteralPath $buildZip -DestinationPath $llamaRoot -Force
             Expand-Archive -LiteralPath $runtimeZip -DestinationPath $llamaRoot -Force
         } finally { Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue }
@@ -165,11 +170,13 @@ try {
     try {
         & uv run --no-sync python -c 'import numpy, fireredvad, auto_translate'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
-        Write-Host 'Python dependency check OK'
+        & uv run --no-sync python -m auto_translate.plamo_model
+        if ($LASTEXITCODE -ne 0) { throw 'Could not prefetch PLaMo GGUF. Rerun Setup to resume.' }
+        Write-Host 'Python dependency and PLaMo model checks OK'
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host 'Haas downloaded; PLaMo 3 Translate 2B Q4_K_M (1.81 GB) downloads on first Start translate.bat run.'
+    Write-Host 'Haas downloaded; PLaMo 3 Translate 2B Q4_K_M (1.81 GB) ready in the model cache.'
     Write-Host 'A CUDA-capable NVIDIA driver and working Vulkan0 device are required.'
     exit 0
 } catch {

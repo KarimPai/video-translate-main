@@ -4,10 +4,9 @@ import html
 import logging
 import os
 import re
-import shutil
 import subprocess
 
-from .windows_subprocess import hidden_console_flags
+from .ytdlp import cache_key, extract
 import tempfile
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
@@ -175,6 +174,7 @@ def download_vod_captions(
     """Download/cache Japanese auto-captions; never raises for unavailable captions."""
     cache_dir = _caption_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    video_id = cache_key(video_id)
     cached = cache_dir / f"{video_id}.ja.vtt"
 
     if cached.is_file():
@@ -189,39 +189,15 @@ def download_vod_captions(
         except (OSError, UnicodeError):
             log.warning("could not read cached captions: %s", cached)
 
-    command = [
-        "yt-dlp",
-        "--no-warnings",
-        "--no-call-home",
-        "--skip-download",
-        "--write-auto-subs",
-        "--sub-langs", "ja.*,ja",
-        "--sub-format", "vtt/best",
-        "--output", str(cache_dir / f"{video_id}.%(ext)s"),
-    ]
-    if cfg.cookies_from_browser:
-        command += ["--cookies-from-browser", cfg.cookies_from_browser]
-    command.append(url)
-
     try:
         with tempfile.TemporaryDirectory(
             prefix=f"captions-{video_id}-",
             dir=str(cache_dir),
         ) as temp_dir:
-            command[command.index("--output") + 1] = str(
-                Path(temp_dir) / f"{video_id}.%(ext)s"
-            )
-            result = subprocess.run(
-                command,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=90,
-                check=False,
-                creationflags=hidden_console_flags(),
-            )
+            result = extract(cfg, url, [
+                "--skip-download", "--write-auto-subs", "--sub-langs", "ja.*,ja",
+                "--sub-format", "vtt/best", "--output", str(Path(temp_dir) / "caption.%(ext)s"),
+            ], check=False)
             candidates = sorted(Path(temp_dir).glob("*.vtt"))
             if result.returncode != 0 and not candidates:
                 detail = (result.stderr or result.stdout).strip().splitlines()
@@ -241,7 +217,7 @@ def download_vod_captions(
                     path.name,
                 )
             )
-            shutil.copy2(candidates[0], cached)
+            candidates[0].replace(cached)
 
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("Japanese caption download failed; continuing with Haas: %s", exc)

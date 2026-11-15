@@ -15,7 +15,6 @@ import http.server
 import logging
 import queue
 import re
-import shutil
 import subprocess
 
 from .windows_subprocess import hidden_console_flags
@@ -32,6 +31,7 @@ import numpy as np
 from .config import IngestConfig, SeparationConfig, DeepFilterConfig
 from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
+from .ytdlp import extract
 
 log = logging.getLogger(__name__)
 
@@ -93,13 +93,6 @@ def start_from_url(url: str) -> float:
             return parse_time(params[key][0])
 
     return 0.0
-
-
-def _cookie_args(cfg: IngestConfig) -> list[str]:
-    return (
-        ["--cookies-from-browser", cfg.cookies_from_browser]
-        if cfg.cookies_from_browser else []
-    )
 
 
 def fmt_hms(seconds: float) -> str:
@@ -203,6 +196,14 @@ class Ingest:
         deepfilter_cfg: DeepFilterConfig | None = None,
     ):
         self.source = source
+        # Older versions archived raw FFmpeg reports, including signed URLs.
+        reports = Path(__file__).resolve().parents[2] / "logs" / "ffmpeg"
+        for report in reports.glob("session-*-ffmpeg-*.log"):
+            try:
+                if report.stat().st_mtime < time.time() - 7 * 86400:
+                    report.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("Could not prune FFmpeg report %s: %s", report.name, exc)
         self._vod_audio_url: str | None = None
         self._audio_client_fallback = False  # retry known 2026 YouTube client 403s
         self.cfg = cfg
@@ -222,6 +223,8 @@ class Ingest:
         self._cache_root = (
             Path(self._cache_temp.name) if self._cache_temp else None
         )
+        self.video_ready = threading.Event()
+        self._video_encoder = "copy"
         self._cache_sequence = 0
         self._http_server: http.server.ThreadingHTTPServer | None = None
         self._http_thread: threading.Thread | None = None
@@ -252,7 +255,7 @@ class Ingest:
         self._video_progress_lock = threading.Lock()
         self._video_progress_at = 0.0
         self._video_failed = threading.Event()
-        self._proc_lock = threading.Lock()
+        self._proc_lock = threading.Condition()
         self._inputs: list[str] | None = None
         self._stopped = False
         self._session = 0
@@ -322,7 +325,7 @@ class Ingest:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             proc = self._video_proc
-            if proc is not None and proc.poll() not in (None, 0):
+            if self._stopped or (proc is not None and proc.poll() is not None):
                 log.error("fMP4 cache writer exited before producing a segment")
                 return False
             try:
@@ -361,6 +364,7 @@ class Ingest:
             )
 
             self._generation += 1
+            self._proc_lock.notify_all()
             self._session += 1
 
             self._go.clear()
@@ -373,6 +377,7 @@ class Ingest:
             self.first_pts_ready.clear()
 
             if not preserve_video_cache:
+                self.video_ready.clear()
                 self._inputs = None
                 self._video_proc = None
                 if self._cache_root is not None:
@@ -393,6 +398,7 @@ class Ingest:
         lead = max(0.0, float(lead_s))
         with self._proc_lock:
             self._vod_max_audio_lead_s = lead
+            self._proc_lock.notify_all()
             self._playback_position_s = float(self.source.start_s)
             self._vod_pacing_waiting_generation = None
         if lead:
@@ -407,6 +413,7 @@ class Ingest:
         with self._proc_lock:
             if self._vod_max_audio_lead_s > 0:
                 self._playback_position_s = max(0.0, float(position_s))
+                self._proc_lock.notify_all()
 
     def is_vod_audio_lead_limited(self) -> bool:
         """True only while the CURRENT VOD PCM reader is intentionally parked.
@@ -423,35 +430,17 @@ class Ingest:
 
     def _wait_for_vod_lead(self, sample: int, generation: int) -> bool:
         """Return False immediately when a stop/seek invalidates this read."""
-        waiting = False
-        while True:
-            with self._proc_lock:
-                if self._stopped or generation != self._generation:
-                    if self._vod_pacing_waiting_generation == generation:
-                        self._vod_pacing_waiting_generation = None
-                    return False
+        with self._proc_lock:
+            while not self._stopped and generation == self._generation:
                 lead = self._vod_max_audio_lead_s
-                playback = self._playback_position_s
-                reached = lead > 0 and sample / SAMPLE_RATE > playback + lead
-                if reached:
-                    self._vod_pacing_waiting_generation = generation
-                elif self._vod_pacing_waiting_generation == generation:
+                if lead <= 0 or sample / SAMPLE_RATE <= self._playback_position_s + lead:
                     self._vod_pacing_waiting_generation = None
-            if not reached:
-                if waiting:
-                    log.debug(
-                        "VOD audio reader resumed: pcm_pos=%.1fs play_pos=%.1fs",
-                        sample / SAMPLE_RATE, playback,
-                    )
-                return True
-            if not waiting:
-                waiting = True
-                log.debug(
-                    "VOD audio reader yielding: pcm_pos=%.1fs play_pos=%.1fs "
-                    "max_ahead=%.1fs",
-                    sample / SAMPLE_RATE, playback, lead,
-                )
-            time.sleep(0.15)
+                    return True
+                self._vod_pacing_waiting_generation = generation
+                self._proc_lock.wait()
+            if self._vod_pacing_waiting_generation == generation:
+                self._vod_pacing_waiting_generation = None
+            return False
 
     def go(self) -> None:
         self._go.set()
@@ -566,9 +555,6 @@ class Ingest:
             "-nostats",
             "-loglevel",
             "info",
-            # Write FFmpeg's complete debug report in the session directory.
-            # This captures the exact file operation behind HLS muxer errors.
-            "-report",
         ]
 
         for url in inputs:
@@ -625,28 +611,16 @@ class Ingest:
                 "-hls_flags", "temp_file+independent_segments",
             ]
 
-        # YouTube's separate HLS video rendition can deliver H.264 packets
-        # without PTS/DTS. Stream-copying those packets into fragmented MP4
-        # fails because the muxer requires valid timestamps. Decode the video
-        # and regenerate its timeline, then use NVENC to keep the repair
-        # GPU-accelerated. Passthrough frame sync avoids CFR frame clipping;
-        # forced IDR keyframes let the HLS muxer cut complete 2-second chunks.
-        # The AAC rendition is already compressed; only convert ADTS framing
-        # to the MPEG-4 AudioSpecificConfig required by MP4/fMP4.
+        video_options = ["-c:v", "copy"]
+        if self._video_encoder != "copy":
+            quality = (["-preset", "p1", "-rc", "vbr", "-cq", "16", "-b:v", "0"]
+                       if self._video_encoder == "h264_nvenc" else ["-preset", "veryfast", "-crf", "20"])
+            video_options = [
+                "-vf", "setpts=N/(FRAME_RATE*TB)", "-c:v", self._video_encoder, *quality,
+                "-fps_mode", "passthrough", "-force_key_frames", "expr:gte(t,n_forced*2)",
+            ]
         return ffmpeg + [
-            "-map", "0:v:0?",
-            "-map", audio,
-            "-vf", "setpts=N/(FRAME_RATE*TB)",
-            "-c:v", "h264_nvenc",
-            "-preset", "p1",
-            "-tune", "ull",
-            "-rc", "vbr",
-            "-cq", "18",
-            "-b:v", "0",
-            "-fps_mode", "passthrough",
-            "-g", "120",
-            "-forced-idr", "1",
-            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-map", "0:v:0?", "-map", audio, *video_options,
             "-c:a", "copy",
             "-bsf:a", "aac_adtstoasc",
             *hls_options,
@@ -733,25 +707,11 @@ class Ingest:
             if Path(self.source.location).exists():
                 self._inputs = [self.source.location]
             else:
-                cmd = [
-                    "yt-dlp",
-                    "--no-warnings",
-                    "--remote-components",
-                    "ejs:github",
-                    "-f",
-                    self.video_format,
-                    "-g",
-                ]
-                cmd += _cookie_args(self.cfg) + [self.source.location]
-
-                self._inputs = subprocess.run(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    creationflags=hidden_console_flags(),
-                ).stdout.split()
+                self._inputs = extract(self.cfg, self.source.location, [
+                    "-f", self.video_format, "-g",
+                ]).stdout.split()
+                if not self._inputs:
+                    raise RuntimeError("yt-dlp returned no video URLs")
         return self._inputs
 
     def _read_stderr(
@@ -806,6 +766,7 @@ class Ingest:
                 )
             )
 
+            line = re.sub(r"https?://[^\s'\"]+", "[stream URL]", line)
             if important:
                 log.error("ffmpeg: %s", line)
             elif receiver_gone:
@@ -938,15 +899,7 @@ class Ingest:
         ] + out]
 
     def _resolve_audio_url(self) -> str:
-        resolve_cmd = [
-            "yt-dlp",
-            "--no-warnings",
-            "--remote-components",
-            "ejs:github",
-            "-f",
-            self.cfg.ytdlp_format,
-            "-g",
-        ]
+        resolve_cmd = ["-f", self.cfg.ytdlp_format, "-g"]
         # Some signed URLs from the 2026 default YouTube client return
         # HTTP 403 when opened by FFmpeg. Retry with an alternative client
         # only after the default URL actually fails to provide PCM.
@@ -954,15 +907,7 @@ class Ingest:
             resolve_cmd += [
                 "--extractor-args", "youtube:player_client=default,-web_embedded"
             ]
-        resolve_cmd += _cookie_args(self.cfg) + [self.source.location]
-        audio_urls = subprocess.run(
-            resolve_cmd,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=True,
-            creationflags=hidden_console_flags(),
-        ).stdout.split()
+        audio_urls = extract(self.cfg, self.source.location, resolve_cmd).stdout.split()
         if not audio_urls:
             raise RuntimeError("yt-dlp did not return an audio stream URL")
 
@@ -1095,8 +1040,19 @@ class Ingest:
             # One FFmpeg process fetches and muxes the YouTube audio/video
             # into a growing fMP4 HLS event playlist. Both MPV and ASR then
             # consume this same local media timeline.
-            self.start_video(start_s=self.source.start_s)
-            if not self.wait_video_ready():
+            encoders = ("copy", "h264_nvenc", "libx264")
+            for encoder in encoders[encoders.index(self._video_encoder):]:
+                self._video_encoder = encoder
+                self.start_video(start_s=self.source.start_s)
+                if self.wait_video_ready():
+                    self.video_ready.set()
+                    break
+                if generation != self.generation or self._stopped:
+                    return False
+                log.warning("Live HLS writer failed with %s", encoder)
+                self.prepare_video_retry()
+                self.video_out = str(self._new_video_playlist(self.source.start_s))
+            else:
                 # A concurrent seek deliberately terminates this generation's
                 # cache writer. Let the ingest loop advance to the new session.
                 if generation != self.generation or self._stopped:
@@ -1403,6 +1359,7 @@ class Ingest:
     def stop(self) -> None:
         with self._proc_lock:
             self._stopped = True
+            self._proc_lock.notify_all()
             self._video_proc = None
             self._video_failed.clear()
             self._go.set()
@@ -1428,31 +1385,6 @@ class Ingest:
             self._http_thread = None
 
         if self._cache_temp is not None:
-            # Preserve FFmpeg -report output before TemporaryDirectory removes
-            # the fMP4 session cache. The report is needed to diagnose muxer
-            # failures that are otherwise reduced to "Operation not permitted".
-            if self._cache_root is not None:
-                reports = list(self._cache_root.rglob("ffmpeg-*.log"))
-                if reports:
-                    report_dir = (
-                        Path(__file__).resolve().parents[2]
-                        / "logs"
-                        / "ffmpeg"
-                    )
-                    report_dir.mkdir(parents=True, exist_ok=True)
-                    for report in reports:
-                        destination = report_dir / (
-                            f"{report.parent.name}-{report.name}"
-                        )
-                        try:
-                            shutil.copy2(report, destination)
-                            log.info("saved FFmpeg diagnostic report: %s", destination)
-                        except OSError as exc:
-                            log.warning(
-                                "could not preserve FFmpeg report %s: %s",
-                                report,
-                                exc,
-                            )
             self._cache_temp.cleanup()
             self._cache_temp = None
 

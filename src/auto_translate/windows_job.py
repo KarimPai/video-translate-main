@@ -1,12 +1,12 @@
 """Release owned descendants when a Windows console is closed abruptly."""
-import logging
 import os
 
 _job = None
+_console_handler = None
 
 
 def bind_process_tree():
-    global _job
+    global _job, _console_handler
     if os.name != "nt" or _job is not None:
         return
     import ctypes as c
@@ -35,8 +35,16 @@ def bind_process_tree():
     limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     handle = create(None, None)
     if handle and configure(handle, 9, c.byref(limits), c.sizeof(limits)) and assign(handle, -1):
-        _job = handle  # non-inheritable handle, released by the OS on parent exit
+        _job = handle  # OS releases this non-inheritable handle on hard exit.
+        @c.WINFUNCTYPE(w.BOOL, w.DWORD)
+        def console_handler(event):
+            if event == 2:  # CTRL_CLOSE_EVENT: terminate the job via process exit
+                os._exit(1)
+            return False
+        _console_handler = console_handler
+        kernel.SetConsoleCtrlHandler(_console_handler, True)
     else:
-        logging.getLogger(__name__).warning("Windows process job unavailable: %s", c.get_last_error())
+        error = c.get_last_error()
         if handle:
             kernel.CloseHandle(handle)
+        raise OSError(error, "Could not bind Windows child processes to cleanup job")

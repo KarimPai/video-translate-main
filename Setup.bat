@@ -10,7 +10,7 @@ echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
 echo Vulkan speech.cpp, Haas and CUDA llama.cpp.
-echo PLaMo Q4_K_M downloads on first translation.
+echo Setup downloads PLaMo Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 
@@ -28,7 +28,7 @@ echo.
 if "%SETUP_RESULT%"=="0" (
     echo SETUP FINISHED. Double-click "Start GUI.vbs" to launch the app.
     echo The first GUI launch installs PySide6 if necessary.
-    echo First translation downloads PLaMo 3 and Whisper Large-v3 Turbo models.
+    echo First translation downloads Whisper Large-v3 Turbo models.
 ) else (
     echo SETUP FAILED. Read the error above, then rerun Setup.bat.
 )

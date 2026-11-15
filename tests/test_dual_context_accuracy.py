@@ -34,13 +34,11 @@ class DualContextAccuracyTests(unittest.TestCase):
             ("待って！", "Don't wait!"),  # reversed imperative; should not be used as an example
             ("了解！", "Roger!"),
         ]
-        answer = MagicMock()
-        answer.__enter__.return_value.read.return_value = json.dumps(
-            {"choices": [{"message": {"content": "I'll circle around."}}]}
-        ).encode()
-        with patch("auto_translate.translate.plamo.urllib.request.urlopen", return_value=answer) as request:
+        obj.client = MagicMock()
+        obj.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "Done."}}]}
+        with patch.object(obj.client, "post", wraps=obj.client.post) as request:
             PlamoTranslator._chat(obj, "回り込む！", history, timeout=1.0)
-        body = json.loads(request.call_args.args[0].data)
+        body = request.call_args.kwargs["json"]
         self.assertEqual(body["messages"][-1], {"role": "user", "content": "回り込む！"})
         self.assertIn({"role": "assistant", "content": "Roger!"}, body["messages"])
         self.assertNotIn("He left.", str(body["messages"]))
@@ -50,11 +48,11 @@ class DualContextAccuracyTests(unittest.TestCase):
     def test_glossary_name_mismatch_excluded_from_examples(self):
         obj = self.make_translator()
         history = [("わためが来た", "Watanabe arrived.")]
-        answer = MagicMock()
-        answer.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"Watame arrived."}}]}'
-        with patch("auto_translate.translate.plamo.urllib.request.urlopen", return_value=answer) as request:
+        obj.client = MagicMock()
+        obj.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "Done."}}]}
+        with patch.object(obj.client, "post", wraps=obj.client.post) as request:
             PlamoTranslator._chat(obj, "わためが来た", history, timeout=1)
-        body = json.loads(request.call_args.args[0].data)
+        body = request.call_args.kwargs["json"]
         self.assertEqual(body["messages"], [{"role": "user", "content": "わためが来た"}])
 
     def test_punctuation_is_required_for_sentence_split(self):
@@ -78,11 +76,11 @@ class DualContextAccuracyTests(unittest.TestCase):
     def test_legacy_can_restore_previous_japanese_only_context(self):
         obj = self.make_translator()
         obj.cfg.context_profile = "legacy"
-        answer = MagicMock()
-        answer.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"Roger."}}]}'
-        with patch("auto_translate.translate.plamo.urllib.request.urlopen", return_value=answer) as request:
+        obj.client = MagicMock()
+        obj.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "Done."}}]}
+        with patch.object(obj.client, "post", wraps=obj.client.post) as request:
             PlamoTranslator._chat(obj, "了解", [("どこだ", "Where?")], timeout=1)
-        body = json.loads(request.call_args.args[0].data)
+        body = request.call_args.kwargs["json"]
         self.assertEqual(body["messages"], [{"role": "user", "content": "了解"}])
 
 

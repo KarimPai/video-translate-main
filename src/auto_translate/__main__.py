@@ -14,7 +14,7 @@ from . import cuda_dlls
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="auto-translate")
-    parser.add_argument("source", help="YouTube URL (live or VOD) or a local audio/video file")
+    parser.add_argument("source", nargs="?", default=os.getenv("VIDEO_URL"), help="YouTube URL (live or VOD) or a local audio/video file")
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
     parser.add_argument("--mode", choices=["auto", "live", "vod"], default="auto",
                         help="auto (default) asks yt-dlp whether the URL is live right now")
@@ -51,10 +51,30 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
+    from urllib.parse import urlsplit
+    source = args.source or ""
+    try:
+        parts = urlsplit(source)
+        remote = parts.scheme in ("http", "https") and parts.hostname and '"' not in source
+        valid = remote or Path(source).is_file()
+    except (ValueError, OSError):
+        valid = False
+    if not valid:
+        parser.error("Enter an HTTP(S) URL or an existing media file")
+
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
 
+    handlers = [logging.StreamHandler()]
+    if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
+        console = handlers[0]
+        console.setLevel(logging.WARNING)
+        handlers.append(logging.FileHandler("logs/run.log", encoding="utf-8"))
+        def report_failure(kind, error, traceback):
+            logging.getLogger("auto_translate").critical("Translator stopped", exc_info=(kind, error, traceback))
+        sys.excepthook = report_failure
     logging.basicConfig(
+        handlers=handlers,
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
@@ -81,6 +101,14 @@ def main() -> None:
     from .translate import create_translator
 
     cfg = load_config(args.config)
+    if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
+        import shutil
+        from .output.mpv import find_mpv
+        for tool in ("ffmpeg", "yt-dlp", "llama-server", "deno"):
+            if not shutil.which(tool):
+                parser.error(f"{tool} missing from PATH. Run Setup.bat")
+        if args.mpv or cfg.mpv.enabled:
+            find_mpv(cfg.mpv.path)
 
     if args.delay is not None:
         cfg.mpv.delay_s = args.delay
@@ -162,6 +190,9 @@ def main() -> None:
     from .gpu_budget import GpuBudget
     from .asr.dual import DualASR
     from dataclasses import replace
+    from .config import vad_for_source
+    from .vad import Segmenter
+    segmenter = Segmenter(vad_for_source(cfg.vad, live=bool(source.live)))
     budget = GpuBudget(cfg.gpu_budget)
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
                       if source.live else cfg.asr.response_timeout_s)
@@ -333,6 +364,7 @@ def main() -> None:
             translator,
             outputs,
             stop,
+            segmenter=segmenter,
             captions=captions,
             vod_title=vod_context,
             session_cache=subtitle_cache,

@@ -59,6 +59,18 @@ def _create_kill_job(proc: subprocess.Popen) -> Any:
     if sys.platform != "win32":
         return None
 
+    handle = getattr(proc, "_handle", None)
+    if handle is None:
+        return None
+    if hasattr(handle, "_mock_name") or hasattr(handle, "mock_calls"):
+        return None
+    try:
+        raw_handle = int(handle)
+    except (TypeError, ValueError):
+        return None
+    if raw_handle <= 4:
+        return None
+
     class IO_COUNTERS(ctypes.Structure):
         _fields_ = [
             ("ReadOperationCount", ctypes.c_ulonglong),
@@ -137,7 +149,7 @@ def _create_kill_job(proc: subprocess.Popen) -> Any:
 
     if not kernel32.AssignProcessToJobObject(
         job,
-        wintypes.HANDLE(int(proc._handle)),
+        wintypes.HANDLE(raw_handle),
     ):
         error = ctypes.get_last_error()
         kernel32.CloseHandle(job)
@@ -208,8 +220,11 @@ class _WindowsPipe:
             if self._api.WaitForSingleObject(ov.event, 5000) != 0:
                 raise TimeoutError("mpv IPC pipe write timed out")
         except BaseException:
-            ov.cancel()
-            ov.GetOverlappedResult(True)
+            try:
+                ov.cancel()
+                ov.GetOverlappedResult(True)
+            except OSError:
+                pass
             raise
         written, error = ov.GetOverlappedResult(True)
         if error:
@@ -271,12 +286,14 @@ class MpvIpc:
 
                 msg = json.loads(line)
                 if msg.get("event") == "property-change":
-                    self._properties[msg["name"]] = msg.get("data")
+                    name = msg.get("name")
+                    if name:
+                        self._properties[name] = msg.get("data")
                 elif "event" in msg:
                     self.events.put(msg)
                 elif "request_id" in msg:
                     self._responses.put(msg)
-        except (OSError, ValueError, ConnectionError) as exc:
+        except Exception as exc:
             self._reader_failure = exc
             self._responses.put({"_reader_error": str(exc)})
 

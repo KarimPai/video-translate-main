@@ -151,10 +151,22 @@ class WhisperTurboASR:
         watchdog.start()
         try:
             connection.send({"id": request_id, "audio": samples, "initial_prompt": initial_prompt})
-            while not connection.poll(0.1):
-                if not process.is_alive():
-                    raise RuntimeError("Whisper Turbo worker exited during decode")
-            response = connection.recv()
+            while True:
+                while not connection.poll(0.05):
+                    if not process.is_alive():
+                        raise RuntimeError("Whisper Turbo worker exited during decode")
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise CancelledError("Whisper Turbo request cancelled")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Whisper Turbo transcription timed out")
+                response = connection.recv()
+                if response.get("id") == request_id:
+                    break
+                if response.get("id") is not None and response.get("id") < request_id:
+                    log.info("Discarded stale Whisper reply request=%d (waiting for %d)",
+                             response.get("id"), request_id)
+                    continue
+                break
         except (EOFError, BrokenPipeError, OSError) as exc:
             raise RuntimeError("Whisper Turbo worker communication failed") from exc
         finally:

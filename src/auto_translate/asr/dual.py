@@ -166,6 +166,10 @@ class DualASR:
             if selector:
                 selector.close()
 
+    def close(self):
+        """Standard lifecycle close alias."""
+        self.release()
+
     def deadline(self, utt):
         if not self.live:
             return float("inf")

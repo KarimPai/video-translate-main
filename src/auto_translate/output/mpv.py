@@ -18,6 +18,7 @@ import queue
 import shutil
 import socket
 import subprocess
+from ..windows_subprocess import owned_popen
 import sys
 import threading
 import time
@@ -487,7 +488,7 @@ class MpvOutput:
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
 
         ipc_path = f"{IPC_PREFIX}-{os.getpid()}-{uuid4().hex}"
-        self._proc = subprocess.Popen([
+        self._proc = owned_popen([
             find_mpv(cfg.path),
 
             "--pause",
@@ -584,7 +585,7 @@ class MpvOutput:
                     self._proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._proc.kill()
-                    self._proc.wait()
+                    self._proc.wait(timeout=2)
 
             _close_job(self._job)
             self._job = None

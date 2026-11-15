@@ -114,3 +114,19 @@ def subprocess_environment(root: Path, original: dict[str, str] | None = None) -
     if extra:
         env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
     return env
+
+
+def session_launcher(python, args):
+    """Use the base interpreter so the venv redirector itself is in the job."""
+    config = Path(python).parent.parent / "pyvenv.cfg"
+    base = Path(python)
+    if config.is_file():
+        entries = dict(line.split("=", 1) for line in config.read_text(encoding="utf8").splitlines()
+                       if "=" in line)
+        home = next((v.strip() for k, v in entries.items() if k.strip() == "home"), None)
+        if not home:
+            raise ValueError("Missing base interpreter home in pyvenv.cfg")
+        base = Path(home) / "pythonw.exe"
+    if not base.is_file():
+        raise FileNotFoundError(f"Missing base interpreter: {base}")
+    return str(base), ["-S", "-m", "auto_translate.gui_session", python, *args]

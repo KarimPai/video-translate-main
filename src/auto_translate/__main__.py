@@ -92,6 +92,16 @@ def _main(resources: ExitStack) -> None:
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     from .windows_job import bind_process_tree
     bind_process_tree()
+    stop = threading.Event()
+    control = None
+    from .windows_subprocess import check_running, guard_gui_spawns
+    if args.gui_control:
+        if not (args.gui_control_token and args.gui_control_port and 0 < args.gui_control_port <= 65535):
+            parser.error("Missing GUI control connection")
+        from .gui_control import BackendControl
+        guard_gui_spawns()
+        control = BackendControl(args.gui_control_port, args.gui_control_token, stop)
+        resources.callback(control.close)
     cuda_dlls.setup()
 
     from .asr import create_asr
@@ -139,6 +149,7 @@ def _main(resources: ExitStack) -> None:
         cfg.ingest.vod_max_audio_lead_s = min(cfg.ingest.vod_max_audio_lead_s, 30.0)
         log.info("Shared GPU playback: VOD audio lead capped at %.1fs",
                  cfg.ingest.vod_max_audio_lead_s)
+    check_running()
     source = resolve_source(
         args.source,
         args.mode,
@@ -198,6 +209,7 @@ def _main(resources: ExitStack) -> None:
     from dataclasses import replace
     from .config import vad_for_source
     from .vad import Segmenter
+    check_running()
     segmenter = Segmenter(vad_for_source(cfg.vad, live=bool(source.live)))
     budget = GpuBudget(cfg.gpu_budget)
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
@@ -210,6 +222,7 @@ def _main(resources: ExitStack) -> None:
              primary_cfg.haas_device, budget.total, budget.free)
     t0 = time.perf_counter()
     try:
+        check_running()
         asr = create_asr(primary_cfg)
     except (RuntimeError, OSError):
         if primary_cfg.haas_device.lower() == "cpu":
@@ -217,6 +230,7 @@ def _main(resources: ExitStack) -> None:
         log.warning("Haas Vulkan startup failed; retrying on CPU", exc_info=True)
         asr = create_asr(replace(primary_cfg, haas_device="cpu"))
 
+    resources.callback(asr.close)
     asr_model = cfg.asr.haas_model
     log.info(
         "ASR ready (%s, Haas) in %.1fs",
@@ -225,6 +239,7 @@ def _main(resources: ExitStack) -> None:
     )
 
     t0 = time.perf_counter()
+    check_running()
     glossary = Glossary.load(Path(cfg.translate.glossary))
     try:
         # Preserve room for two ASRs, the reconciler, and MPV/VSR on 8 GiB GPUs.
@@ -258,6 +273,7 @@ def _main(resources: ExitStack) -> None:
         time.perf_counter() - t0,
     )
 
+    resources.callback(translator.close)
     use_mpv = args.mpv or cfg.mpv.enabled
     if use_mpv and not source.live and source.paced:
         # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
@@ -279,7 +295,6 @@ def _main(resources: ExitStack) -> None:
         deepfilter_cfg=cfg.deepfilter,
     )
 
-    stop = threading.Event()
     outputs: list[Output] = []
     # Cache only this MPV VOD in RAM. Never reuse it for another video,
     # and never persist translated text on disk.
@@ -297,11 +312,14 @@ def _main(resources: ExitStack) -> None:
         )
 
     try:
+        check_running()
         dual = DualASR(cfg, budget, glossary, source.live)
     except BaseException:
         asr.close()
         translator.close()
         raise
+
+    resources.callback(dual.release)
 
     # Optional, CPU-only spoken-language gate. Failure is nonfatal: retain
     # Japanese speech rather than suppressing cues on an unavailable model.
@@ -316,6 +334,7 @@ def _main(resources: ExitStack) -> None:
                 "English/Indonesian filtering: %s", exc,
             )
 
+    check_running()
     if use_mpv:
         from .output.mpv import MpvOutput
         try:
@@ -329,13 +348,8 @@ def _main(resources: ExitStack) -> None:
             resources.enter_context(player)
             outputs.append(player)
             dual.playback_position = player.playback_position
-            if args.gui_control:
-                from .gui_control import read_control_socket
-                threading.Thread(
-                    target=read_control_socket,
-                    args=(args.gui_control_port, args.gui_control_token, player.queue_gui_command),
-                    name="gui-command-reader", daemon=True,
-                ).start()
+            if control:
+                control.player = player
         except BaseException:
             dual.release()
             ingest.stop()
@@ -371,6 +385,7 @@ def _main(resources: ExitStack) -> None:
           f"{'CPU ECAPA' if language_filter else 'off'}) | "
           f"Selector: {selector_status} | "
           f"PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
+    check_running()
     budget.start(relieve_pressure)
     try:
         run(

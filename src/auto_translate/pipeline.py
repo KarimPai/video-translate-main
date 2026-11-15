@@ -796,6 +796,12 @@ def run(
                     + cfg.reconciler.vod_timeout_s
                     + cfg.translate.timeout_s
                     + cfg.translate.retry_timeout_s))
+                from .windows_subprocess import stopping
+                if stopping.is_set():
+                    from .gui_control import WORKER_DRAIN_S
+                    if dual:
+                        dual.release()
+                    grace_s = WORKER_DRAIN_S
                 deadline = time.monotonic() + grace_s
                 # Main loop is no longer rendering subtitles: keep draining
                 # completed cues so MT cannot block forever on a full queue.

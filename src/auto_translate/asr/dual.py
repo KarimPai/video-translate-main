@@ -7,6 +7,7 @@ from concurrent.futures import CancelledError
 
 import numpy as np
 
+from ..windows_subprocess import stopping
 from ..asr_correction import lap_spelling_from_peer
 from ..text_filter import is_usable_transcript
 from .whisper_turbo import WhisperTurboASR
@@ -91,7 +92,7 @@ class DualASR:
     def _maybe_restart(self):
         """Restart asynchronously: model startup must never block live playback."""
         with self.lock:
-            if (self.closed or self.worker is not None or
+            if (self.closed or stopping.is_set() or self.worker is not None or
                     (self._restart_thread and self._restart_thread.is_alive()) or
                     time.monotonic() < self.retry_at):
                 return

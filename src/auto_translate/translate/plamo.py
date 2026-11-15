@@ -9,6 +9,8 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
+from ..windows_subprocess import owned_popen, check_running
 import time
 import urllib.error
 import urllib.parse
@@ -204,6 +206,8 @@ class PlamoTranslator:
         self.base_url = cfg.plamo_base_url.rstrip("/")
         self.process: subprocess.Popen | None = None
         self._server_log = None
+        self._close_lock = threading.Lock()
+        self._closed = False
         self.client = httpx.Client(trust_env=False)
         try:
             self._start_server()
@@ -220,6 +224,7 @@ class PlamoTranslator:
         log.info("Checking PLaMo endpoint %s", self.base_url)
         next_progress = 0.0
         while True:
+            check_running()
             state = _server_state(self.base_url, self.cfg.plamo_model)
             if state in ("ready", "absent"):
                 break
@@ -272,7 +277,7 @@ class PlamoTranslator:
         )
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            self.process = subprocess.Popen(
+            self.process = owned_popen(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=self._server_log,
@@ -292,6 +297,7 @@ class PlamoTranslator:
 
         deadline = time.monotonic() + self.cfg.load_timeout_s
         while time.monotonic() < deadline:
+            check_running()
             if self.process.poll() is not None:
                 self.close()
                 raise RuntimeError(
@@ -312,6 +318,7 @@ class PlamoTranslator:
         """Retry transient 503 responses while llama.cpp finishes model setup."""
         deadline = time.monotonic() + self.cfg.load_timeout_s
         while True:
+            check_running()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
@@ -334,25 +341,31 @@ class PlamoTranslator:
 
     def close(self) -> None:
         """Stop only the llama-server process started by this translator."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         stats = getattr(self, "validation_stats", None)
         if stats:
             log.info("PLaMo translation validation summary: %s", dict(stats))
             stats.clear()
         process = self.process
         self.process = None
-        if process is not None and process.poll() is None:
-            log.info("Stopping PLaMo server (PID %s)...", process.pid)
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        if self._server_log is not None:
-            self._server_log.close()
-            self._server_log = None
-        self.client.close()
-        atexit.unregister(self.close)
+        try:
+            if process is not None and process.poll() is None:
+                log.info("Stopping PLaMo server (PID %s)...", process.pid)
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        finally:
+            if self._server_log is not None:
+                self._server_log.close()
+                self._server_log = None
+            self.client.close()
+            atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         """Translate complete exchanges without changing media timestamps.

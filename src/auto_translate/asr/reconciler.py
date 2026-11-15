@@ -6,6 +6,7 @@ import logging
 import shutil
 import socket
 import subprocess
+from ..windows_subprocess import owned_popen, check_running
 
 from ..windows_subprocess import hidden_console_flags
 import time
@@ -22,6 +23,7 @@ MODEL = "LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M"
 class Reconciler:
     def __init__(self, gpu_layers, *, cancel_event=None):
         cancel_event = cancel_event if cancel_event is not None else threading.Event()
+        self._close_lock = threading.Lock()
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -35,13 +37,14 @@ class Reconciler:
             command.extend(["--device", "none", "--no-kv-offload", "-t", "2", "-tb", "2"])
         Path("logs").mkdir(exist_ok=True)
         with Path("logs/reconciler.log").open("a", encoding="utf8") as output:
-            self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            self.process = owned_popen(command, stdin=subprocess.DEVNULL,
                                             stdout=output, stderr=subprocess.STDOUT,
                                             creationflags=hidden_console_flags())
         try:
             until = time.monotonic() + 300
             next_progress = time.monotonic() + 10
             while self.process.poll() is None and time.monotonic() < until:
+                check_running()
                 if cancel_event.is_set():
                     raise CancelledError("Selector startup cancelled")
                 try:
@@ -86,10 +89,13 @@ class Reconciler:
         return record["selected_japanese"]
 
     def close(self):
-        if self.process.poll() is None:
-            self.process.terminate()
+        with self._close_lock:
+            process = self.process
+            self.process = None
+        if process is not None and process.poll() is None:
+            process.terminate()
             try:
-                self.process.wait(timeout=2)
+                process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+                process.kill()
+                process.wait(timeout=2)

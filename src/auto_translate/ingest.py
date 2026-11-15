@@ -18,6 +18,7 @@ import shutil
 import queue
 import re
 import subprocess
+from .windows_subprocess import owned_popen
 
 from .windows_subprocess import hidden_console_flags
 import tempfile
@@ -512,7 +513,7 @@ class Ingest:
             # working directory. Keep that file inside this session's cache
             # directory instead of the repository/launcher working directory.
             self._start_cache_server()
-            proc = subprocess.Popen(
+            proc = owned_popen(
                 self._video_command(start_s=start_s),
                 cwd=str(Path(self.video_playlist).parent),
                 stdout=subprocess.DEVNULL,
@@ -1125,7 +1126,7 @@ class Ingest:
 
             try:
                 for cmd in cmds:
-                    p = subprocess.Popen(
+                    p = owned_popen(
                         cmd,
                         stdin=stdin,
                         stdout=subprocess.PIPE,
@@ -1161,7 +1162,7 @@ class Ingest:
                         p.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         p.kill()
-                        p.wait()
+                        p.wait(timeout=2)
 
                     for pipe in (p.stdout, p.stderr):
                         if pipe is not None:
@@ -1380,7 +1381,7 @@ class Ingest:
                         p.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         p.kill()
-                        p.wait()
+                        p.wait(timeout=2)
 
                 # Remove only this session's audio processes. Do not replace
                 # the shared list: it may also contain the MPV video process.

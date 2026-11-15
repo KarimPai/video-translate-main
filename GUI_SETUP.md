@@ -115,3 +115,61 @@ The EXE is **not a standalone model bundle**. It uses the original project's
 - Embedded MPV and RTX 3070 GPU translation still require testing on the
   actual Windows machine. CI verifies GUI startup and EXE packaging, not
   local video rendering.
+
+## Windows session cleanup and verification
+
+Pull the matching backend source and replace the frontend EXE from the same
+commit. The Windows GUI workflow builds `VideoTranslate-EXE-Only` alongside the
+full package. The EXE-only artifact uses the existing pinned Qt runtime.
+
+Each Start writes a fresh 32-character session ID to `logs/gui-lifecycle.log`
+and `logs/run.log`. The frontend job covers the first launcher instruction.
+The windowless base-Python gate joins the named session job before it runs the
+venv interpreter. A restrictive host job or assignment failure aborts launch.
+The backend also owns a nested job, so hard backend exit releases its workers.
+
+| Process creation path | Owner and shutdown |
+| --- | --- |
+| Qt QProcess, base Python, venv redirector and backend | GUI lifetime job; gate, redirector and backend additionally inside the per-Start job. |
+| Haas speech.cpp, including CPU retries | PrimaryASR owns the pipe worker; close terminates, waits, escalates and closes streams. |
+| Whisper multiprocessing spawn, including restarts | DualASR releases its worker. The backend job also contains the Windows spawn interpreter. |
+| Reconciler and locally launched PLaMo | The creating adapter retains its Popen handle. Existing PLaMo endpoints are HTTP clients only. |
+| MPV and its yt-dlp / Deno helpers | Backend job membership is inherited at creation. MPV also has IPC quit and its player-specific job. |
+| FFmpeg, yt-dlp metadata/captions, Deno, GPU monitor probes | Ingest registers media processes under its lock. All helpers and their descendants inherit the job, including short-lived probes. |
+| Live fMP4 cache | Orderly ingest stop closes the cache server and removes the temporary directory. An abrupt process death can leave files until the next live-cache startup prunes them. |
+
+Stop and window close send authenticated quit. The backend listens during
+initialization. GUI control loss sets the same stop event. On explicit GUI stop,
+pipeline workers have a three-second drain after output/ingest closure. The GUI
+allows 20 seconds total, then terminates the session job and launcher. It checks
+job membership asynchronously for up to three further seconds and logs the result.
+
+From PowerShell in the checkout, inspect the latest session before or after exit.
+For concurrent GUI instances substitute the exact session ID from the relevant log.
+This command only opens the named job for query. An empty list means there are
+no current members; a Windows query error other than a missing job is reported.
+
+```powershell
+$entry = Select-String -Path .\logs\gui-lifecycle.log -Pattern '^session=([0-9a-f]{32}) Starting translation backend' | Select-Object -Last 1
+if (-not $entry) { throw 'No session recorded by the updated GUI' }
+$sessionId = $entry.Matches[0].Groups[1].Value
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+& .\.venv\Scripts\python.exe -c "import sys; from auto_translate.windows_job import session_members; print(session_members(sys.argv[1]))" $sessionId
+```
+
+The model-free Windows integration tests use an offscreen Qt frontend, actual
+Job Objects, a spawned multiprocessing worker and sleeping native processes.
+They pin each original process with a Windows handle before shutdown, then check
+those handles for exit and confirm the unrelated control process survives.
+Run with a Python installation containing PySide6:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+python -m unittest discover -s tests -p test_session_lifecycle.py -v
+```
+
+For hardware verification on Windows 11, capture the session ID while a real
+Hololive stream is translating, run the query to confirm membership, stop the
+session, then repeat it. Repeat during VOD seek and cold model startup. For the
+crash case, end only the selected GUI PID. Verify an externally started PLaMo
+endpoint still answers and the new session starts without stale CUDA allocations.

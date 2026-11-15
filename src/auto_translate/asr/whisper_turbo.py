@@ -4,6 +4,8 @@ Keep CUDA allocations isolated from Haas Vulkan and llama.cpp. The parent can
 enforce a deadline and release VRAM without leaving a timed-out decode running.
 """
 import logging
+import os
+from ..windows_subprocess import check_running
 from concurrent.futures import CancelledError
 import multiprocessing as mp
 import threading
@@ -111,10 +113,14 @@ class WhisperTurboASR:
             name="whisper-turbo-asr", daemon=True,
         )
         try:
+            check_running()
             self.process.start()
+            log.info("session=%s name=whisper-turbo pid=%s parent=%s owned=true",
+                     os.getenv("VIDEO_TRANSLATE_SESSION", "cli"), self.process.pid, os.getpid())
             child.close()
             deadline = time.monotonic() + startup_timeout
             while time.monotonic() < deadline:
+                check_running()
                 if self.connection.poll(0.2):
                     response = self.connection.recv()
                     if response.get("type") == "ready":
@@ -163,6 +169,7 @@ class WhisperTurboASR:
             connection.send({"id": request_id, "audio": samples, "initial_prompt": initial_prompt})
             while True:
                 while not connection.poll(0.05):
+                    check_running()
                     if not process.is_alive():
                         raise RuntimeError("Whisper Turbo worker exited during decode")
                     if cancel_event is not None and cancel_event.is_set():
@@ -196,7 +203,7 @@ class WhisperTurboASR:
             self.process = self.connection = None
         if connection is not None:
             connection.close()
-        if process is not None:
+        if process is not None and process.pid is not None:
             if process.is_alive():
                 process.terminate()
             process.join(timeout=2)

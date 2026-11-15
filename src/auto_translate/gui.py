@@ -6,6 +6,8 @@ Python backend used by Start translate.bat and native MPV renders into a HWND.
 import codecs
 import json
 import logging
+import os
+import uuid
 import secrets
 import select
 import socket
@@ -21,10 +23,11 @@ from PySide6.QtWidgets import (
     QSlider, QStyle, QStyleOptionSlider, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from auto_translate.gui_control import parse_event
+from auto_translate.gui_control import parse_event, GUI_SHUTDOWN_MS
+from auto_translate.windows_job import WindowsJob, bind_process_tree
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS, READY_MARKER, build_backend_command, discover_project_root,
-    prepare_project, subprocess_environment, valid_youtube_url,
+    prepare_project, session_launcher, subprocess_environment, valid_youtube_url,
 )
 
 log = logging.getLogger(__name__)
@@ -103,6 +106,11 @@ class VideoTranslateWindow(QMainWindow):
     def __init__(self, root: Path):
         super().__init__()
         self.root = root
+        self._job = None
+        self._session = None
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.setSingleShot(True)
+        self._shutdown_timer.timeout.connect(self._force_shutdown)
         self.process: QProcess | None = None
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._pending_line = ""
@@ -287,6 +295,15 @@ class VideoTranslateWindow(QMainWindow):
         if text:
             self.url_input.setText(text)
 
+    def _lifecycle(self, message):
+        line = f"session={self._session} {message}"
+        self._write_console(line + "\n")
+        try:
+            with (self.root / "logs" / "gui-lifecycle.log").open("a", encoding="utf8") as stream:
+                print(line, file=stream)
+        except OSError:
+            pass
+
     def _write_console(self, text: str):
         if not text:
             return
@@ -335,7 +352,9 @@ class VideoTranslateWindow(QMainWindow):
         if not self._control_lost and not self._stopping:
             self._control_lost = True
             self.status.setText("Seek channel lost. See Console.")
-            self._write_console("GUI: seek channel lost. Restart translation to reconnect.\n")
+            self._write_console("GUI: control channel lost. Stopping translation.\n")
+
+            self.stop_translation()
 
     def _poll_control(self):
         # Nonblocking sockets keep Qt responsive and reuse the packaged Qt runtime.
@@ -414,11 +433,28 @@ class VideoTranslateWindow(QMainWindow):
                 rtx_vsr=self.vsr_checkbox.isChecked(),
             )
             env = subprocess_environment(self.root)
+            self._session = uuid.uuid4().hex
+            env["VIDEO_TRANSLATE_SESSION"] = self._session
+            if os.name == "nt":
+                # The GUI job covers even a crash before the gate joins the
+                # per-translation job. Existing children are never adopted.
+                bind_process_tree()
+                self._job = WindowsJob(self._session)
             qenv = QProcessEnvironment()
             for key, value in env.items():
                 qenv.insert(key, value)
             args.extend(self._listen_for_control())
+            if os.name == "nt":
+                command, args = session_launcher(command, args)
         except (OSError, ValueError) as exc:
+            self._close_control()
+            if self._job:
+                self._job.close()
+                self._job = None
+            logging.exception("session=%s launch/containment failed", self._session)
+            if (self.root / "logs").is_dir():
+                with (self.root / "logs" / "run.log").open("a", encoding="utf8") as stream:
+                    print(f"session={self._session} launch/containment failed: {exc}", file=stream)
             QMessageBox.critical(self, "Cannot start translation", str(exc))
             return
 
@@ -441,7 +477,7 @@ class VideoTranslateWindow(QMainWindow):
         proc.setProcessEnvironment(qenv)
         proc.setProgram(command)
         proc.setArguments(args)
-        self._write_console("Starting translation backend...\n")
+        self._lifecycle(f"Starting translation backend gui_pid={os.getpid()}")
         if "--rtx-vsr" in args:
             self._write_console(
                 "RTX VSR requested: NVIDIA D3D11 scaling. "
@@ -582,6 +618,8 @@ class VideoTranslateWindow(QMainWindow):
     def _send_player_command(self, action: str, value: float | None = None) -> bool:
         if not ((self._ready or action == "quit") and self._control_ready and self._control_socket is not None):
             return False
+        if self._stopping and action != "quit":
+            return False
         message = {"action": action}
         if value is not None:
             message["value"] = float(value)
@@ -712,18 +750,34 @@ class VideoTranslateWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.status.setText("Stopping translation and player...")
         if self.process.state() != QProcess.ProcessState.NotRunning:
-            process = self.process
-            if not self._send_player_command("quit"):
-                self._write_console("Backend control unavailable during shutdown.\n")
-            QTimer.singleShot(8000, lambda: self._kill_if_still_running(process))
+            self._lifecycle("graceful shutdown requested")
+            self._send_player_command("quit")
+            self._shutdown_timer.start(GUI_SHUTDOWN_MS)
 
-    def _kill_if_still_running(self, process):
-        if self.process is process and process.state() != QProcess.ProcessState.NotRunning:
-            self._write_console("Graceful shutdown timed out; terminating backend.\n")
+    def _force_shutdown(self):
+        if self.process is None:
+            return
+        self._lifecycle("timeout; forcing session shutdown")
+        self._terminate_job()
+        if self.process.state() != QProcess.ProcessState.NotRunning:
             self.process.kill()
 
+    def _terminate_job(self):
+        if self._job:
+            try:
+                members = self._job.pids()
+                if members:
+                    self._lifecycle(f"terminating owned PIDs={members}")
+                # Terminate even an empty job: a late launcher cannot add work.
+                self._job.terminate()
+            except OSError as exc:
+                self._lifecycle(f"job termination/query error: {exc}")
+                self._job.close()
+                self._job = None
+                self._lifecycle("kill-on-close fallback; remaining membership unverified")
+
     def _on_error(self, error):
-        if self.process is None or self._closing:
+        if self.process is None:
             return
         self._write_console(f"Backend process error: {self.process.errorString()}\n")
         if error == QProcess.ProcessError.FailedToStart:
@@ -746,7 +800,29 @@ class VideoTranslateWindow(QMainWindow):
         self._session_finished(reason)
 
     def _session_finished(self, reason: str):
+        self._shutdown_timer.stop()
         self._close_control()
+        if self._job:
+            self._terminate_job()
+            self._verify_job(reason, time.monotonic() + 3)
+            return
+        self._finish_ui(reason)
+
+    def _verify_job(self, reason, deadline):
+        if self._job:
+            try:
+                remaining = self._job.pids()
+            except OSError as exc:
+                remaining = f"unknown ({exc})"
+            if remaining and time.monotonic() < deadline:
+                QTimer.singleShot(50, lambda: self._verify_job(reason, deadline))
+                return
+            self._lifecycle(f"remaining owned PIDs={remaining}")
+            self._job.close()
+            self._job = None
+        self._finish_ui(reason)
+
+    def _finish_ui(self, reason):
         if self.process is not None:
             self.process.deleteLater()
             self.process = None

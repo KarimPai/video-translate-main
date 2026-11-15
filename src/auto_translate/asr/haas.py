@@ -5,6 +5,7 @@ import queue
 import threading
 import shutil
 import subprocess
+from ..windows_subprocess import check_running, owned_popen
 
 from ..windows_subprocess import hidden_console_flags
 import time
@@ -22,6 +23,7 @@ class HaasASR:
 
     def __init__(self, cfg: AsrConfig, *, language: str | None = None) -> None:
         self.cfg = cfg
+        self._close_lock = threading.Lock()
         self.request_counter = 0
         self.last_stop = None
 
@@ -43,7 +45,7 @@ class HaasASR:
 
 
         try:
-            self.process = subprocess.Popen(
+            self.process = owned_popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=None, text=True, encoding="utf-8", bufsize=1,
                 creationflags=hidden_console_flags(),
@@ -96,7 +98,11 @@ class HaasASR:
 
     def _read_message(self, deadline):
         while (remaining := deadline - time.monotonic()) > 0:
-            response = self._read_response(remaining)
+            check_running()
+            try:
+                response = self._read_response(min(remaining, 0.25))
+            except TimeoutError:
+                continue
             try:
                 message = json.loads(response)
             except json.JSONDecodeError:
@@ -107,10 +113,11 @@ class HaasASR:
         raise TimeoutError("speech.cpp response deadline expired")
 
     def close(self) -> None:
-        process = getattr(self, "process", None)
+        with self._close_lock:
+            process = self.process
+            self.process = None
         if process is None:
             return
-        self.process = None
         if process.poll() is None:
             process.terminate()
             try:
@@ -121,6 +128,7 @@ class HaasASR:
         for stream in (process.stdin, process.stdout):
             if stream is not None:
                 stream.close()
+        self._reader.join(timeout=0.5)
 
     def transcribe(self, audio: np.ndarray, probe: bool = False, *, timeout=None) -> str:
         if self.process is None or self.process.poll() is not None:

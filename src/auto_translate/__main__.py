@@ -236,8 +236,11 @@ def _main(resources: ExitStack) -> None:
         elif not budget.admits(2.8):
             cfg.translate.plamo_gpu_layers = 0
         log.info("PLaMo GPU layer limit=%s", cfg.translate.plamo_gpu_layers)
+        from .translate.plamo import ExistingServerUnavailable
         try:
             translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
+        except ExistingServerUnavailable:
+            raise
         except (RuntimeError, OSError):
             if not cfg.translate.plamo_gpu_layers:
                 raise

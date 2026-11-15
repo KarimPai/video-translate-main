@@ -106,14 +106,42 @@ for line in sys.stdin:
         target = "auto_translate.translate.plamo._LOCAL.open"
         for reason, expected in ((ConnectionRefusedError(), "absent"),
                                  ("[WinError 10061] connection refused", "absent"),
-                                 (TimeoutError(), "loading"), ("timed out", "loading")):
+                                 (TimeoutError(), "unresponsive"), ("timed out", "unresponsive")):
             with self.subTest(reason=reason), patch(target, side_effect=urllib.error.URLError(reason)):
                 self.assertEqual(_server_state("http://localhost", "plamo"), expected)
         with patch(target, side_effect=TimeoutError()):
-            self.assertEqual(_server_state("http://localhost", "plamo"), "loading")
+            self.assertEqual(_server_state("http://localhost", "plamo"), "unresponsive")
         with patch(target, side_effect=urllib.error.URLError("unknown transport failure")):
             with self.assertRaisesRegex(RuntimeError, "unknown transport"):
                 _server_state("http://localhost", "plamo")
+
+    def test_plamo_timeout_on_free_port_reaches_launch(self):
+        import socket
+        from auto_translate.translate.plamo import PlamoTranslator, _loopback_port_available
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = Mock(load_timeout_s=10)
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            translator.base_url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1"
+            self.assertFalse(_loopback_port_available(translator.base_url))
+        with patch("auto_translate.translate.plamo._server_state", return_value="unresponsive"), patch(
+                "auto_translate.translate.plamo.shutil.which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "not found in PATH"):
+                translator._start_server()
+
+    def test_plamo_occupied_port_timeout_does_not_launch(self):
+        from auto_translate.translate.plamo import ExistingServerUnavailable, PlamoTranslator
+        translator = object.__new__(PlamoTranslator)
+        translator.cfg = Mock(load_timeout_s=1)
+        translator.base_url = "http://127.0.0.1:8000/v1"
+        with patch("auto_translate.translate.plamo._server_state", return_value="unresponsive"), patch(
+                "auto_translate.translate.plamo._loopback_port_available", return_value=False), patch(
+                "auto_translate.translate.plamo.time.monotonic", side_effect=[0, 2, 2, 2]), patch(
+                "auto_translate.translate.plamo.subprocess.Popen") as launch:
+            with self.assertRaises(ExistingServerUnavailable):
+                translator._start_server()
+            launch.assert_not_called()
 
     def test_mpv_job_skips_mock_before_native_calls(self):
         with patch("auto_translate.output.mpv.sys.platform", "win32"):

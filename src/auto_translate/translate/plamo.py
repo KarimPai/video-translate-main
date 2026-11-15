@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -168,6 +169,25 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
     return suspicious_translation(source, translation, names=terms) is None
 
 
+class ExistingServerUnavailable(RuntimeError):
+    """An existing endpoint failed before this run launched a model."""
+
+
+def _loopback_port_available(url: str) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.hostname not in ("127.0.0.1", "::1"):
+        return False
+    family = socket.AF_INET6 if parsed.hostname == "::1" else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            probe.bind((parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)))
+        except OSError:
+            return False
+        return True
+
+
 class PlamoTranslator:
     """Japanese-to-English PLaMo translator; inference stays on the local machine."""
 
@@ -185,6 +205,7 @@ class PlamoTranslator:
         try:
             self._start_server()
             # Warm up before ingest starts so first subtitles do not pay load cost.
+            log.info("Warming up PLaMo translation")
             self._warmup()
         except Exception:
             self.close()
@@ -193,12 +214,21 @@ class PlamoTranslator:
     def _start_server(self) -> None:
         """Reuse a responding local server; otherwise launch and own one."""
         deadline = time.monotonic() + self.cfg.load_timeout_s
-        state = _server_state(self.base_url, self.cfg.plamo_model)
-        while state == "loading":
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Existing PLaMo server is still loading")
-            time.sleep(0.5)
+        log.info("Checking PLaMo endpoint %s", self.base_url)
+        next_progress = 0.0
+        while True:
             state = _server_state(self.base_url, self.cfg.plamo_model)
+            if state in ("ready", "absent"):
+                break
+            if state == "unresponsive" and _loopback_port_available(self.base_url):
+                log.info("PLaMo probe timed out but the local port is free; launching llama-server")
+                break
+            if time.monotonic() >= next_progress:
+                log.info("Waiting for existing PLaMo endpoint %s (%s)", self.base_url, state)
+                next_progress = time.monotonic() + 10
+            if time.monotonic() >= deadline:
+                raise ExistingServerUnavailable(f"Existing PLaMo endpoint {self.base_url} is {state} after {self.cfg.load_timeout_s:g}s")
+            time.sleep(0.5)
         if state == "ready":
             log.info("Using existing llama.cpp server at %s", self.base_url)
             return
@@ -213,6 +243,7 @@ class PlamoTranslator:
         parsed = urllib.parse.urlparse(self.base_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        log.info("Resolving PLaMo model %s for llama-server", self.cfg.plamo_hf_model)
         from ..plamo_model import model_arguments
         model_args = model_arguments(self.cfg.plamo_hf_model)
         command = [
@@ -499,7 +530,7 @@ _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def _server_state(base_url: str, alias: str) -> str:
     try:
-        with _LOCAL.open(base_url + "/models", timeout=1.0) as response:
+        with _LOCAL.open(base_url + "/models", timeout=3.0) as response:
             models = json.load(response)["data"]
     except urllib.error.HTTPError as exc:
         if exc.code == 503:
@@ -512,10 +543,10 @@ def _server_state(base_url: str, alias: str) -> str:
         ):
             return "absent"
         if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            return "loading"
+            return "unresponsive"
         raise RuntimeError(f"Cannot probe PLaMo at {base_url}: {reason}") from exc
     except TimeoutError:
-        return "loading"
+        return "unresponsive"
     if not any(model.get("id") == alias for model in models):
         raise RuntimeError(f"Service at {base_url} does not advertise required model {alias}")
     return "ready"

@@ -7,6 +7,7 @@ import threading
 import unittest
 from types import SimpleNamespace
 
+from auto_translate.config import MpvConfig
 from auto_translate.output.mpv import MpvOutput
 from auto_translate.types import Subtitle
 
@@ -15,6 +16,7 @@ class EnglishLiveSubtitleTests(unittest.TestCase):
     @staticmethod
     def player(*, live=True, now=0.0):
         player = object.__new__(MpvOutput)
+        player.cfg = MpvConfig()
         player.ingest = SimpleNamespace(source=SimpleNamespace(live=live))
         player._session_start = 0.0
         player._clock_source_anchor = 0.0

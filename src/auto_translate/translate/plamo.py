@@ -506,9 +506,16 @@ def _server_state(base_url: str, alias: str) -> str:
             return "loading"
         raise RuntimeError(f"Unexpected model service at {base_url}: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
-        if isinstance(exc.reason, ConnectionRefusedError):
+        reason = exc.reason
+        if isinstance(reason, ConnectionRefusedError) or (
+            isinstance(reason, str) and ("connection refused" in reason.lower() or "10061" in reason)
+        ):
             return "absent"
-        raise
+        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            return "loading"
+        raise RuntimeError(f"Cannot probe PLaMo at {base_url}: {reason}") from exc
+    except TimeoutError:
+        return "loading"
     if not any(model.get("id") == alias for model in models):
         raise RuntimeError(f"Service at {base_url} does not advertise required model {alias}")
     return "ready"

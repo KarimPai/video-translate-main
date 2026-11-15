@@ -1,4 +1,6 @@
 """Owned loopback llama.cpp text-selection server."""
+from concurrent.futures import CancelledError
+import threading
 import json
 import logging
 import shutil
@@ -18,7 +20,8 @@ MODEL = "LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M"
 
 
 class Reconciler:
-    def __init__(self, gpu_layers):
+    def __init__(self, gpu_layers, *, cancel_event=None):
+        cancel_event = cancel_event if cancel_event is not None else threading.Event()
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -37,14 +40,20 @@ class Reconciler:
                                             creationflags=hidden_console_flags())
         try:
             until = time.monotonic() + 300
+            next_progress = time.monotonic() + 10
             while self.process.poll() is None and time.monotonic() < until:
+                if cancel_event.is_set():
+                    raise CancelledError("Selector startup cancelled")
                 try:
                     with _LOCAL.open(self.url + "/v1/models", timeout=1) as resp:
                         if any(m["id"] == "jp-selector" for m in json.load(resp)["data"]):
                             return
                 except OSError:
                     pass
-                time.sleep(0.3)
+                if time.monotonic() >= next_progress:
+                    log.info("Waiting for LFM selector startup; see logs/reconciler.log")
+                    next_progress = time.monotonic() + 10
+                cancel_event.wait(0.3)
             raise RuntimeError("selector startup failed; see logs/reconciler.log")
         except BaseException:
             self.close()

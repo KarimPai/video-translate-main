@@ -157,7 +157,6 @@ class SeparationWorker:
         self.input_q: queue.Queue = queue.Queue()
         self.error: Exception | None = None
         self._closed = False
-        self._closed = False
 
         self.worker = threading.Thread(
             target=self._run,

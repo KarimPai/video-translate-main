@@ -78,7 +78,7 @@ def _worker_main(connection, model_name, device, compute_type, beam_size):
                                  "stop": "complete" if transcript else "unknown"})
             except Exception as exc:
                 logging.exception("Whisper Turbo decode failed")
-                connection.send({"type": "error", "message": str(exc)})
+                connection.send({"type": "error", "id": command["id"], "message": str(exc)})
     except EOFError:
         pass
     except BaseException as exc:
@@ -99,6 +99,7 @@ class WhisperTurboASR:
         self.last_stop = "unknown"
         self._lock = threading.Lock()
         self._request_id = 0
+        self._decode_lock = threading.Lock()
         self.process = None
         self.connection = None
         context = mp.get_context("spawn")
@@ -130,7 +131,15 @@ class WhisperTurboASR:
             raise
 
     def transcribe(self, audio, timeout=None, initial_prompt=None, cancel_event=None):
-        """Drain one tagged reply even when its caller has moved on."""
+        """Keep a single reader and writer on the worker pipe across requests."""
+        if not self._decode_lock.acquire(blocking=False):
+            raise RuntimeError("Whisper Turbo request already in progress")
+        try:
+            return self._transcribe(audio, timeout, initial_prompt, cancel_event)
+        finally:
+            self._decode_lock.release()
+
+    def _transcribe(self, audio, timeout, initial_prompt, cancel_event):
         samples = _audio16(audio)
         if timeout is None:
             timeout = 25.0
@@ -138,11 +147,12 @@ class WhisperTurboASR:
             raise TimeoutError("Whisper Turbo deadline exceeded")
         if cancel_event is not None and cancel_event.is_set():
             raise CancelledError("Whisper Turbo request already cancelled")
-        connection, process = self.connection, self.process
+        with self._lock:
+            connection, process = self.connection, self.process
+            self._request_id += 1
+            request_id = self._request_id
         if process is None or not process.is_alive() or connection is None:
             raise RuntimeError("Whisper Turbo worker unavailable")
-        self._request_id += 1
-        request_id = self._request_id
         deadline = time.monotonic() + timeout
         # The optional caller can leave at its soft deadline. A separate hard
         # limit also covers a blocked pipe send, before polling can begin.

@@ -34,6 +34,7 @@ class DualASR:
         self.playback_position = lambda: None
         self.session_id = str(time.time_ns())
         self.closed = False
+        self._selector_stop = threading.Event()
         self.failures = 0
         self.retry_at = 0.0
         self._restart_thread = None
@@ -120,25 +121,33 @@ class DualASR:
         # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
         # and MPV/VAD allocations that may arrive after model startup.
         playback_reserve = 0.65
+        placements = [0]
         if layers and self.budget.admits(1.15 + playback_reserve):
+            placements.insert(0, layers)
+        for placement in placements:
+            if self._selector_stop.is_set():
+                return
             try:
-                self.selector = Reconciler(layers)
-                if self.budget.admits(playback_reserve):
-                    log.info("LFM2.5-1.2B-JP transcript selector ready; GPU layers requested=%d", layers)
-                    return
-                self.selector.close()
-                self.selector = None
-                log.warning("Selector exceeded startup reservation; switching to CPU")
+                selector = Reconciler(placement, cancel_event=self._selector_stop)
+            except CancelledError:
+                return
             except Exception as exc:
-                log.warning("GPU selector failed to start; trying CPU: %s", exc)
-        elif layers:
-            log.info("Insufficient GPU headroom for LFM2.5-1.2B-JP; selecting on CPU")
-        try:
-            self.selector = Reconciler(0)
-            log.info("LFM2.5-1.2B-JP transcript selector ready; CPU")
-        except Exception as exc:
-            self.selector = None
-            log.warning("Selector unavailable; deterministic selection: %s", exc)
+                log.warning("Selector startup failed (GPU layers=%d): %s", placement, exc)
+                continue
+            try:
+                if placement and not self.budget.admits(playback_reserve):
+                    log.warning("Selector exceeded startup reservation; switching to CPU")
+                    continue
+                with self.lock:
+                    if self.closed:
+                        return
+                    self.selector = selector
+                    selector = None  # Ownership transferred to DualASR.
+                log.info("LFM2.5-1.2B-JP selector ready; GPU layers requested=%d", placement)
+                return
+            finally:
+                if selector is not None:
+                    selector.close()
 
     def release_selector(self):
         """Reclaim the optional GPU selector first, retaining secondary ASR."""
@@ -155,6 +164,7 @@ class DualASR:
         """Permanent shutdown, reserved for GPU pressure or session exit."""
         with self.lock:
             self.closed = True
+            self._selector_stop.set()
             worker, selector = self.worker, self.selector
             self.worker = self.selector = None
         if worker or selector:

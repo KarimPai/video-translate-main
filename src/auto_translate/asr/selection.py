@@ -3,12 +3,14 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
+from ..text_filter import KATA_TO_HIRA
+
 
 def normalize(text):
     value = unicodedata.normalize("NFC", text)
     # Fold width only. Preserve kanji, particles, prolonged sounds and decimal points.
     value = re.sub(r"[！-～｡-ﾟ]+", lambda m: unicodedata.normalize("NFKC", m[0]), value)
-    value = "".join(chr(ord(c) - 96) if "ァ" <= c <= "ヶ" else c for c in value)
+    value = value.translate(KATA_TO_HIRA)
     return re.sub(r"(?<![0-9])[.,]|[.,](?![0-9])|[\s、。！？!?「」『』…]", "", value)
 
 

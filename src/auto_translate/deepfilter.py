@@ -32,7 +32,8 @@ class DeepFilterWorker:
         self.generation = generation
         self.input_q: queue.Queue = queue.Queue()
         self.error: Exception | None = None
-        
+        self._closed = False
+        self._close_lock = threading.Lock()
 
         self.worker = threading.Thread(
             target=self._run,
@@ -48,7 +49,10 @@ class DeepFilterWorker:
         self.input_q.put("progress")
 
     def close(self) -> None:
-        self.input_q.put(None)
+        with self._close_lock:
+            if not self._closed:
+                self._closed = True
+                self.input_q.put(None)
         self.worker.join()
 
         if self.error:

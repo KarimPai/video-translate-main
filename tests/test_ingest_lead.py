@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from auto_translate.ingest import Ingest
+from auto_translate.config import MpvConfig
 from auto_translate.output.mpv import MpvOutput
 from auto_translate.types import SAMPLE_RATE
 
@@ -75,6 +76,7 @@ class PlaybackPacingTests(unittest.TestCase):
 
     def test_vod_resumes_without_audio_and_keeps_seek_target(self):
         player = object.__new__(MpvOutput)
+        player.cfg = MpvConfig()
         player.ingest = Mock(generation=1)
         player.ingest.source.live = False
         player.ingest.source.start_s = 0.0  # asynchronous restart still pending

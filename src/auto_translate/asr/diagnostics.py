@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 _MAX_FILE_BYTES = 20 * 1024 * 1024
 _QUEUE = queue.Queue(maxsize=4096)
 _START_LOCK = threading.Lock()
-_STARTED = False
+_STOPPING = False
 _WRITER = None
 _DROPPED = 0
 
@@ -40,51 +40,42 @@ def _write_batch(batch):
 def _writer_loop():
     while True:
         item = _QUEUE.get()
-        if item[0] is None:
-            item[1].set()
-            _QUEUE.task_done()
-            continue
-        batch = [item]
-        end_after_batch = None
-        # Bound per-write size and flush shortly after the first record.
-        while len(batch) < 64:
+        batch = []
+        while item[0] is not None:
+            batch.append(item)
+            if len(batch) == 64:
+                break
             try:
-                next_item = _QUEUE.get(timeout=0.05)
+                item = _QUEUE.get(timeout=0.05)
             except queue.Empty:
                 break
-            if next_item[0] is None:
-                end_after_batch = next_item
-                break
-            batch.append(next_item)
         try:
-            _write_batch(batch)
+            if batch:
+                _write_batch(batch)
         finally:
             for _ in batch:
                 _QUEUE.task_done()
-        if end_after_batch is not None:
-            end_after_batch[1].set()
+        if item[0] is None:
             _QUEUE.task_done()
-            continue
-
-
-def _start_writer():
-    global _STARTED, _WRITER
-    with _START_LOCK:
-        if not _STARTED:
-            _WRITER = threading.Thread(target=_writer_loop, daemon=True,
-                                       name="asr-comparison-writer")
-            _WRITER.start()
-            _STARTED = True
+            if item[1] is None:
+                return
+            item[1].set()
 
 
 def append_comparison(record: dict, path: Path = Path("logs/asr-comparison.jsonl")) -> None:
     """Enqueue JSONL without blocking ASR on disk or Windows AV scans."""
-    global _DROPPED
+    global _DROPPED, _WRITER
     try:
         line = json.dumps(record, ensure_ascii=False, default=str,
                           separators=(",", ":")) + "\n"
-        _start_writer()
-        _QUEUE.put_nowait((Path(path), line))
+        with _START_LOCK:
+            if _STOPPING:
+                return
+            if _WRITER is None:
+                _WRITER = threading.Thread(target=_writer_loop, daemon=True,
+                                           name="asr-comparison-writer")
+                _WRITER.start()
+            _QUEUE.put_nowait((Path(path), line))
     except queue.Full:
         _DROPPED += 1
         if _DROPPED == 1 or _DROPPED % 1000 == 0:
@@ -95,15 +86,34 @@ def append_comparison(record: dict, path: Path = Path("logs/asr-comparison.jsonl
 
 def flush_comparisons(timeout=3.0):
     """Wait for records queued before this call; useful for tests and shutdown."""
-    if not _STARTED:
-        return True
     done = threading.Event()
-    try:
-        _QUEUE.put((None, done), timeout=timeout)
-    except queue.Full:
-        return False
-    # Flush markers do not terminate the writer; later cues can still log.
+    with _START_LOCK:
+        if _WRITER is None:
+            return True
+        if _STOPPING:
+            return False
+        try:
+            _QUEUE.put((None, done), timeout=timeout)
+        except queue.Full:
+            return False
     return done.wait(timeout)
 
 
-atexit.register(flush_comparisons)
+def _shutdown_writer(timeout=3.0):
+    global _STOPPING
+    with _START_LOCK:
+        if _WRITER is None:
+            return
+        if not _STOPPING:
+            try:
+                _QUEUE.put((None, None), timeout=timeout)
+            except queue.Full:
+                log.warning("Timed out queuing diagnostics shutdown")
+                return
+            _STOPPING = True
+    _WRITER.join(timeout)
+    if _WRITER.is_alive():
+        log.warning("Timed out flushing diagnostics on shutdown")
+
+
+atexit.register(_shutdown_writer)

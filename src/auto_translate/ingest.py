@@ -194,10 +194,13 @@ def _owner_gone(pid: int) -> bool:
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        handle = kernel.OpenProcess(0x1000, False, pid)
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
         if handle:
-            kernel.CloseHandle(handle)
-            return False
+            try:
+                return kernel.WaitForSingleObject(handle, 0) == 0  # WAIT_OBJECT_0
+            finally:
+                kernel.CloseHandle(handle)
         return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER for an absent PID
     try:
         os.kill(pid, 0)
@@ -1199,17 +1202,17 @@ class Ingest:
         # between reads are intentional and must never trigger recovery.
         read_deadline = None
         finished = threading.Event()
-        def watch_pcm():
+        def watch_pcm(pcm_process):
             while not finished.wait(1.0):
                 with self._proc_lock:
                     if read_deadline is not None and time.monotonic() >= read_deadline:
                         if generation == self._generation and not self._stopped:
                             log.error("Live PCM read stalled for 60s; restarting shared session")
                             self._video_failed.set()
-                            procs[-1].kill()
+                            pcm_process.kill()
                         return
         if self.source.live and self.video_out:
-            threading.Thread(target=watch_pcm, name="live-pcm-watch", daemon=True).start()
+            threading.Thread(target=watch_pcm, args=(procs[-1],), name="live-pcm-watch", daemon=True).start()
 
         worker = None
         deepfilter_worker = None
@@ -1263,13 +1266,16 @@ class Ingest:
                     break
 
                 if self.source.live and self.video_out:
-                    read_deadline = time.monotonic() + 60.0
+                    with self._proc_lock:
+                        read_deadline = time.monotonic() + 60.0
                 if worker:
                     data = stdout.read(SEPARATION_READ_FRAMES * 4)
                 else:
                     data = stdout.read(CHUNK_SAMPLES * 2)
 
-                read_deadline = None
+                if self.source.live and self.video_out:
+                    with self._proc_lock:
+                        read_deadline = None
                 if not data:
                     break
 

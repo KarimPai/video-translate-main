@@ -305,6 +305,7 @@ class RecoveryTests(unittest.TestCase):
         from auto_translate.asr.whisper_turbo import WhisperTurboASR
         worker = object.__new__(WhisperTurboASR)
         worker._lock = threading.Lock()
+        worker._decode_lock = threading.Lock()
         worker.last_stop = "unknown"
         process, connection = Mock(), Mock()
         worker._request_id = 0
@@ -325,6 +326,48 @@ class RecoveryTests(unittest.TestCase):
         process.terminate.assert_not_called()
         connection.close.assert_not_called()
 
+    def test_stale_decode_error_after_cancel_does_not_fail_next_cue(self):
+        from auto_translate.asr.whisper_turbo import WhisperTurboASR
+        worker = object.__new__(WhisperTurboASR)
+        worker._lock = threading.Lock()
+        worker._decode_lock = threading.Lock()
+        worker._request_id = 0
+        worker.process, worker.connection = Mock(), Mock()
+        cancelled = threading.Event()
+        def cancel_while_polling(_):
+            cancelled.set()
+            return False
+        worker.connection.poll.side_effect = cancel_while_polling
+        with self.assertRaises(CancelledError):
+            worker.transcribe(np.ones(100), cancel_event=cancelled)
+        worker.connection.poll.side_effect = None
+        worker.connection.poll.return_value = True
+        worker.connection.recv.side_effect = [
+            {"type": "error", "id": 1, "message": "obsolete decode failure"},
+            {"type": "transcript", "id": 2, "text": "次"},
+        ]
+        self.assertEqual(worker.transcribe(np.ones(100)), "次")
+
+    def test_diagnostics_shutdown_drains_and_exits(self):
+        import subprocess
+        import sys
+        script = """
+from auto_translate.asr import diagnostics as d
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+for i in range(75):
+    d.append_comparison({"cue": i}, path)
+d._shutdown_writer()
+assert not d._WRITER.is_alive()
+assert d._QUEUE.unfinished_tasks == 0
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cues.jsonl"
+            subprocess.run([sys.executable, "-c", script, str(path)], check=True, timeout=10)
+            self.assertEqual([json.loads(line)["cue"] for line in path.read_text().splitlines()],
+                             list(range(75)))
+
     def test_diagnostics_flushes_between_cues(self):
         from auto_translate.asr.diagnostics import append_comparison, flush_comparisons
         with tempfile.TemporaryDirectory() as folder:
@@ -338,8 +381,26 @@ class RecoveryTests(unittest.TestCase):
 
 class SelectorPlacementTests(unittest.TestCase):
     @patch("auto_translate.asr.dual.Reconciler")
+    def test_release_during_startup_closes_unpublished_selector(self, constructor):
+        cfg = Config()
+        cfg.dual_asr.enabled = False
+        dual = DualASR(cfg, Mock(), Glossary({}), False)
+        selector = Mock()
+        def finish_after_release(layers, *, cancel_event):
+            dual.close()
+            self.assertTrue(cancel_event.is_set())
+            return selector
+        constructor.side_effect = finish_after_release
+        dual._start_selector(0)
+        self.assertIsNone(dual.selector)
+        selector.close.assert_called_once()
+
+    @patch("auto_translate.asr.dual.Reconciler")
     def test_full_offload_and_fallback(self, constructor):
         dual = object.__new__(DualASR)
+        dual._selector_stop = threading.Event()
+        dual.lock = threading.Lock()
+        dual.closed = False
         dual.budget = Mock()
         for checks, layers in [([True, True], [99]), ([False], [0]), ([True, False], [99, 0])]:
             with self.subTest(checks=checks):
@@ -353,6 +414,9 @@ class SelectorPlacementTests(unittest.TestCase):
     @patch("auto_translate.asr.dual.Reconciler")
     def test_gpu_startup_failure_retries_on_cpu(self, constructor):
         dual = object.__new__(DualASR)
+        dual._selector_stop = threading.Event()
+        dual.lock = threading.Lock()
+        dual.closed = False
         dual.budget = Mock()
         cpu = Mock()
         constructor.side_effect = [RuntimeError("allocation failed"), cpu]
@@ -380,6 +444,7 @@ class WorkerProcessTests(unittest.TestCase):
         adapter = object.__new__(WhisperTurboASR)
         adapter._request_id = 0
         adapter._lock = threading.Lock()
+        adapter._decode_lock = threading.Lock()
         adapter.connection = parent
         adapter.process = ctx.Process(target=_fake_whisper_pipe, args=(child, cancel), daemon=True)
         adapter.process.start()

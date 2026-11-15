@@ -285,9 +285,11 @@ class MpvIpc:
                     raise ConnectionError("mpv closed the IPC connection")
 
                 msg = json.loads(line)
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("event") == "property-change":
                     name = msg.get("name")
-                    if name:
+                    if isinstance(name, str) and name:
                         self._properties[name] = msg.get("data")
                 elif "event" in msg:
                     self.events.put(msg)
@@ -532,7 +534,6 @@ class MpvOutput:
             # The embedded player already has a Qt timeline.
             "--osc=no" if cfg.window_id else "--osc=yes",
             "--osd-on-seek=no",
-            "--no-input-default-bindings",
             f"--input-conf={GUI_INPUT_CONF if cfg.window_id else INPUT_CONF}",
 
             # Hardware video decoding.
@@ -707,7 +708,7 @@ class MpvOutput:
         now = self._now
         if now is not None and now > until:
             late_by = now - until
-            allowed_late = max(0.0, getattr(getattr(self, "cfg", None), "live_late_window_s", self.LIVE_LATE_WINDOW_S))
+            allowed_late = max(0.0, getattr(self.cfg, "live_late_window_s", self.LIVE_LATE_WINDOW_S))
             if self.ingest.source.live and late_by <= allowed_late:
                 log.warning(
                     "displaying late live subtitle now: "
@@ -725,7 +726,7 @@ class MpvOutput:
                 )
                 return
 
-        minimum = getattr(getattr(self, "cfg", None), "min_subtitle_duration_s", 1.2)
+        minimum = getattr(self.cfg, "min_subtitle_duration_s", 1.2)
         line = _Line(sub, show_from, max(until, show_from + minimum))
         with self._lock:
             if sub.generation != getattr(self.ingest, "generation", sub.generation):
@@ -802,6 +803,12 @@ class MpvOutput:
                 return
 
             time.sleep(0.25)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     def close(self) -> None:
         """Cleanly stop MPV and release its automatic cleanup protection."""
@@ -1062,8 +1069,7 @@ class MpvOutput:
 
             self._subtitle_ready.clear()
             if self.ingest.video_failed.is_set():
-                if self._recover_video_stream():
-                    return
+                self._recover_video_stream()
                 return
 
             should_unpause = (
@@ -1157,7 +1163,7 @@ class MpvOutput:
 
                 self._render(self._now)
 
-            if getattr(getattr(self, "cfg", None), "window_id", None):
+            if getattr(self.cfg, "window_id", None):
                 self._emit_gui_status(mpv_paused is True)
                 self._handle_gui_commands()
 
@@ -1322,9 +1328,9 @@ class MpvOutput:
             elif ev.get("event") == "client-message" and args[:1] == ["auto-translate-gui-pause"]:
                 self._toggle_user_pause()
                 requested = True
-            elif getattr(getattr(self, "cfg", None), "window_id", None) and ev.get("event") == "client-message" and args[:1] == [FULLSCREEN_MESSAGE]:
+            elif getattr(self.cfg, "window_id", None) and ev.get("event") == "client-message" and args[:1] == [FULLSCREEN_MESSAGE]:
                 emit_event("toggle_fullscreen")
-            elif getattr(getattr(self, "cfg", None), "window_id", None) and ev.get("event") == "client-message" and args[:1] == [EXIT_FULLSCREEN_MESSAGE]:
+            elif getattr(self.cfg, "window_id", None) and ev.get("event") == "client-message" and args[:1] == [EXIT_FULLSCREEN_MESSAGE]:
                 emit_event("exit_fullscreen")
             elif (
                 ev.get("event") == "client-message"

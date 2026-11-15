@@ -2,6 +2,7 @@
 """CLI entry point: uv run auto-translate <youtube-url | audio file> [options]."""
 
 import argparse
+from contextlib import ExitStack
 import logging
 import os
 import sys
@@ -13,6 +14,11 @@ from . import cuda_dlls
 
 
 def main() -> None:
+    with ExitStack() as resources:
+        _main(resources)
+
+
+def _main(resources: ExitStack) -> None:
     parser = argparse.ArgumentParser(prog="auto-translate")
     parser.add_argument("source", nargs="?", default=os.getenv("VIDEO_URL"), help="YouTube URL (live or VOD) or a local audio/video file")
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
@@ -317,6 +323,7 @@ def main() -> None:
                     raise
                 log.warning("VSR player startup failed (%s); retrying standard MPV once", exc)
                 player = MpvOutput(replace(cfg.mpv, rtx_vsr=False), ingest, stop, subtitle_cache=subtitle_cache)
+            resources.enter_context(player)
             outputs.append(player)
             dual.playback_position = player.playback_position
             if args.gui_control:

@@ -87,7 +87,8 @@ Actions workflow now uploads two choices:
   the workflow announces an incompatible runtime/dependency update.
 
 Update the existing Git branch first so the Python backend source is current.
-Close VideoTranslate, download and extract the EXE-only artifact into
+After installing the full process-cleanup release, compatible subsequent builds can use
+the following incremental procedure. Close VideoTranslate, download and extract the EXE-only artifact into
 `C:\Games\video-translate-dual-asr\dist\VideoTranslate\`, and overwrite only
 `VideoTranslate.exe`. Start the EXE normally. **Do not delete `_internal`.**
 
@@ -120,7 +121,9 @@ The EXE is **not a standalone model bundle**. It uses the original project's
 
 Pull the matching backend source and replace the frontend EXE from the same
 commit. The Windows GUI workflow builds `VideoTranslate-EXE-Only` alongside the
-full package. The EXE-only artifact uses the existing pinned Qt runtime.
+full package. For the first upgrade from the previous GUI, install the full package. The
+old runtime lacks the native ctypes extension and libffi used for Job Objects.
+Use EXE-only updates once the installed runtime matches the build.
 
 Each Start writes a fresh 32-character session ID to `logs/gui-lifecycle.log`
 and `logs/run.log`. The frontend job covers the first launcher instruction.

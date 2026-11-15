@@ -56,7 +56,7 @@ def frontend(folder, scenario):
 
     app = QApplication([])
     gui.GUI_SHUTDOWN_MS = 700 if scenario == "hang" else 8000
-    pyw = Path(sys.executable).with_name("pythonw.exe")
+    pyw = Path(os.environ["DUMMY_PYTHONW"])
     gui.build_backend_command = lambda *a, **kw: (
         str(pyw), ["-u", str(Path(__file__).resolve()), "backend", str(folder), scenario])
     (folder / "config.example.toml").touch()

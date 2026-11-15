@@ -51,10 +51,18 @@ class LifecycleTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" and importlib.util.find_spec("PySide6"),
                      "requires Windows and Qt offscreen")
 class WindowsSessionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import venv
+        cls.venv_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.venv_dir.cleanup)
+        venv.EnvBuilder(with_pip=False).create(cls.venv_dir.name)
+
     def exercise(self, scenario):
         import _winapi
         fixture = Path(__file__).parent.resolve() / "fixtures" / "lifecycle_dummy.py"
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
+                   DUMMY_PYTHONW=str(Path(self.venv_dir.name) / "Scripts" / "pythonw.exe"),
                    PYTHONPATH=str(fixture.parents[2] / "src"))
         # Same interpreter and native image as the owned dummy servers.
         external = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(150)"])

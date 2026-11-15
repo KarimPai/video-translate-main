@@ -17,7 +17,7 @@ from auto_translate.types import SAMPLE_RATE, Utterance
 def make_filter(results=None, cfg=None):
     filt = object.__new__(LanguageFilter)
     filt.cfg = cfg or LanguageFilterConfig()
-    filt.disabled = False
+    filt.retry_at = 0.0
     filt._predict = Mock(side_effect=results or [])
     return filt
 
@@ -74,13 +74,15 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertEqual(v.reason, "too_short")
         filt._predict.assert_not_called()
 
-    def test_inference_failure_disables_filter_without_dropping_japanese(self):
+    def test_transient_inference_failure_recovers_after_cooldown(self):
         filt = make_filter()
         filt._predict.side_effect = RuntimeError("onnx runtime error")
         self.assertFalse(filt.classify(audio()).drop)
-        self.assertTrue(filt.disabled)
         self.assertFalse(filt.classify(audio()).drop)
         self.assertEqual(filt._predict.call_count, 1)
+        filt.retry_at = 0.0
+        filt._predict.side_effect = [("id", .99, .001, .95)]
+        self.assertTrue(filt.classify(audio()).drop)
 
     def test_invalid_configuration_rejected(self):
         with self.assertRaises(ValueError):

@@ -14,6 +14,20 @@ _JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _KANA = re.compile(r"[\u3040-\u30ff]+")
 
 
+_TAIL = re.compile(r"([ぁ-ヺー一-鿿]{1,12}?)\1{7,}[。！？!?]*$")
+
+
+def trim_repetition_tail(text: str) -> str:
+    """Trim only a long contiguous decoder loop after independent dialogue."""
+    match = _TAIL.search(text)
+    if not match or len(match[0].rstrip("。！？!?")) < 18:
+        return text
+    prefix = text[:match.start()].rstrip()
+    if len(_JAPANESE.findall(prefix)) < 3 or match[1] in ("はい", "うん", "待って", "いや", "だめ"):
+        return text
+    return prefix
+
+
 def _compact(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return _NON_TEXT.sub("", normalized)

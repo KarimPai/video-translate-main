@@ -13,7 +13,7 @@ from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import clause_differences, compare, scene_repair
 from .quality_guard import (transcript_problem, disagreement_unresolved,
-                            suspicious_phonetics, uncorroborated_full_name)
+                            suspicious_phonetics, uncorroborated_full_name, weak_outro)
 
 log = logging.getLogger(__name__)
 SECONDARY = "whisper-large-v3-turbo"
@@ -37,7 +37,6 @@ class DualASR:
         self.failures = 0
         self.retry_at = 0.0
         self._restart_thread = None
-        self._decoding_worker = None
         if not cfg.dual_asr.enabled or self.mode == "off":
             return
         try:
@@ -82,8 +81,6 @@ class DualASR:
             if self.closed or self.worker is not worker:
                 return
             self.worker = None
-            if self._decoding_worker is worker:
-                self._decoding_worker = None
         # Defer before close so no new worker races the old CUDA teardown.
         self._defer_restart(reason)
         # Close outside lock: multiprocessing join can take seconds on Windows.
@@ -160,7 +157,6 @@ class DualASR:
             self.closed = True
             worker, selector = self.worker, self.selector
             self.worker = self.selector = None
-            self._decoding_worker = None
         if worker or selector:
             log.warning("Releasing optional models for the rest of this session")
         try:
@@ -193,7 +189,7 @@ class DualASR:
                                haas_elapsed_s=elapsed, fallback_reason=reason,
                                vad_confidence=utt.vad_confidence))
 
-    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None):
+    def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None:
@@ -219,7 +215,7 @@ class DualASR:
 
         def recognize():
             try:
-                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, prefetched, cancel_event=cancelled)
+                result[0] = self.choose(utt, primary, title, backlog, generation, primary_stop, primary_elapsed_s, cancel_event=cancelled)
             except Exception:
                 log.exception("Optional recognition failed at %.3fs", utt.start_s)
             finally:
@@ -241,7 +237,7 @@ class DualASR:
         self.pending.join()
         return result[0] if generation() == utt.generation else None
 
-    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, prefetched=None, cancel_event=None):
+    def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, cancel_event=None):
         """Return corroborated Japanese, an abstention, or None for the Haas path."""
         worker, selector = self.worker, self.selector
         duration = utt.end_s - utt.start_s
@@ -269,29 +265,12 @@ class DualASR:
         if not self.live and backlog() and is_usable_transcript(primary):
             return fallback("backlog")
         if (self.mode == "selective" and primary_stop != "model_limit" and primary and len(primary) > 5
-                and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4
-                and prefetched is None):
+                and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4):
             return fallback("selective_mode")
         try:
-            if (prefetched is not None and prefetched.route == "japanese"
-                    and is_usable_transcript(prefetched.text)):
-                secondary = prefetched.text
-                secondary_elapsed_s = prefetched.elapsed_s
-                log.debug("Reusing Whisper Turbo auto-Japanese transcript at %.2fs", utt.start_s)
-            else:
-                started = time.perf_counter()
-                # Never seed short audio with talent names: this can turn unrelated
-                # speech into a plausible but unspoken character name.
-                with self.lock:
-                    self._decoding_worker = worker
-                try:
-                    secondary = worker.transcribe(utt.audio, timeout=secondary_budget,
-                                                  cancel_event=cancel_event)
-                finally:
-                    with self.lock:
-                        if self._decoding_worker is worker:
-                            self._decoding_worker = None
-                secondary_elapsed_s = time.perf_counter() - started
+            started = time.perf_counter()
+            secondary = worker.transcribe(utt.audio, timeout=secondary_budget, cancel_event=cancel_event)
+            secondary_elapsed_s = time.perf_counter() - started
             log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
         except CancelledError:
@@ -328,10 +307,8 @@ class DualASR:
                 "duration_s": round(utt.end_s - utt.start_s, 3),
                 "haas": primary,
                 "whisper_turbo": secondary,
-                "detected_language": getattr(prefetched, "language", None),
-                "language_route": ("japanese_reconciled" if getattr(prefetched, "route", None) == "japanese"
-                                   else "uncertain_japanese_fallback" if prefetched is not None
-                                   else "japanese_forced"),
+                "detected_language": None,
+                "language_route": "japanese_forced",
                 "chosen": selected_text,
                 "chosen_by": selected_by,
                 "haas_elapsed_s": (round(primary_elapsed_s, 3)
@@ -350,6 +327,15 @@ class DualASR:
         def suspect_credit(text, peer):
             return (duration >= 3 and re.fullmatch(r"by [a-z]\.", text.strip(), re.I)
                     and re.search(r"[ぁ-ヺ一-龯]", peer) and not transcript_problem(peer, duration))
+
+        for candidate, peer in ((primary, secondary), (secondary, primary)):
+            if weak_outro(candidate, peer, duration, utt.vad_confidence, utt.audio):
+                mode = self.cfg.dual_asr.japanese_outro_mode
+                log.info("Weak Japanese outro at %.2fs, mode=%s, VAD=%.3f", utt.start_s, mode, utt.vad_confidence)
+                if mode == "suppress":
+                    replacement = peer if not transcript_problem(peer, duration) else ""
+                    record(replacement, "weak_japanese_outro")
+                    return replacement
 
         if transcript_problem(secondary, duration) or suspect_credit(secondary, primary):
             if transcript_problem(primary, duration):

@@ -1,6 +1,7 @@
 """Japanese YouTube auto-caption download, parsing and timestamp matching."""
 
 import html
+import json
 import logging
 import os
 import re
@@ -59,12 +60,14 @@ class CaptionMatch:
     overlap_s: float
     coverage: float
     reliable: bool
+    creator_uploaded: bool = False
 
 
 class CaptionIndex:
     """Small immutable VTT index matched against source-timeline timestamps."""
 
     def __init__(self, cues: list[CaptionCue]) -> None:
+        self.creator_uploaded = False
         self.cues = sorted(cues, key=lambda cue: (cue.start_s, cue.end_s))
         self._starts = [cue.start_s for cue in self.cues]
         # Ends can be out of order when a long cue overlaps shorter ones.
@@ -146,6 +149,7 @@ class CaptionIndex:
             overlap_s=overlap_s,
             coverage=coverage,
             reliable=reliable,
+            creator_uploaded=self.creator_uploaded,
         )
 
 
@@ -177,9 +181,13 @@ def download_vod_captions(
     video_id = cache_key(video_id)
     cached = cache_dir / f"{video_id}.ja.vtt"
 
+    creator_cache = cache_dir / f"{video_id}.creator.ja.vtt"
+    if creator_cache.is_file():
+        cached = creator_cache
     if cached.is_file():
         try:
             index = CaptionIndex.from_file(cached)
+            index.creator_uploaded = cached == creator_cache
             if index.cues:
                 log.info(
                     "Japanese YouTube captions loaded from cache (%d cues)",
@@ -195,7 +203,7 @@ def download_vod_captions(
             dir=str(cache_dir),
         ) as temp_dir:
             result = extract(cfg, url, [
-                "--skip-download", "--write-auto-subs", "--sub-langs", "ja.*,ja",
+                "--skip-download", "--write-info-json", "--write-subs", "--write-auto-subs", "--sub-langs", "ja.*,ja",
                 "--sub-format", "vtt/best", "--output", str(Path(temp_dir) / "caption.%(ext)s"),
             ], check=False)
             candidates = sorted(Path(temp_dir).glob("*.vtt"))
@@ -217,7 +225,19 @@ def download_vod_captions(
                     path.name,
                 )
             )
-            candidates[0].replace(cached)
+            selected = candidates[0]
+            info_file = Path(temp_dir) / "caption.info.json"
+            if info_file.is_file():
+                try:
+                    info = json.loads(info_file.read_text(encoding="utf8"))
+                    lang = selected.name[len("caption."):-len(".vtt")]
+                    track = (info.get("requested_subtitles") or {}).get(lang) or {}
+                    manual = (info.get("subtitles") or {}).get(lang) or []
+                    if track.get("url") and any(t.get("url") == track["url"] for t in manual):
+                        cached = creator_cache
+                except (ValueError, OSError):
+                    log.debug("Could not establish caption provenance")
+            selected.replace(cached)
 
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("Japanese caption download failed; continuing with Haas: %s", exc)
@@ -229,6 +249,7 @@ def download_vod_captions(
         log.warning("could not parse downloaded captions; continuing with Haas: %s", exc)
         return None
 
+    index.creator_uploaded = cached == creator_cache
     if not index.cues:
         log.info("downloaded Japanese caption file contained no usable cues")
         return None

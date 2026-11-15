@@ -41,7 +41,16 @@ class Glossary:
     def _matches(self, ja: str) -> tuple[tuple[str, str], ...]:
         hits = []
         for term, en in self.terms:
-            if term in ja:
+            if term not in ja:
+                continue
+            if re.fullmatch(r"[一-鿿]", term):
+                # A one-kanji hint may be useful with particles, but changes
+                # meaning inside compounds such as 素敵, 石油 or 草原.
+                pattern = rf"(?<![一-鿿]){re.escape(term)}(?![一-鿿])"
+                ja, count = re.subn(pattern, "\0", ja)
+                if count:
+                    hits.append((term, en))
+            else:
                 hits.append((term, en))
                 ja = ja.replace(term, "\0")  # mask it so shorter terms can't match inside
         return tuple(hits)

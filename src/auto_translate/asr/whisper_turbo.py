@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ..text_filter import trim_repetition_tail
+
 log = logging.getLogger(__name__)
 MODEL = "h2oai/faster-whisper-large-v3-turbo"
 
@@ -24,14 +26,14 @@ def _audio16(audio):
     return np.ascontiguousarray(np.clip(samples, -1, 1))
 
 
-def _decode(model, samples, beam_size, initial_prompt=None):
+def _decode(model, samples, beam_size, initial_prompt=None, *, temperature=0.0):
     """Never let Whisper auto-detect English or choose the translation task."""
     segments, _ = model.transcribe(
         samples,
         task="transcribe",
         language="ja",
         beam_size=beam_size,
-        temperature=0.0,
+        temperature=temperature,
         condition_on_previous_text=False,
         initial_prompt=initial_prompt,
         vad_filter=False,  # FireRedVAD has already segmented original audio.
@@ -48,7 +50,7 @@ def _decode(model, samples, beam_size, initial_prompt=None):
             continue
         value = segment.text.strip()
         if value:
-            phrases.append(value)
+            phrases.append(trim_repetition_tail(value))
     return " ".join(phrases).strip()
 
 

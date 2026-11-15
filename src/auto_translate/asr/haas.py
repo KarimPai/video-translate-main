@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 from ..config import AsrConfig
-from ..text_filter import rejection_reason
+from ..text_filter import rejection_reason, trim_repetition_tail
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ class HaasASR:
             log.debug("Discarding blocked Haas text: %s", text)
             return ""
 
+        text = trim_repetition_tail(text)
         reason = rejection_reason(text)
         if reason is not None:
             log.debug("Discarding Haas noise (%s): %s", reason, text)

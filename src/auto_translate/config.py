@@ -162,6 +162,7 @@ class DualAsrConfig:
     secondary_device: str = "cuda"
     secondary_compute_type: str = "int8_float16"
     secondary_beam_size: int = 6
+    japanese_outro_mode: str = "log"  # log or suppress weak uncorroborated candidates
     whisper_name_hints: bool = False  # deprecated/ignored: no unconditional Whisper name prompts
     secondary_live_mode: str = "selective"
     secondary_vod_mode: str = "all"
@@ -169,6 +170,8 @@ class DualAsrConfig:
     vod_timeout_s: float = 25.0
 
     def __post_init__(self):
+        if self.japanese_outro_mode not in ("log", "suppress"):
+            raise ValueError("japanese_outro_mode must be log or suppress")
         if not self.secondary_model.strip():
             raise ValueError("secondary model identifier must be nonempty")
         if self.secondary_device not in ("cuda", "cpu"):

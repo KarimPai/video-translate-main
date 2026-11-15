@@ -4,6 +4,7 @@ These heuristics are *not* a semantic accuracy score. They only flag a few
 high-confidence errors; clean-looking text can still be mistranslated.
 """
 import re
+import logging
 import unicodedata
 from collections import Counter
 from decimal import Decimal, InvalidOperation
@@ -91,6 +92,12 @@ def suspicious_translation(
             return "positive_reaction_reversed"
         if _NEGATIVE_JA.search(jp) and not _NEGATIVE_EN_MEANING.search(en):
             return "possible_negation_loss"
+
+    # Longer clauses and inflected negatives are review signals only.
+    if (re.search(r"(?:でき|出来|知ら|行か|分から|わから|食べ|見|じゃ|では)(?:ない|なかった|ず)"
+                  r"|(?:し|き|り|み|れ|せ|け|べ)ません(?:でした)?", jp)
+            and not _NEGATIVE_EN_MEANING.search(en.replace("’", "'"))):
+        logging.getLogger(__name__).info("Review possible negation loss: JA=%r EN=%r", jp, en)
 
     src_numbers = _number_values(jp, japanese=True)
     eng_numbers = _number_values(unicodedata.normalize("NFKC", en), japanese=False)

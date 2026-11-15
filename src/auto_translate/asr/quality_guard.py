@@ -50,3 +50,15 @@ def uncorroborated_full_name(chosen: str, other: str, name_guards=()) -> bool:
 def suspicious_phonetics(text):
     """Only a review signal on its own: katakana can be a real name."""
     return re.fullmatch(r"[ァ-ヺー]{6,}[。！？!?]?", text.strip()) is not None
+
+_JAPANESE_OUTROS = ("ご視聴ありがとうございました", "チャンネル登録よろしくお願いします")
+
+
+def weak_outro(candidate, peer, duration, vad_confidence, audio):
+    """Flag isolated complete outros only on very short, faint, weak-VAD audio."""
+    if normalize(candidate) not in _JAPANESE_OUTROS or normalize(candidate) in normalize(peer):
+        return False
+    if duration > 1.3 or vad_confidence is None or vad_confidence >= 0.55:
+        return False
+    import numpy as np
+    return bool(len(audio) and np.mean(np.square(audio)) < 0.0001)

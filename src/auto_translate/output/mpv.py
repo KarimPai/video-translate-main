@@ -1060,6 +1060,8 @@ class MpvOutput:
                     fmt_hms(self._session_start),
                 )
 
+            if not paused and isinstance(mpv_paused, bool):
+                self._user_paused = mpv_paused
             self._manually_paused = (
                 (not paused or getattr(self, "_user_paused", False)) and mpv_paused is True
             )
@@ -1338,6 +1340,7 @@ class MpvOutput:
 
         self._native_seek_at = None
         source_target = self._source_time_from_mpv(float(pos))
+        self._last_seek_position = source_target
         if self._cached_seek_ready(source_target):
             return False
         self._restart_audio_at(source_target)
@@ -1404,11 +1407,14 @@ class MpvOutput:
     def _cached_seek_ready(self, target: float) -> bool:
         """Only skip an audio restart when the next 5s is fully translated."""
         cache = getattr(self, "_subtitle_cache", None)
-        return bool(
-            cache is not None
-            and getattr(self, "_direct_video_loaded", False)
-            and cache.covered_until(target) >= target + self.PAUSE_LEAD_SECONDS
-        )
+        if cache is None or not self._direct_video_loaded:
+            return False
+        end = cache.covered_until(target)
+        # An isolated historical range must restart at its end; the current
+        # audio reader could otherwise keep processing a different part of the VOD.
+        return (end >= target + self.PAUSE_LEAD_SECONDS
+                and self.ingest.source.start_s <= end
+                and target <= self._translated_until <= end + 0.02)
 
     def _restart_audio_at(self, target: float) -> None:
         """Buffer translation at the confirmed video position."""
@@ -1428,7 +1434,11 @@ class MpvOutput:
         self._clock_source_anchor = target
         self._mpv_anchor = None
         self._anchor_reason = "seek"
-        self.ingest.request_restart(target)
+        cache = getattr(self, "_subtitle_cache", None)
+        resume = cache.covered_until(target) if cache is not None and self._uses_original_timeline else target
+        if resume > target:
+            log.info("Seek reused processed audio %.3f–%.3fs; resuming ASR at boundary", target, resume)
+        self.ingest.request_restart(resume)
         # The queued reset marker may arrive after the MPV thread restarts.
         self.reset_buffer(target)
         self.ingest.go()
@@ -1496,6 +1506,7 @@ class MpvOutput:
                     sub.end_s,
                 )
                 for sub in cache.active_at(now, getattr(self.cfg, "min_subtitle_duration_s", 1.2))
+                if sub.end_s > getattr(self, "_last_seek_position", -1.0)
             ]
 
         active.sort(key=lambda ln: ln.show_from)

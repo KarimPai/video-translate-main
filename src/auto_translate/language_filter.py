@@ -6,6 +6,7 @@ from Japanese-forced transcripts; that text is unreliable for code-switching.
 An uncertain result is passed through to protect Japanese dialogue.
 """
 import logging
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -38,7 +39,7 @@ class LanguageFilter:
         import onnxruntime as ort
 
         self.cfg = cfg
-        self.disabled = False
+        self.retry_at = 0.0
         log.info(
             "Initializing CPU-only VoxLingua107 language filter (first run "
             "downloads a ~27 MB INT8 ONNX model and its language labels)"
@@ -85,7 +86,7 @@ class LanguageFilter:
         )
 
     def classify(self, audio: np.ndarray) -> LanguageDecision:
-        if self.disabled:
+        if time.monotonic() < self.retry_at:
             return LanguageDecision("unknown", 0., 0., False, "unavailable")
         samples = len(audio)
         duration = samples / SAMPLE_RATE
@@ -108,9 +109,9 @@ class LanguageFilter:
         try:
             predicted = [self._predict(clip) for clip in windows]
         except Exception as exc:
-            self.disabled = True
+            self.retry_at = time.monotonic() + 5.0
             log.warning(
-                "Language filter disabled after CPU inference error; "
+                "Language filter retry in 5s after CPU inference error; "
                 "preserving original Japanese pipeline: %s", exc,
             )
             return LanguageDecision("unknown", 0., 0., False, "inference_error")

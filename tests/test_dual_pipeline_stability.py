@@ -200,7 +200,6 @@ class AsrComparisonTests(unittest.TestCase):
         primary = Mock()
         primary.transcribe.return_value = "渡辺、そこにいるの？"
         dual = Mock()
-        dual.preflight_language.return_value = None
         dual.select_segment.return_value = "渡辺、そこにいるの？"
         caption = Mock()
         caption.match.return_value = CaptionMatch(
@@ -220,7 +219,6 @@ class AsrComparisonTests(unittest.TestCase):
         primary = Mock()
         primary.transcribe.return_value = "渡辺、行こう"
         dual = Mock()
-        dual.preflight_language.return_value = None
         dual.select_segment.return_value = "渡辺、行こう"
         input_q, output_q = queue.Queue(), queue.Queue()
         input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32),
@@ -236,7 +234,6 @@ class AsrComparisonTests(unittest.TestCase):
         primary = Mock()
         primary.transcribe.return_value = "渡辺さん"
         dual = Mock()
-        dual.preflight_language.return_value = None
         dual.select_segment.return_value = "渡辺さん"
         captions = Mock()
         captions.match.return_value = CaptionMatch(

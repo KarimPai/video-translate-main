@@ -310,7 +310,13 @@ def main() -> None:
     if use_mpv:
         from .output.mpv import MpvOutput
         try:
-            player = MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache)
+            try:
+                player = MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache)
+            except (RuntimeError, OSError) as exc:
+                if not cfg.mpv.rtx_vsr:
+                    raise
+                log.warning("VSR player startup failed (%s); retrying standard MPV once", exc)
+                player = MpvOutput(replace(cfg.mpv, rtx_vsr=False), ingest, stop, subtitle_cache=subtitle_cache)
             outputs.append(player)
             dual.playback_position = player.playback_position
             if args.gui_control:

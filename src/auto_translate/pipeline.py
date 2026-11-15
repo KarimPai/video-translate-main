@@ -194,8 +194,7 @@ def run_asr(
                                       lambda: (in_q.qsize() > (1 if live else 5)
                                                or out_q.qsize() > (1 if live else 5)), get_generation,
                                       getattr(asr, "last_stop", None),
-                                      primary_elapsed_s,
-                                      None)
+                                      primary_elapsed_s)
                   if dual is not None else None)
         original_haas = text
         if choice is not None:
@@ -241,7 +240,7 @@ def run_asr(
 
         if (
             choice is None and not text and caption_match is not None
-            and caption_match.reliable
+            and caption_match.reliable and caption_match.creator_uploaded
             and is_usable_transcript(caption_match.text)
         ):
             text = caption_match.text
@@ -270,7 +269,7 @@ def run_asr(
         corrected = correct_asr_name(
             text,
             vod_title=vod_title,
-            caption=caption_match.text if caption_match else "",
+            caption=caption_match.text if caption_match and caption_match.reliable else "",
         )
         if corrected != text:
             log.info("Watame ASR name correction: %s -> %s", text, corrected)

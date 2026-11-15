@@ -64,12 +64,11 @@ class GuiRunnerTests(unittest.TestCase):
                 480, 24680, rtx_vsr=False, frozen=True,
             )
             self.assertIn("--no-rtx-vsr", off_args)
-            for unavailable in (360, 720, 1080):
-                with self.assertRaisesRegex(ValueError, "480p"):
-                    build_backend_command(
-                        root, "https://www.youtube.com/watch?v=jd7Bp0prwiI",
-                        unavailable, 24680, rtx_vsr=True, frozen=True,
-                    )
+            for quality in (360, 480, 720, 1080):
+                _, args_on = build_backend_command(root, "https://youtu.be/jd7Bp0prwiI",
+                                                   quality, 24680, rtx_vsr=True, frozen=True)
+                self.assertIn("--rtx-vsr", args_on)
+                self.assertEqual(args_on[args_on.index("--video-quality") + 1], str(quality))
             for flag in ("-u", "--mpv", "--no-web", "--shared-gpu-playback",
                          "--simple-terminal", "--hwdec", "--gui-control"):
                 self.assertIn(flag, args)

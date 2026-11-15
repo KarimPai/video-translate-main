@@ -43,7 +43,7 @@ def main() -> None:
                         help="embed MPV into the supplied Windows native widget handle")
     vsr_option = parser.add_mutually_exclusive_group()
     vsr_option.add_argument("--rtx-vsr", action="store_true",
-                            help="request NVIDIA RTX VSR for <=480p source video; enable High in NVIDIA App")
+                            help="request NVIDIA RTX VSR for the selected video quality; enable VSR in NVIDIA App")
     vsr_option.add_argument("--no-rtx-vsr", action="store_true",
                             help="disable RTX VSR even when enabled in config.toml")
     parser.add_argument("--diagnostics", action="store_true",

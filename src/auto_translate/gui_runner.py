@@ -68,8 +68,6 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
         raise ValueError("Unsupported video quality.")
     if not isinstance(rtx_vsr, bool):
         raise ValueError("RTX VSR selection must be a boolean.")
-    if rtx_vsr and quality != 480:
-        raise ValueError("RTX VSR is available in the GUI only at 480p.")
     if not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Embedded MPV requires a valid native window handle.")
     python = backend_python(root, frozen=frozen, executable=executable)

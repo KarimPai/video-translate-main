@@ -23,8 +23,8 @@ def parse_command(line: str) -> tuple[str, float | None] | None:
     if not isinstance(obj, dict):
         return None
     action = obj.get("action")
-    if action == "pause":
-        return ("pause", None)
+    if action in ("pause", "quit"):
+        return (action, None)
     if action not in ("seek", "seek_relative"):
         return None
     raw = obj.get("value")

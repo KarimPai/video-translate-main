@@ -31,7 +31,7 @@ from ..config import MpvConfig
 from ..windows_subprocess import hidden_console_flags
 from ..gui_control import emit_event, FULLSCREEN_MESSAGE, EXIT_FULLSCREEN_MESSAGE
 from .rtx_vsr import (
-    VSR_FILTER, VSR_LABEL, VsrPerformanceGuard,
+    vsr_filter, VSR_LABEL, VsrPerformanceGuard,
     filter_present, launch_options, source_eligible,
 )
 from ..ingest import Ingest, fmt_hms
@@ -420,6 +420,7 @@ class MpvOutput:
         self._native_seek_at: float | None = None
         self._last_live_mpv_pos: float | None = None
         self._last_live_sample_at: float | None = None
+        self._user_paused = False
         self._manually_paused = False
         self._vsr_launch_args = launch_options(cfg.rtx_vsr, cfg.hwdec, sys.platform)
         self._vsr_requested = bool(self._vsr_launch_args)
@@ -559,18 +560,18 @@ class MpvOutput:
         self._thread.start()
 
     def _enable_vsr_if_eligible(self) -> None:
-        """Add NVIDIA scaling only after MPV confirms a <=480p video source."""
+        """Add NVIDIA scaling only after MPV confirms the decoded source height."""
         video_params = self.ipc.get("video-params")
         if not source_eligible(video_params):
             log.warning(
-                "RTX VSR skipped: source height not confirmed <=480p (%r); "
+                "RTX VSR skipped: source height unavailable or outside the supported range (%r); "
                 "standard MPV scaling remains active", video_params,
             )
             self._vsr_requested = False
             return
 
         try:
-            self.ipc.command("vf", "add", VSR_FILTER)
+            self.ipc.command("vf", "add", vsr_filter(int(video_params["h"])))
             if not filter_present(self.ipc.get("vf")):
                 raise MpvError("MPV did not retain the NVIDIA video filter")
         except (MpvError, ConnectionError, OSError) as exc:
@@ -580,8 +581,8 @@ class MpvOutput:
         self._vsr_active = True
         self._vsr_next_health_at = time.monotonic() + 30.0
         log.info(
-            "RTX VSR filter requested for %sp source: 3x NVIDIA D3D11 scaling. "
-            "NVIDIA App must enable RTX VSR and set High; MPV filter acceptance "
+            "RTX VSR filter requested for %sp source: NVIDIA D3D11 scaling. "
+            "NVIDIA App must enable RTX VSR in its video settings; MPV filter acceptance "
             "alone does not confirm AI enhancement.", video_params["h"],
         )
 
@@ -680,7 +681,8 @@ class MpvOutput:
                 )
                 return
 
-        line = _Line(sub, show_from, until)
+        minimum = getattr(getattr(self, "cfg", None), "min_subtitle_duration_s", 1.2)
+        line = _Line(sub, show_from, max(until, show_from + minimum))
         with self._lock:
             self._lines.append(line)
         self._subtitle_ready.set()
@@ -1041,7 +1043,7 @@ class MpvOutput:
                     "waiting for the translation buffer"
                 )
 
-            if paused and should_unpause:
+            if paused and should_unpause and not getattr(self, "_user_paused", False):
 
                 self.ipc.command(
                     "set_property",
@@ -1059,7 +1061,7 @@ class MpvOutput:
                 )
 
             self._manually_paused = (
-                not paused and mpv_paused is True
+                (not paused or getattr(self, "_user_paused", False)) and mpv_paused is True
             )
             replay, delta = self._read_player_events()
             if replay and self._now is not None and self.ipc.get("eof-reached"):
@@ -1171,6 +1173,11 @@ class MpvOutput:
         """Accept a parsed GUI command without touching MPV from the stdin thread."""
         if not self.cfg.window_id:
             return
+        if action == "quit":
+            log.info("Authenticated GUI shutdown requested")
+            self.stop.set()
+            self._subtitle_ready.set()
+            return
         log.info("GUI player command queued: %s value=%s", action, value)
         try:
             self._gui_commands.put_nowait((action, value))
@@ -1213,7 +1220,7 @@ class MpvOutput:
             except queue.Empty:
                 break
             if action == "pause":
-                self.ipc.command("cycle", "pause")
+                self._toggle_user_pause()
                 continue
             if self.ingest.source.live:
                 log.info("GUI seek rejected: livestream")
@@ -1237,6 +1244,11 @@ class MpvOutput:
             log.info("GUI seek command: %s %+.2fs -> %.2fs", action, delta, target)
             self._jump(delta, gui=True)
 
+    def _toggle_user_pause(self):
+        self._user_paused = self.ipc.get("pause") is False
+        self.ipc.command("set_property", "pause", self._user_paused)
+        log.debug("User pause intent=%s", self._user_paused)
+
     def _read_player_events(self) -> tuple[bool, float]:
         """Consume each IPC event once, including events arriving during a seek."""
         requested = False
@@ -1253,6 +1265,9 @@ class MpvOutput:
                 ev.get("event") == "client-message"
                 and args[:1] == ["auto-translate-replay"]
             ):
+                requested = True
+            elif ev.get("event") == "client-message" and args[:1] == ["auto-translate-gui-pause"]:
+                self._toggle_user_pause()
                 requested = True
             elif getattr(getattr(self, "cfg", None), "window_id", None) and ev.get("event") == "client-message" and args[:1] == [FULLSCREEN_MESSAGE]:
                 emit_event("toggle_fullscreen")
@@ -1480,7 +1495,7 @@ class MpvOutput:
                     if sub.speech_start_s is not None else sub.start_s,
                     sub.end_s,
                 )
-                for sub in cache.active_at(now)
+                for sub in cache.active_at(now, getattr(self.cfg, "min_subtitle_duration_s", 1.2))
             ]
 
         active.sort(key=lambda ln: ln.show_from)

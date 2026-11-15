@@ -13,6 +13,8 @@ MPV video/audio stream-copy output is kept separate from audio processing.
 import functools
 import http.server
 import logging
+import os
+import shutil
 import queue
 import re
 import subprocess
@@ -184,6 +186,39 @@ def resolve_source(
 # ---- ingest ------------------------------------------------------------------------------
 
 
+def _owner_gone(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel.CloseHandle(handle)
+            return False
+        return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER for an absent PID
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, OverflowError):
+        pass
+    return False
+
+
+def _prune_abandoned_sessions(parent: Path) -> None:
+    for path in parent.glob("auto-translate-fmp4-pid*-*"):
+        match = re.fullmatch(r"auto-translate-fmp4-pid([1-9][0-9]{0,8})-[a-z0-9_]{8}", path.name)
+        if match and not path.is_symlink() and not path.is_junction() and _owner_gone(int(match[1])):
+            try:
+                shutil.rmtree(path)
+                log.info("Removed abandoned fMP4 session %s", path.name)
+            except OSError as exc:
+                log.debug("Could not prune %s: %s", path.name, exc)
+
+
 class Ingest:
     def __init__(
         self,
@@ -216,8 +251,9 @@ class Ingest:
         self._cache_temp = None
         if video_out:
             cache_parent.mkdir(parents=True, exist_ok=True)
+            _prune_abandoned_sessions(cache_parent)
             self._cache_temp = tempfile.TemporaryDirectory(
-                prefix="auto-translate-fmp4-",
+                prefix=f"auto-translate-fmp4-pid{os.getpid()}-",
                 dir=str(cache_parent),
             )
         self._cache_root = (

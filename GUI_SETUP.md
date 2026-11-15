@@ -29,20 +29,15 @@ or translation models. Installation may require internet access.
 
 ## RTX Video Super Resolution (VSR)
 
-In the quality selector, choose **480p** to enable the optional **RTX VSR
-(480p → 1440p)** checkbox. VSR is **off by default**. If enabled, the GUI
-passes `--rtx-vsr` to the existing backend; if unchecked or another quality is
-selected, it explicitly passes `--no-rtx-vsr` (also overrides a prior
-`config.toml` preference for the GUI session).
+The **RTX Video Super Resolution** checkbox is available at all four qualities.
+It defaults to off and keeps its setting when you change resolution or start another
+video in the same window. Enable RTX VSR under **System → Video** in the NVIDIA
+app and check its activity indicator during playback.
 
-The existing MPV D3D11 path requests **3× NVIDIA scaling** only if the actual
-source is confirmed at **480p or lower**. Enable NVIDIA RTX VSR and choose
-**High** in NVIDIA's video settings separately. MPV accepting the filter does
-**not prove** the NVIDIA driver applied VSR; see the **Console** tab and
-`logs/mpv.log` / `logs/run.log` for diagnostics. MPV falls back to normal
-scaling if the source or filtering prerequisites fail, without changing
-translation, seeking or live subtitle alignment. The 1440p target assumes an
-actual 480p source; fallback to lower-quality video may produce less than 1440p.
+MPV requests the NVIDIA D3D11 video processor using the actual decoded height.
+The filter targets 1440p with a maximum 3× scale. A 360p source scales to 1080p.
+Filter acceptance and playback fallback reasons appear in `logs/run.log`.
+Only the driver can confirm enhancement.
 
 ## Playback controls
 

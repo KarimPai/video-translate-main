@@ -1,7 +1,7 @@
 """Offline tests for opt-in MPV RTX VSR; NVIDIA/Windows requires live testing."""
 import unittest
 from auto_translate.output.rtx_vsr import (
-    VSR_FILTER, VsrPerformanceGuard, filter_present, launch_options,
+    vsr_filter, VsrPerformanceGuard, filter_present, launch_options,
     source_eligible,
 )
 
@@ -18,10 +18,11 @@ class RtxVsrTests(unittest.TestCase):
     def test_source_guard_and_labeled_filter(self):
         self.assertTrue(source_eligible({"h": 480}))
         self.assertTrue(source_eligible({"h": 360}))
-        self.assertFalse(source_eligible({"h": 720}))
+        self.assertTrue(source_eligible({"h": 720}))
+        self.assertTrue(source_eligible({"h": 1080}))
         self.assertFalse(source_eligible({"h": "broken"}))
         self.assertFalse(source_eligible(None))
-        self.assertIn("scale=3:scaling-mode=nvidia", VSR_FILTER)
+        self.assertIn("scale=3:scaling-mode=nvidia", vsr_filter(480))
         self.assertTrue(filter_present([{"label": "haas-rtx-vsr"}]))
         self.assertFalse(filter_present([{"label": "unrelated"}]))
 

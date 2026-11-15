@@ -44,6 +44,7 @@ def mock_player(live=False, duration=600.0):
 
 class GuiPlayerProtocolTests(unittest.TestCase):
     def test_valid_commands(self):
+        self.assertEqual(parse_command('{"action":"quit"}'), ("quit", None))
         self.assertEqual(parse_command('{"action":"seek","value":3650.5}'), ("seek", 3650.5))
         self.assertEqual(parse_command('{"action":"seek_relative","value":-10}'), ("seek_relative", -10))
         self.assertEqual(parse_command('{"action":"pause"}'), ("pause", None))
@@ -56,7 +57,6 @@ class GuiPlayerProtocolTests(unittest.TestCase):
             '{"action":"seek","value":true}',
             '{"action":"seek","value":1e300}',
             '{"action":"seek_relative","value":100000}',
-            '{"action":"quit"}',
             '{"action":"set_property","value":"fullscreen"}',
         ):
             with self.subTest(data=data):
@@ -121,7 +121,7 @@ class GuiPlayerProtocolTests(unittest.TestCase):
         with patch("auto_translate.output.mpv.emit_event") as emit:
             player._handle_gui_commands()
             emit.assert_called_once_with("seek_ack", accepted=False, target=200.0)
-        self.assertEqual(player.ipc.command.call_args.args, ("cycle", "pause"))
+        self.assertEqual(player.ipc.command.call_args.args, ("set_property", "pause", True))
         with self.assertRaises(ConnectionError):
             player._jump(20)
 
@@ -147,7 +147,7 @@ class GuiPlayerProtocolTests(unittest.TestCase):
         player.queue_gui_command("seek", 300.0)
         player.queue_gui_command("pause", None)
         self.assertFalse(player._handle_gui_commands())
-        self.assertEqual(player.ipc.calls, [("cycle", "pause")])
+        self.assertEqual(player.ipc.calls, [("set_property", "pause", True)])
 
     def test_fullscreen_mpvoverlay_key_forwards_to_gui(self):
         player = mock_player()
@@ -180,3 +180,13 @@ class GuiPlayerProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShutdownTests(unittest.TestCase):
+    def test_quit_is_immediate_even_when_scheduler_is_busy(self):
+        player = mock_player()
+        player.stop = threading.Event()
+        for _ in range(2):
+            player.queue_gui_command("quit", None)
+        self.assertTrue(player.stop.is_set())
+        self.assertTrue(player._gui_commands.empty())

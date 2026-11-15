@@ -64,14 +64,20 @@ class SessionSubtitleCache:
                 key=lambda sub: abs(sub.start_s - start_s) + abs(sub.end_s - end_s),
             )
 
-    def active_at(self, now: float) -> list[Subtitle]:
+    def active_at(self, now: float, minimum_s: float = 0.0) -> list[Subtitle]:
         """Return already translated cues that should be visible at this time."""
         with self._lock:
-            items = [
-                sub for sub in self._by_second.get(floor(now), ())
-                if (sub.speech_start_s if sub.speech_start_s is not None else sub.start_s)
-                <= now < sub.end_s
-            ]
+            minimum_s = min(10.0, max(0.0, minimum_s))
+            items = []
+            seen = set()
+            for second in range(floor(now - minimum_s), floor(now) + 1):
+                for sub in self._by_second.get(second, ()):
+                    if id(sub) in seen:
+                        continue
+                    seen.add(id(sub))
+                    onset = sub.speech_start_s if sub.speech_start_s is not None else sub.start_s
+                    if onset <= now < max(sub.end_s, onset + minimum_s):
+                        items.append(sub)
         return sorted(items, key=lambda sub: sub.start_s)
 
     def record_processed(self, start_s: float, end_s: float) -> None:

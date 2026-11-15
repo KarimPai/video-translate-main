@@ -6,7 +6,10 @@ can confirm actual RTX video enhancement. This does not touch audio or ASR.
 from dataclasses import dataclass
 
 VSR_LABEL = "@haas-rtx-vsr"
-VSR_FILTER = "@haas-rtx-vsr:d3d11vpp=scale=3:scaling-mode=nvidia"
+def vsr_filter(height: int) -> str:
+    # Keep the established 1440p target and avoid a 3240p intermediate at 1080p.
+    scale = min(3.0, 1440 / height)
+    return f"{VSR_LABEL}:d3d11vpp=scale={scale:.6g}:scaling-mode=nvidia"
 
 
 def launch_options(enabled: bool, hwdec: str, platform: str) -> list[str]:
@@ -17,14 +20,14 @@ def launch_options(enabled: bool, hwdec: str, platform: str) -> list[str]:
 
 
 def source_eligible(video_params: object) -> bool:
-    """Only apply to source frames whose height can be verified <=480p."""
+    """Only apply to source frames whose height can be verified within the supported quality range."""
     if not isinstance(video_params, dict):
         return False
     try:
         h = int(video_params.get("h", 0))
     except (ValueError, TypeError, OverflowError):
         return False
-    return 0 < h <= 480
+    return 0 < h <= 1080
 
 
 def filter_present(filters: object) -> bool:

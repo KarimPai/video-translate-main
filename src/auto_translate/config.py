@@ -277,7 +277,7 @@ class MpvConfig:
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"
-    rtx_vsr: bool = False  # optional RTX 480p NVIDIA enhancement (Windows/D3D11)
+    rtx_vsr: bool = False  # optional NVIDIA RTX enhancement (Windows/D3D11)
     window_id: int | None = None  # optional native Qt HWND for MPV embedding
     live_late_window_s: float = 7.0  # reject extremely stale spoken cues
     ytdlp_format: str = (
@@ -288,12 +288,15 @@ class MpvConfig:
     live_back_cache_mib: int = 1024
     en_size: int = 28
     ja_size: int = 0
+    min_subtitle_duration_s: float = 1.2
     max_subtitle_rows: int = 3
 
     def __post_init__(self):
         for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):
             if not math.isfinite(value) or value < 0:
                 raise ValueError("MPV timing values must be finite and nonnegative")
+        if not 0 <= self.min_subtitle_duration_s <= 10:
+            raise ValueError("MPV minimum subtitle duration must be between 0 and 10 seconds")
         if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
             raise ValueError("Invalid MPV live cache size")
 

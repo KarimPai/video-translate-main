@@ -200,16 +200,14 @@ class VideoTranslateWindow(QMainWindow):
             self.quality.addItem(f"{value}p", value)
         self.quality.setCurrentIndex(self.quality.findData(720))
         settings_row.addWidget(self.quality)
-        self.vsr_checkbox = QCheckBox("RTX VSR (480p → 1440p)")
+        self.vsr_checkbox = QCheckBox("RTX Video Super Resolution")
         self.vsr_checkbox.setChecked(False)
         self.vsr_checkbox.setToolTip(
             "Optional NVIDIA RTX Video Super Resolution. Requires an eligible "
-            "480p source, compatible MPV/D3D11, and RTX VSR enabled in "
-            "NVIDIA settings. 3× scaling is requested, not guaranteed."
+            "source, compatible MPV/D3D11, and RTX VSR enabled in "
+            "NVIDIA settings. Check activation in the NVIDIA app."
         )
         settings_row.addWidget(self.vsr_checkbox)
-        self.quality.currentIndexChanged.connect(self._update_vsr_control)
-        self._update_vsr_control()
         settings_row.addStretch(1)
         self.start_button = QPushButton("Start Translation")
         self.start_button.setObjectName("start")
@@ -283,20 +281,6 @@ class VideoTranslateWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_translation)
         footer.addWidget(self.stop_button)
         layout.addWidget(self.footer_panel)
-
-    def _update_vsr_control(self):
-        eligible = self.quality.currentData() == 480
-        self.vsr_checkbox.setEnabled(eligible)
-        if not eligible:
-            self.vsr_checkbox.setToolTip(
-                "Select 480p to enable optional NVIDIA RTX VSR (3× scaling)."
-            )
-        else:
-            self.vsr_checkbox.setToolTip(
-                "Request 480p → 1440p NVIDIA VSR. Requires compatible D3D11 "
-                "hardware decoding and RTX VSR enabled in NVIDIA settings. "
-                "The backend verifies the actual source and falls back safely."
-            )
 
     def paste_url(self):
         text = QApplication.clipboard().text().strip()
@@ -427,7 +411,7 @@ class VideoTranslateWindow(QMainWindow):
             command, args = build_backend_command(
                 self.root, url, int(self.quality.currentData()), hwnd,
                 frozen=getattr(sys, "frozen", False),
-                rtx_vsr=bool(self.vsr_checkbox.isEnabled() and self.vsr_checkbox.isChecked()),
+                rtx_vsr=self.vsr_checkbox.isChecked(),
             )
             env = subprocess_environment(self.root)
             qenv = QProcessEnvironment()
@@ -460,7 +444,7 @@ class VideoTranslateWindow(QMainWindow):
         self._write_console("Starting translation backend...\n")
         if "--rtx-vsr" in args:
             self._write_console(
-                "RTX VSR requested: 480p source, 3x NVIDIA D3D11 scaling. "
+                "RTX VSR requested: NVIDIA D3D11 scaling. "
                 "Actual activation requires MPV filter support and RTX VSR "
                 "enabled in NVIDIA settings.\n"
             )
@@ -534,6 +518,8 @@ class VideoTranslateWindow(QMainWindow):
         if action == "control_ready":
             if self._control_socket is not None:
                 self._control_ready = True
+                if self._stopping:
+                    self._send_player_command("quit")
                 self._update_seek_buttons()
                 if self._ready:
                     self.status.setText("Running.")
@@ -594,7 +580,7 @@ class VideoTranslateWindow(QMainWindow):
                         )
 
     def _send_player_command(self, action: str, value: float | None = None) -> bool:
-        if not (self._ready and self._control_ready and self._control_socket is not None):
+        if not ((self._ready or action == "quit") and self._control_ready and self._control_socket is not None):
             return False
         message = {"action": action}
         if value is not None:
@@ -660,6 +646,15 @@ class VideoTranslateWindow(QMainWindow):
             self.video_controls.hide()
 
     def toggle_fullscreen(self):
+        if getattr(self, "_fullscreen_transition", False):
+            return
+        self._fullscreen_transition = True
+        try:
+            self._toggle_fullscreen()
+        finally:
+            self._fullscreen_transition = False
+
+    def _toggle_fullscreen(self):
         if not self._ready:
             return
         if self._fullscreen:
@@ -717,11 +712,13 @@ class VideoTranslateWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.status.setText("Stopping translation and player...")
         if self.process.state() != QProcess.ProcessState.NotRunning:
-            self.process.terminate()
-            QTimer.singleShot(4000, self._kill_if_still_running)
+            process = self.process
+            if not self._send_player_command("quit"):
+                self._write_console("Backend control unavailable during shutdown.\n")
+            QTimer.singleShot(8000, lambda: self._kill_if_still_running(process))
 
-    def _kill_if_still_running(self):
-        if self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning:
+    def _kill_if_still_running(self, process):
+        if self.process is process and process.state() != QProcess.ProcessState.NotRunning:
             self._write_console("Graceful shutdown timed out; terminating backend.\n")
             self.process.kill()
 
@@ -764,13 +761,16 @@ class VideoTranslateWindow(QMainWindow):
         self._ready = False
         self._stopping = False
         self.status.setText(reason)
+        if self._closing:
+            QTimer.singleShot(0, self.close)
 
     def closeEvent(self, event: QCloseEvent):
-        self._closing = True
-        self._close_control()
         if self.process is not None:
-            self.process.kill()
-            self.process.waitForFinished(3000)
+            self._closing = True
+            self.stop_translation()
+            event.ignore()
+            return
+        self._close_control()
         if self._log_stream:
             self._log_stream.close()
             self._log_stream = None

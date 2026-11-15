@@ -69,3 +69,17 @@ class EnglishLiveSubtitleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MinimumDurationTests(unittest.TestCase):
+    def test_presentation_extends_short_cues_without_changing_cached_end(self):
+        from auto_translate.session_cache import SessionSubtitleCache
+        player = EnglishLiveSubtitleTests.player()
+        sub = Subtitle(1.0, 1.1, "え", "Huh?")
+        player.show(sub)
+        self.assertEqual(player._lines[0].show_until, 2.2)
+        cache = SessionSubtitleCache()
+        cache.add(sub)
+        self.assertEqual(cache.active_at(2.1, 1.2), [sub])
+        self.assertEqual(cache.active_at(2.2, 1.2), [])
+        self.assertEqual(sub.end_s, 1.1)

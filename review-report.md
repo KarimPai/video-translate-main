@@ -53,3 +53,9 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 The historical Windows run was reported as exit 1. Its exact command and complete stdout/stderr were unavailable. The clean baseline rerun did not reproduce it. The original statement that all 230 passed cannot establish the historical process status. Windows CI now runs full discovery as a separate step so its output and exit status can be inspected independently of the expected nonzero batch-preflight checks.
 
 The three skips in updated Linux discovery were native Windows Job Object cleanup, retained Windows process handles, and Qt shutdown (PySide6 unavailable). Compilation of src, tests and scripts and the Git whitespace check succeeded. Offline tests cover player control routing, seek generations, pause intent, live clock mapping, subtitle timing and VSR quality selection. Native Windows playback, visible fullscreen transitions, RTX enhancement, model quality on live Japanese audio and real GPU performance were not measured in this run.
+
+## GitHub Actions verification
+
+At implementation commit `416307d`, both Ubuntu and Windows passed the [offline quality workflow](https://github.com/KarimPai/video-translate-main/actions/runs/43707034532), including full unittest discovery on Windows and the native process-handle checks. The [Windows GUI workflow](https://github.com/KarimPai/video-translate-main/actions/runs/43707034308) also passed its offscreen startup, control-state, seekbar, fullscreen, windowless subprocess and launcher checks. These checks do not exercise video decoding or RTX VSR on physical hardware.
+
+The quality and Windows GUI workflows at baseline `ecacb34` both recorded success as well. Neither workflow contains the missing output from the historical local test process.

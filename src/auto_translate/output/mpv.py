@@ -374,6 +374,33 @@ def _mpv_media_url(ingest: Ingest) -> str:
     return ingest.source.location
 
 
+@dataclass
+class _LivePlaybackHealth:
+    last_position: float | None = None
+    progress_at: float | None = None
+    healthy_since: float | None = None
+
+    def sample(self, position, paused, now):
+        if paused:
+            self.progress_at = self.healthy_since = None
+            self.last_position = None
+            return None
+        if self.progress_at is None:
+            self.progress_at = now
+        if position is not None and position != self.last_position:
+            if (self.last_position is None or self.healthy_since is None
+                    or now - self.progress_at > 5 or position < self.last_position
+                    or position - self.last_position > now - self.progress_at + 5):
+                self.healthy_since = now
+            self.last_position = position
+            self.progress_at = now
+            if now - self.healthy_since >= 60:
+                return "healthy"
+        if now - self.progress_at >= 60:
+            return "stalled"
+        return None
+
+
 class MpvOutput:
     # Minimum translated lead before starting/resuming after a seek.
     PAUSE_LEAD_SECONDS = 5.0
@@ -684,6 +711,8 @@ class MpvOutput:
         minimum = getattr(getattr(self, "cfg", None), "min_subtitle_duration_s", 1.2)
         line = _Line(sub, show_from, max(until, show_from + minimum))
         with self._lock:
+            if sub.generation != getattr(self.ingest, "generation", sub.generation):
+                return
             self._lines.append(line)
         self._subtitle_ready.set()
 
@@ -1009,7 +1038,7 @@ class MpvOutput:
             return
 
         paused = True
-        healthy_position = None
+        live_health = _LivePlaybackHealth()
         vod_wait_until = time.monotonic() + lead
 
         while not self.stop.is_set():
@@ -1073,13 +1102,17 @@ class MpvOutput:
             pos = self.ipc.get("time-pos")
             if not self.ingest.source.live and self._settle_seek(pos):
                 return
+            if self.ingest.source.live and self.ingest.video_out:
+                health = live_health.sample(pos, paused or mpv_paused is True, time.monotonic())
+                if health == "stalled":
+                    log.error("Live MPV clock stalled for 60s; restarting shared session")
+                    self._recover_video_stream()
+                    return
+                if health == "healthy" and self._video_retries:
+                    log.info("Live playback healthy for 60s; resetting recovery attempts")
+                    self._video_retries = 0
             if pos is not None:
                 if self.ingest.source.live:
-                    if self._video_retries and not mpv_paused:
-                        if healthy_position is None or not 0 <= float(pos) - healthy_position <= 65:
-                            healthy_position = float(pos)
-                        elif float(pos) - healthy_position >= 60:
-                            self._video_retries = 0
                     self._sample_live_clock(float(pos), time.monotonic())
                 if self._mpv_anchor is None:
                     self._mpv_anchor = float(pos)
@@ -1137,7 +1170,8 @@ class MpvOutput:
     def _recover_video_stream(self) -> bool:
         """Restart the shared fMP4 cache and audio reader at the current source position."""
         if self._video_retries >= 3:
-            log.error("fMP4 cache recovery stopped after 3 attempts")
+            self.scheduler_failure = RuntimeError("fMP4 cache recovery stopped after 3 attempts")
+            log.error("%s", self.scheduler_failure)
             self.stop.set()
             return False
 

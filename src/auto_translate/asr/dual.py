@@ -76,7 +76,7 @@ class DualASR:
                     reason, delay, self.failures)
 
     def _retire_worker(self, worker, reason):
-        """Retire only the failed/cancelled Whisper process, not the selector."""
+        """Retire only the failed Whisper process, not the selector."""
         with self.lock:
             if self.closed or self.worker is not worker:
                 return

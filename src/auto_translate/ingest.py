@@ -1262,7 +1262,8 @@ class Ingest:
                 if not self._wait_for_vod_lead(reader_sample, generation):
                     break
 
-                read_deadline = time.monotonic() + 60.0
+                if self.source.live and self.video_out:
+                    read_deadline = time.monotonic() + 60.0
                 if worker:
                     data = stdout.read(SEPARATION_READ_FRAMES * 4)
                 else:

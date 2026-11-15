@@ -168,10 +168,6 @@ class WhisperTurboASR:
         self.last_stop = response.get("stop", "unknown")
         return response["text"]
 
-    def cancel(self):
-        """Force-stop a blocked IPC send/decode from a separate watchdog thread."""
-        self.close()
-
     def close(self):
         with self._lock:
             process, connection = self.process, self.connection

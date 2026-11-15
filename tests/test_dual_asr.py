@@ -359,3 +359,39 @@ class SelectorPlacementTests(unittest.TestCase):
         dual._start_selector(99)
         self.assertIs(dual.selector, cpu)
         self.assertEqual(constructor.call_args.args, (0,))
+
+
+def _fake_whisper_pipe(connection, cancelled):
+    for i in range(4):
+        command = connection.recv()
+        if i < 3:
+            cancelled.set()
+        connection.send({"type": "transcript", "id": command["id"], "text": str(i)})
+    connection.recv()
+
+
+class WorkerProcessTests(unittest.TestCase):
+    def test_repeated_cancellations_preserve_subprocess_pid(self):
+        import multiprocessing
+        from auto_translate.asr.whisper_turbo import WhisperTurboASR
+        ctx = multiprocessing.get_context("spawn")
+        parent, child = ctx.Pipe()
+        cancel = ctx.Event()
+        adapter = object.__new__(WhisperTurboASR)
+        adapter._request_id = 0
+        adapter._lock = threading.Lock()
+        adapter.connection = parent
+        adapter.process = ctx.Process(target=_fake_whisper_pipe, args=(child, cancel), daemon=True)
+        adapter.process.start()
+        child.close()
+        pid = adapter.process.pid
+        try:
+            for _ in range(3):
+                cancel.clear()
+                with self.assertRaises(CancelledError):
+                    adapter.transcribe(np.ones(100), timeout=10, cancel_event=cancel)
+                self.assertEqual(adapter.process.pid, pid)
+                self.assertTrue(adapter.process.is_alive())
+            self.assertEqual(adapter.transcribe(np.ones(100)), "3")
+        finally:
+            adapter.close()

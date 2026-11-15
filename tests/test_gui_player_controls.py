@@ -190,3 +190,26 @@ class ShutdownTests(unittest.TestCase):
             player.queue_gui_command("quit", None)
         self.assertTrue(player.stop.is_set())
         self.assertTrue(player._gui_commands.empty())
+
+
+class PauseIntentTests(unittest.TestCase):
+    def test_automatic_resume_respects_intent_on_each_new_session(self):
+        for manual in (True, False):
+            player = mock_player()
+            player._user_paused = manual
+            player._lock = threading.Lock()
+            player._lines = []
+            player._direct_video_loaded = True
+            player._session_start = 10.
+            player.ingest.generation = 1
+            player.ingest.source.timeline = None
+            player.ingest.video_failed = threading.Event()
+            player.ingest.set_playback_position = Mock()
+            player.stop = threading.Event()
+            player._translation_ready = lambda: True
+            player.ipc.get = lambda name: True if name == "pause" else None
+            player._settle_seek = Mock(return_value=False)
+            player._emit_gui_status = Mock()
+            player._check_vsr_health = player.stop.set
+            player._play_session(False)
+            self.assertEqual(("set_property", "pause", False) in player.ipc.calls, not manual)

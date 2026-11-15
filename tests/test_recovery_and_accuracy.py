@@ -91,3 +91,39 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertTrue(live.exists())
             self.assertTrue(unknown.exists())
+
+
+class PlayerHealthTests(unittest.TestCase):
+    def test_stall_health_reset_and_pause(self):
+        from auto_translate.output.mpv import _LivePlaybackHealth
+        health = _LivePlaybackHealth()
+        for tick in range(60):
+            self.assertIsNone(health.sample(tick, False, tick))
+        self.assertEqual(health.sample(60, False, 60), "healthy")
+        self.assertEqual(health.sample(60, False, 120), "stalled")
+        self.assertIsNone(health.sample(60, True, 300))
+        self.assertIsNone(health.sample(60, False, 400))
+        self.assertIsNone(health.sample(50000, False, 401))
+        self.assertEqual(health.sample(None, False, 461), "stalled")
+
+
+class GuiShutdownTests(unittest.TestCase):
+    def test_stop_requests_quit_once_and_kills_only_original_process(self):
+        try:
+            from auto_translate.gui import VideoTranslateWindow, QProcess
+        except ImportError:
+            self.skipTest("optional Qt frontend unavailable")
+        window = Mock(_stopping=False)
+        old = window.process
+        old.state.return_value = QProcess.ProcessState.Running
+        with patch("auto_translate.gui.QTimer.singleShot") as timer:
+            VideoTranslateWindow.stop_translation(window)
+            VideoTranslateWindow.stop_translation(window)
+            window._send_player_command.assert_called_once_with("quit")
+            timer.assert_called_once()
+            old.kill.assert_not_called()
+            VideoTranslateWindow._kill_if_still_running(window, old)
+            old.kill.assert_called_once()
+            window.process = Mock()
+            VideoTranslateWindow._kill_if_still_running(window, old)
+            window.process.kill.assert_not_called()

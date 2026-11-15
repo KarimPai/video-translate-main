@@ -50,6 +50,10 @@ def rejection_reason(text: str) -> str | None:
     if re.fullmatch(r"(?:\[|\(|【)\s*(?:笑い声|笑い|爆笑|laughter|laughs)\s*(?:\]|\)|】)", label):
         return "laughter_only"
 
+    # A single spoken 草 may be the noun “grass”, including a one-word answer.
+    if compact == "草":
+        return None
+
     # Haas may spell the same laugh in hiragana or katakana.
     laugh_kana = compact.translate(KATA_TO_HIRA)
     without_laughter = _LAUGHTER.sub("", laugh_kana)

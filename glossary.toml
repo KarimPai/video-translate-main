@@ -41,7 +41,7 @@
 "古参" = "long-time fan"
 "同接" = "concurrent viewers"
 "登録者" = "subscribers"
-"草" = "LOL"
+# 草 can mean literal grass or a laughter reaction; resolve it in context.
 "ｗｗｗ" = "LOL"
 "なんでやねん" = "what the heck"
 "助かる" = "blessed"

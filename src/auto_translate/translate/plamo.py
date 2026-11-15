@@ -107,6 +107,11 @@ def _needs_fragment_context(ja: str) -> bool:
     )
 
 
+# Limit the extra instruction to the ambiguous word, excluding compounds
+# such as 草原 and sound-alikes such as くさい or 面倒くさい.
+_KUSA = re.compile(r"(?<![一-鿿])草(?![一-鿿])|(?:くさ|クサ)(?=$|[。、！？!?\s]|[をがはにもの])")
+
+
 def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previous_ja: str = "") -> list[tuple[str, str]]:
     """Longest-first, non-overlapping current-source matches (never future guesses)."""
     scene = (
@@ -401,7 +406,7 @@ class PlamoTranslator:
                 english = canonicalize_english_names(ja, english, self.vod_title)
             return preserve_spoken_names(ja, english, names)
 
-        if getattr(self, "memory_lines", 0):
+        if getattr(self, "memory_lines", 0) and not _KUSA.search(ja):
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
@@ -528,6 +533,12 @@ class PlamoTranslator:
                 "\n" + memory if memory else ""
             ) + source_hint + fragment_hint,
         }
+        if _KUSA.search(ja):
+            options["context"] += (
+                " Resolve kusa from the current Japanese and preceding dialogue. "
+                "Use grass or weeds for vegetation, mowing, gathering or feeding animals. "
+                "Use lol only when kusa expresses amusement."
+            )
         hits = names if names is not None else _current_glossary_matches(ja, self.vod_title, self.glossary)
         if any(self.glossary.nicknames.get(source) == target for source, target in hits):
             options["context"] += (" Keep each spoken nickname at its supplied length, "

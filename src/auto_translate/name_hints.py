@@ -6,7 +6,6 @@ general Japanese or reconstruct words absent from the audio.
 import re
 
 _HOLO = re.compile(r"ホロ|holo", re.I)
-_HOLOGTA = re.compile(r"ホロ(?:ライブ)?GTA|ホロスサントス|holo.?gta", re.I)
 _HAACHAMA_JA = ("はあちゃま", "はぁちゃま", "はーちゃま", "はやちゃま", "ハーチャマ")
 _LAPLUS_JA = ("ラプラス", "らぷらす")
 
@@ -36,15 +35,6 @@ def matsuri_matches(ja, title, previous):
         target = ("Natsuiro Matsuri" if full else "Matsuri") + _HONORIFIC.get(suffix, "")
         matches.append((mention[0], target))
     return matches
-
-
-def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None:
-    """Legacy compatibility hook. Never seed Whisper with unspoken names.
-
-    Existing configs can still contain whisper_name_hints; the dual-ASR
-    pipeline no longer calls this hook or supplies an initial name prompt.
-    """
-    return None
 
 
 # Only substitute an existing English mention. Family membership is also

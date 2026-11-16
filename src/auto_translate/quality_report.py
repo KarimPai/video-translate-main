@@ -181,7 +181,7 @@ def _timeout(row):
 
 def build_report(rows: list[dict], *, source: str | None = None,
                  hardware_label: str | None = None, use_jiwer: bool = False) -> dict:
-    """Summarize aligned rows. Unit-bearing fields are documented in PERFORMANCE.md."""
+    """Summarize aligned rows; metric units are documented in docs/performance.md."""
     groups = defaultdict(list)
     for row in rows:
         for tag in _tags(row):

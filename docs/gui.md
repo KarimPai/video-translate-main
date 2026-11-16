@@ -8,7 +8,7 @@ are unchanged.
 
 - **Start GUI.vbs** in the project root is the primary silent launcher.
 - **VideoTranslate.exe** in `dist\VideoTranslate\` is an optional packaged
-  launcher; only present after downloading the GitHub Actions build artifact.
+  launcher; build it with `scripts/Update-GUI.ps1` or install the full GitHub Actions artifact.
 - **Setup.bat** is for initial runtime installation or repairing dependencies.
 - **Start translate.bat** remains an optional command-line fallback for
   troubleshooting and comparisons.
@@ -70,10 +70,6 @@ and the Windows `CREATE_NO_WINDOW` flag. It still renders inside the Qt
 player and accepts IPC seeking/subtitle commands. The classic CLI is
 unchanged; logs remain in `logs/run.log`, `logs/mpv.log`, and other files.
 
-**No EXE download is needed for this particular console fix.** It changes
-the Python MPV backend. Update the existing Git branch, then reopen the
-already-installed `dist/VideoTranslate/VideoTranslate.exe`.
-
 ## Updating the GUI locally
 
 Close VideoTranslate, then run from the project folder in PowerShell:
@@ -117,10 +113,9 @@ llama.cpp, shared model caches, and `config.toml`.
 
 ## Windows session cleanup and verification
 
-Pull the matching backend source and install the full frontend package from the
-same commit. This release intentionally publishes the full package only. The
-old runtime lacks the native ctypes extension and libffi used for Job Objects.
-Use EXE-only updates only if a future workflow explicitly verifies runtime compatibility.
+Keep the backend source and frontend build at the same commit using the verified
+updater. Artifact installations require the full frontend package, including its
+native ctypes/libffi and Qt runtime files.
 
 Each Start writes a fresh 32-character session ID to `logs/gui-lifecycle.log`
 and `logs/run.log`. The frontend job covers the first launcher instruction.

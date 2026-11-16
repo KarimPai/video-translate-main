@@ -1,64 +1,81 @@
-"""Regression tests for live HLS playlist timestamp jumps."""
-
+"""Exercise the scheduler's real observation path without a display or GPU."""
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
-from auto_translate.output.mpv import MpvOutput
+from auto_translate.live_clock import Discontinuity, LiveMediaClock
+from auto_translate.output.mpv import MpvOutput, _live_buffer_seconds
 
 
 class LiveMpvClockTests(unittest.TestCase):
-    def make_output(self, *, live=True):
-        # Avoid launching MPV; exercise the same helpers used by its scheduler.
-        output = MpvOutput.__new__(MpvOutput)
-        output.ingest = SimpleNamespace(
-            source=SimpleNamespace(live=live),
-        )
-        output._clock_source_anchor = 0.0
-        output._mpv_anchor = None
-        output._now = None
-        output._last_live_mpv_pos = None
-        output._last_live_sample_at = None
-        output._uses_original_timeline = False
-        return output
+    def setUp(self):
+        self.player = MpvOutput.__new__(MpvOutput)
+        self.player._live_clock = LiveMediaClock(3)
+        self.player._live_diagnostic_at = float("inf")
+        self.player.ingest = SimpleNamespace(live_audio_span=(15260, 15360))
+        self.player.ipc = Mock()
 
-    def sample(self, output, mpv_pos, sampled_at):
-        output._sample_live_clock(mpv_pos, sampled_at)
-        # Mirrors the scheduler's first-sample anchor assignment.
-        if output._mpv_anchor is None:
-            output._mpv_anchor = float(mpv_pos)
-        output._now = output._source_time_from_mpv(float(mpv_pos))
-        return output._now
+    def sample(self, pos, at, audio=None):
+        self.player.ipc.get.return_value = pos if audio is None else audio
+        return self.player._sample_live_clock(pos, at)
 
-    def test_live_starts_at_large_hls_media_timestamp(self):
-        output = self.make_output()
-        self.assertAlmostEqual(self.sample(output, 15260.0, 100.0), 0.0)
-        self.assertAlmostEqual(self.sample(output, 15261.0, 101.0), 1.0)
+    def test_different_reader_opens_and_placeholder(self):
+        self.assertIsNone(self.sample(0, 1))
+        self.assertEqual(self.sample(15267, 3), 15267)
+        self.assertEqual(self.sample(15268, 4), 15268)
 
-    def test_live_startup_zero_to_multi_hour_timestamp_reanchors(self):
-        output = self.make_output()
-        self.assertAlmostEqual(self.sample(output, 0.0, 100.0), 0.0)
-        self.assertAlmostEqual(self.sample(output, 15260.0, 100.1), 0.0)
-        self.assertAlmostEqual(self.sample(output, 15261.0, 101.1), 1.0)
+    def test_zero_origin_and_unreliable_observations(self):
+        self.player.ingest.live_audio_span = (0, 3)
+        self.assertIsNone(self.sample(0, 1, 15260))
+        self.assertIsNone(self.sample(float("nan"), 2))
+        self.assertEqual(self.sample(0, 3), 0)
 
-    def test_normal_progress_after_long_scheduler_gap_does_not_reanchor(self):
-        output = self.make_output()
-        self.sample(output, 15260.0, 100.0)
-        self.assertAlmostEqual(self.sample(output, 15290.0, 130.0), 30.0)
-        self.assertAlmostEqual(output._mpv_anchor, 15260.0)
+    def test_startup_reserve_uses_available_media(self):
+        from auto_translate.config import MpvConfig
+        target = MpvConfig().delay_s
+        self.assertEqual(target, 20)
+        for pos in (0, None, 808):
+            self.assertLess(_live_buffer_seconds((808, 812.5), pos), target)
+            self.assertEqual(_live_buffer_seconds((808, 828), pos), target)
+        self.assertEqual(_live_buffer_seconds((808, 830), 825), 5)
+        self.assertEqual(_live_buffer_seconds(None, 808), 0)
 
-    def test_live_hls_timestamp_reset_preserves_subtitle_clock(self):
-        output = self.make_output()
-        self.sample(output, 15260.0, 100.0)
-        self.sample(output, 15269.0, 109.0)
-        self.assertAlmostEqual(self.sample(output, 0.0, 109.1), 9.0)
-        self.assertAlmostEqual(self.sample(output, 1.0, 110.1), 10.0)
+    def test_pause_and_long_poll_gap(self):
+        self.sample(15261, 1)
+        self.assertEqual(self.sample(15261, 400), 15261)
+        self.assertEqual(self.sample(15321, 460), 15321)
 
-    def test_original_vod_timeline_is_not_rebased(self):
-        output = self.make_output(live=False)
-        output._uses_original_timeline = True
-        output._mpv_anchor = 15260.0
-        self.assertAlmostEqual(output._source_time_from_mpv(15261.0), 15261.0)
+    def test_reset_or_jump_requires_a_new_epoch(self):
+        self.sample(15261, 1)
+        for target in (0, 15280):
+            with self.assertRaises(Discontinuity):
+                self.sample(target, 2)
 
+    def test_six_hour_coordinate(self):
+        self.player.ingest.live_audio_span = (15260, 15260 + 21601)
+        for delta in range(0, 21601, 60):
+            self.assertEqual(self.sample(15260 + delta, delta), 15260 + delta)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_shared_recovery_clears_and_reloads_and_stops_after_three(self):
+        import threading
+        player = self.player
+        player.stop = threading.Event()
+        player._lock = threading.Lock()
+        player._lines = [object()]
+        player._shown = "stale"
+        player._video_retries = 0
+        player._now = 15260
+        player.ingest = Mock()
+        player.ingest.source.start_s = 0
+        player.ingest.source.live = True
+        player.reset_buffer = Mock()
+        for _ in range(3):
+            player._direct_video_loaded = True
+            self.assertTrue(player._recover_video_stream())
+            self.assertFalse(player._direct_video_loaded)
+        self.assertFalse(player._recover_video_stream())
+        self.assertTrue(player.stop.is_set())
+        self.assertEqual(player.ingest.request_restart.call_count, 3)
+        player.ingest.request_restart.assert_called_with(0)
+        self.assertEqual(player._lines, [])
+        self.assertEqual(player._shown, "")

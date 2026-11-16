@@ -213,8 +213,10 @@ class Segmenter:
             return []
         self._read_at = chunk.read_at
         if self._next_frame_sample == 0:
-            self._next_frame_sample = chunk.start_sample  # VOD may start mid-video
+            self._next_frame_sample = chunk.start_sample
             self._idle_start = chunk.start_sample
+        if chunk.timestamped:
+            self._next_frame_sample = chunk.start_sample - len(self._leftover)
         audio = np.concatenate([self._leftover, chunk.pcm])
         whole = len(audio) // FRAME * FRAME
         self._leftover = audio[whole:]

@@ -70,7 +70,7 @@ class VadConfig:
     prob_smooth_frames: int = 5
     max_utterance_s: float = 14.0  # VOD soft cap: more sentence context
     max_split_extension_s: float = 2.0  # VOD hard cap: 16s
-    live_max_utterance_s: float = 7.0  # fits around 9s live buffer
+    live_max_utterance_s: float = 7.0
     live_max_split_extension_s: float = 1.0  # live hard cap: 8s
     # Natural-pause splitting begins before the long-form hard cap.
     adaptive_split: bool = True
@@ -137,7 +137,7 @@ class MpvConfig:
 
     enabled: bool = False
     path: str = ""
-    delay_s: float = 9.0
+    delay_s: float = 20.0
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"

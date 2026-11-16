@@ -72,7 +72,7 @@ fallback_s = 0.0
 - **Speech sensitivity:** 0.45→0.38 threshold and 100→70 ms onset gate aim to recover quieter words and rapid reactions; the 200 ms sustained-speech requirement remains, with the existing high-confidence short-reply exception.
 - **Sentence completeness:** 200→320 ms speech padding, 500→550 ms end silence, and a longer quiet-point split search aim to avoid clipping beginnings/endings and splitting sentences early.
 - **VOD:** 14 s soft utterance cap / 16 s hard cap instead of 11 s / 12 s. Haas has full-context attention, but very long chunks can still lose words, so the hard cap remains bounded.
-- **Live:** 7 s soft / 8 s hard cap for the existing 9-second playback delay. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
+- **Live:** 7 s soft / 8 s hard cap for livestreams. This is a timing safeguard, not a claim that shorter segments recognize better; live needs comparative testing.
 - **Anti-hallucination:** VAD-negative fallback probing stays **off**. Avoided enabling speculative extra decoding on music, and kept translation repeat/prompt-leak rejection.
 - **Overrides:** Your local `config.toml` continues to override these defaults. Check effective values in `logs\\run.log` under `FireRedVAD accuracy-first`.
 
@@ -133,7 +133,7 @@ The correction vocabulary is intentionally small to minimize false positive name
 - Worker failures are reported to the main runner instead of silently hanging. The queue watchdog excludes intentional VOD pause and audio read-ahead parking.
 - Session-only subtitles and processed-region caching are preserved, including reuse after backward seeking.
 - MPV safe hardware decode and the existing native OSC seekbar are preserved.
-- For live playback, the configured original delay remains **9 seconds** (not a hard subtitle timestamp offset).
+- For live playback, the default startup target is **20 seconds of buffered media**.
 
 ## Scope and limitations
 
@@ -164,3 +164,57 @@ Check `logs\run.log` for application errors and `logs\mpv.log` for player warnin
 Measure Japanese CER from aligned manually reviewed reference clips with `python scripts/benchmark_quality.py YOUR_ALIGNED_REFERENCE.csv`. The CSV columns are `reference_ja,output_ja,reference_en,output_en`. Human review of English meaning, proper names, negation and subtitle synchronization remains necessary. Do not interpret the English guard-flag count as translation accuracy.
 
 CPU-only verification: `uv run --no-sync python -m unittest discover -s tests -p "test_*.py" -v`. For full validation, test long HoloGTA VOD clips, 30+ minute live HLS playback, pausing, backward/forward seeking, and process exit on the actual Windows/Vulkan/CUDA machine before relying on the new settings.
+
+## Livestream timing and validation
+
+Use the existing configuration. The default live startup target is 20 seconds of media ahead of playback. After a cache underrun MPV targets up to 8 seconds before resuming. Override the startup target with `[mpv] delay_s` or `--delay`. The setting
+`[mpv] live_late_window_s` defaults to 7. Keep FFmpeg and its companion
+`ffprobe.exe` on PATH. This change adds no Python packages or GPU models.
+
+The local writer preserves source timestamps for live video, including variable
+frame intervals, and copies AAC. FFmpeg can derive missing PTS from available
+decode timestamps. Each new cache directory gets a local fragment probe for
+overlapping audio/video presentation times. On recovery from separate renditions,
+the resolver prefers a combined rendition within the selected height ceiling.
+Unusable timestamps or failed verification are logged. Recovery has three attempts.
+
+FFmpeg sends packed PCM on stdout and post-resampling frame metadata on stderr.
+Each frame record specifies its integer media timestamp, sample rate and exact byte
+count. The reader consumes both in order and checks continuity. This reuses the
+installed FFmpeg build and the same local cache. VAD receives sample coordinates
+in the shared media timeline. With MPV start-time rebasing disabled, later playlist
+opens can observe a different segment and still use the same timestamps.
+The scheduler compares MPV audio playback PTS with its video playback position
+and the decoded audio span before rendering. A player reset starts a fresh epoch.
+
+On-time cues use the original speech interval. An eligible late cue can receive
+a two-second emergency display, limited to one per two seconds of playback.
+A pause can retain up to 256 pending cues. The existing five-second VOD translation
+lead and direct source timeline have their own playback path.
+
+### Windows live acceptance runs
+
+1. Run the offline test suite. Record the commit, stream URL, selected quality,
+   FFmpeg/MPV versions and live delay. Save a separate run log for each session.
+2. Watch 30 minutes at 480p, 2 hours at 720p and 6 hours at 1080p where available.
+   Record the actual quality if YouTube falls back. At startup, every 30 minutes
+   and before ending, capture several clearly identifiable spoken cues with audio.
+   Compare first audible speech with first displayed text, targeting 250–500 ms
+   on controlled material. Record late translations separately.
+3. Pause and resume, allow a brief network interruption, and observe a recovery.
+   Check for an epoch change on reconnect, cleared old text, and correct alignment
+   after playback resumes. A normal segment rotation or short pause should not
+   cause a reload. Close MPV and check that its owned processes exit.
+4. Inspect `logs/run.log` for the first segment, epoch, verified state, audio PTS
+   range, player PTS, late counters, and VAD/ASR/translation/cue-ready percentiles.
+   The player A/V delta and its change since the first verified observation describe
+   the two IPC readings. Measuring spoken-to-visible alignment requires the recording.
+   The cue-ready latency starts at estimated local arrival of the final speech sample.
+5. Play a VOD, seek forward and backward, and confirm the original playback position
+   and cached subtitles. Record any repeated pauses or increasing delay.
+
+Timing references: [FFmpeg timestamp options](https://ffmpeg.org/ffmpeg.html),
+[FFmpeg audio frame metadata](https://ffmpeg.org/ffmpeg-filters.html#ashowinfo),
+[MPV playback properties](https://mpv.io/manual/master/#properties),
+[HLS rendition synchronization](https://www.rfc-editor.org/rfc/rfc8216#section-6.2.4),
+[PyAV time bases](https://pyav.basswood.io/docs/stable/api/time.html).

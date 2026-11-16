@@ -12,10 +12,21 @@ from auto_translate.windows_subprocess import hidden_console_flags
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS, READY_MARKER, backend_python, build_backend_command,
     discover_project_root, prepare_project, subprocess_environment, valid_youtube_url,
+    validate_gui_launch,
 )
 
 
 class GuiRunnerTests(unittest.TestCase):
+    def test_gui_launch_rejects_missing_or_duplicated_endpoint_before_spawn(self):
+        valid = ["--gui-control", "--gui-control-port", "12345", "--gui-control-token", "a" * 64]
+        validate_gui_launch(valid)
+        for invalid in (["--gui-control"], valid + ["--gui-control-port", "3"],
+                        ["--gui-control", "--gui-control-port", "0", "--gui-control-token", "token"],
+                        ["--gui-control", "--gui-control-port", "x", "--gui-control-token", "token"],
+                        ["--gui-control", "--gui-control-port", "1", "--gui-control-token"]):
+            with self.subTest(args=invalid), self.assertRaises(ValueError):
+                validate_gui_launch(invalid)
+
     def test_youtube_links(self):
         for url in (
             "https://www.youtube.com/watch?v=jd7Bp0prwiI",
@@ -99,7 +110,19 @@ class GuiRunnerTests(unittest.TestCase):
             exe = root / "dist/VideoTranslate/VideoTranslate.exe"
             exe.parent.mkdir(parents=True)
             exe.touch()
-            self.assertEqual(discover_project_root(executable=str(exe), cwd=exe.parent), root)
+            self.assertEqual(discover_project_root(executable=str(exe), cwd=exe.parent), root.resolve())
+
+    def test_packaged_executable_uses_adjacent_checkout_instead_of_unrelated_cwd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            roots = [Path(folder) / name for name in ("installed", "other")]
+            for root in roots:
+                (root / "src/auto_translate").mkdir(parents=True)
+                (root / "pyproject.toml").touch()
+                (root / "src/auto_translate/__main__.py").touch()
+            exe = roots[0] / "dist/VideoTranslate/VideoTranslate.exe"
+            exe.parent.mkdir(parents=True)
+            exe.touch()
+            self.assertEqual(discover_project_root(executable=str(exe), cwd=roots[1]), roots[0].resolve())
 
     def test_gui_child_creationflags_only_when_gui_env_is_set(self):
         with patch.object(os, "name", "nt"), patch.object(

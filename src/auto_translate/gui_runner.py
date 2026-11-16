@@ -12,6 +12,32 @@ from urllib.parse import parse_qs, urlsplit
 
 READY_MARKER = "VIDEO_TRANSLATE_GUI_READY"
 QUALITY_OPTIONS = (360, 480, 720, 1080)
+GUI_CONTROL_PROTOCOL = "1"
+
+
+def validate_gui_launch(args: list[str]) -> None:
+    """Check the complete frontend command before wrapping/spawning it.
+
+    The generic command builder deliberately has no listener credentials yet.
+    Every real GUI launch must append exactly one authenticated endpoint.
+    """
+    if args.count("--gui-control") != 1:
+        raise ValueError("GUI launch must enable authenticated player controls")
+    values = {}
+    for name in ("--gui-control-port", "--gui-control-token"):
+        if args.count(name) != 1:
+            raise ValueError("GUI/backend mismatch: control port/token missing or duplicated. Restart the updated GUI.")
+        index = args.index(name) + 1
+        if index >= len(args):
+            raise ValueError("GUI/backend mismatch: incomplete control connection")
+        values[name] = args[index]
+    try:
+        port = int(values["--gui-control-port"])
+    except (TypeError, ValueError):
+        raise ValueError("GUI control port must be an integer") from None
+    token = values["--gui-control-token"]
+    if not 0 < port <= 65535 or not isinstance(token, str) or not token or token.startswith("--"):
+        raise ValueError("GUI/backend mismatch: invalid control connection")
 
 
 def valid_youtube_url(value: str) -> bool:
@@ -38,7 +64,7 @@ def valid_youtube_url(value: str) -> bool:
 
 def discover_project_root(executable: str | None = None, cwd: Path | None = None) -> Path:
     """Find project beside the source checkout or a dist/VideoTranslate.exe."""
-    sources = [Path(cwd or Path.cwd()), Path(executable or sys.executable).resolve().parent,
+    sources = [Path(executable or sys.executable).resolve().parent, Path(cwd or Path.cwd()),
                Path(__file__).resolve().parent]
     for source in sources:
         for candidate in (source, *source.parents):
@@ -100,6 +126,8 @@ def subprocess_environment(root: Path, original: dict[str, str] | None = None) -
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONUTF8"] = "1"
     env["VIDEO_TRANSLATE_GUI"] = "1"
+    env["VIDEO_TRANSLATE_GUI_PROTOCOL"] = GUI_CONTROL_PROTOCOL
+    env["VIDEO_TRANSLATE_FRONTEND"] = str(Path(sys.executable).resolve())
     extra = []
     if os.name == "nt":
         local = Path(env.get("LOCALAPPDATA", ""))

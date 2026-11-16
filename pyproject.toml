@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
+    "pysubs2>=1.8,<2",
     "audioread>=3.1.0",
     "fireredvad[gpu]>=0.0.2",
     "faster-whisper>=1.2.1",
@@ -20,11 +21,14 @@ dependencies = [
 ]
 
 [dependency-groups]
-ci = ["numpy>=1.26", "httpx>=0.27", "ruff>=0.9"]
+ci = ["numpy>=1.26", "httpx>=0.27", "ruff>=0.9", "pysubs2>=1.8,<2"]
 
 [project.optional-dependencies]
 # Lightweight frontend; CLI installs do not require Qt.
-gui = ["PySide6>=6.8,<7"]
+gui = ["PySide6>=6.8,<7", "pysubs2>=1.8,<2"]
+subtitles = ["pysubs2>=1.8,<2"]
+quality = ["jiwer>=4,<5"]
+refinement = ["whisperx>=3.7,<4"]
 # Install only the heavy runtime packages for features you actually enable.
 separation = [
     "audio-separator>=0.48.0",

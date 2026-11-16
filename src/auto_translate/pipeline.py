@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Callable
@@ -25,7 +26,8 @@ from .gui_control import emit_event
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
-from .translate.base import Translator, TranslatorUnavailable
+from .queue_utils import QueueStopped, get_until_stopped, put_until_stopped
+from .translate.base import Translator, TranslatorUnavailable, TranslationCancelled
 from .types import (
     SAMPLE_RATE,
     AudioChunk,
@@ -37,6 +39,42 @@ from .types import (
 from .vad import Segmenter, run_segmenter
 
 log = logging.getLogger(__name__)
+
+
+class StageActivity:
+    """Explicit bounded in-flight work, independent of subtitle output rate."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._deadlines: dict[str, float] = {}
+        self.last_progress = time.monotonic()
+
+    @contextmanager
+    def track(self, name: str, budget_s: float):
+        with self._lock:
+            self._deadlines[name] = time.monotonic() + budget_s
+            self.last_progress = time.monotonic()
+        try:
+            yield self.heartbeat
+        finally:
+            with self._lock:
+                self._deadlines.pop(name, None)
+                self.last_progress = time.monotonic()
+
+    def heartbeat(self):
+        # A heartbeat proves work progressed but cannot extend its deadline.
+        with self._lock:
+            self.last_progress = time.monotonic()
+
+    def check(self, now: float, last_output: float, backlog: dict) -> None:
+        with self._lock:
+            active = dict(self._deadlines)
+            last_progress = self.last_progress
+        expired = [name for name, deadline in active.items() if now > deadline]
+        if expired:
+            raise RuntimeError("Pipeline in-flight deadline exceeded: " + ", ".join(expired))
+        if backlog and not active and now - max(last_output, last_progress) > 90.0:
+            raise RuntimeError("Haas/PLaMo pipeline stalled with queued work: " + str(backlog))
 
 
 def _guard_stage(
@@ -106,10 +144,14 @@ def run_asr(
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
     language_filter=None,
+    activity: StageActivity | None = None,
 ) -> None:
     """Transcribe Japanese speech; drop only confident English/Indonesian audio."""
     while True:
-        item = in_q.get()
+        try:
+            item = get_until_stopped(in_q, stop)
+        except QueueStopped:
+            break
 
         if item is None:
             break
@@ -120,7 +162,7 @@ def run_asr(
             if get_generation is not None and item.generation != get_generation():
                 continue
 
-            out_q.put(item)
+            put_until_stopped(out_q, item, stop)
             continue
 
         utt = item
@@ -145,11 +187,11 @@ def run_asr(
                 "reusing translated VOD cue %.2f-%.2fs after seek",
                 cached.start_s, cached.end_s,
             )
-            out_q.put(replace(
+            put_until_stopped(out_q, replace(
                 cached,
                 generation=utt.generation,
                 timings=utt.timings,
-            ))
+            ), stop)
             continue
 
         # Language is determined from ORIGINAL audio, not Japanese-forced ASR.
@@ -160,7 +202,8 @@ def run_asr(
                    start_s=round(utt.start_s, 3), end_s=round(utt.end_s, 3))
         if language_filter is not None:
             started = time.monotonic()
-            verdict = language_filter.classify(utt.audio)
+            with activity.track("language_filter", 60.0) if activity else nullcontext():
+                verdict = language_filter.classify(utt.audio)
             if session:
                 append_comparison(dict(cue, stage="language_filter", language=verdict.language,
                                        probability=verdict.probability, dropped=verdict.drop,
@@ -189,16 +232,28 @@ def run_asr(
             continue
         if stop is not None and stop.is_set():
             continue
-        text = asr.transcribe(utt.audio, utt.probe)
+        primary_budget = (getattr(asr_cfg, "startup_timeout_s", 120.0)
+                          + getattr(asr_cfg, "response_timeout_s", 24.0) + 10.0)
+        with activity.track("asr", primary_budget) if activity else nullcontext():
+            text = asr.transcribe(utt.audio, utt.probe)
         primary_elapsed_s = time.monotonic() - utt.timings.asr_start
         if get_generation is not None and utt.generation != get_generation():
             continue
-        choice = (dual.select_segment(utt, text, vod_title,
-                                      lambda: (in_q.qsize() > (1 if live else 5)
-                                               or out_q.qsize() > (1 if live else 5)), get_generation,
-                                      getattr(asr, "last_stop", None),
-                                      primary_elapsed_s)
-                  if dual is not None else None)
+        choice = None
+        if dual is not None:
+            dual_cfg = getattr(dual, "cfg", None)
+            if not isinstance(dual_cfg, Config):
+                dual_cfg = None
+            timeout_name = "live_timeout_s" if live else "vod_timeout_s"
+            dual_budget = (getattr(getattr(dual_cfg, "dual_asr", None), timeout_name, 25.0)
+                           + getattr(getattr(dual_cfg, "reconciler", None), timeout_name, 20.0) + 10.0)
+            with activity.track("dual_asr", dual_budget) if activity else nullcontext():
+                choice = dual.select_segment(
+                    utt, text, vod_title,
+                    lambda: (in_q.qsize() > (1 if live else 5)
+                             or out_q.qsize() > (1 if live else 5)), get_generation,
+                    getattr(asr, "last_stop", None), primary_elapsed_s,
+                )
         original_haas = text
         if choice is not None:
             text = choice
@@ -220,7 +275,8 @@ def run_asr(
                 and asr_cfg.retry_min_duration_s <= duration <= asr_cfg.retry_max_duration_s):
             import numpy as np
             pad = int(0.2 * SAMPLE_RATE)
-            candidate = asr.transcribe(np.pad(utt.audio, (pad, pad)), False)
+            with activity.track("asr", primary_budget) if activity else nullcontext():
+                candidate = asr.transcribe(np.pad(utt.audio, (pad, pad)), False)
             if is_usable_transcript(candidate):
                 text = candidate
                 log.info("Recovered VAD-positive silent Haas result at %.2f-%.2fs",
@@ -298,7 +354,7 @@ def run_asr(
                                        after_caption=before_name, after_name=corrected,
                                        after_term_repair=text, speech_start_s=utt.speech_start_s,
                                        asr_elapsed_s=utt.timings.asr_end-utt.timings.asr_start))
-        out_q.put(
+        put_until_stopped(out_q,
             Transcript(
                 utt.start_s,
                 utt.end_s,
@@ -307,10 +363,10 @@ def run_asr(
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
                 diagnostic_session=session,
-            )
+            ), stop
         )
 
-    out_q.put(None)
+    put_until_stopped(out_q, None, stop)
 
 
 def run_translate(
@@ -323,6 +379,7 @@ def run_translate(
     playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
+    activity: StageActivity | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
     consecutive_failures = 0
@@ -331,7 +388,10 @@ def run_translate(
     memory_generation: int | None = None
 
     while True:
-        item = in_q.get()
+        try:
+            item = get_until_stopped(in_q, stop)
+        except QueueStopped:
+            break
 
         if item is None:
             break
@@ -349,7 +409,7 @@ def run_translate(
                 history.clear()
             memory_generation = item.generation
 
-            out_q.put(item)
+            put_until_stopped(out_q, item, stop)
             continue
 
         tr = item
@@ -373,7 +433,7 @@ def run_translate(
                 history.append((tr.ja, tr.en))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
-            out_q.put(tr)
+            put_until_stopped(out_q, tr, stop)
             continue
 
         tr.timings.mt_start = time.monotonic()
@@ -390,8 +450,26 @@ def run_translate(
                     log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
                     tr = replace(tr, ja=repaired_ja)
             try:
-                en = translator.translate(tr.ja, list(history))
+                def cancelled():
+                    return ((stop is not None and stop.is_set())
+                            or (get_generation is not None and tr.generation != get_generation()))
+
+                budget_s = getattr(getattr(translator, "cfg", None), "cue_timeout_s", 75.0)
+                if not isinstance(budget_s, (int, float)):
+                    budget_s = 75.0
+                # Mock/third-party translators retain the original protocol.
+                cancellable = getattr(type(translator), "translate_cancellable", None)
+                with activity.track("translate", budget_s + 5.0) if activity else nullcontext():
+                    if callable(cancellable):
+                        en = translator.translate_cancellable(
+                            tr.ja, list(history), cancelled=cancelled,
+                            heartbeat=activity.heartbeat if activity else None,
+                        )
+                    else:
+                        en = translator.translate(tr.ja, list(history))
                 consecutive_failures = 0
+            except TranslationCancelled:
+                continue
             except TranslatorUnavailable:
                 raise
             except Exception as e:
@@ -451,7 +529,7 @@ def run_translate(
             )
             continue
 
-        out_q.put(
+        put_until_stopped(out_q,
             Subtitle(
                 tr.start_s,
                 tr.end_s,
@@ -460,10 +538,11 @@ def run_translate(
                 tr.timings,
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
-            )
+                diagnostic_session=tr.diagnostic_session,
+            ), stop
         )
 
-    out_q.put(None)
+    put_until_stopped(out_q, None, stop)
 
 
 @dataclass
@@ -568,6 +647,7 @@ def run(
         "subtitle": sub_q,
     }
     failures: queue.Queue[tuple[str, Exception]] = queue.Queue()
+    activity = StageActivity()
 
     threads = [
         threading.Thread(
@@ -579,7 +659,7 @@ def run(
         threading.Thread(
             target=_guard_stage,
             args=("vad", run_segmenter, failures, segmenter if segmenter is not None else Segmenter(vad_cfg), audio_q, utt_q,
-                  lambda: ingest.generation),
+                  lambda: ingest.generation, stop),
             name="vad",
             daemon=True,
         ),
@@ -599,6 +679,7 @@ def run(
                 cfg.mpv.live_late_window_s,
                 stop,
                 language_filter,
+                activity,
             ),
             name="asr",
             daemon=True,
@@ -615,6 +696,7 @@ def run(
                 getattr(dual, "playback_position", None),
                 cfg.mpv.live_late_window_s,
                 stop,
+                activity,
             ),
             name="translate",
             daemon=True,
@@ -633,6 +715,8 @@ def run(
     last_activity = started
     last_warning = started
     last_guard_key = ""
+    last_guard_ja = ""
+    last_guard_start = -float("inf")
     last_guard_end = -float("inf")
     last_guard_generation: int | None = None
     identical_count = 0
@@ -665,6 +749,7 @@ def run(
                     progress_s = item.sample / SAMPLE_RATE
                     if item.reset:
                         last_guard_key, last_guard_end = "", -float("inf")
+                        last_guard_ja, last_guard_start = "", -float("inf")
                         identical_count = 0
                         last_guard_generation = item.generation
                         processed_generation = item.generation
@@ -698,14 +783,19 @@ def run(
 
                 if item.generation != last_guard_generation:
                     last_guard_key, last_guard_end, identical_count = "", -float("inf"), 0
+                    last_guard_ja, last_guard_start = "", -float("inf")
                     last_guard_generation = item.generation
                 key = normalized_cue(item.en) if item.en else ""
-                if (key and len(key.split()) >= 2 and key == last_guard_key
-                        and -0.2 <= item.start_s - last_guard_end <= 10.0):
+                # Repeated spoken pleas/commands are real dialogue. Only
+                # count matching source+target for the SAME media interval.
+                if (key and key == last_guard_key and item.ja == last_guard_ja
+                        and abs(item.start_s - last_guard_start) <= 0.15
+                        and abs(item.end_s - last_guard_end) <= 0.15):
                     identical_count += 1
                 else:
                     identical_count = 1
                 last_guard_key, last_guard_end = key, item.end_s
+                last_guard_ja, last_guard_start = item.ja, item.start_s
                 if (key and identical_count >
                         max(1, int(cfg.translate.max_identical_cues))):
                     log.info("Suppressed repeat subtitle: gen=%d count=%d text=%r",
@@ -713,6 +803,20 @@ def run(
                     continue
 
                 stats.add(item, deadline_s=cfg.mpv.delay_s if ingest.source.live else None)
+
+                if item.diagnostic_session:
+                    tm = item.timings
+                    append_comparison(dict(
+                        stage="subtitle", session_id=item.diagnostic_session,
+                        generation=item.generation,
+                        start_s=round(item.start_s, 3), end_s=round(item.end_s, 3),
+                        final_ja=item.ja, final_en=item.en,
+                        audio_duration_s=max(0.0, item.end_s - item.start_s),
+                        cue_latency_s=(max(0.0, tm.mt_end - tm.audio_read)
+                                       if tm.audio_read > 0 and tm.mt_end >= tm.audio_read else None),
+                        asr_s=max(0.0, tm.asr_end - tm.asr_start),
+                        mt_s=max(0.0, tm.mt_end - tm.mt_start),
+                    ))
 
                 if session_cache is not None:
                     session_cache.add(item)
@@ -725,16 +829,15 @@ def run(
 
             _raise_worker_failure(failures)
             now = time.monotonic()
+            backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
+            # Enforce explicit inference deadlines even while VOD ingest is
+            # intentionally parked; parking does not prove a model is alive.
+            activity.check(now, last_activity, {} if _expected_vod_idle(ingest, outputs) else backlog)
             if _expected_vod_idle(ingest, outputs):
                 # User pause or intentional audio lead cap is not a stall.
                 last_activity = now
                 last_warning = now
             else:
-                backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
-                if backlog and now - last_activity > 90.0:
-                    raise RuntimeError(
-                        "Haas/PLaMo pipeline stalled with queued work: " + str(backlog)
-                    )
                 if backlog and now - last_activity > 30.0 and now - last_warning > 30.0:
                     last_warning = now
                     log.warning("Haas/PLaMo pipeline waiting with queued work: %s", backlog)
@@ -813,15 +916,21 @@ def run(
                         dual.release()
                     grace_s = WORKER_DRAIN_S
                 deadline = time.monotonic() + grace_s
-                # Main loop is no longer rendering subtitles: keep draining
-                # completed cues so MT cannot block forever on a full queue.
-                # Stop-aware ASR/MT stages discard pending work and propagate
-                # their existing EOF sentinel when producers exit.
+                # Cancellation wakes consumers even when a failed producer
+                # cannot deliver EOF. Empty all queues to release any legacy
+                # or ingest producer already blocked in a put.
                 while time.monotonic() < deadline and any(t.is_alive() for t in threads):
-                    try:
-                        sub_q.get(timeout=0.10)
-                    except queue.Empty:
-                        pass
+                    for work_queue in queues.values():
+                        while True:
+                            try:
+                                pending = work_queue.get_nowait()
+                                if pending is None:
+                                    work_queue.put_nowait(None)
+                                    break
+                            except queue.Empty:
+                                break
+                    for thread in threads:
+                        thread.join(timeout=0.025)
                 for thread in threads:
                     if thread.is_alive():
                         thread.join(timeout=max(0., deadline - time.monotonic()))
@@ -831,8 +940,22 @@ def run(
                 else:
                     log.info("all pipeline workers exited before model shutdown")
                 for label, worker in (("Haas", asr), ("PLaMo", translator)):
+                    # Never close a model under a still-running inference
+                    # call. Arrange eventual cleanup by that worker's exit.
+                    worker_name = "asr" if label == "Haas" else "translate"
+                    worker_thread = next(t for t in threads if t.name == worker_name)
                     close = getattr(worker, "close", None)
                     if callable(close):
+                        if worker_thread.is_alive():
+                            def close_after_exit(thread=worker_thread, closer=close):
+                                thread.join()
+                                try:
+                                    closer()
+                                except Exception:
+                                    log.exception("deferred model shutdown failed")
+                            threading.Thread(target=close_after_exit, daemon=True,
+                                             name=worker_name + "-cleanup").start()
+                            continue
                         try:
                             close()
                         except Exception:

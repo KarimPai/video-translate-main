@@ -54,8 +54,44 @@ def _main(resources: ExitStack) -> None:
                             help="disable RTX VSR even when enabled in config.toml")
     parser.add_argument("--diagnostics", action="store_true",
                         help="log additional pipeline metrics")
+    parser.add_argument("--preview", action="store_true", help="opt-in provisional Japanese live text")
+    parser.add_argument("--wait-optional", action="store_true", help="offline benchmarks: finish optional model startup before ingest")
+    parser.add_argument("--export", type=Path, help="explicit subtitle export (.srt, .vtt, .ass)")
+    parser.add_argument("--export-language", choices=("japanese", "english", "bilingual"), default="bilingual")
+    parser.add_argument("--quality-report", type=Path, help="generate a report from comparison JSONL, without loading models")
+    parser.add_argument("--report-output", type=Path, help="report destination directory")
+    parser.add_argument("--refine-subtitles", type=Path, help="refine bilingual subtitle timings against a local source file, then --export")
+    parser.add_argument("--refine-device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+
+    if args.gui_control and not (args.gui_control_token and args.gui_control_port
+                                 and 0 < args.gui_control_port <= 65535):
+        parser.exit(2, "auto-translate: error: GUI/backend version mismatch: the launcher did not provide "
+                       "its control port/token. Close the old GUI and launch the updated "
+                       "dist\\VideoTranslate\\VideoTranslate.exe, or run "
+                       "uv run --no-sync python -m auto_translate.gui from the project folder.\n")
+
+    if args.quality_report:
+        from .quality_report import generate_report
+        result = generate_report(args.quality_report, args.report_output)
+        print(result["html_path"])
+        return
+    if args.refine_subtitles:
+        if not args.source or not Path(args.source).is_file() or not args.export:
+            parser.error("Timing refinement requires a local media source and --export destination")
+        if args.export.resolve() == args.refine_subtitles.resolve():
+            parser.error("Choose a new export file to preserve the original subtitle revision")
+        from .subtitle_files import import_subtitles, export_subtitles
+        from .refinement import refine_subtitle_timings
+        cues = import_subtitles(args.refine_subtitles, language="bilingual")
+        refined = refine_subtitle_timings(args.source, cues, device=args.refine_device)
+        export_subtitles(args.export, refined, language=args.export_language)
+        print(args.export)
+        return
+    if args.export and (args.export.suffix.lower() not in (".srt", ".vtt", ".ass")
+                        or not args.export.parent.is_dir()):
+        parser.error("Export requires an existing destination folder and .srt, .vtt or .ass extension")
 
     from urllib.parse import urlsplit
     source = args.source or ""
@@ -69,7 +105,8 @@ def _main(resources: ExitStack) -> None:
         parser.error("Enter an HTTP(S) URL or an existing media file")
 
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8")
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
 
     handlers = [logging.StreamHandler()]
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
@@ -96,8 +133,6 @@ def _main(resources: ExitStack) -> None:
     control = None
     from .windows_subprocess import check_running, guard_gui_spawns
     if args.gui_control:
-        if not (args.gui_control_token and args.gui_control_port and 0 < args.gui_control_port <= 65535):
-            parser.error("Missing GUI control connection")
         from .gui_control import BackendControl
         guard_gui_spawns()
         control = BackendControl(args.gui_control_port, args.gui_control_token, stop)
@@ -117,6 +152,8 @@ def _main(resources: ExitStack) -> None:
     from .translate import create_translator
 
     cfg = load_config(args.config)
+    if args.preview:
+        cfg.preview.enabled = True
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
         import shutil
         from .output.mpv import find_mpv
@@ -134,9 +171,6 @@ def _main(resources: ExitStack) -> None:
         cfg.mpv.rtx_vsr = True
     elif args.no_rtx_vsr:
         cfg.mpv.rtx_vsr = False
-    if args.gui_control and not (args.gui_control_token and args.gui_control_port
-                                 and 0 < args.gui_control_port <= 65535):
-        parser.error("GUI control socket missing. Update the GUI launcher and backend together.")
     if args.gui_control and not args.mpv_wid:
         parser.error("--gui-control requires --mpv-wid")
     if args.mpv_wid is not None:
@@ -275,6 +309,8 @@ def _main(resources: ExitStack) -> None:
 
     resources.callback(translator.close)
     use_mpv = args.mpv or cfg.mpv.enabled
+    if args.wait_optional and use_mpv:
+        parser.error("--wait-optional is for offline benchmarks without MPV")
     if use_mpv and not source.live and source.paced:
         # A 1x (-re) FFmpeg reader cannot rebuild the 5-second translation
         # buffer promptly after seeking. MPV itself keeps real-time playback.
@@ -296,6 +332,12 @@ def _main(resources: ExitStack) -> None:
     )
 
     outputs: list[Output] = []
+    if args.gui_control or args.export:
+        from .output.review import ReviewOutput
+        review_output = ReviewOutput(gui=args.gui_control, export_path=args.export,
+                                    language=args.export_language)
+        outputs.append(review_output)
+        resources.callback(review_output.close)
     # Cache only this MPV VOD in RAM. Never reuse it for another video,
     # and never persist translated text on disk.
     subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
@@ -310,16 +352,6 @@ def _main(resources: ExitStack) -> None:
                 cfg.output.web_port,
             )
         )
-
-    try:
-        check_running()
-        dual = DualASR(cfg, budget, glossary, source.live)
-    except BaseException:
-        asr.close()
-        translator.close()
-        raise
-
-    resources.callback(dual.release)
 
     # Optional, CPU-only spoken-language gate. Failure is nonfatal: retain
     # Japanese speech rather than suppressing cues on an unavailable model.
@@ -347,15 +379,45 @@ def _main(resources: ExitStack) -> None:
                 player = MpvOutput(replace(cfg.mpv, rtx_vsr=False), ingest, stop, subtitle_cache=subtitle_cache)
             resources.enter_context(player)
             outputs.append(player)
-            dual.playback_position = player.playback_position
             if control:
                 control.player = player
         except BaseException:
-            dual.release()
             ingest.stop()
             asr.close()
             translator.close()
             raise
+
+    # Allocate playback surfaces first, then warm optional models off-thread.
+    # The primary pipeline remains usable during cold downloads/startup.
+    check_running()
+    dual = DualASR(cfg, budget, glossary, source.live, start_background=not args.wait_optional,
+                   startup_event=player.playback_ready if use_mpv else None)
+    resources.callback(dual.release)
+    if use_mpv:
+        dual.playback_position = player.playback_position
+
+    if cfg.preview.enabled and source.live:
+        from .live_preview import LivePreview
+        from .output.review import PreviewDispatcher
+
+        dispatcher = PreviewDispatcher(outputs, lambda: ingest.generation, stop)
+        resources.callback(dispatcher.close)
+
+        def decode_preview(samples, generation, *, timeout, cancel_event):
+            if stop.is_set() or cancel_event.is_set() or generation != ingest.generation:
+                return None
+            if language_filter is not None and language_filter.classify(samples).drop:
+                return None
+            return dual.try_preview(samples, generation, timeout=timeout, cancel_event=cancel_event)
+
+        preview = LivePreview(decode_preview, dispatcher.submit,
+                              min_agreement=cfg.preview.min_agreement,
+                              timeout_s=min(1.0, cfg.preview.interval_s))
+        resources.callback(preview.close)
+        segmenter.set_preview(preview.submit, interval_s=cfg.preview.interval_s,
+                              window_s=cfg.preview.window_s)
+    elif cfg.preview.enabled:
+        log.info("Provisional text is live-only; VOD keeps finalized subtitles")
 
     def relieve_pressure():
         # Only real free-memory pressure causes degradation. No fixed 7.5 GB
@@ -368,8 +430,8 @@ def _main(resources: ExitStack) -> None:
             log.warning("Low physical GPU headroom (free=%s GB): releasing GPU selector", budget.free)
             dual.release_selector()
 
-    # MPV/VSR allocate GPU surfaces AFTER optional model startup. Recheck
-    # after the player is ready rather than waiting for the monitor's tick.
+    # Optional startup waits for file-loaded/VSR setup. Keep monitoring physical
+    # memory as playback and model scratch allocations change afterward.
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
@@ -380,7 +442,9 @@ def _main(resources: ExitStack) -> None:
         selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
     # Whisper Turbo only transcribes Japanese; ECAPA filters other languages first.
     # Do not report an Indonesian worker: that optional third-ASR feature was removed.
-    print(f"ASR: Haas + {'Whisper Large-v3 Turbo' if dual.worker else 'no secondary'} | "
+    secondary_status = ("Whisper Large-v3 Turbo" if dual.worker else
+                        "Whisper warming/recovering" if cfg.dual_asr.enabled and dual.mode != "off" else "no secondary")
+    print(f"ASR: Haas + {secondary_status} | "
           f"Language: Japanese only (EN/ID audio filter: "
           f"{'CPU ECAPA' if language_filter else 'off'}) | "
           f"Selector: {selector_status} | "

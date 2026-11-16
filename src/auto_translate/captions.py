@@ -137,7 +137,18 @@ class CaptionIndex:
         if not texts:
             return None
 
-        overlap_s = min(duration, sum(overlap for _, overlap in matched))
+        # Rolling captions overlap; confidence must measure unique audio time.
+        intervals = sorted((max(start_s, cue.start_s), min(end_s, cue.end_s))
+                           for cue, _ in matched)
+        overlap_s = 0.0
+        union_start, union_end = intervals[0]
+        for begin, finish in intervals[1:]:
+            if begin <= union_end:
+                union_end = max(union_end, finish)
+            else:
+                overlap_s += union_end - union_start
+                union_start, union_end = begin, finish
+        overlap_s += union_end - union_start
         coverage = overlap_s / duration
         strongest = max(overlap for _, overlap in matched)
         reliable = (

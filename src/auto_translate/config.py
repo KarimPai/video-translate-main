@@ -254,12 +254,33 @@ class TranslateConfig:
     neutral_subjects: bool = True  # prefer unspecified/neutral speakers, no inferred gender
     retry_suspicious: bool = True  # only one additional PLaMo request for clear mismatches
     retry_timeout_s: float = 15.0  # upper bound for the optional second pass
+    cue_timeout_s: float = 75.0  # shared deadline across sentences and retries
     fragment_context: bool = True  # Japanese-only previous cue for ambiguous fragments
 
     def __post_init__(self):
-        for value in (self.timeout_s, self.load_timeout_s, self.retry_timeout_s):
+        for value in (self.timeout_s, self.load_timeout_s, self.retry_timeout_s, self.cue_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")
+
+
+@dataclass
+class PreviewConfig:
+    """Opt-in Japanese drafts; never enter translation context or cue caches."""
+    enabled: bool = False
+    interval_s: float = 1.5
+    window_s: float = 8.0
+    min_agreement: int = 2
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("preview.enabled must be boolean")
+        if any(type(v) not in (int, float) or not math.isfinite(v)
+               for v in (self.interval_s, self.window_s)):
+            raise ValueError("Preview timings must be finite numbers")
+        if not 0.5 <= self.interval_s <= 10 or not self.interval_s <= self.window_s <= 16:
+            raise ValueError("Invalid preview interval/window")
+        if type(self.min_agreement) is not int or not 2 <= self.min_agreement <= 5:
+            raise ValueError("preview.min_agreement must be between 2 and 5")
 
 
 @dataclass
@@ -322,6 +343,7 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
 
 @dataclass
 class Config:
+    preview: PreviewConfig = field(default_factory=PreviewConfig)
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
     dual_asr: DualAsrConfig = field(default_factory=DualAsrConfig)
     reconciler: ReconcilerConfig = field(default_factory=ReconcilerConfig)
@@ -368,6 +390,7 @@ def load_config(path: Path) -> Config:
     ingest_data.pop("pitch_semitones", None)
 
     return Config(
+        preview=PreviewConfig(**data.get("preview", {})),
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
         dual_asr=DualAsrConfig(**data.get("dual_asr", {})),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),

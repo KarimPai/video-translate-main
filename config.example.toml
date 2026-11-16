@@ -44,6 +44,7 @@ min_top_margin = 0.45
 
 
 [translate]
+cue_timeout_s = 75.0 # shared by all sentences, transport retries and quality retries
 # Accuracy-first OverlaySubs-style context. Use legacy to restore previous behavior.
 context_profile = "compact" # compact, legacy
 context_lines = 3
@@ -62,3 +63,10 @@ live_response_timeout_s = 12
 [mpv]
 live_forward_cache_mib = 1024
 live_back_cache_mib = 1024
+
+[preview]
+# Optional Japanese drafts in GUI/browser. Final subtitles always take priority.
+enabled = false
+interval_s = 1.5
+window_s = 8.0
+min_agreement = 2

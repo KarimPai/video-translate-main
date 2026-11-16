@@ -300,6 +300,7 @@ class RecoveryTests(unittest.TestCase):
         selector.close.assert_not_called()
         self.assertGreater(dual.retry_at, time.monotonic())
         constructor.return_value = replacement
+        cfg.dual_asr.enabled = True
         dual.retry_at = 0
         dual._maybe_restart()
         dual._restart_thread.join(2)

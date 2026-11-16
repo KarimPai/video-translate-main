@@ -177,7 +177,23 @@ def split_completed_japanese_sentences(text: str, *, min_chars: int = 8, max_par
     beginning = 0
     closers = '」』”’\'"'
     terminals = "。！？"
+    quote_stack: list[str] = []
+    quote_pairs = {"「": "」", "『": "』", "“": "”", "‘": "’"}
     for i, char in enumerate(source):
+        if char in quote_pairs:
+            quote_stack.append(quote_pairs[char])
+            continue
+        if quote_stack and char == quote_stack[-1]:
+            quote_stack.pop()
+            continue
+        if char == '"':
+            if quote_stack and quote_stack[-1] == '"':
+                quote_stack.pop()
+            else:
+                quote_stack.append('"')
+            continue
+        if quote_stack:
+            continue
         if char not in terminals:
             continue
         following = source[i + 1:i + 2]

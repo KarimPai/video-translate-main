@@ -58,7 +58,7 @@ def frontend(folder, scenario):
     gui.GUI_SHUTDOWN_MS = 700 if scenario == "hang" else 8000
     pyw = Path(os.environ["DUMMY_PYTHONW"])
     gui.build_backend_command = lambda *a, **kw: (
-        str(pyw), ["-u", str(Path(__file__).resolve()), "backend", str(folder), scenario])
+        str(pyw), ["-u", str(Path(__file__).resolve()), "backend", str(folder), scenario, "--gui-control"])
     (folder / "config.example.toml").touch()
     window = gui.VideoTranslateWindow(folder)
     window.show()

@@ -22,7 +22,7 @@ SECONDARY = "whisper-large-v3-turbo"
 
 
 class DualASR:
-    def __init__(self, cfg, budget, glossary, live):
+    def __init__(self, cfg, budget, glossary, live, *, start_background=False, startup_event=None):
         self.cfg = cfg
         self.budget = budget
         self.glossary = glossary
@@ -40,7 +40,18 @@ class DualASR:
         self.failures = 0
         self.retry_at = 0.0
         self._restart_thread = None
+        self._selector_thread = None
+        self.selector_failures = 0
+        self.selector_retry_at = 0.0
+        self._selector_cpu_only = False
+        self._preview_lock = threading.Lock()
+        self._preview_cancel = threading.Event()
+        self._final_requested = threading.Event()
+        self._startup_event = startup_event
         if not cfg.dual_asr.enabled or self.mode == "off":
+            return
+        if start_background:
+            self.start_background()
             return
         try:
             self.worker = self._create_worker()
@@ -53,6 +64,13 @@ class DualASR:
         if cfg.reconciler.enabled:
             self._start_selector(cfg.reconciler.gpu_layers)
 
+    def start_background(self):
+        """Warm optional models without delaying primary playback startup."""
+        self._maybe_restart()
+
+    def _enabled(self):
+        return self.cfg.dual_asr.enabled and self.mode != "off"
+
     def _create_worker(self):
         # Admission includes MPV, VAD, model scratch and Windows headroom.
         if self.cfg.dual_asr.secondary_device == "cuda" and not self.budget.admits(1.9):
@@ -62,6 +80,7 @@ class DualASR:
             device=self.cfg.dual_asr.secondary_device,
             compute_type=self.cfg.dual_asr.secondary_compute_type,
             beam_size=self.cfg.dual_asr.secondary_beam_size,
+            cancel_event=self._selector_stop,
         )
         if self.cfg.dual_asr.secondary_device == "cuda" and not self.budget.admits(0.3):
             worker.close()
@@ -84,15 +103,19 @@ class DualASR:
             if self.closed or self.worker is not worker:
                 return
             self.worker = None
-        # Defer before close so no new worker races the old CUDA teardown.
-        self._defer_restart(reason)
+            self.retry_at = float("inf")
         # Close outside lock: multiprocessing join can take seconds on Windows.
-        worker.close()
+        try:
+            worker.close()
+        finally:
+            # Start the backoff after teardown, preventing overlapping CUDA
+            # allocations even if termination takes longer than the delay.
+            self._defer_restart(reason)
 
     def _maybe_restart(self):
         """Restart asynchronously: model startup must never block live playback."""
         with self.lock:
-            if (self.closed or stopping.is_set() or self.worker is not None or
+            if (not self._enabled() or self.closed or stopping.is_set() or self.worker is not None or
                     (self._restart_thread and self._restart_thread.is_alive()) or
                     time.monotonic() < self.retry_at):
                 return
@@ -101,13 +124,19 @@ class DualASR:
             self._restart_thread.start()
 
     def _restart_worker(self):
+        ready = getattr(self, "_startup_event", None)
+        while ready is not None and not ready.wait(0.1):
+            if self.closed or self._selector_stop.is_set() or stopping.is_set():
+                return
         try:
             worker = self._create_worker()
+        except CancelledError:
+            return
         except Exception as exc:
             self._defer_restart(exc)
             return
         with self.lock:
-            closed = self.closed
+            closed = self.closed or stopping.is_set() or not self._enabled()
             if not closed:
                 self.worker = worker
                 self.failures = 0
@@ -116,8 +145,36 @@ class DualASR:
             worker.close()
             return
         log.info("Secondary Whisper Turbo recovered; dual ASR enabled")
-        if self.cfg.reconciler.enabled and self.selector is None and not self.closed:
-            self._start_selector(self.cfg.reconciler.gpu_layers)
+        self._maybe_start_selector()
+
+    def _maybe_start_selector(self):
+        with self.lock:
+            if (not self._enabled() or not self.cfg.reconciler.enabled or self.closed
+                    or stopping.is_set() or self.worker is None or self.selector is not None
+                    or (self._selector_thread and self._selector_thread.is_alive())
+                    or time.monotonic() < self.selector_retry_at):
+                return
+            layers = 0 if self._selector_cpu_only else self.cfg.reconciler.gpu_layers
+            self._selector_thread = threading.Thread(
+                target=self._start_selector, args=(layers,), name="asr-selector-start", daemon=True)
+            self._selector_thread.start()
+
+    def _retire_selector(self, selector, reason):
+        with self.lock:
+            if self.closed or self.selector is not selector:
+                return
+            self.selector = None
+            self._selector_cpu_only = True
+            self.selector_failures += 1
+            delay = min(2 ** min(self.selector_failures, 6), 60)
+            self.selector_retry_at = float("inf")
+        log.warning("Transcript selector failed (%s); retrying on CPU after backoff", reason)
+        try:
+            selector.close()
+        finally:
+            with self.lock:
+                if not self.closed:
+                    self.selector_retry_at = time.monotonic() + delay
 
     def _start_selector(self, layers):
         # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
@@ -144,12 +201,19 @@ class DualASR:
                     if self.closed:
                         return
                     self.selector = selector
+                    self.selector_failures = 0
+                    self.selector_retry_at = 0.0
                     selector = None  # Ownership transferred to DualASR.
                 log.info("LFM2.5-1.2B-JP selector ready; GPU layers requested=%d", placement)
                 return
             finally:
                 if selector is not None:
                     selector.close()
+        with self.lock:
+            if not self.closed:
+                self.selector_failures = getattr(self, "selector_failures", 0) + 1
+                self._selector_cpu_only = True
+                self.selector_retry_at = time.monotonic() + min(2 ** min(self.selector_failures, 6), 60)
 
     def release_selector(self):
         """Reclaim the optional GPU selector first, retaining secondary ASR."""
@@ -159,6 +223,7 @@ class DualASR:
             if selector is None or not getattr(selector, "gpu_layers", 0):
                 return
             self.selector = None
+            self._selector_cpu_only = True
         log.warning("GPU pressure: releasing optional GPU transcript selector")
         selector.close()
 
@@ -167,6 +232,7 @@ class DualASR:
         with self.lock:
             self.closed = True
             self._selector_stop.set()
+            self._preview_cancel.set()
             worker, selector = self.worker, self.selector
             self.worker = self.selector = None
         if worker or selector:
@@ -206,12 +272,25 @@ class DualASR:
                                vad_confidence=utt.vad_confidence))
 
     def select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
+        with self.lock:
+            self._final_requested.set()
+            self._preview_cancel.set()
+        try:
+            return self._select_segment(utt, primary, title, backlog, current,
+                                        primary_stop, primary_elapsed_s)
+        finally:
+            self._final_requested.clear()
+
+    def _select_segment(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None):
         # Single-flight optional work. A blocked pipe or HTTP read cannot hold
         # the live ASR stage past its deadline or accumulate an executor queue.
         if self.worker is None:
+            if not self._enabled() or self.closed:
+                return None
             self._maybe_restart()
             self.log_fallback(utt, primary, primary_elapsed_s, "secondary_restarting")
             return None
+        self._maybe_start_selector()
         if self.pending and self.pending.is_alive():
             self.log_fallback(utt, primary, primary_elapsed_s, "worker_busy")
             return None
@@ -253,6 +332,32 @@ class DualASR:
         self.pending.join()
         return result[0] if generation() == utt.generation else None
 
+    def try_preview(self, audio, generation, timeout=0.25, cancel_event=None):
+        """Opportunistic draft decode; final cues have priority over previews."""
+        if not self._preview_lock.acquire(blocking=False):
+            return None
+        try:
+            with self.lock:
+                if (self.closed or not self._enabled() or self.worker is None
+                        or self._final_requested.is_set()
+                        or (self.pending and self.pending.is_alive())):
+                    return None
+                worker = self.worker
+                local_cancel = threading.Event()
+                self._preview_cancel = local_cancel
+
+            class Cancellation:
+                def is_set(self):
+                    return local_cancel.is_set() or (cancel_event is not None and cancel_event.is_set())
+
+            try:
+                result = worker.transcribe(audio, timeout=timeout, cancel_event=Cancellation())
+                return None if local_cancel.is_set() else result
+            except (CancelledError, TimeoutError, RuntimeError, OSError):
+                return None
+        finally:
+            self._preview_lock.release()
+
     def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, cancel_event=None):
         """Return corroborated Japanese, an abstention, or None for the Haas path."""
         worker, selector = self.worker, self.selector
@@ -285,6 +390,16 @@ class DualASR:
             return fallback("selective_mode")
         try:
             started = time.perf_counter()
+            # A draft may have canceled its caller while the child finishes.
+            # Give final work its existing budget to drain that job rather than
+            # immediately losing secondary recognition for the entire cue.
+            wait_idle = getattr(type(worker), "wait_until_idle", None)
+            if callable(wait_idle):
+                if not wait_idle(worker, secondary_budget, cancel_event):
+                    return fallback("secondary_busy")
+                secondary_budget -= time.perf_counter() - started
+                if secondary_budget <= 0:
+                    return fallback("secondary_busy")
             secondary = worker.transcribe(utt.audio, timeout=secondary_budget, cancel_event=cancel_event)
             secondary_elapsed_s = time.perf_counter() - started
             log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
@@ -403,6 +518,7 @@ class DualASR:
                 except Exception as exc:
                     fallback_reason = type(exc).__name__
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
+                    self._retire_selector(selector, exc)
                 finally:
                     selector_elapsed = round(time.perf_counter() - started, 3)
         if current and current() != utt.generation:

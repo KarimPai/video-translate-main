@@ -97,11 +97,12 @@ class WhisperTurboASR:
     """Persistent, single-flight secondary Japanese recognition worker."""
 
     def __init__(self, *, model=MODEL, device="cuda", compute_type="int8_float16",
-                 beam_size=6, startup_timeout=600):
+                 beam_size=6, startup_timeout=600, cancel_event=None):
         self.last_stop = "unknown"
         self._lock = threading.Lock()
         self._request_id = 0
         self._decode_lock = threading.Lock()
+        self._inflight = None
         self.process = None
         self.connection = None
         context = mp.get_context("spawn")
@@ -121,6 +122,8 @@ class WhisperTurboASR:
             deadline = time.monotonic() + startup_timeout
             while time.monotonic() < deadline:
                 check_running()
+                if cancel_event is not None and cancel_event.is_set():
+                    raise CancelledError("Whisper Turbo startup cancelled")
                 if self.connection.poll(0.2):
                     response = self.connection.recv()
                     if response.get("type") == "ready":
@@ -139,11 +142,40 @@ class WhisperTurboASR:
     def transcribe(self, audio, timeout=None, initial_prompt=None, cancel_event=None):
         """Keep a single reader and writer on the worker pipe across requests."""
         if not self._decode_lock.acquire(blocking=False):
-            raise RuntimeError("Whisper Turbo request already in progress")
+            raise CancelledError("Whisper Turbo request already in progress")
         try:
             return self._transcribe(audio, timeout, initial_prompt, cancel_event)
         finally:
             self._decode_lock.release()
+
+    def wait_until_idle(self, timeout, cancel_event=None):
+        """Bounded final-cue wait for a canceled preview's child reply.
+
+        Keep final scheduling outside the pipe reader and never submit a second
+        job before the previous caller has released its single-flight lease.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            check_running()
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            if not self._decode_lock.acquire(timeout=min(.05, max(0., deadline - time.monotonic()))):
+                continue
+            try:
+                with self._lock:
+                    inflight = getattr(self, "_inflight", None)
+                    connection, process = self.connection, self.process
+                if process is None or connection is None or not process.is_alive():
+                    raise RuntimeError("Whisper Turbo worker unavailable")
+                if inflight is None or connection.poll(0):
+                    return True  # _transcribe drains the old response before send.
+            finally:
+                self._decode_lock.release()
+            if cancel_event is not None:
+                cancel_event.wait(.02)
+            else:
+                time.sleep(.02)
+        return False
 
     def _transcribe(self, audio, timeout, initial_prompt, cancel_event):
         samples = _audio16(audio)
@@ -155,15 +187,35 @@ class WhisperTurboASR:
             raise CancelledError("Whisper Turbo request already cancelled")
         with self._lock:
             connection, process = self.connection, self.process
-            self._request_id += 1
-            request_id = self._request_id
         if process is None or not process.is_alive() or connection is None:
             raise RuntimeError("Whisper Turbo worker unavailable")
+        # A canceled caller does not own the child job's lifetime. Keep its
+        # watchdog and drain its reply before submitting any new audio. This
+        # prevents seeks/previews from building a queue of obsolete decodes.
+        previous = getattr(self, "_inflight", None)
+        if previous is not None:
+            try:
+                if not connection.poll(0):
+                    raise CancelledError("Whisper Turbo is finishing an obsolete request")
+                stale = connection.recv()
+            except (EOFError, BrokenPipeError, OSError) as exc:
+                raise RuntimeError("Whisper Turbo worker communication failed") from exc
+            if stale.get("id") != previous["id"]:
+                raise RuntimeError("Unexpected Whisper Turbo reply while draining")
+            self._finish_request(previous["id"])
+            log.info("Drained obsolete Whisper reply request=%d", previous["id"])
+        with self._lock:
+            self._request_id += 1
+            request_id = self._request_id
         deadline = time.monotonic() + timeout
         # The optional caller can leave at its soft deadline. A separate hard
         # limit also covers a blocked pipe send, before polling can begin.
-        watchdog = threading.Timer(timeout + 30.0, self.close)
+        watchdog = threading.Timer(timeout + 30.0, self._abort_request, args=(request_id,))
         watchdog.daemon = True
+        with self._lock:
+            if self.connection is not connection or self.process is not process:
+                raise CancelledError("Whisper Turbo worker closed before submission")
+            self._inflight = {"id": request_id, "watchdog": watchdog}
         watchdog.start()
         try:
             connection.send({"id": request_id, "audio": samples, "initial_prompt": initial_prompt})
@@ -186,9 +238,9 @@ class WhisperTurboASR:
                 break
         except (EOFError, BrokenPipeError, OSError) as exc:
             raise RuntimeError("Whisper Turbo worker communication failed") from exc
-        finally:
-            watchdog.cancel()
-            watchdog.join()
+        # Only receiving the job's reply clears its watchdog. Cancellation
+        # leaves the deadline alive even when no further utterance arrives.
+        self._finish_request(request_id)
         if response.get("type") != "transcript" or response.get("id") != request_id:
             raise RuntimeError("Whisper Turbo worker error: " + response.get("message", "unexpected reply"))
         if time.monotonic() >= deadline or (cancel_event is not None and cancel_event.is_set()):
@@ -197,10 +249,37 @@ class WhisperTurboASR:
         self.last_stop = response.get("stop", "unknown")
         return response["text"]
 
+    def _finish_request(self, request_id):
+        with self._lock:
+            inflight = getattr(self, "_inflight", None)
+            if inflight is None or inflight["id"] != request_id:
+                return
+            self._inflight = None
+        inflight["watchdog"].cancel()
+
+    def _abort_request(self, request_id):
+        with self._lock:
+            inflight = getattr(self, "_inflight", None)
+            if inflight is None or inflight["id"] != request_id:
+                return
+            process, connection = self.process, self.connection
+            self.process = self.connection = None
+            self._inflight = None
+        log.warning("Whisper Turbo hard deadline expired for request=%d", request_id)
+        self._close_process(process, connection)
+
     def close(self):
         with self._lock:
             process, connection = self.process, self.connection
             self.process = self.connection = None
+            inflight = getattr(self, "_inflight", None)
+            self._inflight = None
+        if inflight is not None:
+            inflight["watchdog"].cancel()
+        self._close_process(process, connection)
+
+    @staticmethod
+    def _close_process(process, connection):
         if connection is not None:
             connection.close()
         if process is not None and process.pid is not None:

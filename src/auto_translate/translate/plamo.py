@@ -22,7 +22,8 @@ from .base import (TranslatorUnavailable, TranslationCancelled,
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
-from ..name_hints import canonicalize_english_names, matsuri_matches, preserve_spoken_names
+from ..name_hints import canonicalize_english_names, preserve_spoken_names
+from ..name_context import is_matsuri_target, is_miko_target, is_name_target
 from ..subject_guard import (
     neutralize_unsupported_subjects,
     unsupported_person_reference,
@@ -30,7 +31,7 @@ from ..subject_guard import (
     neutralize_unwarranted_first_person,
     neutralize_unwarranted_possessives,
 )
-from ..translation_guard import suspicious_translation
+from ..translation_guard import proper_name_mismatch, suspicious_translation
 from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
@@ -114,16 +115,22 @@ def _needs_fragment_context(ja: str) -> bool:
 _KUSA = re.compile(r"(?<![一-鿿])草(?![一-鿿])|(?:くさ|クサ)(?=$|[。、！？!?\s]|[をがはにもの])")
 
 
-def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previous_ja: str = "") -> list[tuple[str, str]]:
+def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previous_ja: str = "", *,
+                              name_context_ja: str | None = None) -> list[tuple[str, str]]:
     """Longest-first, non-overlapping current-source matches (never future guesses)."""
     scene = (
         [(source, target) for source, target in _HOLOGTA_TERMS.items() if source in ja]
         if _HOLOGTA_TITLE.search(vod_title) else []
     )
-    miko_context = bool(re.search(r"ホロ|holo|さくらみこ|Sakura Miko", vod_title, re.I)
-                        or re.search(r"みこち|さくらみこ", previous_ja + " " + ja))
-    terms = glossary.find(ja, previous_ja=previous_ja, miko_context=miko_context)
-    candidates = sorted(scene + matsuri_matches(ja, vod_title, previous_ja) + terms, key=lambda item: len(item[0]), reverse=True)
+    terms = glossary.find(ja, previous_ja=previous_ja, video_context=vod_title)
+    if name_context_ja is not None and name_context_ja != previous_ja:
+        # Extend person-name evidence while retaining the established
+        # immediately-previous-cue policy for Marine's captain role.
+        terms = [pair for pair in terms if not is_name_target(pair[1])] + [
+            pair for pair in glossary.find(ja, previous_ja=name_context_ja, video_context=vod_title)
+            if is_name_target(pair[1])
+        ]
+    candidates = sorted(scene + terms, key=lambda item: len(item[0]), reverse=True)
     remaining = ja
     selected: list[tuple[str, str]] = []
     for source, target in candidates:
@@ -133,6 +140,36 @@ def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previ
         if len(selected) >= 16:
             break
     return selected
+
+
+def _recent_name_context(history: list[tuple[str, str]]) -> str:
+    """Use bounded Japanese evidence, never a prior English name guess."""
+    return "\n".join(source[:200] for source, _ in history[-4:])
+
+
+def _name_translation_input(ja: str, names: list[tuple[str, str]], mentions):
+    """Disambiguate only evidenced spans in a translation-only copy.
+
+    A glossary cannot give two meanings to the same spelling in one cue.
+    Write a resolved kanji homophone (or a mixed name/role spelling) as its
+    supplied English name, leaving literal role mentions and raw ASR intact.
+    """
+    rewrite = [mention for mention in mentions
+               if mention.source.startswith("巫女")
+               or (is_matsuri_target(mention.target) and mention.source in ("祭り", "祭"))
+               or (mention.source, mention.target) not in names]
+    if not rewrite:
+        return ja, names
+    translated_source = ja
+    for mention in reversed(rewrite):
+        translated_source = (translated_source[:mention.start] + mention.target
+                             + translated_source[mention.end:])
+    rewritten = {mention.source for mention in rewrite}
+    hints = [(source, target) for source, target in names
+             if source in translated_source
+             and not (is_name_target(target) and source in rewritten)]
+    hints.extend((mention.target, mention.target) for mention in rewrite)
+    return translated_source, list(dict.fromkeys(hints))
 
 
 _COMPACT_CONTEXT = (
@@ -158,7 +195,8 @@ def _translation_context(vod_title: str, *, neutral_retry: bool = False, profile
     return context
 
 
-def _trusted_history_pair(source: str, translation: str, vod_title: str, glossary: Glossary) -> bool:
+def _trusted_history_pair(source: str, translation: str, vod_title: str, glossary: Glossary,
+                          previous_ja: str = "", *, name_context_ja: str | None = None) -> bool:
     """Reject detected bad examples before giving them the authority of few-shot pairs.
 
     These are conservative checks, not proof of semantic correctness.
@@ -177,7 +215,11 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
     if any(re.search(jp, source) and re.search(en, translation, re.I)
            for jp, en in inversions):
         return False
-    terms = _current_glossary_matches(source, vod_title, glossary)
+    terms = _current_glossary_matches(source, vod_title, glossary, previous_ja,
+                                      name_context_ja=name_context_ja)
+    terms.extend((mention.source, mention.target) for mention in glossary.name_mentions(
+        source, video_context=vod_title,
+        previous_ja=previous_ja if name_context_ja is None else name_context_ja))
     return suspicious_translation(source, translation, names=terms) is None
 
 
@@ -412,6 +454,8 @@ class PlamoTranslator:
         self._cue_deadline = time.monotonic() + getattr(self.cfg, "cue_timeout_s", 75.0)
         self._cue_cancelled = cancelled
         self._cue_heartbeat = heartbeat
+        self.last_name_resolutions = []
+        self.last_translation_flags = []
         try:
             self._check_cue()
             result = self._translate_with_recovery(ja, history)
@@ -423,6 +467,8 @@ class PlamoTranslator:
             self._cue_heartbeat = None
 
     def _translate_with_recovery(self, ja: str, history: list[tuple[str, str]]) -> str:
+        resolution_count = len(self.last_name_resolutions)
+        previous_flags = list(self.last_translation_flags)
         try:
             return self._translate_cue(ja, history)
         except httpx.TransportError as exc:
@@ -437,6 +483,10 @@ class PlamoTranslator:
                     self._server_log.close()
                     self._server_log = None
             log.warning("Owned PLaMo server exited. Restarting and retrying the subtitle.")
+            # The complete cue is retried. Diagnostics from the failed
+            # attempt must not make the recovered result look unresolved.
+            del self.last_name_resolutions[resolution_count:]
+            self.last_translation_flags = previous_flags
             try:
                 self._check_cue()
                 self._start_server()
@@ -461,6 +511,8 @@ class PlamoTranslator:
             return self._translate_one(ja, history)
         recent = list(history)
         english = []
+        resolution_count = len(self.last_name_resolutions)
+        previous_flags = list(self.last_translation_flags)
         try:
             for segment in segments:
                 self._check_cue()
@@ -474,25 +526,43 @@ class PlamoTranslator:
             raise
         except Exception as exc:
             log.warning("Sentence context fallback to whole utterance: %s", exc)
+            del self.last_name_resolutions[resolution_count:]
+            self.last_translation_flags = previous_flags
             return self._translate_one(ja, history)
         return " ".join(english)
 
     def _translate_one(self, ja: str, history: list[tuple[str, str]]) -> str:
         self._check_cue()
         previous = history[-1][0] if history else ""
-        names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous)
+        name_context = _recent_name_context(history)
+        names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous,
+                                          name_context_ja=name_context)
+        mentions = self.glossary.name_mentions(
+            ja, video_context=self.vod_title, previous_ja=name_context)
+        translation_ja, translation_names = _name_translation_input(ja, names, mentions)
+        # Retain original source spans for validation, including names that
+        # cannot safely be represented as a cue-wide glossary entry.
+        names = list(dict.fromkeys(names + [(m.source, m.target) for m in mentions]))
+        for mention in mentions:
+            self.last_name_resolutions.append(dict(
+                japanese=ja, start=mention.start, end=mention.end,
+                source=mention.source, target=mention.target, evidence=mention.evidence,
+                translation_source=translation_ja if translation_ja != ja else None,
+            ))
 
         def normalize_names(english: str) -> str:
             if any(target in ("Haachama", "Laplus") for _, target in names):
                 english = canonicalize_english_names(ja, english, self.vod_title)
-            return preserve_spoken_names(ja, english, names)
+            return preserve_spoken_names(ja, english, names, name_mentions=mentions)
 
         if getattr(self, "memory_lines", 0) and not _KUSA.search(ja) and "マツリ" not in ja:
             reused = reuse_recent_short_term(ja, history)
             if reused is not None:
-                log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 # Cached subtitles must obey current short-name policy too.
-                return normalize_names(reused)
+                reused = normalize_names(reused)
+                if not proper_name_mismatch(ja, reused, names):
+                    log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
+                    return reused
 
         def normalized(raw: str) -> str:
             translated = _clean(raw)
@@ -508,13 +578,13 @@ class PlamoTranslator:
                     if self.cfg.neutral_subjects else translated)
 
         try:
-            raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
+            raw = self._chat(translation_ja, history, timeout=self.cfg.timeout_s, names=translation_names)
         except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
                 raise
             log.warning("Retrying transient PLaMo request failure: %s", exc)
             self._check_cue()
-            raw = self._chat(ja, history, timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s), names=names)
+            raw = self._chat(translation_ja, history, timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s), names=translation_names)
         english = normalized(raw)
         pronoun_reason = (
             unsupported_person_reference(ja, english)
@@ -531,8 +601,8 @@ class PlamoTranslator:
                 # unsupported person/gender references. No new model is loaded.
                 self._check_cue()
                 candidate = normalized(self._chat(
-                    ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
-                    neutral_retry=bool(pronoun_reason), names=names,
+                    translation_ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
+                    neutral_retry=bool(pronoun_reason), names=translation_names,
                 ))
             except Exception as exc:
                 if isinstance(exc, (TranslationCancelled, TranslationDeadlineExceeded)):
@@ -562,6 +632,9 @@ class PlamoTranslator:
             # that explicitly states a person/gender retains that information.
             english = neutralize_unwarranted_gender(ja, english)
             english = neutralize_unwarranted_first_person(ja, english)
+        if proper_name_mismatch(ja, english, names):
+            if "proper_name_mismatch" not in self.last_translation_flags:
+                self.last_translation_flags.append("proper_name_mismatch")
         return english
 
     def _chat(
@@ -577,12 +650,15 @@ class PlamoTranslator:
         dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
         compact = getattr(self.cfg, "context_profile", "legacy") == "compact"
         rejected_sources: list[str] = []
-        for source, translation in dialogue_history:
+        history_offset = len(history) - len(dialogue_history)
+        for index, (source, translation) in enumerate(dialogue_history):
             # The compact profile borrows OverlaySubs' paired PFML examples,
             # but only after basic quality and unsupported-pronoun checks.
             # Legacy mode preserves the old Japanese-only neutral prompt.
+            prior = history[:history_offset + index]
             trusted = (not compact or _trusted_history_pair(
-                source, translation, self.vod_title, self.glossary))
+                source, translation, self.vod_title, self.glossary,
+                prior[-1][0] if prior else "", name_context_ja=_recent_name_context(prior)))
             if trusted and (compact or not self.cfg.neutral_subjects):
                 messages.append({"role": "user", "content": source})
                 messages.append({
@@ -632,7 +708,21 @@ class PlamoTranslator:
                 "Use grass or weeds for vegetation, mowing, gathering or feeding animals. "
                 "For amusement retain the spoken slang kusa. Do not render kusa as lol."
             )
-        hits = names if names is not None else _current_glossary_matches(ja, self.vod_title, self.glossary)
+        hits = names if names is not None else _current_glossary_matches(
+            ja, self.vod_title, self.glossary, history[-1][0] if history else "",
+            name_context_ja=_recent_name_context(history))
+        if any(is_miko_target(target) for _, target in hits):
+            options["context"] += (
+                " The supplied Miko/Mikochi glossary entries are person names for Sakura Miko. "
+                "Preserve the supplied name and spoken honorific; do not translate it as shrine maiden. "
+                "A separate literal occupation or role 巫女 still means shrine maiden."
+            )
+        if any(is_matsuri_target(target) for _, target in hits):
+            options["context"] += (
+                " The supplied Matsuri glossary entries are person names for Natsuiro Matsuri. "
+                "Preserve their supplied form and spoken honorifics; do not translate the name as festival. "
+                "A separate literal festival or event remains festival. Keep spoken corrections and negation."
+            )
         if any(self.glossary.nicknames.get(source) == target for source, target in hits):
             options["context"] += (" Keep each spoken nickname at its supplied length, "
                                    "including spoken honorifics. Do not expand it to a stage name.")

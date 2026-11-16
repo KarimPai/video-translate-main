@@ -9,6 +9,7 @@ import numpy as np
 
 from ..windows_subprocess import stopping
 from ..asr_correction import lap_spelling_from_peer
+from ..name_context import is_name_target
 from ..text_filter import is_usable_transcript
 from .whisper_turbo import WhisperTurboASR
 from .diagnostics import append_comparison
@@ -483,7 +484,13 @@ class DualASR:
                 and secondary.startswith(primary) and len(secondary) > len(primary)):
             result = secondary
             selected_by = "whisper_turbo_completion"
-        terms = list(dict.fromkeys(self.glossary.find(primary) + self.glossary.find(secondary)))
+        # Reuse the same bounded, generation-local name evidence as translation.
+        # This only informs A/B/U selection; the original ASR candidates stay intact.
+        previous_ja = "\n".join(context)
+        terms = list(dict.fromkeys(
+            self.glossary.find(primary, previous_ja=previous_ja, video_context=title[:200])
+            + self.glossary.find(secondary, previous_ja=previous_ja, video_context=title[:200])
+        ))
         score, flags = compare(primary, secondary, terms, self.glossary.scene_pairs)
         if score < 1 and primary_ok and selected_by != "whisper_turbo_completion":
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
@@ -537,11 +544,11 @@ class DualASR:
             log.warning("Suppressing one-sided uncorroborated full name at %.2fs", utt.start_s)
             record("", "abstain_uncorroborated_full_name", score, flags, selector_called)
             return ""
-        # A nickname heard on just one side of a strong disagreement
-        # must not disable the weak-phonetics abstention.
-        corroborating_terms = any(source not in self.glossary.nicknames
+        # A nickname or context-resolved name homophone heard on just one
+        # side must not disable the weak-phonetics abstention.
+        corroborating_terms = any((source not in self.glossary.nicknames and not is_name_target(target))
                                   or (source in primary and source in secondary)
-                                  for source, _ in terms)
+                                  for source, target in terms)
         if suspicious_phonetics(result) and not corroborating_terms and score < .45:
             flags.append("uncorroborated_phonetics")
             if selected_by == "uncertain" and utt.vad_confidence < .6:

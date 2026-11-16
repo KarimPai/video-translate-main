@@ -322,23 +322,25 @@ jobs:
           if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
-      - name: Check incremental GUI patch
+      - name: Smoke test compiled transcript files and reports
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          Remove-Item "logs/gui-packaged-smoke.log" -Force -ErrorAction SilentlyContinue
+          $app = Start-Process -FilePath "dist/VideoTranslate/VideoTranslate.exe" -ArgumentList "--smoke-test" -PassThru
+          if (-not $app.WaitForExit(30000)) { $app.Kill(); throw "Compiled GUI smoke timed out" }
+          if ($app.ExitCode -ne 0) { throw "Compiled GUI smoke failed" }
+          $log = Get-Content "logs/gui-packaged-smoke.log" -Raw
+          if (-not $log.Contains("Transcript/files/report smoke passed")) { throw "Missing compiled GUI smoke marker" }
+      - name: Check full GUI runtime
         shell: pwsh
         run: |
           $exe = Get-Item "dist/VideoTranslate/VideoTranslate.exe"
           $full = (Get-ChildItem "dist/VideoTranslate" -File -Recurse | Measure-Object Length -Sum).Sum
           if (-not (Test-Path "dist/VideoTranslate/_internal")) { throw "Missing packaged Qt runtime" }
           if ($exe.Length -lt 10000) { throw "Packaged frontend EXE unexpectedly small" }
-          Write-Host "Incremental GUI EXE size: $([math]::Round($exe.Length / 1MB, 2)) MiB"
+          Write-Host "GUI EXE size: $([math]::Round($exe.Length / 1MB, 2)) MiB"
           Write-Host "Complete GUI runtime size: $([math]::Round($full / 1MB, 2)) MiB"
-      - name: Upload small EXE-only update
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: VideoTranslate-EXE-Only
-          path: dist/VideoTranslate/VideoTranslate.exe
-          compression-level: 9
-          retention-days: 30
-          if-no-files-found: error
       - name: Upload full GUI (new installs)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

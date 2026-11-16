@@ -523,7 +523,7 @@ class VideoTranslateWindow(QMainWindow):
         if not Path(path).suffix:
             path += ".vtt" if "vtt" in selected else ".ass" if "ass" in selected else ".srt"
         try:
-            from .subtitle_files import export_subtitles
+            from auto_translate.subtitle_files import export_subtitles
             count = export_subtitles(path, self.review.snapshot(), language=self.file_language.currentData())
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, "Export failed", str(exc))
@@ -540,7 +540,7 @@ class VideoTranslateWindow(QMainWindow):
         if not path:
             return
         try:
-            from .subtitle_files import import_corrections
+            from auto_translate.subtitle_files import import_corrections
             revisions = import_corrections(path, self.review.snapshot(), language=self.file_language.currentData())
             for revision in revisions:
                 cue = revision.revised
@@ -582,7 +582,7 @@ class VideoTranslateWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Save performance report", str(self.root / "logs"))
         if not folder:
             return
-        from .quality_report import generate_report
+        from auto_translate.quality_report import generate_report
         self.performance_report_button.setEnabled(False)
         self.status.setText("Generating performance report from comparison logs…")
         job = ReviewJob(lambda: generate_report(log_path, Path(folder)), self)
@@ -626,7 +626,7 @@ class VideoTranslateWindow(QMainWindow):
         if not Path(destination).suffix:
             destination += ".srt"
         try:
-            from .subtitle_files import export_subtitles
+            from auto_translate.subtitle_files import export_subtitles
             temporary = tempfile.TemporaryDirectory(prefix="video-translate-refine-")
             self._refine_temp = temporary
             source = Path(temporary.name) / "reviewed.srt"
@@ -1318,6 +1318,31 @@ class VideoTranslateWindow(QMainWindow):
         event.accept()
 
 
+def _smoke_review(window, root):
+    """Exercise lazy file/report imports in both script and frozen entry modes."""
+    from auto_translate.subtitle_files import export_subtitles, import_subtitles
+    from auto_translate.quality_report import generate_report
+    window._on_player_event(dict(event="subtitle", start_s=1, end_s=2,
+                                 ja="こんにちは", en="Hello", generation=0))
+    window._refresh_transcript()
+    if window.transcript_model.rowCount() != 1:
+        raise RuntimeError("Transcript model failed its packaged smoke check")
+    with tempfile.TemporaryDirectory(prefix="video-translate-smoke-") as folder:
+        folder = Path(folder)
+        subs = folder / "review.srt"
+        export_subtitles(subs, window.review.snapshot(), language="bilingual")
+        if import_subtitles(subs, language="bilingual")[0].en != "Hello":
+            raise RuntimeError("Packaged subtitle round trip failed")
+        events = folder / "events.jsonl"
+        events.write_text(json.dumps(dict(session_id="smoke", stage="translation",
+                                          start_s=1, end_s=2, final_ja="こんにちは", final_en="Hello")) + "\n",
+                          encoding="utf-8")
+        if not generate_report(events)["html_path"].is_file():
+            raise RuntimeError("Packaged report generation failed")
+    (root / "logs").mkdir(exist_ok=True)
+    (root / "logs" / "gui-packaged-smoke.log").write_text("Transcript/files/report smoke passed\n", encoding="utf-8")
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Video Translate")
@@ -1329,6 +1354,16 @@ def main():
         return 1
     window = VideoTranslateWindow(root)
     window.show()
+    if "--smoke-test" in sys.argv:
+        try:
+            _smoke_review(window, root)
+        except Exception:
+            import traceback
+            (root / "logs").mkdir(exist_ok=True)
+            (root / "logs" / "gui-packaged-smoke.log").write_text(traceback.format_exc(), encoding="utf-8")
+            window.close()
+            return 1
+        QTimer.singleShot(250, app.quit)
     return app.exec()
 
 

@@ -76,8 +76,13 @@ already-installed `dist/VideoTranslate/VideoTranslate.exe`.
 
 ## Updating without downloading the entire GUI again
 
-For an existing EXE installation, the **Windows GUI frontend build** GitHub
-Actions workflow now uploads two choices:
+**The transcript-tools release requires the full `VideoTranslate-Windows-GUI`
+artifact.** Close the app and replace the complete `dist/VideoTranslate` folder,
+including `_internal`. This adds NumPy/subtitle runtime files; replacing only
+the EXE leaves file export and review tools without required modules. Update the
+matching backend checkout and run `uv sync --locked` as well.
+
+Earlier compatible builds offered two choices:
 
 - **`VideoTranslate-EXE-Only`**: small incremental download containing only
   `VideoTranslate.exe`. Use for ordinary GUI code changes; keep the existing
@@ -119,11 +124,10 @@ The EXE is **not a standalone model bundle**. It uses the original project's
 
 ## Windows session cleanup and verification
 
-Pull the matching backend source and replace the frontend EXE from the same
-commit. The Windows GUI workflow builds `VideoTranslate-EXE-Only` alongside the
-full package. For the first upgrade from the previous GUI, install the full package. The
+Pull the matching backend source and install the full frontend package from the
+same commit. This release intentionally publishes the full package only. The
 old runtime lacks the native ctypes extension and libffi used for Job Objects.
-Use EXE-only updates once the installed runtime matches the build.
+Use EXE-only updates only if a future workflow explicitly verifies runtime compatibility.
 
 Each Start writes a fresh 32-character session ID to `logs/gui-lifecycle.log`
 and `logs/run.log`. The frontend job covers the first launcher instruction.

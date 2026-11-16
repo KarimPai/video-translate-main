@@ -32,6 +32,11 @@ class HololiveNameHintsTests(unittest.TestCase):
         translator.glossary = Glossary.load(Path("glossary.toml"))
         translator.vod_title = "ホロライブ ラプラス"
         for ja, raw, expected in (
+            ("草。", "LOL!", "kusa!"),
+            ("草を刈って", "Cut the lol.", "Cut the grass."),
+            ("ラプ来た", "Rap arrived.", "Lap arrived."),
+            ("みこちすごい", "Sakura Miko is amazing.", "Mikochi is amazing."),
+            ("まつり来た", "The festival arrived.", "Matsuri arrived."),
             ("ラプが来た", "Rap is here.", "Lap is here."),
             ("ラプ様どこ？", "Where's Laplus?", "Where's Lap-sama?"),
             ("らぷさん", "rap-san", "Lap-san"),

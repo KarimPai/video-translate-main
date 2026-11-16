@@ -11,7 +11,7 @@ from pathlib import Path
 # potentially matching stems inside compounds. Only common post-name syntax
 # is admitted; the original (unmasked) text determines each boundary.
 _PARTICLE = re.compile(r"(?:が|は|を|に|も|の|と|で)(?=$|[^ぁ-ん]|いる|いた|きた|どこ|いっしょ)")
-_FOLLOW = re.compile(r"どこ|って|だよ|です|だね|だ[。！？!?]?$")
+_FOLLOW = re.compile(r"来[たてるな]|いた|いる|すご[いく]|かわいい|おはよう|どこ|って|だよ|です|だね|だ[。！？!?]?$")
 _SHIP = re.compile(r"海賊船|船員|乗組員|乗客|出航|航海|操舵|操縦|甲板|港|この船|船の|フェリー")
 _SHRINE = re.compile(r"神社|神主|神職|巫女|お祓い")
 

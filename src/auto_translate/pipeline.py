@@ -21,10 +21,11 @@ from .context_memory import repair_near_repeated_word
 from .text_filter import is_usable_transcript
 from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
 from .config import AsrConfig, Config, vad_for_source
+from .gui_control import emit_event
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
-from .translate.base import Translator
+from .translate.base import Translator, TranslatorUnavailable
 from .types import (
     SAMPLE_RATE,
     AudioChunk,
@@ -59,7 +60,9 @@ def _raise_worker_failure(
         name, exc = failures.get_nowait()
     except queue.Empty:
         return
-    raise RuntimeError(f"pipeline worker '{name}' failed: {exc}") from exc
+    message = f"pipeline worker '{name}' failed: {exc}"
+    emit_event("session_error", message=message)
+    raise RuntimeError(message) from exc
 
 
 def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
@@ -322,6 +325,7 @@ def run_translate(
     stop: threading.Event | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
+    consecutive_failures = 0
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
     memory_generation: int | None = None
@@ -387,7 +391,13 @@ def run_translate(
                     tr = replace(tr, ja=repaired_ja)
             try:
                 en = translator.translate(tr.ja, list(history))
+                consecutive_failures = 0
+            except TranslatorUnavailable:
+                raise
             except Exception as e:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    raise TranslatorUnavailable(f"PLaMo failed on three consecutive cues: {e}") from e
                 log.error("translation failed: %s", e)
                 suppressed = True
 

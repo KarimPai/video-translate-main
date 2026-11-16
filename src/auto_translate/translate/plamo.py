@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .base import TranslatorUnavailable
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
@@ -213,6 +214,7 @@ class PlamoTranslator:
         self._server_log = None
         self._close_lock = threading.Lock()
         self._closed = False
+        self._restart_used = False
         self.client = httpx.Client(trust_env=False)
         try:
             self._start_server()
@@ -277,33 +279,37 @@ class PlamoTranslator:
 
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        self._server_log = (log_dir / "plamo-server.log").open(
-            "a", encoding="utf-8"
-        )
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        try:
-            self.process = owned_popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=self._server_log,
-                stderr=subprocess.STDOUT,
-                creationflags=creationflags,
+        with self._close_lock:
+            if self._closed:
+                raise TranslatorUnavailable("PLaMo session closed")
+            self._server_log = (log_dir / "plamo-server.log").open(
+                "a", encoding="utf-8"
             )
-        except Exception:
-            self._server_log.close()
-            self._server_log = None
-            raise
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            try:
+                self.process = owned_popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=self._server_log,
+                    stderr=subprocess.STDOUT,
+                    creationflags=creationflags,
+                )
+            except Exception:
+                self._server_log.close()
+                self._server_log = None
+                raise
 
-        atexit.register(self.close)
+            process = self.process
+            atexit.register(self.close)
         log.info(
             "Started local PLaMo server (PID %s); loading model...",
-            self.process.pid,
+            process.pid,
         )
 
         deadline = time.monotonic() + self.cfg.load_timeout_s
         while time.monotonic() < deadline:
             check_running()
-            if self.process.poll() is not None:
+            if process.poll() is not None:
                 self.close()
                 raise RuntimeError(
                     "llama-server exited during startup. See logs\\plamo-server.log."
@@ -373,6 +379,27 @@ class PlamoTranslator:
             atexit.unregister(self.close)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        try:
+            return self._translate_cue(ja, history)
+        except httpx.TransportError as exc:
+            with self._close_lock:
+                if self._closed or self.process is None or self.process.poll() is None:
+                    raise
+                if self._restart_used:
+                    raise TranslatorUnavailable("PLaMo exited again after recovery") from exc
+                self._restart_used = True
+                self.process = None
+                if self._server_log is not None:
+                    self._server_log.close()
+                    self._server_log = None
+            log.warning("Owned PLaMo server exited. Restarting and retrying the subtitle.")
+            try:
+                self._start_server()
+                return self._translate_cue(ja, history)
+            except Exception as recovery_error:
+                raise TranslatorUnavailable(f"PLaMo recovery failed: {recovery_error}") from recovery_error
+
+    def _translate_cue(self, ja: str, history: list[tuple[str, str]]) -> str:
         """Translate complete exchanges without changing media timestamps.
 
         The segmented path runs only on clear punctuation boundaries; every
@@ -392,6 +419,8 @@ class PlamoTranslator:
                     raise ValueError("unreliable sentence translation")
                 english.append(translated.strip())
                 recent.append((segment, translated))
+        except httpx.TransportError:
+            raise
         except Exception as exc:
             log.warning("Sentence context fallback to whole utterance: %s", exc)
             return self._translate_one(ja, history)
@@ -415,6 +444,11 @@ class PlamoTranslator:
 
         def normalized(raw: str) -> str:
             translated = _clean(raw)
+            if _KUSA.search(ja) and re.search(r"\blol\b", translated, re.I):
+                literal = re.search(r"草[をがはもに]*(?:刈|食|抜|生やさ|集め)|(?:羊|牛|馬).*食|草むしり", ja)
+                if not literal and ja.strip("。！？!? ") in ("草", "くさ", "クサ") and previous:
+                    literal = re.search(r"庭|雑草|草刈|草食|(?:羊|牛|馬).*食", previous)
+                translated = re.sub(r"\blol\b", "grass" if literal else "kusa", translated, flags=re.I)
             if any(target in ("Watame", "Watamee", "Tsunomaki Watame") for _, target in names):
                 translated = correct_translation(ja, translated)
             return neutralize_unsupported_subjects(ja, normalize_names(translated))
@@ -537,7 +571,7 @@ class PlamoTranslator:
             options["context"] += (
                 " Resolve kusa from the current Japanese and preceding dialogue. "
                 "Use grass or weeds for vegetation, mowing, gathering or feeding animals. "
-                "Use lol only when kusa expresses amusement."
+                "For amusement retain the spoken slang kusa. Do not render kusa as lol."
             )
         hits = names if names is not None else _current_glossary_matches(ja, self.vod_title, self.glossary)
         if any(self.glossary.nicknames.get(source) == target for source, target in hits):

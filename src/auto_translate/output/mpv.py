@@ -174,6 +174,10 @@ class MpvError(Exception):
     pass
 
 
+class MpvCommandTimeout(MpvError):
+    """The command may have executed before the reply deadline."""
+
+
 class _WindowsPipe:
     """Raw newline IPC over a duplex, overlapped Windows pipe.
 
@@ -317,7 +321,7 @@ class MpvIpc:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise MpvError(
+                    raise MpvCommandTimeout(
                         f"mpv IPC command timed out after "
                         f"{self.COMMAND_TIMEOUT_S:.1f}s: {cmd!r}"
                     )
@@ -325,7 +329,7 @@ class MpvIpc:
                 try:
                     msg = self._responses.get(timeout=remaining)
                 except queue.Empty:
-                    raise MpvError(
+                    raise MpvCommandTimeout(
                         f"mpv IPC command timed out after "
                         f"{self.COMMAND_TIMEOUT_S:.1f}s: {cmd!r}"
                     ) from None
@@ -851,6 +855,15 @@ class MpvOutput:
 
     # ---- Scheduler ----
 
+    def _player_command(self, *args, **kwargs) -> bool:
+        """A rejected command or late reply does not close the IPC connection."""
+        try:
+            self.ipc.command(*args, **kwargs)
+            return True
+        except MpvError as exc:
+            log.warning("MPV %s was not confirmed: %s", args[0], exc)
+            return False
+
     def _run(self) -> None:
         try:
             first = True
@@ -1011,13 +1024,18 @@ class MpvOutput:
                            duration=self.ingest.source.duration)
                 self._gui_ready_emitted = True
             if self._session_start > 0 and not self.ingest.source.live:
-                self.ipc.command("seek", self._session_start, "absolute+exact")
+                self._player_command("seek", self._session_start, "absolute+exact")
                 deadline = time.monotonic() + 10.0
                 while time.monotonic() < deadline:
                     pos = self.ipc.get("time-pos")
                     if pos is not None and abs(float(pos) - self._session_start) <= 1.0:
                         break
                     time.sleep(0.05)
+                else:
+                    if pos is None:
+                        raise RuntimeError("MPV could not confirm the initial playback position")
+                    self._restart_audio_at(float(pos))
+                    return
 
         if self.ingest.source.live:
             if not self._wait_live_ready(self.ingest.first_pts_ready, "audio PTS", 60.0):
@@ -1096,13 +1114,8 @@ class MpvOutput:
                     "waiting for the translation buffer"
                 )
 
-            if paused and should_unpause and not getattr(self, "_user_paused", False):
-
-                self.ipc.command(
-                    "set_property",
-                    "pause",
-                    False,
-                )
+            if (paused and should_unpause and not getattr(self, "_user_paused", False)
+                    and self._player_command("set_property", "pause", False)):
 
                 paused = False
                 mpv_paused = False
@@ -1210,7 +1223,7 @@ class MpvOutput:
             restart_at,
         )
 
-        self.ipc.command("set_property", "pause", True)
+        self._player_command("set_property", "pause", True)
         self._now = None
         self._shown = ""
         with self._lock:
@@ -1305,9 +1318,10 @@ class MpvOutput:
             self._jump(delta, gui=True)
 
     def _toggle_user_pause(self):
-        self._user_paused = self.ipc.get("pause") is False
-        self.ipc.command("set_property", "pause", self._user_paused)
-        log.debug("User pause intent=%s", self._user_paused)
+        paused = self.ipc.get("pause")
+        if isinstance(paused, bool) and self._player_command("set_property", "pause", not paused):
+            self._user_paused = not paused
+        log.debug("User pause intent=%s", getattr(self, "_user_paused", False))
 
     def _read_player_events(self) -> tuple[bool, float]:
         """Consume each IPC event once, including events arriving during a seek."""
@@ -1345,7 +1359,7 @@ class MpvOutput:
         src = self.ingest.source
 
         if src.live:
-            self.ipc.command(
+            self._player_command(
                 "show-text",
                 "Jumping only works for VODs",
                 2000,
@@ -1364,7 +1378,9 @@ class MpvOutput:
         mpv_target = self._mpv_time_from_source(target)
         try:
             self.ipc.command("seek", mpv_target, "absolute+exact")
-        except (MpvError, TimeoutError) as exc:
+        except (MpvCommandTimeout, TimeoutError):
+            log.warning("MPV seek reply timed out; checking playback position")
+        except MpvError as exc:
             log.warning("MPV seek to %.3fs failed: %s", target, exc)
             if gui:
                 emit_event("seek_ack", accepted=False, target=target)
@@ -1383,7 +1399,7 @@ class MpvOutput:
                 return False
         else:
             target, deadline, gui = pending
-            landed = (self._native_seek_at is not None and pos is not None
+            landed = (pos is not None
                       and abs(pos - target) <= 0.75
                       and self.ipc.get("seeking") is False)
             if not landed and now < deadline:
@@ -1476,15 +1492,15 @@ class MpvOutput:
 
     def _restart_audio_at(self, target: float) -> None:
         """Buffer translation at the confirmed video position."""
-        self.ipc.command("set_property", "pause", True)
+        self._player_command("set_property", "pause", True)
         self._now = None
-        self._shown = ""
-        self.ipc.command(
+        cleared = self._player_command(
             "osd-overlay",
             id=OVERLAY_ID,
             format="none",
             data="",
         )
+        self._shown = "" if cleared else None
         with self._lock:
             self._lines.clear()
 
@@ -1600,7 +1616,7 @@ class MpvOutput:
         )
 
         if text != self._shown:
-            self.ipc.command(
+            if not self._player_command(
                 "osd-overlay",
                 id=OVERLAY_ID,
                 format="ass-events" if text else "none",
@@ -1609,7 +1625,8 @@ class MpvOutput:
                 res_y=720,
                 z=10,
                 hidden=False,
-            )
+            ):
+                return
             if text and not self._shown:
                 log.debug("MPV subtitle overlay accepted at %.3fs", now)
             self._shown = text

@@ -49,6 +49,7 @@ class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
 CHUNK_SAMPLES = 4096
 SEPARATION_READ_FRAMES = 8192
 SEPARATION_INPUT_RATE = 44100
+PCM_READ_TIMEOUT_S = 60.0
 DEEPFILTER_INPUT_RATE = 48000
 
 @dataclass
@@ -243,6 +244,7 @@ class Ingest:
                     report.unlink(missing_ok=True)
             except OSError as exc:
                 log.warning("Could not prune FFmpeg report %s: %s", report.name, exc)
+        self._vod_resume_s: float | None = None
         self._vod_audio_url: str | None = None
         self._audio_client_fallback = False  # retry known 2026 YouTube client 403s
         self.cfg = cfg
@@ -876,6 +878,10 @@ class Ingest:
             f"atempo={tempo:.8f}",
         ]
 
+    def _audio_start_s(self) -> float:
+        resume = self._vod_resume_s
+        return self.source.start_s if resume is None else resume
+
     def _audio_commands(self) -> list[list[str]]:
         """Build audio-only FFmpeg commands without per-frame PTS diagnostics.
 
@@ -897,8 +903,9 @@ class Ingest:
             if src.paced:
                 ffmpeg.append("-re")
 
-            if src.start_s:
-                ffmpeg += ["-ss", f"{src.start_s:.3f}"]
+            start_s = self._audio_start_s()
+            if start_s:
+                ffmpeg += ["-ss", f"{start_s:.6f}"]
 
         if self.separation_enabled:
             output_rate = SEPARATION_INPUT_RATE
@@ -940,6 +947,7 @@ class Ingest:
                 self._vod_audio_url = audio_url
 
         return [ffmpeg + [
+            *([] if src.live else ["-xerror", "-rw_timeout", "30000000"]),
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "10",
@@ -992,15 +1000,16 @@ class Ingest:
                 # The previous logic checked whether the URL was cached before
                 # the first read, so a fresh signed URL returning 403 stopped
                 # all ASR without ever refreshing it.
+                self._vod_resume_s = None
                 retries = 0
                 while True:
                     try:
-                        failed_to_open = self._read_session(out_q)
+                        read_failed = self._read_session(out_q)
                     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
                         if not (self.source.live and self.video_out):
                             raise
                         log.warning("shared live HLS read failed: %s", exc)
-                        failed_to_open = True
+                        read_failed = True
 
                     with self._proc_lock:
                         remote_vod = (
@@ -1011,25 +1020,25 @@ class Ingest:
                             not self._stopped and self._restart_at is None
                             and generation == self._generation
                         )
-                        refresh = remote_vod and current and failed_to_open and retries < 2
+                        refresh = remote_vod and current and read_failed and retries < 2
                         if refresh:
                             self._vod_audio_url = None
                             # Attempt 1: fresh default URL; attempt 2:
                             # alternative player client for persistent HTTP 403.
                             self._audio_client_fallback = retries >= 1
-                        give_up = remote_vod and current and failed_to_open and not refresh
+                        give_up = remote_vod and current and read_failed and not refresh
                     if not refresh:
                         break
                     retries += 1
                     log.warning(
-                        "YouTube VOD audio failed before any PCM; refreshing signed URL "
+                        "YouTube VOD audio interrupted at %.3fs; refreshing signed URL "
                         "(retry %d/2, alternate client=%s)",
-                        retries, self._audio_client_fallback,
+                        self._audio_start_s(), retries, self._audio_client_fallback,
                     )
                     time.sleep(0.5)
                 if give_up:
                     raise RuntimeError(
-                        "YouTube VOD audio inaccessible: FFmpeg could not decode any "
+                        "YouTube VOD audio inaccessible: FFmpeg could not sustain "
                         "audio after URL refresh and alternate-client retry. "
                         "Check HTTP 403 above, update yt-dlp, and try another "
                         "YouTube client or browser cookies."
@@ -1079,7 +1088,7 @@ class Ingest:
         self,
         out_q: "queue.Queue[AudioChunk | None]",
     ) -> bool:
-        """Read a session. Return True if FFmpeg failed before producing audio."""
+        """Read a session. Return True on an abnormal FFmpeg exit."""
         with self._proc_lock:
             if self._stopped or self._restart_at is not None:
                 return False
@@ -1195,7 +1204,8 @@ class Ingest:
         stdout = procs[-1].stdout
         assert stdout is not None
 
-        first = round(self.source.start_s * SAMPLE_RATE)
+        start_s = self._audio_start_s()
+        first = round(start_s * SAMPLE_RATE)
         sample = first
         input_frames = 0
 
@@ -1203,17 +1213,22 @@ class Ingest:
         # between reads are intentional and must never trigger recovery.
         read_deadline = None
         finished = threading.Event()
+        shared_live = bool(self.source.live and self.video_out)
+        remote_vod = not self.source.live and not self.video_out and not Path(self.source.location).exists()
+        watch_reads = shared_live or remote_vod
+
         def watch_pcm(pcm_process):
             while not finished.wait(1.0):
                 with self._proc_lock:
                     if read_deadline is not None and time.monotonic() >= read_deadline:
                         if generation == self._generation and not self._stopped:
-                            log.error("Live PCM read stalled for 60s; restarting shared session")
-                            self._video_failed.set()
+                            log.error("FFmpeg PCM read stalled for %gs", PCM_READ_TIMEOUT_S)
+                            if shared_live:
+                                self._video_failed.set()
                             pcm_process.kill()
                         return
-        if self.source.live and self.video_out:
-            threading.Thread(target=watch_pcm, args=(procs[-1],), name="live-pcm-watch", daemon=True).start()
+        if watch_reads:
+            threading.Thread(target=watch_pcm, args=(procs[-1],), name="pcm-read-watch", daemon=True).start()
 
         worker = None
         deepfilter_worker = None
@@ -1266,15 +1281,15 @@ class Ingest:
                 if not self._wait_for_vod_lead(reader_sample, generation):
                     break
 
-                if self.source.live and self.video_out:
+                if watch_reads:
                     with self._proc_lock:
-                        read_deadline = time.monotonic() + 60.0
+                        read_deadline = time.monotonic() + PCM_READ_TIMEOUT_S
                 if worker:
                     data = stdout.read(SEPARATION_READ_FRAMES * 4)
                 else:
                     data = stdout.read(CHUNK_SAMPLES * 2)
 
-                if self.source.live and self.video_out:
+                if watch_reads:
                     with self._proc_lock:
                         read_deadline = None
                 if not data:
@@ -1415,7 +1430,10 @@ class Ingest:
                     fmt_hms(self.source.start_s),
                 )
 
-        return processed_seconds == 0 and any(p.returncode for p in procs)
+        failed = any(p.returncode for p in procs)
+        if failed and remote_vod:
+            self._vod_resume_s = start_s + processed_seconds
+        return failed
 
     def _describe(self) -> str:
         src = self.source

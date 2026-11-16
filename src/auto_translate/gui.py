@@ -114,6 +114,7 @@ class VideoTranslateWindow(QMainWindow):
         self.process: QProcess | None = None
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._pending_line = ""
+        self._session_error = ""
         self._log_stream = None
         self._ready = False
         self._stopping = False
@@ -461,6 +462,7 @@ class VideoTranslateWindow(QMainWindow):
         self.console.clear()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._pending_line = ""
+        self._session_error = ""
         self._ready = False
         self._stopping = False
         self._reset_player_controls()
@@ -551,6 +553,10 @@ class VideoTranslateWindow(QMainWindow):
 
     def _on_player_event(self, event: dict):
         action = event.get("event")
+        if action == "session_error":
+            self._session_error = str(event.get("message", ""))
+            self.status.setText(self._session_error)
+            return
         if action == "control_ready":
             if self._control_socket is not None:
                 self._control_ready = True
@@ -796,7 +802,7 @@ class VideoTranslateWindow(QMainWindow):
         normal = (exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit)
         reason = "Stopped." if self._stopping else (
             "Video finished." if normal else
-            f"Backend stopped with exit code {exit_code}; check Console / logs/run.log.")
+            self._session_error or f"Backend stopped with exit code {exit_code}; check Console / logs/run.log.")
         self._session_finished(reason)
 
     def _session_finished(self, reason: str):

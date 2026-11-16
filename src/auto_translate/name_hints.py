@@ -5,6 +5,8 @@ general Japanese or reconstruct words absent from the audio.
 """
 import re
 
+from .name_context import is_miko_target
+
 _HOLO = re.compile(r"ホロ|holo", re.I)
 _HAACHAMA_JA = ("はあちゃま", "はぁちゃま", "はーちゃま", "はやちゃま", "ハーチャマ")
 _LAPLUS_JA = ("ラプラス", "らぷらす")
@@ -42,7 +44,7 @@ def matsuri_matches(ja, title, previous):
 _FAMILIES = {
     "Lap": ("Lap Laplus Lap-sama Lap-chan Lap-san", r"(?:La\s*\+|La plus|Laplus|Laplace)(?:[ ·-]+Darkness+)?|Lap"),
     "Matsuri": ("Matsuri Matsuri-chan Matsuri-san Matsuri-sama", r"(?:Natsuiro )?Matsuri"),
-    "Miko": ("Miko Mikochi Miko-chan", r"(?:Sakura )?Miko(?:chi)?"),
+    "Miko": ("Miko Mikochi Miko-chan Miko-san Miko-sama", r"(?:Sakura )?Miko(?:chi)?"),
     "Watame": ("Watame Watamee", r"(?:Tsunomaki )?Watamee?"),
     "Marine": ("Senchou", r"(?:Houshou )?Marine|Senchou"),
     "Suisei": ("Sui-chan", r"(?:Hoshimachi )?Suisei|Sui"),
@@ -67,11 +69,14 @@ _FAMILIES = {
 SPOKEN_NAME_FORMS = {form for forms, _ in _FAMILIES.values() for form in forms.split()}
 
 
-def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -> str:
+def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]], *,
+                          miko_mentions=()) -> str:
     """Change one unambiguous output span per evidenced name family."""
     targets = {target for _, target in names}
     for family, (forms, aliases) in _FAMILIES.items():
         spoken = targets.intersection(forms.split())
+        if family == "Miko":
+            spoken = {target for target in targets if is_miko_target(target)}
         if len(spoken) != 1 or any(
             family.lower() in other.lower() for other in targets - spoken
         ):
@@ -92,8 +97,18 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -
                     aliases += r"|rap(?=(?:[ -](?:sama|san|chan))?[.!?, '’]*$)"
                 if ja.strip(" 。！？!?") == source and re.fullmatch(r"rapping[.!?]?", english, re.I):
                     aliases += r"|rapping"
-        if family == "Miko" and not re.search(r"神社|巫女", ja):
-            aliases += r"|(?:the )?shrine maiden"
+        if family == "Miko":
+            remainder = ja
+            if miko_mentions:
+                for mention in reversed(miko_mentions):
+                    remainder = (remainder[:mention.start] + "\0" * (mention.end - mention.start)
+                                 + remainder[mention.end:])
+            else:
+                remainder = remainder.replace(source, "", 1)
+            # Never turn a real role mention into a name. A shrine LOCATION
+            # elsewhere is fine; it need not veto an evidenced person name.
+            if not re.search(r"巫女|みこ|ミコ", remainder):
+                aliases += r"|(?:the |a )?shrine[ -]maiden"
         if family == "Marine" and "マリン" not in ja:
             aliases += r"|(?:the )?captain"
         pattern = re.compile(r"(?<![\w-])(?:" + aliases + r")(?:[ -](?:chan|san|sama|nee))?(?![\w-])", re.I)

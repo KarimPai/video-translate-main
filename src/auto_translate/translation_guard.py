@@ -10,6 +10,7 @@ from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 from .name_hints import SPOKEN_NAME_FORMS
+from .name_context import is_miko_target
 from .subtitle_clean import has_generation_loop, looks_like_prompt_echo
 
 _SHORT_POSITIVE_JA = re.compile(
@@ -73,6 +74,18 @@ def _number_values(text: str, japanese: bool) -> Counter:
 _GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "subaru", "haachama", "laplus"})
 
 
+def proper_name_mismatch(japanese: str, english: str, names=()) -> bool:
+    """Check only names evidenced in this source, including full Miko forms."""
+    jp = unicodedata.normalize("NFKC", japanese)
+    for source, target in (names or []):
+        guarded = (target in SPOKEN_NAME_FORMS or is_miko_target(target)
+                   or target.casefold() in _GUARDED_NAMES)
+        if guarded and unicodedata.normalize("NFKC", source) in jp:
+            if not re.search(r"(?<![a-z])" + re.escape(target) + r"(?![a-z])", english, re.I):
+                return True
+    return False
+
+
 def suspicious_translation(
     japanese: str,
     english: str,
@@ -105,8 +118,6 @@ def suspicious_translation(
     if src_numbers and eng_numbers and src_numbers != eng_numbers:
         return "numeric_mismatch"
 
-    for source, target in (names or []):
-        if (target in SPOKEN_NAME_FORMS or target.casefold() in _GUARDED_NAMES) and source in jp:
-            if not re.search(r"(?<![a-z])" + re.escape(target) + r"(?![a-z])", en, re.I):
-                return "proper_name_mismatch"
+    if proper_name_mismatch(jp, en, names):
+        return "proper_name_mismatch"
     return None

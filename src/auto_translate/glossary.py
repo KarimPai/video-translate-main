@@ -6,6 +6,8 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
+from .name_context import MikoMention, is_miko_target, resolve_miko_mentions
+
 
 # Japanese has no whitespace between most words. Favor missed hints over
 # potentially matching stems inside compounds. Only common post-name syntax
@@ -13,7 +15,6 @@ from pathlib import Path
 _PARTICLE = re.compile(r"(?:が|は|を|に|も|の|と|で)(?=$|[^ぁ-ん]|いる|いた|きた|どこ|いっしょ)")
 _FOLLOW = re.compile(r"来[たてるな]|いた|いる|すご[いく]|かわいい|おはよう|どこ|って|だよ|です|だね|だ[。！？!?]?$")
 _SHIP = re.compile(r"海賊船|船員|乗組員|乗客|出航|航海|操舵|操縦|甲板|港|この船|船の|フェリー")
-_SHRINE = re.compile(r"神社|神主|神職|巫女|お祓い")
 
 
 def nickname_boundary(text: str, start: int, end: int, *, joined=False, marine=False) -> bool:
@@ -29,6 +30,7 @@ class Glossary:
         # Longest first, so "てぇてぇ" is matched before any shorter term inside it.
         self.nicknames = dict(nicknames or {})
         self.terms = sorted((terms | self.nicknames).items(), key=lambda kv: len(kv[0]), reverse=True)
+        self._miko_aliases = {source: target for source, target in self.terms if is_miko_target(target)}
         # Optional ASR-only rules: acoustic peer comparison, not inferred words.
         self.scene_pairs = tuple(
             (rule["heard"], rule["correct"], tuple(rule.get("anchors", ())))
@@ -52,15 +54,36 @@ class Glossary:
                        scene_pairs=rules.get("scene_pairs", ()),
                        name_guards=rules.get("name_guards", ()))
 
-    def find(self, ja: str, *, previous_ja: str = "", miko_context: bool = False) -> list[tuple[str, str]]:
+    def miko_mentions(self, ja: str, *, previous_ja: str = "", miko_context: bool = False,
+                      video_context: str = "") -> tuple[MikoMention, ...]:
+        return resolve_miko_mentions(ja, self._miko_aliases, previous_ja=previous_ja,
+                                     miko_context=miko_context, video_context=video_context)
+
+    def find(self, ja: str, *, previous_ja: str = "", miko_context: bool = False,
+             video_context: str = "") -> list[tuple[str, str]]:
         """Entries that appear in `ja` (non-overlapping, longest match wins)."""
-        return list(self._matches(ja, previous_ja if "船長" in ja else "", miko_context))
+        return list(self._matches(ja, previous_ja, miko_context, video_context))
 
     @lru_cache(maxsize=128)
-    def _matches(self, ja: str, previous_ja: str, miko_context: bool) -> tuple[tuple[str, str], ...]:
+    def _matches(self, ja: str, previous_ja: str, miko_context: bool,
+                 video_context: str) -> tuple[tuple[str, str], ...]:
         source = ja
         hits = []
+        mentions = self.miko_mentions(source, previous_ja=previous_ja,
+                                      miko_context=miko_context, video_context=video_context)
+        for mention in sorted(mentions, key=lambda item: item.end - item.start, reverse=True):
+            pair = (mention.source, mention.target)
+            # A term glossary applies to every occurrence. Never give it a
+            # global name mapping when another occurrence denotes the role.
+            occurrences = list(re.finditer(re.escape(mention.source), source))
+            if pair not in hits and all(any(
+                item.start <= match.start() and match.end() <= item.end for item in mentions
+            ) for match in occurrences):
+                hits.append(pair)
+            ja = ja[:mention.start] + "\0" * (mention.end - mention.start) + ja[mention.end:]
         for term, en in self.terms:
+            if is_miko_target(en):
+                continue  # The shared span resolver owns these ambiguous names.
             if term not in ja:
                 continue
             if term in self.nicknames:
@@ -71,8 +94,6 @@ class Glossary:
                     or ("宝鐘マリン" in previous_ja and not _SHIP.search(previous_ja))
                 ):
                     continue
-                if en == "Miko" and (not miko_context or _SHRINE.search(source)):
-                    continue
                 matches = []
                 for m in re.finditer(re.escape(term), ja):
                     repeated = source.strip("。！？!? ") == term * 2
@@ -81,8 +102,6 @@ class Glossary:
                     joined_names = (following.startswith("と") and any(
                         following.startswith(other, 1) for other in self.nicknames
                     ))
-                    if term == "みこ" and following.startswith("と") and not joined_names:
-                        continue  # みこと is also a complete name/word.
                     if repeated or nickname_boundary(source, m.start(), m.end(),
                                                      joined=joined_names, marine=marine_title):
                         matches.append(m)

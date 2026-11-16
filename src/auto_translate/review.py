@@ -24,7 +24,7 @@ class ReviewCue:
     @property
     def needs_review(self) -> bool:
         d = self.diagnostic
-        return bool(d.get("flags") or d.get("fallback_reason") or
+        return bool(d.get("flags") or d.get("translation_flags") or d.get("fallback_reason") or
                     "uncertain" in str(d.get("chosen_by", "")) or
                     str(d.get("chosen_by", "")).startswith("abstain"))
 

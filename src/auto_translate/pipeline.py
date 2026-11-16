@@ -440,6 +440,7 @@ def run_translate(
         before_history = tr.ja
         en = ""
         suppressed = False
+        translation_diagnostic = {}
 
         if translator is not None:
             # Correct a near-identical repeated Katakana word only when
@@ -468,6 +469,19 @@ def run_translate(
                     else:
                         en = translator.translate(tr.ja, list(history))
                 consecutive_failures = 0
+                # Capture only a completed current call. Mock/third-party
+                # translators need not implement these optional diagnostics,
+                # and a failed call must never reuse the preceding cue's data.
+                resolutions = getattr(translator, "last_name_resolutions", None)
+                if isinstance(resolutions, list):
+                    translation_diagnostic["name_resolutions"] = [
+                        dict(item) for item in resolutions if isinstance(item, dict)
+                    ]
+                flags = getattr(translator, "last_translation_flags", None)
+                if isinstance(flags, list):
+                    translation_diagnostic["translation_flags"] = [
+                        flag for flag in flags if isinstance(flag, str)
+                    ]
             except TranslationCancelled:
                 continue
             except TranslatorUnavailable:
@@ -520,7 +534,8 @@ def run_translate(
                                    end_s=round(tr.end_s, 3), final_ja=tr.ja if translator else None,
                                    history_repair_from=before_history if before_history != tr.ja else None,
                                    final_en=en, suppressed=suppressed,
-                                   mt_elapsed_s=tr.timings.mt_end-tr.timings.mt_start))
+                                   mt_elapsed_s=tr.timings.mt_end-tr.timings.mt_start,
+                                   **translation_diagnostic))
         if suppressed:
             log.info(
                 "Translated cue %.2f-%.2fs suppressed by English output guard; "

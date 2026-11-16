@@ -112,6 +112,18 @@ class GuiRunnerTests(unittest.TestCase):
             exe.touch()
             self.assertEqual(discover_project_root(executable=str(exe), cwd=exe.parent), root)
 
+    def test_packaged_executable_uses_adjacent_checkout_instead_of_unrelated_cwd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            roots = [Path(folder) / name for name in ("installed", "other")]
+            for root in roots:
+                (root / "src/auto_translate").mkdir(parents=True)
+                (root / "pyproject.toml").touch()
+                (root / "src/auto_translate/__main__.py").touch()
+            exe = roots[0] / "dist/VideoTranslate/VideoTranslate.exe"
+            exe.parent.mkdir(parents=True)
+            exe.touch()
+            self.assertEqual(discover_project_root(executable=str(exe), cwd=roots[1]), roots[0])
+
     def test_gui_child_creationflags_only_when_gui_env_is_set(self):
         with patch.object(os, "name", "nt"), patch.object(
                 subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):

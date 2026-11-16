@@ -27,6 +27,8 @@ on:
       - "src/auto_translate/review.py"
       - "src/auto_translate/subtitle_files.py"
       - "src/auto_translate/quality_report.py"
+      - "src/auto_translate/gui_build.py"
+      - "scripts/Update-GUI.ps1"
       - ".github/workflows/windows-gui.yml"
 
 jobs:
@@ -321,7 +323,10 @@ jobs:
           $log = Get-Content "logs/gui-startup.log" -Raw
           if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
-        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src src/auto_translate/gui.py
+        shell: pwsh
+        run: |
+          & ./scripts/Update-GUI.ps1 -SkipPull -SkipSync -SkipBuildTools -NoLaunch -PythonExecutable (Get-Command python).Source
+          if ($LASTEXITCODE -ne 0) { throw "Verified GUI updater failed" }
       - name: Smoke test compiled transcript files and reports
         shell: pwsh
         run: |

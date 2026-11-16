@@ -35,6 +35,7 @@ from auto_translate.gui_runner import (
     prepare_project, session_launcher, subprocess_environment, valid_youtube_url, validate_gui_launch,
 )
 from auto_translate.review import DiagnosticTail, TranscriptReview, cue_key
+from auto_translate.gui_build import build_identity, verify_build
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +169,7 @@ class VideoTranslateWindow(QMainWindow):
     def __init__(self, root: Path):
         super().__init__()
         self.root = root
+        self._build_identity = build_identity(root)
         self._job = None
         self._session = None
         self._shutdown_timer = QTimer(self)
@@ -200,7 +202,7 @@ class VideoTranslateWindow(QMainWindow):
         self._refine_process = None
         self._refine_temp = None
         self._refine_output = ""
-        self.setWindowTitle("Video Translate - Dual ASR")
+        self.setWindowTitle("Video Translate - Dual ASR [" + self._build_identity["commit"][:8] + "]")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
         self._control_server = None
@@ -895,6 +897,7 @@ class VideoTranslateWindow(QMainWindow):
         proc.setArguments(args)
         self._lifecycle(f"Starting translation backend gui_pid={os.getpid()}")
         self._lifecycle(f"frontend={sys.executable} gui_source={__file__} backend_root={self.root} control_protocol=1")
+        self._lifecycle(f"build={self._build_identity['commit']} gui_sha256={self._build_identity['gui_sha256']}")
         if "--rtx-vsr" in args:
             self._write_console(
                 "RTX VSR requested: NVIDIA D3D11 scaling. "
@@ -1358,6 +1361,10 @@ def main():
     window.show()
     if "--smoke-test" in sys.argv:
         try:
+            if "--verify-build" in sys.argv or "--verify-source-sha" in sys.argv:
+                commit = sys.argv[sys.argv.index("--verify-build") + 1]
+                digest = sys.argv[sys.argv.index("--verify-source-sha") + 1]
+                verify_build(window._build_identity, commit, digest)
             _smoke_review(window, root)
         except Exception:
             import traceback

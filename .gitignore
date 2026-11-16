@@ -24,3 +24,6 @@ config.toml.local-backup
 config.separation-test.toml
 pretrained_models/
 temp/
+build/
+dist/
+VideoTranslate.spec

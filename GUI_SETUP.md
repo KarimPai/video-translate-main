@@ -74,67 +74,46 @@ unchanged; logs remain in `logs/run.log`, `logs/mpv.log`, and other files.
 the Python MPV backend. Update the existing Git branch, then reopen the
 already-installed `dist/VideoTranslate/VideoTranslate.exe`.
 
-## Updating without downloading the entire GUI again
+## Updating the GUI locally
 
-If the backend reports **GUI/backend version mismatch** or **Missing GUI control
-connection**, close the older frontend. The current GUI supplies an authenticated
-port and token; an old EXE or shortcut may still launch a version without them.
-To run the current source GUI immediately from the project folder:
+Close VideoTranslate, then run from the project folder in PowerShell:
+
+```powershell
+& ./scripts/Update-GUI.ps1
+```
+
+For `C:\Games\video-translate-dual-asr`, the first update installing this helper is:
+
+```powershell
+Set-Location 'C:\Games\video-translate-dual-asr' && git pull --ff-only origin feature/dual-asr-review-improvements && & ./scripts/Update-GUI.ps1 -SkipPull
+```
+
+This pulls Git changes, syncs GUI dependencies from the lockfile using existing
+caches, and builds the EXE from absolute source paths into a staging folder. It
+verifies the embedded commit, GUI source SHA256, subtitle export, and report
+imports before replacing `dist/VideoTranslate`. Build/smoke failures preserve the
+installed GUI. A running or locked EXE stops the update. No backup is created;
+the exact updated EXE launches after a successful replacement.
+
+The window title shows the embedded build commit. Startup logs record the
+frontend executable, GUI source fingerprint, backend project root, and control
+protocol. Control tokens are never logged. A packaged EXE without build metadata
+is labeled `unversioned`, rather than claiming to match the latest checkout.
+
+If an old shortcut or GUI reports **Missing GUI control connection** or
+**GUI/backend version mismatch**, run the helper and update the shortcut to
+`dist\VideoTranslate\VideoTranslate.exe`. To use the current source GUI immediately:
 
 ```powershell
 uv sync --locked --extra gui && uv run --no-sync python -m auto_translate.gui
 ```
 
-For a compiled launch, use the exact updated
-`dist\VideoTranslate\VideoTranslate.exe` path and update any shortcut targeting a
-different copy. Startup logs now record the frontend executable, GUI source path,
-backend project root, and control protocol. Tokens are never logged.
+The model-free Windows workflow runs the same staged build helper. If using an
+artifact instead, install the complete `VideoTranslate-Windows-GUI` package,
+including `_internal`; this release adds runtime files and offers no EXE-only
+artifact. The EXE still uses the project's installed backend, MPV/speech.cpp/
+llama.cpp, shared model caches, and `config.toml`.
 
-**The transcript-tools release requires the full `VideoTranslate-Windows-GUI`
-artifact.** Close the app and replace the complete `dist/VideoTranslate` folder,
-including `_internal`. This adds NumPy/subtitle runtime files; replacing only
-the EXE leaves file export and review tools without required modules. Update the
-matching backend checkout and run `uv sync --locked` as well.
-
-Earlier compatible builds offered two choices:
-
-- **`VideoTranslate-EXE-Only`**: small incremental download containing only
-  `VideoTranslate.exe`. Use for ordinary GUI code changes; keep the existing
-  `_internal` folder untouched.
-- **`VideoTranslate-Windows-GUI`**: complete package containing EXE and Qt
-  runtime. Use for first installation, missing/corrupt `_internal`, or when
-  the workflow announces an incompatible runtime/dependency update.
-
-Update the existing Git branch first so the Python backend source is current.
-After installing the full process-cleanup release, compatible subsequent builds can use
-the following incremental procedure. Close VideoTranslate, download and extract the EXE-only artifact into
-`C:\Games\video-translate-dual-asr\dist\VideoTranslate\`, and overwrite only
-`VideoTranslate.exe`. Start the EXE normally. **Do not delete `_internal`.**
-
-The GUI build pins the Python, PySide6 and PyInstaller versions to match the
-existing November 14 full-runtime release. EXE-only patches require an
-already-working compatible full install, not just the EXE file. If it fails,
-download the full artifact instead.
-
-The EXE is **not a standalone model bundle**. It uses the original project's
-`.venv`, installed MPV/speech.cpp/llama.cpp, shared model caches, and
-`config.toml`.
-
-## Troubleshooting
-
-- If the launcher reports a missing Python environment, run `Setup.bat`.
-- If double-clicking `Start GUI.vbs` opens no window, inspect
-  `logs\\gui-startup.log`. The launcher now shows errors from
-  `auto_translate.gui_bootstrap` in a Windows dialog.
-- To diagnose without the silent launcher, open CMD in the project folder and run:
-  `set PYTHONPATH=%CD%\\src && .venv\\Scripts\\python.exe -m auto_translate.gui_bootstrap`.
-  Any startup traceback also goes to `logs\\gui-startup.log`.
-- If Qt installation fails, ensure `uv` is installed and internet is available,
-  then open `Start GUI.vbs` again.
-- If the player remains blank, inspect `logs\mpv.log` and `logs\run.log`.
-- Embedded MPV and RTX 3070 GPU translation still require testing on the
-  actual Windows machine. CI verifies GUI startup and EXE packaging, not
-  local video rendering.
 
 ## Windows session cleanup and verification
 

@@ -71,6 +71,12 @@ does not vendor their implementations; optional libraries keep their own terms.
 
 ## Windows GUI (recommended)
 
+For local EXE updates, close the GUI and run `scripts/Update-GUI.ps1` from
+PowerShell. It pulls source changes, reuses cached dependencies, verifies a
+staged EXE against the source commit/hash, then overwrites and launches the exact
+installed EXE. The window title now shows its build commit. It keeps the current
+EXE if the build or verification fails and does not download a GUI artifact.
+
 **Double-click `Start GUI.vbs`** in the project folder to open the silent
 Windows app. It installs the PySide6 GUI dependency automatically if required.
 After the YouTube video loads, the URL controls hide; translations and logs

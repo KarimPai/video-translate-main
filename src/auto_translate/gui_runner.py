@@ -64,7 +64,7 @@ def valid_youtube_url(value: str) -> bool:
 
 def discover_project_root(executable: str | None = None, cwd: Path | None = None) -> Path:
     """Find project beside the source checkout or a dist/VideoTranslate.exe."""
-    sources = [Path(cwd or Path.cwd()), Path(executable or sys.executable).resolve().parent,
+    sources = [Path(executable or sys.executable).resolve().parent, Path(cwd or Path.cwd()),
                Path(__file__).resolve().parent]
     for source in sources:
         for candidate in (source, *source.parents):

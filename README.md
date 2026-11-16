@@ -1,5 +1,72 @@
 # Haas + Whisper Large-v3 Turbo Japanese dual-ASR (2026-11-14)
 
+## Reliability and transcript tools
+
+The review improvements keep disabled/off ASR modes disabled, apply Haas CPU
+fallback to failed restarts, retain watchdogs for canceled Whisper jobs, recover
+failed transcript selectors, and make seek/shutdown queues cancellation-aware.
+PLaMo uses a shared `translate.cue_timeout_s` budget across sentences and retries;
+the pipeline distinguishes bounded in-flight work from a stalled stage. Optional
+ASR models now warm in the background after MPV startup.
+
+The **Transcript** tab supports search, a needs-review filter, source-ASR
+diagnostics, click-to-replay, manual corrections with revision history, and
+Japanese/English/bilingual SRT, WebVTT or ASS export. Corrections stay in the
+review session until explicitly exported; they do not silently alter translation
+context or the running player's subtitle cache. Import corrected files using the
+same language setting and original timestamps.
+
+Explicit CLI export (no transcript file is created unless requested):
+
+```sh
+uv sync --locked
+uv run --no-sync auto-translate VIDEO_URL --export subtitles.srt --export-language bilingual
+```
+
+**Live drafts** are opt-in (`--preview`, the GUI checkbox, or `[preview] enabled =
+true`). They reuse idle Whisper capacity, pass through the spoken-language gate,
+and show provisional Japanese separately in the GUI/browser. Repeated partial
+hypotheses establish local agreement. Drafts never enter translation history,
+final subtitle exports, or the cache. Final work takes priority; a busy or
+unavailable secondary simply produces no draft. Keep this disabled when measuring
+baseline performance on an 8 GB GPU.
+
+The Transcript tab's **Performance report** action produces HTML and JSON from
+comparison logs; command-line equivalent:
+
+```sh
+uv run --no-sync auto-translate --quality-report logs/asr-comparison.jsonl
+```
+
+See [PERFORMANCE.md](PERFORMANCE.md) for annotated Japanese CER, latency/fallback
+metrics, beam 1/3/6 and sequential/concurrent benchmarks, and measured preset
+recommendations. Missing measurements remain unavailable; there are no assumed
+RTX 3070 performance gains.
+
+**Refine VOD timing** is a separate, optional Japanese forced-alignment pass using
+WhisperX. Stop translation first, use the matching complete local media file, and
+save to a new destination. CPU is the default. The first explicit refinement can
+download an alignment model and long media needs additional host RAM:
+
+```sh
+uv sync --locked --extra refinement
+uv run --no-sync auto-translate local-vod.mp4 --refine-subtitles subtitles.srt --export subtitles-aligned.srt
+```
+
+The input for refinement must be a bilingual export with Japanese on its first
+line (English may be empty for uncertain cues). Export multiline Japanese
+separately instead of guessing language boundaries. Alignment refines cue timing;
+it does not correct recognition/translation
+content or produce English word timings. Model accuracy, preview latency, and
+GPU contention still need representative audio and physical hardware validation.
+
+Feature references: [pysubs2](https://github.com/tkarabela/pysubs2),
+[Subtitle Edit](https://github.com/SubtitleEdit/subtitleedit) (workflow inspiration),
+[JiWER](https://github.com/jitsi/jiwer),
+[WhisperLiveKit](https://github.com/QuentinFuxa/WhisperLiveKit) (streaming policy
+inspiration), and [WhisperX](https://github.com/m-bain/whisperX). The application
+does not vendor their implementations; optional libraries keep their own terms.
+
 **Current branch:** `feature/haas-whisper-turbo-dual-asr-20261114`, based on the Japanese-only language-filter branch.
 
 ## Windows GUI (recommended)

@@ -990,6 +990,23 @@ class Ingest:
             time.sleep(0.1)
         raise RuntimeError("MPV did not restart the failed shared live session within 60s")
 
+    def _put_audio(self, out_q, item, generation: int | None = None) -> bool:
+        """Bound queue waits so stop or seek can cancel a blocked producer.
+
+        Cancellation does not require an EOF slot: downstream stages also
+        observe the shared stop event. On an ordinary EOF the sentinel is
+        delivered after previously queued audio, preserving drain ordering.
+        """
+        while True:
+            with self._proc_lock:
+                if self._stopped or (generation is not None and generation != self._generation):
+                    return False
+            try:
+                out_q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+
     def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
         try:
@@ -1066,15 +1083,18 @@ class Ingest:
                     generation,
                     self.source.start_s,
                 )
-                out_q.put(
+                queued = self._put_audio(out_q,
                     AudioChunk(
                         round(self.source.start_s * SAMPLE_RATE),
                         np.zeros(0, dtype=np.float32),
                         time.monotonic(),
                         reset=True,
                         generation=generation,
-                    )
+                    ),
+                    generation,
                 )
+                if not queued:
+                    continue
 
                 while not self._go.wait(0.2):
                     with self._proc_lock:
@@ -1082,7 +1102,7 @@ class Ingest:
                             return
 
         finally:
-            out_q.put(None)
+            self._put_audio(out_q, None)
 
     def _read_session(
         self,
@@ -1364,14 +1384,17 @@ class Ingest:
                     if generation != self.generation:
                         break
 
-                    out_q.put(
+                    queued = self._put_audio(out_q,
                         AudioChunk(
                             sample,
                             pcm,
                             time.monotonic(),
                             generation=generation,
-                        )
+                        ),
+                        generation,
                     )
+                    if not queued:
+                        break
 
                     sample += len(pcm)
 

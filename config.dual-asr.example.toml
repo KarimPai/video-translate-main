@@ -44,6 +44,7 @@ min_top_margin = 0.45
 
 
 [translate]
+cue_timeout_s = 75.0
 # Accuracy-first OverlaySubs-style context. Use legacy to restore previous behavior.
 context_profile = "compact" # compact, legacy
 context_lines = 3
@@ -53,3 +54,9 @@ sentence_context = true
 
 # Whisper does not receive static character-name prompts. The glossary only
 # normalizes names that actually appear in the Japanese transcript.
+
+[preview]
+enabled = false
+interval_s = 1.5
+window_s = 8.0
+min_agreement = 2

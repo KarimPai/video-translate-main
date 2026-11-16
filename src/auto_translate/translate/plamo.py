@@ -17,7 +17,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .base import TranslatorUnavailable
+from .base import (TranslatorUnavailable, TranslationCancelled,
+                   TranslationDeadlineExceeded, TruncatedTranslation)
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
@@ -227,10 +228,11 @@ class PlamoTranslator:
 
     def _start_server(self) -> None:
         """Reuse a responding local server; otherwise launch and own one."""
-        deadline = time.monotonic() + self.cfg.load_timeout_s
+        deadline = self._operation_deadline(self.cfg.load_timeout_s)
         log.info("Checking PLaMo endpoint %s", self.base_url)
         next_progress = 0.0
         while True:
+            self._check_cue()
             check_running()
             state = _server_state(self.base_url, self.cfg.plamo_model)
             if state in ("ready", "absent"):
@@ -306,8 +308,9 @@ class PlamoTranslator:
             process.pid,
         )
 
-        deadline = time.monotonic() + self.cfg.load_timeout_s
+        deadline = self._operation_deadline(self.cfg.load_timeout_s)
         while time.monotonic() < deadline:
+            self._check_cue()
             check_running()
             if process.poll() is not None:
                 self.close()
@@ -378,7 +381,48 @@ class PlamoTranslator:
             self.client.close()
             atexit.unregister(self.close)
 
+    def _operation_deadline(self, timeout_s: float) -> float:
+        return min(time.monotonic() + timeout_s,
+                   getattr(self, "_cue_deadline", float("inf")))
+
+    def _check_cue(self) -> None:
+        cancelled = getattr(self, "_cue_cancelled", None)
+        if cancelled is not None and cancelled():
+            raise TranslationCancelled("Subtitle superseded or player stopped")
+        deadline = getattr(self, "_cue_deadline", float("inf"))
+        if deadline != float("inf") and time.monotonic() >= deadline:
+            raise TranslationDeadlineExceeded("PLaMo cue translation time budget exhausted")
+        heartbeat = getattr(self, "_cue_heartbeat", None)
+        if heartbeat is not None:
+            heartbeat()
+
+    def _request_timeout(self, timeout_s: float) -> float:
+        self._check_cue()
+        remaining = getattr(self, "_cue_deadline", float("inf")) - time.monotonic()
+        if remaining <= 0:
+            raise TranslationDeadlineExceeded("PLaMo cue translation time budget exhausted")
+        return min(timeout_s, remaining)
+
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        return self.translate_cancellable(ja, history)
+
+    def translate_cancellable(self, ja: str, history: list[tuple[str, str]], *,
+                              cancelled=None, heartbeat=None) -> str:
+        """One shared deadline for sentence, transport and validation retries."""
+        self._cue_deadline = time.monotonic() + getattr(self.cfg, "cue_timeout_s", 75.0)
+        self._cue_cancelled = cancelled
+        self._cue_heartbeat = heartbeat
+        try:
+            self._check_cue()
+            result = self._translate_with_recovery(ja, history)
+            self._check_cue()
+            return result
+        finally:
+            self._cue_deadline = float("inf")
+            self._cue_cancelled = None
+            self._cue_heartbeat = None
+
+    def _translate_with_recovery(self, ja: str, history: list[tuple[str, str]]) -> str:
         try:
             return self._translate_cue(ja, history)
         except httpx.TransportError as exc:
@@ -394,8 +438,12 @@ class PlamoTranslator:
                     self._server_log = None
             log.warning("Owned PLaMo server exited. Restarting and retrying the subtitle.")
             try:
+                self._check_cue()
                 self._start_server()
+                self._check_cue()
                 return self._translate_cue(ja, history)
+            except (TranslationCancelled, TranslationDeadlineExceeded):
+                raise
             except Exception as recovery_error:
                 raise TranslatorUnavailable(f"PLaMo recovery failed: {recovery_error}") from recovery_error
 
@@ -406,6 +454,7 @@ class PlamoTranslator:
         finalized sentence informs the next one. If a pass fails, preserve the
         original whole-utterance behavior instead of emitting half a cue.
         """
+        self._check_cue()
         segments = (split_completed_japanese_sentences(ja)
                     if getattr(self.cfg, "sentence_context", False) else [ja])
         if len(segments) < 2:
@@ -414,12 +463,14 @@ class PlamoTranslator:
         english = []
         try:
             for segment in segments:
+                self._check_cue()
                 translated = self._translate_one(segment, recent)
                 if not translated.strip() or suspicious_translation(segment, translated):
                     raise ValueError("unreliable sentence translation")
                 english.append(translated.strip())
                 recent.append((segment, translated))
-        except httpx.TransportError:
+        except (httpx.TransportError, TranslationCancelled,
+                TranslationDeadlineExceeded, TruncatedTranslation):
             raise
         except Exception as exc:
             log.warning("Sentence context fallback to whole utterance: %s", exc)
@@ -427,6 +478,7 @@ class PlamoTranslator:
         return " ".join(english)
 
     def _translate_one(self, ja: str, history: list[tuple[str, str]]) -> str:
+        self._check_cue()
         previous = history[-1][0] if history else ""
         names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous)
 
@@ -451,7 +503,9 @@ class PlamoTranslator:
                 translated = re.sub(r"\blol\b", "grass" if literal else "kusa", translated, flags=re.I)
             if any(target in ("Watame", "Watamee", "Tsunomaki Watame") for _, target in names):
                 translated = correct_translation(ja, translated)
-            return neutralize_unsupported_subjects(ja, normalize_names(translated))
+            translated = normalize_names(translated)
+            return (neutralize_unsupported_subjects(ja, translated)
+                    if self.cfg.neutral_subjects else translated)
 
         try:
             raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
@@ -459,6 +513,7 @@ class PlamoTranslator:
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
                 raise
             log.warning("Retrying transient PLaMo request failure: %s", exc)
+            self._check_cue()
             raw = self._chat(ja, history, timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s), names=names)
         english = normalized(raw)
         pronoun_reason = (
@@ -474,11 +529,14 @@ class PlamoTranslator:
             try:
                 # Extra neutral instruction only when the first pass introduced
                 # unsupported person/gender references. No new model is loaded.
+                self._check_cue()
                 candidate = normalized(self._chat(
                     ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
                     neutral_retry=bool(pronoun_reason), names=names,
                 ))
             except Exception as exc:
+                if isinstance(exc, (TranslationCancelled, TranslationDeadlineExceeded)):
+                    raise
                 self._count_validation("retry_unavailable")
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
@@ -529,7 +587,8 @@ class PlamoTranslator:
                 messages.append({"role": "user", "content": source})
                 messages.append({
                     "role": "assistant",
-                    "content": neutralize_unsupported_subjects(source, translation),
+                    "content": (neutralize_unsupported_subjects(source, translation)
+                                if self.cfg.neutral_subjects else translation),
                 })
             elif source.strip():
                 rejected_sources.append(source.strip()[:100])
@@ -592,9 +651,25 @@ class PlamoTranslator:
             "chat_template_kwargs": options,
             "stream": False,
         }
-        response = self.client.post(self.url, json=body, timeout=timeout)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        for attempt in range(2):
+            response = self.client.post(self.url, json=body,
+                                        timeout=self._request_timeout(timeout))
+            response.raise_for_status()
+            self._check_cue()
+            choice = response.json()["choices"][0]
+            if choice.get("finish_reason") != "length":
+                content = choice["message"]["content"]
+                if not isinstance(content, str):
+                    raise ValueError("PLaMo returned non-text translation content")
+                return content
+            self._count_validation("token_limit")
+            if attempt:
+                raise TruncatedTranslation("PLaMo translation still truncated after one token-limit retry")
+            # Regenerate the COMPLETE cue; concatenating a partial response
+            # can duplicate or contradict earlier words. Stay inside both
+            # the original cue deadline and model context budget.
+            body["max_tokens"] = max(self.cfg.max_tokens, min(self.cfg.max_tokens * 2, 768))
+            log.warning("PLaMo hit token limit; retrying complete cue with %d tokens", body["max_tokens"])
 
 
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))

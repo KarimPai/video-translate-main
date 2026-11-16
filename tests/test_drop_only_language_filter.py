@@ -54,9 +54,9 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertFalse(filt.classify(audio()).drop)
 
     def test_mixed_japanese_english_long_segment_passes(self):
-        filt = make_filter([("en", .95, .01, .9), ("ja", .89, .89, .8)])
+        filt = make_filter([("en", .95, .01, .9), ("ja", .89, .89, .8)] * 4)
         self.assertFalse(filt.classify(audio(12.0)).drop)
-        self.assertEqual(filt._predict.call_count, 2)
+        self.assertGreaterEqual(filt._predict.call_count, 3)
 
     def test_medium_length_code_switch_protects_japanese(self):
         filt = make_filter([("id", .96, .01, .9), ("ja", .81, .81, .6)])
@@ -64,7 +64,7 @@ class DropOnlyLanguageTests(unittest.TestCase):
         self.assertEqual(filt._predict.call_count, 2)
 
     def test_entire_long_segment_must_be_foreign(self):
-        filt = make_filter([("en", .94, .02, .9), ("id", .90, .03, .8)])
+        filt = make_filter([("en", .94, .02, .9), ("id", .90, .03, .8)] * 4)
         self.assertTrue(filt.classify(audio(12.0)).drop)
 
     def test_short_reactions_are_preserved(self):

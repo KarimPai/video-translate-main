@@ -72,3 +72,4 @@ class Subtitle:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None
+    diagnostic_session: str | None = None

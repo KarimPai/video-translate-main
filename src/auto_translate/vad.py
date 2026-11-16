@@ -17,6 +17,8 @@ from typing import Callable
 import numpy as np
 
 from .config import VadConfig
+from .live_preview import PreviewSnapshot
+from .queue_utils import QueueStopped, get_until_stopped, put_until_stopped
 from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
 
 log = logging.getLogger(__name__)
@@ -186,7 +188,54 @@ class Segmenter:
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
         self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device)
+        self._preview_callback = None
+        self._preview_interval = SAMPLE_RATE
+        self._preview_window = 8 * SAMPLE_RATE
+        self._preview_last_sample = 0
         self._reset(0, generation=0)
+
+    def set_preview(self, callback: Callable[[PreviewSnapshot], None] | None, *,
+                    interval_s: float = 1.5, window_s: float = 8.0) -> None:
+        """Attach a nonblocking optional observer; finalized queues stay unchanged."""
+        import math
+        if not math.isfinite(interval_s) or not 0.25 <= interval_s <= 10:
+            raise ValueError("preview interval must be in .25..10 seconds")
+        if not math.isfinite(window_s) or not interval_s <= window_s <= 16:
+            raise ValueError("preview window must be >= interval and <=16 seconds")
+        self._preview_callback = callback
+        self._preview_interval = round(interval_s * SAMPLE_RATE)
+        self._preview_window = round(window_s * SAMPLE_RATE)
+        self._preview_last_sample = self._next_frame_sample
+
+    def _preview(self, *, final: bool = False, reset: bool = False) -> None:
+        callback = self._preview_callback
+        if callback is None:
+            return
+        end = self._start_sample + len(self._frames) * FRAME
+        if reset:
+            start = end = self._next_frame_sample
+            audio = np.empty(0, dtype=np.float32)
+        elif final:
+            start = self._start_sample
+            audio = np.empty(0, dtype=np.float32)
+        else:
+            if end - self._preview_last_sample < self._preview_interval:
+                return
+            # Never ask the optional decoder to inspect VAD-negative probes.
+            if not self._in_speech or not self._frames:
+                return
+            count = max(1, self._preview_window // FRAME)
+            frames = self._frames[-count:]
+            start = end - len(frames) * FRAME
+            audio = np.concatenate(frames).astype(np.float32, copy=False)
+        self._preview_last_sample = end
+        try:
+            callback(PreviewSnapshot(start / SAMPLE_RATE, end / SAMPLE_RATE,
+                                     audio, self._generation, final=final, reset=reset))
+        except Exception:
+            # Optional previews may fail without touching finalized subtitles.
+            log.exception("Live preview observer failed; disabling it")
+            self._preview_callback = None
 
     def _reset(self, next_sample: int, generation: int) -> None:
         """Fresh stream state, starting at sample `next_sample` (0 = take it from the first chunk)."""
@@ -216,6 +265,8 @@ class Segmenter:
         self._out: list[Utterance] = []
         self._pending_progress = next_sample
         self._last_progress_sample = next_sample
+        self._preview_last_sample = next_sample
+        self._preview(reset=True)
 
     def feed(self, chunk: AudioChunk) -> list[Utterance]:
         if chunk.reset:
@@ -298,12 +349,15 @@ class Segmenter:
                 self._start_sample,
                 self._next_frame_sample - (self.onset_frames - 1) * FRAME,
             )
+            self._preview_last_sample = self._start_sample
             self._silence = 0
             return
 
         self._frames.append(frame)
         self._probs.append(prob)
         self._silence = self._silence + 1 if prob < cfg.neg_threshold else 0
+
+        self._preview()
 
         if self._silence >= self.min_silence:
             # Pause found: keep `pad` frames of trailing silence, the rest becomes preroll.
@@ -332,6 +386,7 @@ class Segmenter:
                     self._emit(cut, keep_rest=True)
 
     def _emit(self, n: int, keep_rest: bool) -> None:
+        self._preview(final=True)
         frames, probs = self._frames[:n], self._probs[:n]
         rest_frames, rest_probs = self._frames[n:], self._probs[n:]
         start = self._start_sample
@@ -423,23 +478,29 @@ def run_segmenter(
     in_q: "queue.Queue[AudioChunk | AudioProgress | None]",
     out_q: "queue.Queue[Utterance | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
+    stop=None,
 ) -> None:
     """Thread body."""
     awaiting_first_utterance = False
 
     while True:
-        item = in_q.get()
+        try:
+            item = get_until_stopped(in_q, stop)
+        except QueueStopped:
+            return
 
         if item is None:
             for utt in seg.flush():
-                out_q.put(utt)
+                if not put_until_stopped(out_q, utt, stop):
+                    return
 
             progress = seg.advance_progress(seg._next_frame_sample, force=True)
 
             if progress is not None:
-                out_q.put(progress)
+                if not put_until_stopped(out_q, progress, stop):
+                    return
 
-            out_q.put(None)
+            put_until_stopped(out_q, None, stop)
             break
 
         if get_generation is not None and item.generation != get_generation():
@@ -451,7 +512,8 @@ def run_segmenter(
 
             progress = seg.advance_progress(item.sample)
             if progress is not None:
-                out_q.put(progress)
+                if not put_until_stopped(out_q, progress, stop):
+                    return
             continue
 
         if item.reset:
@@ -462,13 +524,14 @@ def run_segmenter(
             )
             seg.feed(item)
             awaiting_first_utterance = True
-            out_q.put(
+            if not put_until_stopped(out_q,
                 AudioProgress(
                     item.start_sample,
                     reset=True,
                     generation=item.generation,
-                )
-            )
+                ), stop,
+            ):
+                return
             continue
 
         for utt in seg.feed(item):
@@ -480,8 +543,10 @@ def run_segmenter(
                     utt.end_s,
                 )
                 awaiting_first_utterance = False
-            out_q.put(utt)
+            if not put_until_stopped(out_q, utt, stop):
+                return
 
         progress = seg.advance_progress(seg._next_frame_sample)
         if progress is not None:
-            out_q.put(progress)
+            if not put_until_stopped(out_q, progress, stop):
+                return

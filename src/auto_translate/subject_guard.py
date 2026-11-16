@@ -149,8 +149,19 @@ _FIRST_EN = re.compile(
     r"\b(?:I|I'm|I've|I'd|I'll|me|my|mine|myself|we|we're|we've|"
     r"we'll|we'd|us|our|ours|ourselves)\b", re.I
 )
-_MALE_JA = re.compile(r"彼(?!女)|男性|男の人|男の子|父|お父|パパ|兄|弟|息子|夫")
-_FEMALE_JA = re.compile(r"彼女|女性|女の人|女の子|母|お母|ママ|姉|妹|娘|妻")
+# Bare kinship characters also occur in unrelated words (大丈夫, 母国,
+# 兄弟). Accept explicit words and isolated kinship nouns, not arbitrary
+# substrings inside another kanji word.
+_MALE_JA = re.compile(
+    r"彼(?![一-鿿])|男性|男の人|男の子|父親|祖父|お父(?:さん|様|さま)?|パパ|"
+    r"お兄(?:さん|ちゃん|様|さま)?|息子|"
+    r"(?<![一-鿿])(?:父|兄|弟|夫)(?![一-鿿])"
+)
+_FEMALE_JA = re.compile(
+    r"彼女|女性|女の人|女の子|母親|祖母|お母(?:さん|様|さま)?|ママ|"
+    r"お姉(?:さん|ちゃん|様|さま)?|"
+    r"(?<![一-鿿])(?:母|姉|妹|娘|妻)(?![一-鿿])"
+)
 _MALE_EN = re.compile(r"\b(?:he|him|his|himself|he's|he'd|he'll)\b", re.I)
 _FEMALE_EN = re.compile(r"\b(?:she|her|hers|herself|she's|she'd|she'll)\b", re.I)
 # Preserve "you" where idiomatic, especially requests/commands: it does not
@@ -292,7 +303,11 @@ def neutralize_unwarranted_gender(japanese: str, english: str) -> str:
         result = re.sub(r"\bherself\b", lambda m: _case_like(m.group(), "themselves"), result, flags=re.I)
         result = re.sub(r"\bhers\b", lambda m: _case_like(m.group(), "theirs"), result, flags=re.I)
         result = _HER_POSSESSIVE.sub(lambda m: _case_like(m.group(), "their"), result)
-        result = re.sub(r"\bher\b", lambda m: _case_like(m.group(), "them"), result, flags=re.I)
+        # "her" may be an object OR a possessive. Only rewrite the object
+        # form when punctuation/end-of-clause makes it unambiguous; an
+        # unknown following noun must never become e.g. "them health".
+        result = re.sub(r"\bher\b(?=\s*(?:$|[.,!?;:]))",
+                        lambda m: _case_like(m.group(), "them"), result, flags=re.I)
         result = re.sub(r"\bshe\b(?!['’])", lambda m: _case_like(m.group(), "that person"), result, flags=re.I)
     return result
 

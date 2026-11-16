@@ -61,7 +61,7 @@ def parse_event(line: str) -> dict | None:
 
 
 def emit_event(event: str, **data: object) -> None:
-    print(format_event(event, **data), flush=True)
+    print(format_event(event, **data) + "\n", end="", flush=True)
 
 
 def read_control_socket(port: int, token: str, queue_command, *, connected=None, disconnected=None) -> None:

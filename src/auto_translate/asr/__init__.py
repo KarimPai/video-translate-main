@@ -21,17 +21,20 @@ class PrimaryASR:
         self.last_failed = False
 
     def transcribe(self, audio, probe=False):
-        with self.lock:
-            if self.closed:
-                raise RuntimeError("primary ASR closed")
-            if self.worker is None:
-                self.worker = HaasASR(self.cfg)
-            worker = self.worker
+        worker = None
         try:
+            with self.lock:
+                if self.closed:
+                    raise RuntimeError("primary ASR closed")
+                # Model/device startup failures need the same bounded recovery
+                # policy as failed decodes after retiring the previous worker.
+                if self.worker is None:
+                    self.worker = HaasASR(self.cfg)
+                worker = self.worker
             result = worker.transcribe(audio, probe)
         except (TimeoutError, OSError, RuntimeError) as exc:
             with self.lock:
-                if self.worker is worker:
+                if worker is not None and self.worker is worker:
                     self.worker = None
                     worker.close()
             self.failures += 1

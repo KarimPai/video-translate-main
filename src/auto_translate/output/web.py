@@ -35,6 +35,7 @@ class WebOutput:
     def __init__(self, host: str, port: int) -> None:
         self._lock = threading.Lock()
         self._next_id = 1
+        self._final_ends = {}
         self._backlog: deque[_Event] = deque(maxlen=BACKLOG)
         self._clients: set[queue.Queue[_Event]] = set()
 
@@ -73,10 +74,23 @@ class WebOutput:
 
     def show(self, sub: Subtitle) -> None:
         payload = {k: v for k, v in asdict(sub).items() if k != "timings"}
+        payload["kind"] = "subtitle"
+        self._publish(payload)
+
+    def show_preview(self, preview: dict) -> None:
+        self._publish(preview, replay=False)
+
+    def _publish(self, payload: dict, *, replay: bool = True) -> None:
         with self._lock:
+            generation = payload.get("generation", 0)
+            if replay:
+                self._final_ends[generation] = max(payload.get("end_s", 0), self._final_ends.get(generation, 0))
+            elif payload.get("end_s", float("inf")) <= self._final_ends.get(generation, -1):
+                return
             event = _Event(self._next_id, json.dumps(payload, ensure_ascii=False))
             self._next_id += 1
-            self._backlog.append(event)
+            if replay:
+                self._backlog.append(event)
             for client in self._clients:
                 if client.full():
                     try:
@@ -101,6 +115,8 @@ class WebOutput:
             last_id = 0
         client = queue.Queue(maxsize=BACKLOG)
         with self._lock:
+            if last_id >= self._next_id:
+                last_id = 0  # A reconnect after backend restart has an old counter.
             if len(self._clients) >= MAX_CLIENTS:
                 handler.send_error(503, "Viewer limit reached")
                 return

@@ -113,17 +113,23 @@ class GuiShutdownTests(unittest.TestCase):
             from auto_translate.gui import VideoTranslateWindow, QProcess
         except ImportError:
             self.skipTest("optional Qt frontend unavailable")
-        window = Mock(_stopping=False)
+        window = Mock(_stopping=False, _job=None, _closing=False)
         old = window.process
         old.state.return_value = QProcess.ProcessState.Running
-        with patch("auto_translate.gui.QTimer.singleShot") as timer:
-            VideoTranslateWindow.stop_translation(window)
-            VideoTranslateWindow.stop_translation(window)
-            window._send_player_command.assert_called_once_with("quit")
-            timer.assert_called_once()
-            old.kill.assert_not_called()
-            VideoTranslateWindow._kill_if_still_running(window, old)
-            old.kill.assert_called_once()
-            window.process = Mock()
-            VideoTranslateWindow._kill_if_still_running(window, old)
-            window.process.kill.assert_not_called()
+        from auto_translate.gui_control import GUI_SHUTDOWN_MS
+        VideoTranslateWindow.stop_translation(window)
+        VideoTranslateWindow.stop_translation(window)
+        window._send_player_command.assert_called_once_with("quit")
+        window._shutdown_timer.start.assert_called_once_with(GUI_SHUTDOWN_MS)
+        old.kill.assert_not_called()
+        VideoTranslateWindow._force_shutdown(window)
+        window._terminate_job.assert_called_once()
+        old.kill.assert_called_once()
+        # A single owned timer is stopped before another session may start.
+        VideoTranslateWindow._session_finished(window, "Stopped.")
+        window._shutdown_timer.stop.assert_called_once()
+        window._finish_ui.assert_called_once_with("Stopped.")
+        VideoTranslateWindow._finish_ui(window, "Stopped.")
+        self.assertIsNone(window.process)
+        VideoTranslateWindow._force_shutdown(window)
+        old.kill.assert_called_once()

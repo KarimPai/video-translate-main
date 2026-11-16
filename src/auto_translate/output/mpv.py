@@ -457,12 +457,14 @@ class MpvOutput:
         self._closed = False
         self._gui_ready_emitted = False
         self._gui_commands: queue.Queue[tuple[str, float | None]] = queue.Queue(maxsize=16)
+        self._deferred_gui_seek: tuple[str, float] | None = None
         self._last_gui_status_at = 0.0
         self._video_retries = 0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
         self._anchor_reason = "initial"
         self._direct_video_loaded = False
+        self.playback_ready = threading.Event()
         # The original VOD's mpv time-pos is the source timestamp. Do not
         # derive a new offset from the restarted FFmpeg audio reader on seek.
         # Local fMP4 fallback retains its separate anchored timeline.
@@ -943,6 +945,8 @@ class MpvOutput:
             attempts = 2 if remote_vod else 1
             loaded = False
             for attempt in range(attempts):
+                if self.stop.is_set():
+                    return
                 try:
                     self.ipc.command("loadfile", video_url, "replace")
                     loaded = (
@@ -963,6 +967,9 @@ class MpvOutput:
                     break
                 if attempt + 1 < attempts:
                     log.warning("Retrying YouTube VOD load with fresh media URLs")
+
+            if self.stop.is_set():
+                return
 
             if not loaded and shared_live_hls:
                 log.error(
@@ -1015,6 +1022,9 @@ class MpvOutput:
 
             self._uses_original_timeline = loaded and not self.ingest.source.live
             self._direct_video_loaded = True
+            ready = getattr(self, "playback_ready", None)
+            if ready is not None:
+                ready.set()
             # The GUI must not hide URL controls until MPV has actually
             # loaded a video and the running pipeline owns its output.
             if self.cfg.window_id and not self._gui_ready_emitted:
@@ -1027,6 +1037,8 @@ class MpvOutput:
                 self._player_command("seek", self._session_start, "absolute+exact")
                 deadline = time.monotonic() + 10.0
                 while time.monotonic() < deadline:
+                    if self.stop.is_set():
+                        return
                     pos = self.ipc.get("time-pos")
                     if pos is not None and abs(float(pos) - self._session_start) <= 1.0:
                         break
@@ -1252,15 +1264,17 @@ class MpvOutput:
             self._subtitle_ready.set()
             return
         log.info("GUI player command queued: %s value=%s", action, value)
-        try:
-            self._gui_commands.put_nowait((action, value))
-        except queue.Full:
-            # Keep the latest seek position if the user drags repeatedly.
+        while True:
             try:
-                self._gui_commands.get_nowait()
-            except queue.Empty:
-                pass
-            self._gui_commands.put_nowait((action, value))
+                self._gui_commands.put_nowait((action, value))
+                break
+            except queue.Full:
+                # A concurrent producer can refill the slot after the removal.
+                # Retry rather than allowing queue.Full to kill the reader.
+                try:
+                    self._gui_commands.get_nowait()
+                except queue.Empty:
+                    pass
         self._subtitle_ready.set()
 
     def _emit_gui_status(self, paused: bool) -> None:
@@ -1287,35 +1301,49 @@ class MpvOutput:
         position was momentarily unavailable during buffering or a restart.
         Retain the latest request until the source clock becomes available.
         """
-        while not self._gui_commands.empty():
+        pending = getattr(self, "_deferred_gui_seek", None)
+        # Bound each tick even if the command reader keeps receiving input.
+        for _ in range(self._gui_commands.maxsize or 16):
             try:
                 action, value = self._gui_commands.get_nowait()
             except queue.Empty:
                 break
             if action == "pause":
+                if pending is not None and self._now is not None:
+                    self._apply_gui_seek(pending)
+                    pending = None
                 self._toggle_user_pause()
                 continue
             if self.ingest.source.live:
                 log.info("GUI seek rejected: livestream")
                 emit_event("seek_ack", accepted=False, target=value)
                 continue
-            if self._now is None:
-                # Queue again and wait for the video clock to become available.
-                # Return now to avoid spinning through the same request forever.
-                self._gui_commands.put_nowait((action, value))
-                return
             if value is None:
                 emit_event("seek_ack", accepted=False, target=None)
                 continue
-            delta = value - self._now if action == "seek" else value
-            target = max(0.0, self._now + delta)
-            if self.ingest.source.duration:
-                target = min(target, max(0.0, self.ingest.source.duration - 5))
-            if target == self._now and self._pending_seek is None:
-                emit_event("seek_ack", accepted=True, target=target)
-                continue
-            log.info("GUI seek command: %s %+.2fs -> %.2fs", action, delta, target)
-            self._jump(delta, gui=True)
+            if action == "seek" or pending is None:
+                pending = (action, value)
+            else:
+                # Relative clicks accumulate; a later absolute seek replaces
+                # the older destination. Only the scheduler owns this state.
+                pending = (pending[0], pending[1] + value)
+        self._deferred_gui_seek = pending
+        if pending is None or self._now is None:
+            return
+        self._deferred_gui_seek = None
+        self._apply_gui_seek(pending)
+
+    def _apply_gui_seek(self, pending: tuple[str, float]) -> None:
+        action, value = pending
+        delta = value - self._now if action == "seek" else value
+        target = max(0.0, self._now + delta)
+        if self.ingest.source.duration:
+            target = min(target, max(0.0, self.ingest.source.duration - 5))
+        if target == self._now and self._pending_seek is None:
+            emit_event("seek_ack", accepted=True, target=target)
+            return
+        log.info("GUI seek command: %s %+.2fs -> %.2fs", action, delta, target)
+        self._jump(delta, gui=True)
 
     def _toggle_user_pause(self):
         paused = self.ipc.get("pause")
@@ -1533,7 +1561,7 @@ class MpvOutput:
         found = False
 
         try:
-            while time.monotonic() < deadline:
+            while not self.stop.is_set() and time.monotonic() < deadline:
                 try:
                     ev = self.ipc.events.get(
                         timeout=min(0.05, max(0.001, deadline - time.monotonic()))

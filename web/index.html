@@ -62,6 +62,7 @@
   }
   body.hide-ja .ja { display: none; }
   #empty { color: var(--faint); font-size: 18px; text-align: center; margin: auto 0; }
+  #draft { color: var(--muted); font-size: 18px; padding: 8px 0; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -73,9 +74,11 @@
     <button id="bigger" title="bigger text">A+</button>
   </header>
   <main id="lines"><div id="empty">Waiting for subtitles…</div></main>
+  <div id="draft" aria-live="polite" hidden></div>
 
 <script>
-  const MAX_LINES = Number(new URLSearchParams(location.search).get("lines")) || 3;
+  const requestedLines = Number(new URLSearchParams(location.search).get("lines"));
+  const MAX_LINES = Number.isFinite(requestedLines) && requestedLines > 0 ? Math.min(20, Math.floor(requestedLines)) : 3;
   const linesEl = document.getElementById("lines");
   const dot = document.getElementById("dot");
   const statusEl = document.getElementById("status");
@@ -132,7 +135,18 @@
   const es = new EventSource("/events");
   es.onopen = () => { dot.classList.add("ok"); statusEl.textContent = "live"; };
   es.onerror = () => { dot.classList.remove("ok"); statusEl.textContent = "reconnecting…"; };
-  es.onmessage = (e) => add(JSON.parse(e.data));
+  es.onmessage = (e) => {
+    const sub = JSON.parse(e.data);
+    const draft = document.getElementById("draft");
+    if (sub.kind === "preview") {
+      draft.hidden = Boolean(sub.clear) || !sub.ja;
+      draft.textContent = draft.hidden ? "" : `Draft Japanese: ${sub.ja}`;
+    } else {
+      draft.hidden = true;
+      draft.textContent = "";
+      add(sub);
+    }
+  };
 </script>
 </body>
 </html>

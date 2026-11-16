@@ -313,7 +313,7 @@ class ShutdownOrderingTests(unittest.TestCase):
                 raise TimeoutError("ingest not stopped")
             q.put(None)
 
-        def fake_vad(_cfg, audio_q, utt_q, _get_generation):
+        def fake_vad(_cfg, audio_q, utt_q, _get_generation, _stop=None):
             self.assertIsNone(audio_q.get(timeout=3))
             utt_q.put(None)
 

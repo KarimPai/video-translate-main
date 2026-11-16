@@ -76,6 +76,20 @@ already-installed `dist/VideoTranslate/VideoTranslate.exe`.
 
 ## Updating without downloading the entire GUI again
 
+If the backend reports **GUI/backend version mismatch** or **Missing GUI control
+connection**, close the older frontend. The current GUI supplies an authenticated
+port and token; an old EXE or shortcut may still launch a version without them.
+To run the current source GUI immediately from the project folder:
+
+```powershell
+uv sync --locked --extra gui && uv run --no-sync python -m auto_translate.gui
+```
+
+For a compiled launch, use the exact updated
+`dist\VideoTranslate\VideoTranslate.exe` path and update any shortcut targeting a
+different copy. Startup logs now record the frontend executable, GUI source path,
+backend project root, and control protocol. Tokens are never logged.
+
 **The transcript-tools release requires the full `VideoTranslate-Windows-GUI`
 artifact.** Close the app and replace the complete `dist/VideoTranslate` folder,
 including `_internal`. This adds NumPy/subtitle runtime files; replacing only

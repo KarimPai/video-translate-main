@@ -130,9 +130,9 @@ class GuiReviewTests(unittest.TestCase):
         w.url_input.setText("https://youtu.be/example")
         self.assertFalse(w.preview_checkbox.isChecked())
         w.preview_checkbox.setChecked(True)
-        args = ["-m", "auto_translate"]
+        args = ["-m", "auto_translate", "--gui-control"]
         with patch("auto_translate.gui.build_backend_command", return_value=(sys.executable, args)), \
-             patch.object(w, "_listen_for_control", return_value=[]), \
+             patch.object(w, "_listen_for_control", return_value=["--gui-control-port", "12345", "--gui-control-token", "test-token"]), \
              patch.object(w, "_new_process", return_value=Mock()):
             w.start_translation()
         self.assertIn("--preview", args)
@@ -142,6 +142,25 @@ class GuiReviewTests(unittest.TestCase):
         w._poll_diagnostics()
         self.assertEqual(set(w.review.diagnostics), {(3000, 4000)})
         self.assertEqual(w.review.diagnostics[(3000, 4000)]["fallback_reason"], "timeout")
+
+    def test_real_listener_credentials_survive_the_complete_launch_command(self):
+        w = self.window
+        w.url_input.setText("https://youtu.be/example")
+        process = Mock()
+        args = ["-m", "auto_translate", "--gui-control"]
+        # Use the real authenticated listener, validating the argv received by
+        # QProcess rather than replacing the listener with an empty mock.
+        with patch("auto_translate.gui.build_backend_command", return_value=(sys.executable, args)), \
+             patch("auto_translate.gui.session_launcher", side_effect=lambda python, argv: (python, ["wrapper", *argv])), \
+             patch.object(w, "_new_process", return_value=process):
+            w.start_translation()
+        final = process.setArguments.call_args.args[0]
+        port = int(final[final.index("--gui-control-port") + 1])
+        token = final[final.index("--gui-control-token") + 1]
+        self.assertEqual(port, w._control_server.getsockname()[1])
+        self.assertEqual(token, w._control_token)
+        self.assertEqual(len(token), 64)
+        process.start.assert_called_once_with()
 
     def test_report_runs_in_background_and_updates_gui(self):
         log_path = self.root / "logs" / "asr-comparison.jsonl"

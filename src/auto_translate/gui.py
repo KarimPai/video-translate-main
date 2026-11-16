@@ -32,7 +32,7 @@ from auto_translate.gui_control import parse_event, GUI_SHUTDOWN_MS
 from auto_translate.windows_job import WindowsJob, bind_process_tree
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS, READY_MARKER, backend_python, build_backend_command, discover_project_root,
-    prepare_project, session_launcher, subprocess_environment, valid_youtube_url,
+    prepare_project, session_launcher, subprocess_environment, valid_youtube_url, validate_gui_launch,
 )
 from auto_translate.review import DiagnosticTail, TranscriptReview, cue_key
 
@@ -846,6 +846,7 @@ class VideoTranslateWindow(QMainWindow):
             for key, value in env.items():
                 qenv.insert(key, value)
             args.extend(self._listen_for_control())
+            validate_gui_launch(args)
             if os.name == "nt":
                 command, args = session_launcher(command, args)
         except (OSError, ValueError) as exc:
@@ -893,6 +894,7 @@ class VideoTranslateWindow(QMainWindow):
         proc.setProgram(command)
         proc.setArguments(args)
         self._lifecycle(f"Starting translation backend gui_pid={os.getpid()}")
+        self._lifecycle(f"frontend={sys.executable} gui_source={__file__} backend_root={self.root} control_protocol=1")
         if "--rtx-vsr" in args:
             self._write_console(
                 "RTX VSR requested: NVIDIA D3D11 scaling. "

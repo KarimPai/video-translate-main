@@ -65,6 +65,13 @@ def _main(resources: ExitStack) -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
+    if args.gui_control and not (args.gui_control_token and args.gui_control_port
+                                 and 0 < args.gui_control_port <= 65535):
+        parser.exit(2, "auto-translate: error: GUI/backend version mismatch: the launcher did not provide "
+                       "its control port/token. Close the old GUI and launch the updated "
+                       "dist\\VideoTranslate\\VideoTranslate.exe, or run "
+                       "uv run --no-sync python -m auto_translate.gui from the project folder.\n")
+
     if args.quality_report:
         from .quality_report import generate_report
         result = generate_report(args.quality_report, args.report_output)
@@ -126,8 +133,6 @@ def _main(resources: ExitStack) -> None:
     control = None
     from .windows_subprocess import check_running, guard_gui_spawns
     if args.gui_control:
-        if not (args.gui_control_token and args.gui_control_port and 0 < args.gui_control_port <= 65535):
-            parser.error("Missing GUI control connection")
         from .gui_control import BackendControl
         guard_gui_spawns()
         control = BackendControl(args.gui_control_port, args.gui_control_token, stop)
@@ -166,9 +171,6 @@ def _main(resources: ExitStack) -> None:
         cfg.mpv.rtx_vsr = True
     elif args.no_rtx_vsr:
         cfg.mpv.rtx_vsr = False
-    if args.gui_control and not (args.gui_control_token and args.gui_control_port
-                                 and 0 < args.gui_control_port <= 65535):
-        parser.error("GUI control socket missing. Update the GUI launcher and backend together.")
     if args.gui_control and not args.mpv_wid:
         parser.error("--gui-control requires --mpv-wid")
     if args.mpv_wid is not None:

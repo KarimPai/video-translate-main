@@ -124,6 +124,21 @@ class ReviewTests(unittest.TestCase):
 
 
 class ToolEntrypointTests(unittest.TestCase):
+    def test_stale_gui_fails_with_actionable_message_before_loading_models(self):
+        import io
+        from contextlib import ExitStack
+        from auto_translate.__main__ import _main
+        error = io.StringIO()
+        with patch("sys.argv", ["auto-translate", "https://youtu.be/example", "--gui-control"]), \
+             patch("sys.stderr", error), \
+             patch("auto_translate.cuda_dlls.setup") as setup:
+            with ExitStack() as resources, self.assertRaises(SystemExit) as stopped:
+                _main(resources)
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("GUI/backend version mismatch", error.getvalue())
+        self.assertIn("python -m auto_translate.gui", error.getvalue())
+        setup.assert_not_called()
+
     def test_quality_report_needs_no_media_or_model_startup(self):
         from contextlib import ExitStack
         from auto_translate.__main__ import _main

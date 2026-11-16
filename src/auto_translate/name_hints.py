@@ -5,7 +5,7 @@ general Japanese or reconstruct words absent from the audio.
 """
 import re
 
-from .name_context import is_miko_target
+from .name_context import is_matsuri_target, is_miko_target
 
 _HOLO = re.compile(r"ホロ|holo", re.I)
 _HAACHAMA_JA = ("はあちゃま", "はぁちゃま", "はーちゃま", "はやちゃま", "ハーチャマ")
@@ -13,30 +13,7 @@ _LAPLUS_JA = ("ラプラス", "らぷらす")
 
 
 _MATSURI = re.compile(r"(夏色)?(まつり|マツリ|祭り)(ちゃん|さん|様|さま)?")
-_MATSURI_EVENT = re.compile(r"お祭|おまつり|夏祭|秋祭|祭典|文化祭|学園祭|神社|屋台|縁日|花火大会|開催|フェス")
-_MATSURI_PERSON = re.compile(r"(?:が|は|も)?(?:来た|来ない|いる|いた|喋|しゃべ|言っ|歌っ|配信して|ログイン)|と(?:話|遊|通話)|の(?:配信|声|視点|チャンネル)")
-_HONORIFIC = {"ちゃん": "-chan", "さん": "-san", "様": "-sama", "さま": "-sama"}
-
-
-def matsuri_matches(ja, title, previous):
-    matches = []
-    for mention in _MATSURI.finditer(ja):
-        full, spelling, suffix = mention.groups()
-        before, after = ja[:mention.start()], ja[mention.end():]
-        if not full and before.endswith(("お", "御", "夏", "秋", "春", "冬", "ひな", "雛", "血", "雪")):
-            continue
-        if not (full or suffix) and _MATSURI_EVENT.search(ja):
-            continue
-        if not (full or suffix or _MATSURI_PERSON.match(after)):
-            isolated = ja.strip(" 。、！？!?「」") == spelling or after.startswith(("どこ", "はどこ"))
-            name_context = _HOLO.search(title) or re.search(r"夏色まつり|Natsuiro Matsuri", title, re.I)
-            prior_name = re.search(r"夏色まつり|(?:まつり|マツリ|祭り)(?:ちゃん|さん|様)", previous)
-            if not (isolated and (prior_name or (name_context and spelling != "祭り"))
-                    and not _MATSURI_EVENT.search(previous)):
-                continue
-        target = ("Natsuiro Matsuri" if full else "Matsuri") + _HONORIFIC.get(suffix, "")
-        matches.append((mention[0], target))
-    return matches
+_MATSURI_EVENT = re.compile(r"お祭|おまつり|夏祭|秋祭|祭典|文化祭|学園祭|屋台|縁日|花火大会|開催|フェス")
 
 
 # Only substitute an existing English mention. Family membership is also
@@ -70,23 +47,34 @@ SPOKEN_NAME_FORMS = {form for forms, _ in _FAMILIES.values() for form in forms.s
 
 
 def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]], *,
-                          miko_mentions=()) -> str:
+                          miko_mentions=(), name_mentions=()) -> str:
     """Change one unambiguous output span per evidenced name family."""
     targets = {target for _, target in names}
+    mentions = name_mentions or miko_mentions
     for family, (forms, aliases) in _FAMILIES.items():
         spoken = targets.intersection(forms.split())
         if family == "Miko":
             spoken = {target for target in targets if is_miko_target(target)}
+        if family == "Matsuri":
+            spoken = {target for target in targets if is_matsuri_target(target)}
         if len(spoken) != 1 or any(
             family.lower() in other.lower() for other in targets - spoken
         ):
             continue
         target = spoken.pop()
         source = next(source for source, en in names if en == target)
+        matsuri_mentions = ()
+        festival_safe = False
         if family == "Matsuri":
             # Avoid replacing a real event elsewhere in a mixed name/event cue.
-            rest = ja.replace(source, "", 1)
+            matsuri_mentions = tuple(m for m in mentions if is_matsuri_target(m.target))
+            rest = ja
+            for mention in reversed(matsuri_mentions):
+                rest = rest[:mention.start] + "\0" * (mention.end - mention.start) + rest[mention.end:]
+            if not matsuri_mentions:
+                rest = rest.replace(source, "", 1)
             if not (_MATSURI.search(rest) or _MATSURI_EVENT.search(rest) or "祭" in rest):
+                festival_safe = True
                 aliases += r"|(?:the |a )?festivals?"
         if family == "Lap":
             # A common English word needs an identifiable name slot. Avoid
@@ -99,8 +87,8 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]], *
                     aliases += r"|rapping"
         if family == "Miko":
             remainder = ja
-            if miko_mentions:
-                for mention in reversed(miko_mentions):
+            if mentions:
+                for mention in reversed(tuple(m for m in mentions if is_miko_target(m.target))):
                     remainder = (remainder[:mention.start] + "\0" * (mention.end - mention.start)
                                  + remainder[mention.end:])
             else:
@@ -113,9 +101,15 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]], *
             aliases += r"|(?:the )?captain"
         pattern = re.compile(r"(?<![\w-])(?:" + aliases + r")(?:[ -](?:chan|san|sama|nee))?(?![\w-])", re.I)
         hits = list(pattern.finditer(english))
-        if len(hits) == 1:
+        if len(hits) == 1 and not (family == "Matsuri" and len(matsuri_mentions) > 1):
             hit = hits[0]
             english = english[:hit.start()] + target + english[hit.end():]
+        elif (family == "Matsuri" and festival_safe and len(hits) > 1
+              and len(hits) == len(matsuri_mentions)):
+            # Repeated calls/corrections may name Matsuri twice. Preserve the
+            # supplied words and negation, changing only evidenced name spans.
+            for hit in reversed(hits):
+                english = english[:hit.start()] + target + english[hit.end():]
     return english
 
 

@@ -10,7 +10,7 @@ from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 from .name_hints import SPOKEN_NAME_FORMS
-from .name_context import is_miko_target
+from .name_context import is_name_target
 from .subtitle_clean import has_generation_loop, looks_like_prompt_echo
 
 _SHORT_POSITIVE_JA = re.compile(
@@ -75,10 +75,10 @@ _GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "s
 
 
 def proper_name_mismatch(japanese: str, english: str, names=()) -> bool:
-    """Check only names evidenced in this source, including full Miko forms."""
+    """Check only evidenced names, including full names and spoken honorifics."""
     jp = unicodedata.normalize("NFKC", japanese)
     for source, target in (names or []):
-        guarded = (target in SPOKEN_NAME_FORMS or is_miko_target(target)
+        guarded = (target in SPOKEN_NAME_FORMS or is_name_target(target)
                    or target.casefold() in _GUARDED_NAMES)
         if guarded and unicodedata.normalize("NFKC", source) in jp:
             if not re.search(r"(?<![a-z])" + re.escape(target) + r"(?![a-z])", english, re.I):

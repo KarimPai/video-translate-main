@@ -89,6 +89,38 @@ class AsrNameContextTests(unittest.TestCase):
         self.assertIn(("巫女", "Miko"), self.evidence()["glossary"])
         unresolved.assert_not_called()
 
+    def test_matsuri_aliases_reach_selector_with_original_candidates(self):
+        for primary in ("まつりはどうした", "マツリはどうした"):
+            with self.subTest(primary=primary):
+                self.dual.selector.choose.reset_mock()
+                self.assertEqual(self.choose(primary, "祭りはどうした", "ホロGTA"), primary)
+                self.assertIn((primary[:3], "Matsuri"), self.evidence()["glossary"])
+                self.assertEqual(self.dual.selector.choose.call_args.args[:2],
+                                 (primary, "祭りはどうした"))
+
+    def test_observed_roster_is_name_evidence_during_selection(self):
+        primary = "okいろは祭りあとビジューカリスマ"
+        self.assertEqual(self.choose(primary, "いろはまつりあとビジュー", "ホロGTA"), primary)
+        self.assertIn(("祭り", "Matsuri"), self.evidence()["glossary"])
+
+    def test_matsuri_recent_evidence_does_not_survive_a_seek(self):
+        self.dual.remember(0, "夏色まつりだよ")
+        self.choose("まつりはどうした", "誰が来た", "Minecraft")
+        self.assertIn(("まつり", "Matsuri"), self.evidence()["glossary"])
+        self.utt.generation = 1
+        self.choose("まつりはどうした", "誰が来た", "Minecraft")
+        self.assertNotIn(("まつり", "Matsuri"), self.evidence()["glossary"])
+
+    def test_matsuri_homophone_does_not_override_weak_acoustic_evidence(self):
+        self.utt.vad_confidence = .55
+        self.dual.selector.last_choice = "uncertain"
+        with patch("auto_translate.asr.dual.compare", return_value=(.2, ["glossary"])), patch(
+                "auto_translate.asr.dual.suspicious_phonetics", return_value=True), patch(
+                "auto_translate.asr.dual.disagreement_unresolved") as unresolved:
+            self.assertEqual(self.choose("祭りはどこ", "誰か来た", "夏色まつり ホロGTA"), "")
+        self.assertIn(("祭り", "Matsuri"), self.evidence()["glossary"])
+        unresolved.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

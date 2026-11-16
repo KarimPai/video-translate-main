@@ -9,7 +9,7 @@ import numpy as np
 
 from ..windows_subprocess import stopping
 from ..asr_correction import lap_spelling_from_peer
-from ..name_context import is_miko_target
+from ..name_context import is_name_target
 from ..text_filter import is_usable_transcript
 from .whisper_turbo import WhisperTurboASR
 from .diagnostics import append_comparison
@@ -544,9 +544,9 @@ class DualASR:
             log.warning("Suppressing one-sided uncorroborated full name at %.2fs", utt.start_s)
             record("", "abstain_uncorroborated_full_name", score, flags, selector_called)
             return ""
-        # A nickname or context-resolved Miko homophone heard on just one
+        # A nickname or context-resolved name homophone heard on just one
         # side must not disable the weak-phonetics abstention.
-        corroborating_terms = any((source not in self.glossary.nicknames and not is_miko_target(target))
+        corroborating_terms = any((source not in self.glossary.nicknames and not is_name_target(target))
                                   or (source in primary and source in secondary)
                                   for source, target in terms)
         if suspicious_phonetics(result) and not corroborating_terms and score < .45:

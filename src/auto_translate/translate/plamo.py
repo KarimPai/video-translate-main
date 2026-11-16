@@ -22,8 +22,8 @@ from .base import (TranslatorUnavailable, TranslationCancelled,
 from ..config import TranslateConfig
 from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
 from ..glossary import Glossary
-from ..name_hints import canonicalize_english_names, matsuri_matches, preserve_spoken_names
-from ..name_context import is_miko_target
+from ..name_hints import canonicalize_english_names, preserve_spoken_names
+from ..name_context import is_matsuri_target, is_miko_target, is_name_target
 from ..subject_guard import (
     neutralize_unsupported_subjects,
     unsupported_person_reference,
@@ -124,13 +124,13 @@ def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previ
     )
     terms = glossary.find(ja, previous_ja=previous_ja, video_context=vod_title)
     if name_context_ja is not None and name_context_ja != previous_ja:
-        # Extend Miko identity evidence without broadening the established
-        # immediately-previous-cue policy for Marine or Matsuri role names.
-        terms = [pair for pair in terms if not is_miko_target(pair[1])] + [
+        # Extend person-name evidence while retaining the established
+        # immediately-previous-cue policy for Marine's captain role.
+        terms = [pair for pair in terms if not is_name_target(pair[1])] + [
             pair for pair in glossary.find(ja, previous_ja=name_context_ja, video_context=vod_title)
-            if is_miko_target(pair[1])
+            if is_name_target(pair[1])
         ]
-    candidates = sorted(scene + matsuri_matches(ja, vod_title, previous_ja) + terms, key=lambda item: len(item[0]), reverse=True)
+    candidates = sorted(scene + terms, key=lambda item: len(item[0]), reverse=True)
     remaining = ja
     selected: list[tuple[str, str]] = []
     for source, target in candidates:
@@ -156,6 +156,7 @@ def _name_translation_input(ja: str, names: list[tuple[str, str]], mentions):
     """
     rewrite = [mention for mention in mentions
                if mention.source.startswith("巫女")
+               or (is_matsuri_target(mention.target) and mention.source in ("祭り", "祭"))
                or (mention.source, mention.target) not in names]
     if not rewrite:
         return ja, names
@@ -166,7 +167,7 @@ def _name_translation_input(ja: str, names: list[tuple[str, str]], mentions):
     rewritten = {mention.source for mention in rewrite}
     hints = [(source, target) for source, target in names
              if source in translated_source
-             and not (is_miko_target(target) and source in rewritten)]
+             and not (is_name_target(target) and source in rewritten)]
     hints.extend((mention.target, mention.target) for mention in rewrite)
     return translated_source, list(dict.fromkeys(hints))
 
@@ -216,7 +217,7 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
         return False
     terms = _current_glossary_matches(source, vod_title, glossary, previous_ja,
                                       name_context_ja=name_context_ja)
-    terms.extend((mention.source, mention.target) for mention in glossary.miko_mentions(
+    terms.extend((mention.source, mention.target) for mention in glossary.name_mentions(
         source, video_context=vod_title,
         previous_ja=previous_ja if name_context_ja is None else name_context_ja))
     return suspicious_translation(source, translation, names=terms) is None
@@ -536,7 +537,7 @@ class PlamoTranslator:
         name_context = _recent_name_context(history)
         names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous,
                                           name_context_ja=name_context)
-        mentions = self.glossary.miko_mentions(
+        mentions = self.glossary.name_mentions(
             ja, video_context=self.vod_title, previous_ja=name_context)
         translation_ja, translation_names = _name_translation_input(ja, names, mentions)
         # Retain original source spans for validation, including names that
@@ -552,7 +553,7 @@ class PlamoTranslator:
         def normalize_names(english: str) -> str:
             if any(target in ("Haachama", "Laplus") for _, target in names):
                 english = canonicalize_english_names(ja, english, self.vod_title)
-            return preserve_spoken_names(ja, english, names, miko_mentions=mentions)
+            return preserve_spoken_names(ja, english, names, name_mentions=mentions)
 
         if getattr(self, "memory_lines", 0) and not _KUSA.search(ja) and "マツリ" not in ja:
             reused = reuse_recent_short_term(ja, history)
@@ -715,6 +716,12 @@ class PlamoTranslator:
                 " The supplied Miko/Mikochi glossary entries are person names for Sakura Miko. "
                 "Preserve the supplied name and spoken honorific; do not translate it as shrine maiden. "
                 "A separate literal occupation or role 巫女 still means shrine maiden."
+            )
+        if any(is_matsuri_target(target) for _, target in hits):
+            options["context"] += (
+                " The supplied Matsuri glossary entries are person names for Natsuiro Matsuri. "
+                "Preserve their supplied form and spoken honorifics; do not translate the name as festival. "
+                "A separate literal festival or event remains festival. Keep spoken corrections and negation."
             )
         if any(self.glossary.nicknames.get(source) == target for source, target in hits):
             options["context"] += (" Keep each spoken nickname at its supplied length, "

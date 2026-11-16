@@ -6,7 +6,8 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
-from .name_context import MikoMention, is_miko_target, resolve_miko_mentions
+from .name_context import (MikoMention, NameMention, is_miko_target, is_name_target,
+                           resolve_miko_mentions, resolve_matsuri_mentions)
 
 
 # Japanese has no whitespace between most words. Favor missed hints over
@@ -31,6 +32,7 @@ class Glossary:
         self.nicknames = dict(nicknames or {})
         self.terms = sorted((terms | self.nicknames).items(), key=lambda kv: len(kv[0]), reverse=True)
         self._miko_aliases = {source: target for source, target in self.terms if is_miko_target(target)}
+        self._configured_terms = dict(self.terms)
         # Optional ASR-only rules: acoustic peer comparison, not inferred words.
         self.scene_pairs = tuple(
             (rule["heard"], rule["correct"], tuple(rule.get("anchors", ())))
@@ -64,12 +66,24 @@ class Glossary:
         """Entries that appear in `ja` (non-overlapping, longest match wins)."""
         return list(self._matches(ja, previous_ja, miko_context, video_context))
 
+    def matsuri_mentions(self, ja: str, *, previous_ja: str = "",
+                         video_context: str = "") -> tuple[NameMention, ...]:
+        return resolve_matsuri_mentions(ja, self._configured_terms,
+                                       previous_ja=previous_ja, video_context=video_context)
+
+    def name_mentions(self, ja: str, *, previous_ja: str = "", miko_context: bool = False,
+                       video_context: str = "") -> tuple[NameMention, ...]:
+        mentions = self.miko_mentions(ja, previous_ja=previous_ja, miko_context=miko_context,
+                                      video_context=video_context)
+        mentions += self.matsuri_mentions(ja, previous_ja=previous_ja, video_context=video_context)
+        return tuple(sorted(mentions, key=lambda item: item.start))
+
     @lru_cache(maxsize=128)
     def _matches(self, ja: str, previous_ja: str, miko_context: bool,
                  video_context: str) -> tuple[tuple[str, str], ...]:
         source = ja
         hits = []
-        mentions = self.miko_mentions(source, previous_ja=previous_ja,
+        mentions = self.name_mentions(source, previous_ja=previous_ja,
                                       miko_context=miko_context, video_context=video_context)
         for mention in sorted(mentions, key=lambda item: item.end - item.start, reverse=True):
             pair = (mention.source, mention.target)
@@ -82,7 +96,7 @@ class Glossary:
                 hits.append(pair)
             ja = ja[:mention.start] + "\0" * (mention.end - mention.start) + ja[mention.end:]
         for term, en in self.terms:
-            if is_miko_target(en):
+            if is_name_target(en):
                 continue  # The shared span resolver owns these ambiguous names.
             if term not in ja:
                 continue

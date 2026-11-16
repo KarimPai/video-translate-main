@@ -6,13 +6,14 @@ import queue
 import tempfile
 import threading
 import time
+from concurrent.futures import CancelledError
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
-from scipy.signal import resample_poly
 
 from .types import SAMPLE_RATE, AudioChunk
+from .windows_subprocess import stopping
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +91,8 @@ class VocalSeparator:
         audio: np.ndarray,
         index: int,
     ) -> np.ndarray:
+        import soundfile as sf
+
         source = self.output_dir / f"window_{index:06d}.wav"
 
         sf.write(
@@ -148,13 +151,19 @@ class SeparationWorker:
         first_sample: int,
         model_path: str,
         generation: int,
+        gate=None,
+        current=None,
     ):
         self.out_q = out_q
         self.first_sample = first_sample
         self.model_path = model_path
         self.generation = generation
+        self.gate = gate
+        self.current = current
+        self._cancel = threading.Event()
+        self._close_lock = threading.Lock()
 
-        self.input_q: queue.Queue = queue.Queue()
+        self.input_q: queue.Queue = queue.Queue(maxsize=4 if gate is not None and gate.enabled else 0)
         self.error: Exception | None = None
         self._closed = False
 
@@ -181,20 +190,63 @@ class SeparationWorker:
                 "Vocal separation expects stereo audio"
             )
 
-        self.input_q.put(pcm)
+        while True:
+            self._check_cancelled()
+            if self.error is not None or not self.worker.is_alive():
+                raise RuntimeError("Vocal separation worker stopped") from self.error
+            if self._closed:
+                raise CancelledError("Vocal separation is closing")
+            try:
+                self.input_q.put(pcm, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
     def close(self) -> None:
-        if self._closed:
-            return
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            # Never block putting a sentinel into a full queue after a failed
+            # worker, and keep seek/shutdown cancellation observable.
+            while self.worker.is_alive():
+                if self._is_cancelled():
+                    self._cancel.set()
+                    break
+                try:
+                    self.input_q.put(None, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
+            cancellation_deadline = None
+            while self.worker.is_alive():
+                if self._is_cancelled():
+                    self._cancel.set()
+                    if cancellation_deadline is None:
+                        cancellation_deadline = time.monotonic() + 2
+                    if time.monotonic() >= cancellation_deadline:
+                        log.warning("Vocal separation still executing after cancellation; worker is daemonized")
+                        break
+                self.worker.join(timeout=0.1)
+            if self.error is not None:
+                raise RuntimeError(
+                    f"Vocal separation failed: {self.error}"
+                ) from self.error
 
-        self._closed = True
-        self.input_q.put(None)
-        self.worker.join()
+    def _is_cancelled(self):
+        return (self._cancel.is_set() or stopping.is_set()
+                or (self.gate is not None and self.gate.stop.is_set())
+                or (self.current is not None and self.current() != self.generation))
 
-        if self.error is not None:
-            raise RuntimeError(
-                f"Vocal separation failed: {self.error}"
-            ) from self.error
+    def _check_cancelled(self):
+        if self._is_cancelled():
+            raise CancelledError("Vocal separation generation/session cancelled")
+
+    def _operation(self, name):
+        self._check_cancelled()
+        return (self.gate.operation(name, cancel_event=self._cancel,
+                                   current=self.current, generation=self.generation)
+                if self.gate is not None else nullcontext())
 
     def _emit(
         self,
@@ -203,6 +255,7 @@ class SeparationWorker:
     ) -> None:
         if len(audio) == 0:
             return
+        from scipy.signal import resample_poly
 
         audio_16k = resample_poly(
             audio,
@@ -230,22 +283,30 @@ class SeparationWorker:
                 offset:offset + OUTPUT_CHUNK_SAMPLES
             ]
 
-            self.out_q.put(
-                AudioChunk(
+            item = AudioChunk(
                     start_sample + offset,
                     chunk,
                     time.monotonic(),
                     generation=self.generation,
                 )
-            )
+            while True:
+                self._check_cancelled()
+                try:
+                    self.out_q.put(item, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
 
     def _run(self) -> None:
         separator = None
 
         try:
-            separator = VocalSeparator(self.model_path)
+            with self._operation("separation_load"):
+                separator = VocalSeparator(self.model_path)
             self._process(separator)
 
+        except CancelledError:
+            log.debug("Discarded vocal separation generation=%d", self.generation)
         except Exception as exc:
             self.error = exc
             log.exception(
@@ -274,7 +335,11 @@ class SeparationWorker:
         index = 0
 
         while True:
-            item = self.input_q.get()
+            self._check_cancelled()
+            try:
+                item = self.input_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
             if item is not None:
                 buffer = np.concatenate(
@@ -295,10 +360,12 @@ class SeparationWorker:
                 window = buffer[:length]
 
                 index += 1
-                vocals = separator.separate(
-                    window,
-                    index,
-                )
+                with self._operation("separation"):
+                    vocals = separator.separate(
+                        window,
+                        index,
+                    )
+                self._check_cancelled()
 
                 # Keep the output length aligned with the input window.
                 expected_length = length

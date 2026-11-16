@@ -31,6 +31,7 @@ from uuid import uuid4
 from ..config import MpvConfig
 from ..windows_subprocess import hidden_console_flags
 from ..gui_control import emit_event, FULLSCREEN_MESSAGE, EXIT_FULLSCREEN_MESSAGE
+from ..runtime_diagnostics import update_metrics, increment_counter, record_event, rotate_log
 from .rtx_vsr import (
     vsr_filter, VSR_LABEL, VsrPerformanceGuard,
     filter_present, launch_options, source_eligible,
@@ -458,6 +459,7 @@ class MpvOutput:
         self._gui_ready_emitted = False
         self._gui_commands: queue.Queue[tuple[str, float | None]] = queue.Queue(maxsize=16)
         self._last_gui_status_at = 0.0
+        self._last_diagnostics_at = 0.0
         self._video_retries = 0
         self._mpv_anchor: float | None = None
         self._clock_source_anchor = self._session_start
@@ -490,6 +492,7 @@ class MpvOutput:
 
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
+        rotate_log(mpv_log)
 
         ipc_path = f"{IPC_PREFIX}-{os.getpid()}-{uuid4().hex}"
         self._proc = owned_popen([
@@ -567,7 +570,8 @@ class MpvOutput:
         try:
             self.ipc = MpvIpc(ipc_path)
 
-            for observer, prop in enumerate(("time-pos", "pause", "eof-reached"), start=1):
+            for observer, prop in enumerate(("time-pos", "pause", "eof-reached",
+                                              "video-params", "video-codec", "hwdec-current", "vf"), start=1):
                 self.ipc.command("observe_property", observer, prop)
             # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
@@ -729,14 +733,18 @@ class MpvOutput:
                     sub.generation, sub.end_s, now, late_by,
                     self.ingest.source.live,
                 )
+                increment_counter("expired")
                 return
 
         minimum = getattr(self.cfg, "min_subtitle_duration_s", 1.2)
         line = _Line(sub, show_from, max(until, show_from + minimum))
         with self._lock:
             if sub.generation != getattr(self.ingest, "generation", sub.generation):
+                increment_counter("dropped")
                 return
             self._lines.append(line)
+            pending = sum(ln.show_from > (self._now if self._now is not None else -1) for ln in self._lines)
+        update_metrics(counters={"pending_subtitles": pending})
         self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
@@ -1217,6 +1225,7 @@ class MpvOutput:
             restart_at = self.ingest.source.start_s
 
         self._video_retries += 1
+        record_event("playback_recovery", attempt=self._video_retries, source_s=restart_at)
         log.warning(
             "restarting progressive fMP4 session (attempt %d/3) at %.2fs",
             self._video_retries,
@@ -1269,6 +1278,24 @@ class MpvOutput:
         if now - self._last_gui_status_at < 0.5:
             return
         self._last_gui_status_at = now
+        if now - getattr(self, "_last_diagnostics_at", 0.) >= 2.:
+            self._last_diagnostics_at = now
+            # These are observer-fed cache reads; monitoring adds no blocking
+            # MPV requests or NVIDIA calls to the scheduling loop.
+            properties = getattr(self.ipc, "_properties", {})
+            params = properties.get("video-params")
+            params = params if isinstance(params, dict) else {}
+            width, height = params.get("w"), params.get("h")
+            hwdec = properties.get("hwdec-current")
+            update_metrics(playback={
+                "resolution": f"{width}x{height}" if width and height else None,
+                "decoder": properties.get("video-codec"), "hwdec": hwdec,
+                "hardware_acceleration": None if hwdec is None else hwdec not in ("no", ""),
+                "vsr_requested": bool(getattr(self, "_vsr_user_requested", getattr(self.cfg, "rtx_vsr", False))),
+                "vsr_filter_present": filter_present(properties.get("vf")),
+                # Filter presence confirms MPV setup, not NVIDIA AI activity.
+                "vsr_active": False if not getattr(self.cfg, "rtx_vsr", False) else None,
+            })
         live = bool(self.ingest.source.live)
         duration = None if live else self.ingest.source.duration
         if duration is None and not live:
@@ -1333,6 +1360,8 @@ class MpvOutput:
             except queue.Empty:
                 break
             args = ev.get("args") or []
+            if ev.get("event") == "end-file" and ev.get("reason") == "error":
+                record_event("video_decoder_error", error=ev.get("file_error"))
             if ev.get("event") == "seek" and not self.ingest.source.live:
                 self._native_seek_at = time.monotonic()
             if (
@@ -1567,6 +1596,8 @@ class MpvOutput:
                 ln for ln in self._lines
                 if ln.show_from <= now < ln.show_until and ln.sub.en
             ]
+            pending = sum(ln.show_from > now for ln in self._lines)
+        update_metrics(counters={"pending_subtitles": pending})
 
         # The per-video text cache survives seek resets and the rolling
         # in-memory display list. Ask it for cues at the current timestamp.

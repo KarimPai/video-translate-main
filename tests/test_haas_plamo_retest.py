@@ -63,7 +63,7 @@ class HaasPlamoRetestTests(unittest.TestCase):
                          "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M")
         self.assertEqual((cfg.translate.context_lines,
                           cfg.translate.memory_lines,
-                          cfg.translate.plamo_context), (3, 0, 4096))
+                          cfg.translate.plamo_context), (3, 16, 4096))
         self.assertEqual(cfg.translate.glossary, "glossary.toml")
         self.assertEqual(cfg.translate.max_tokens, 192)
         self.assertEqual(cfg.translate.timeout_s, 30.0)

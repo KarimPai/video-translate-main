@@ -15,7 +15,15 @@ from . import cuda_dlls
 
 def main() -> None:
     with ExitStack() as resources:
-        _main(resources)
+        from .runtime_diagnostics import record_event
+        try:
+            _main(resources)
+        except BaseException as exc:
+            record_event("application_shutdown", expected=isinstance(exc, (KeyboardInterrupt, SystemExit)),
+                         error=type(exc).__name__)
+            raise
+        else:
+            record_event("application_shutdown", expected=True)
 
 
 def _main(resources: ExitStack) -> None:
@@ -35,6 +43,17 @@ def _main(resources: ExitStack) -> None:
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--shared-gpu-playback", action="store_true",
                         help="limit VOD inference read-ahead during dual-ASR playback")
+    for name, help_text in (("extended-memory", "bounded extended translation memory"),
+                            ("smart-correction", "evidence-gated ASR correction"),
+                            ("youtube-chat-context", "optional public YouTube chat context"),
+                            ("safe-playback", "coordinate inference and bound audio read-ahead")):
+        option = parser.add_mutually_exclusive_group()
+        option.add_argument(f"--{name}", dest=name.replace("-", "_"), action="store_true", default=None,
+                            help=help_text)
+        option.add_argument(f"--no-{name}", dest=name.replace("-", "_"), action="store_false")
+    parser.add_argument("--memory-lines", type=int, choices=range(21), metavar="0..20")
+    parser.add_argument("--correction-vod-retries", type=int, choices=range(3))
+    parser.add_argument("--correction-live-retries", type=int, choices=range(3))
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
     parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
@@ -52,8 +71,10 @@ def _main(resources: ExitStack) -> None:
                             help="request NVIDIA RTX VSR for the selected video quality; enable VSR in NVIDIA App")
     vsr_option.add_argument("--no-rtx-vsr", action="store_true",
                             help="disable RTX VSR even when enabled in config.toml")
-    parser.add_argument("--diagnostics", action="store_true",
-                        help="log additional pipeline metrics")
+    diagnostics_option = parser.add_mutually_exclusive_group()
+    diagnostics_option.add_argument("--diagnostics", action="store_true", default=None,
+                                    help="record bounded application diagnostics")
+    diagnostics_option.add_argument("--no-diagnostics", dest="diagnostics", action="store_false")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -75,7 +96,9 @@ def _main(resources: ExitStack) -> None:
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
         console = handlers[0]
         console.setLevel(logging.WARNING)
-        handlers.append(logging.FileHandler("logs/run.log", encoding="utf-8"))
+        from logging.handlers import RotatingFileHandler
+        Path("logs").mkdir(exist_ok=True)
+        handlers.append(RotatingFileHandler("logs/run.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8"))
         def report_failure(kind, error, traceback):
             logging.getLogger("auto_translate").critical("Translator stopped", exc_info=(kind, error, traceback))
         sys.excepthook = report_failure
@@ -117,6 +140,30 @@ def _main(resources: ExitStack) -> None:
     from .translate import create_translator
 
     cfg = load_config(args.config)
+    for option, section, field_name in (
+        ("extended_memory", cfg.translate, "extended_memory"),
+        ("memory_lines", cfg.translate, "memory_lines"),
+        ("smart_correction", cfg.dual_asr, "smart_correction"),
+        ("correction_vod_retries", cfg.dual_asr, "correction_vod_retries"),
+        ("correction_live_retries", cfg.dual_asr, "correction_live_retries"),
+        ("youtube_chat_context", cfg.chat, "enabled"),
+        ("safe_playback", cfg.safe_playback, "enabled"),
+        ("diagnostics", cfg.diagnostics, "enabled"),
+    ):
+        value = getattr(args, option)
+        if value is not None:
+            setattr(section, field_name, value)
+    from .runtime_diagnostics import configure_diagnostics, record_event
+    diagnostics = configure_diagnostics(cfg.diagnostics)
+    resources.callback(diagnostics.close)
+    def record_cleanup():
+        from .windows_subprocess import owned_process_status
+        record_event("subprocess_cleanup", processes=owned_process_status())
+    resources.callback(record_cleanup)
+    record_event("application_start", safe_playback=cfg.safe_playback.enabled,
+                 extended_memory=cfg.translate.extended_memory, chat=cfg.chat.enabled)
+    from .safe_playback import SafeInferenceGate
+    gate = SafeInferenceGate(cfg.safe_playback, stop)
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
         import shutil
         from .output.mpv import find_mpv
@@ -145,6 +192,11 @@ def _main(resources: ExitStack) -> None:
         cfg.mpv.window_id = args.mpv_wid
 
     log = logging.getLogger("auto_translate")
+    if cfg.safe_playback.enabled:
+        lead = cfg.ingest.vod_max_audio_lead_s
+        cfg.ingest.vod_max_audio_lead_s = min(lead, cfg.safe_playback.max_audio_lead_s) if lead else cfg.safe_playback.max_audio_lead_s
+        log.info("Safe Playback: at most %d simultaneous inference calls; audio lead %.1fs; MPV decoder and VSR settings preserved",
+                 cfg.safe_playback.max_inference_concurrency, cfg.ingest.vod_max_audio_lead_s)
     if args.shared_gpu_playback and cfg.dual_asr.enabled:
         cfg.ingest.vod_max_audio_lead_s = min(cfg.ingest.vod_max_audio_lead_s, 30.0)
         log.info("Shared GPU playback: VOD audio lead capped at %.1fs",
@@ -212,6 +264,8 @@ def _main(resources: ExitStack) -> None:
     check_running()
     segmenter = Segmenter(vad_for_source(cfg.vad, live=bool(source.live)))
     budget = GpuBudget(cfg.gpu_budget)
+    resources.callback(budget.close)
+    budget.operation = gate.operation
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
                       if source.live else cfg.asr.response_timeout_s)
     timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
@@ -273,6 +327,7 @@ def _main(resources: ExitStack) -> None:
         time.perf_counter() - t0,
     )
 
+    translator.safe_playback = bool(cfg.safe_playback.enabled)
     resources.callback(translator.close)
     use_mpv = args.mpv or cfg.mpv.enabled
     if use_mpv and not source.live and source.paced:
@@ -294,6 +349,7 @@ def _main(resources: ExitStack) -> None:
         separation_cfg=cfg.separation,
         deepfilter_cfg=cfg.deepfilter,
     )
+    ingest.inference_gate = gate
 
     outputs: list[Output] = []
     # Cache only this MPV VOD in RAM. Never reuse it for another video,
@@ -320,6 +376,30 @@ def _main(resources: ExitStack) -> None:
         raise
 
     resources.callback(dual.release)
+    if cfg.chat.enabled:
+        from .live_chat import ChatContext
+        chat = ChatContext(cfg.chat, args.source, live=bool(source.live), start_s=source.start_s,
+                           glossary=glossary)
+        resources.callback(chat.close)
+        chat.start()
+        chat_generation = [ingest.generation]
+        chat_anchored = [False]
+
+        def chat_evidence(utt, primary, secondary):
+            if chat_generation[0] != utt.generation:
+                chat.reset(utt.generation, utt.start_s)
+                chat_generation[0] = utt.generation
+            if source.live and not chat_anchored[0] and ingest.first_pts is not None:
+                # PCM receipt is an estimate, not an upstream broadcast timestamp.
+                # Network/encoder delay remains unknown; chat stays weak evidence.
+                chat.set_clock_anchor(ingest.first_pts, time.time() - time.monotonic() + ingest.first_pts_at,
+                                      uncertainty_s=cfg.chat.live_time_uncertainty_s,
+                                      alignment="receipt_estimate")
+                chat_anchored[0] = True
+                record_event("chat_clock_anchor", alignment="pcm_receipt_estimate")
+            return chat.evidence(utt.start_s, utt.end_s, primary, secondary, generation=utt.generation)
+
+        dual.chat_context = chat_evidence
 
     # Optional, CPU-only spoken-language gate. Failure is nonfatal: retain
     # Japanese speech rather than suppressing cues on an unavailable model.
@@ -345,6 +425,7 @@ def _main(resources: ExitStack) -> None:
                     raise
                 log.warning("VSR player startup failed (%s); retrying standard MPV once", exc)
                 player = MpvOutput(replace(cfg.mpv, rtx_vsr=False), ingest, stop, subtitle_cache=subtitle_cache)
+            player._vsr_user_requested = bool(cfg.mpv.rtx_vsr)
             resources.enter_context(player)
             outputs.append(player)
             dual.playback_position = player.playback_position
@@ -401,6 +482,8 @@ def _main(resources: ExitStack) -> None:
             session_cache=subtitle_cache,
             dual=dual,
             language_filter=language_filter,
+            gate=gate,
+            diagnostics=diagnostics if cfg.diagnostics.enabled else None,
         )
     finally:
         budget.close()

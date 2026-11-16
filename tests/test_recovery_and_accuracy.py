@@ -108,22 +108,40 @@ class PlayerHealthTests(unittest.TestCase):
 
 
 class GuiShutdownTests(unittest.TestCase):
-    def test_stop_requests_quit_once_and_kills_only_original_process(self):
+    def test_stop_requests_quit_once_and_arms_owned_shutdown_timer_once(self):
+        try:
+            from auto_translate.gui import VideoTranslateWindow, QProcess, GUI_SHUTDOWN_MS
+        except ImportError:
+            self.skipTest("optional Qt frontend unavailable")
+        window = Mock(_stopping=False)
+        window.process.state.return_value = QProcess.ProcessState.Running
+        VideoTranslateWindow.stop_translation(window)
+        VideoTranslateWindow.stop_translation(window)
+        window._send_player_command.assert_called_once_with("quit")
+        window._shutdown_timer.start.assert_called_once_with(GUI_SHUTDOWN_MS)
+        window.process.kill.assert_not_called()
+
+    def test_forced_shutdown_targets_current_owned_process_tree(self):
         try:
             from auto_translate.gui import VideoTranslateWindow, QProcess
         except ImportError:
             self.skipTest("optional Qt frontend unavailable")
-        window = Mock(_stopping=False)
-        old = window.process
-        old.state.return_value = QProcess.ProcessState.Running
-        with patch("auto_translate.gui.QTimer.singleShot") as timer:
-            VideoTranslateWindow.stop_translation(window)
-            VideoTranslateWindow.stop_translation(window)
-            window._send_player_command.assert_called_once_with("quit")
-            timer.assert_called_once()
-            old.kill.assert_not_called()
-            VideoTranslateWindow._kill_if_still_running(window, old)
-            old.kill.assert_called_once()
-            window.process = Mock()
-            VideoTranslateWindow._kill_if_still_running(window, old)
-            window.process.kill.assert_not_called()
+        window = Mock()
+        window.process.state.return_value = QProcess.ProcessState.Running
+        VideoTranslateWindow._force_shutdown(window)
+        window._terminate_job.assert_called_once_with()
+        window.process.kill.assert_called_once_with()
+        window.process = None
+        VideoTranslateWindow._force_shutdown(window)
+        window._terminate_job.assert_called_once_with()
+
+    def test_session_end_cancels_delayed_shutdown_before_next_session(self):
+        try:
+            from auto_translate.gui import VideoTranslateWindow
+        except ImportError:
+            self.skipTest("optional Qt frontend unavailable")
+        window = Mock(_job=None)
+        VideoTranslateWindow._session_finished(window, "Stopped.")
+        window._shutdown_timer.stop.assert_called_once_with()
+        window._close_control.assert_called_once_with()
+        window._finish_ui.assert_called_once_with("Stopped.")

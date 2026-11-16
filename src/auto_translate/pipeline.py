@@ -7,6 +7,8 @@ import queue
 import threading
 import time
 from collections import deque
+from concurrent.futures import CancelledError
+from contextlib import nullcontext
 from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Callable
@@ -22,6 +24,7 @@ from .text_filter import is_usable_transcript
 from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
 from .config import AsrConfig, Config, vad_for_source
 from .gui_control import emit_event
+from .runtime_diagnostics import update_metrics, increment_counter, record_event
 from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
@@ -106,6 +109,7 @@ def run_asr(
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
     language_filter=None,
+    gate=None,
 ) -> None:
     """Transcribe Japanese speech; drop only confident English/Indonesian audio."""
     while True:
@@ -130,6 +134,7 @@ def run_asr(
         if (live and dual is not None and _expired_live_cue(
                 utt, getattr(dual, "playback_position", None), live_late_window_s)):
             log.info("Skipping expired live ASR cue %.2f-%.2fs", utt.start_s, utt.end_s)
+            increment_counter("expired")
             continue
 
         # Reuse complete Japanese+English results when a backward seek
@@ -189,8 +194,21 @@ def run_asr(
             continue
         if stop is not None and stop.is_set():
             continue
-        text = asr.transcribe(utt.audio, utt.probe)
-        primary_elapsed_s = time.monotonic() - utt.timings.asr_start
+        try:
+            with (gate.operation("haas", current=get_generation, generation=utt.generation)
+                  if gate is not None else nullcontext()):
+                if live and dual is not None and _expired_live_cue(
+                        utt, getattr(dual, "playback_position", None), live_late_window_s):
+                    increment_counter("expired")
+                    continue
+                model_started = time.monotonic()
+                text = asr.transcribe(utt.audio, utt.probe)
+        except CancelledError:
+            continue
+        primary_elapsed_s = time.monotonic() - model_started
+        update_metrics(stages={"haas_s": primary_elapsed_s})
+        if stop is not None and stop.is_set():
+            continue
         if get_generation is not None and utt.generation != get_generation():
             continue
         choice = (dual.select_segment(utt, text, vod_title,
@@ -220,7 +238,12 @@ def run_asr(
                 and asr_cfg.retry_min_duration_s <= duration <= asr_cfg.retry_max_duration_s):
             import numpy as np
             pad = int(0.2 * SAMPLE_RATE)
-            candidate = asr.transcribe(np.pad(utt.audio, (pad, pad)), False)
+            try:
+                with (gate.operation("haas_retry", current=get_generation, generation=utt.generation)
+                      if gate is not None else nullcontext()):
+                    candidate = asr.transcribe(np.pad(utt.audio, (pad, pad)), False)
+            except CancelledError:
+                continue
             if is_usable_transcript(candidate):
                 text = candidate
                 log.info("Recovered VAD-positive silent Haas result at %.2f-%.2fs",
@@ -289,6 +312,8 @@ def run_asr(
 
         if get_generation is not None and utt.generation != get_generation():
             continue
+        if stop is not None and stop.is_set():
+            continue
 
         if dual is not None:
             dual.remember(utt.generation, text)
@@ -323,6 +348,7 @@ def run_translate(
     playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
+    gate=None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
     consecutive_failures = 0
@@ -347,6 +373,7 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                consecutive_failures = 0
             memory_generation = item.generation
 
             out_q.put(item)
@@ -358,12 +385,14 @@ def run_translate(
             continue
         if live and _expired_live_cue(tr, playback_position, live_late_window_s):
             log.info("Skipping expired live PLaMo cue %.2f-%.2fs", tr.start_s, tr.end_s)
+            increment_counter("expired")
             continue
 
         # Seek resets are normally carried by AudioProgress. Also protect
         # against a new generation reaching this queue before its marker.
         if memory_generation is not None and tr.generation != memory_generation:
             history.clear()
+            consecutive_failures = 0
         memory_generation = tr.generation
 
         # A cached Subtitle already includes its Japanese transcript and
@@ -390,11 +419,26 @@ def run_translate(
                     log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
                     tr = replace(tr, ja=repaired_ja)
             try:
-                en = translator.translate(tr.ja, list(history))
+                with (gate.operation("plamo", current=get_generation, generation=tr.generation)
+                      if gate is not None else nullcontext()):
+                    if live and _expired_live_cue(tr, playback_position, live_late_window_s):
+                        increment_counter("expired")
+                        continue
+                    model_started = time.monotonic()
+                    en = translator.translate(tr.ja, list(history))
+                    update_metrics(stages={"plamo_s": time.monotonic() - model_started})
                 consecutive_failures = 0
+            except CancelledError:
+                continue
             except TranslatorUnavailable:
+                if ((stop is not None and stop.is_set()) or
+                        (get_generation is not None and tr.generation != get_generation())):
+                    continue
                 raise
             except Exception as e:
+                if ((stop is not None and stop.is_set()) or
+                        (get_generation is not None and tr.generation != get_generation())):
+                    continue
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
                     raise TranslatorUnavailable(f"PLaMo failed on three consecutive cues: {e}") from e
@@ -402,6 +446,11 @@ def run_translate(
                 suppressed = True
 
             if get_generation is not None and tr.generation != get_generation():
+                continue
+            if stop is not None and stop.is_set():
+                continue
+            if live and _expired_live_cue(tr, playback_position, live_late_window_s):
+                increment_counter("expired")
                 continue
 
             if en:
@@ -444,6 +493,7 @@ def run_translate(
                                    final_en=en, suppressed=suppressed,
                                    mt_elapsed_s=tr.timings.mt_end-tr.timings.mt_start))
         if suppressed:
+            increment_counter("dropped")
             log.info(
                 "Translated cue %.2f-%.2fs suppressed by English output guard; "
                 "Japanese ASR recognized speech: %r",
@@ -535,6 +585,8 @@ def run(
     dual=None,
     language_filter=None,
     segmenter=None,
+    gate=None,
+    diagnostics=None,
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
 
@@ -556,10 +608,12 @@ def run(
     # allowing memory use and subtitle age to grow without limit.
     # 64 audio chunks ~= 16.4 s at 4096 samples / 16 kHz; work queues hold
     # at most 16 complete utterances/transcripts/subtitles each.
-    audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=64)
-    utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=16)
-    text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=16)
-    sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=16)
+    safe = cfg.safe_playback
+    work_size = safe.queue_size if safe.enabled else 16
+    audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=safe.audio_chunks if safe.enabled else 64)
+    utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=work_size)
+    text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=work_size)
+    sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=work_size)
 
     queues = {
         "audio": audio_q,
@@ -579,7 +633,7 @@ def run(
         threading.Thread(
             target=_guard_stage,
             args=("vad", run_segmenter, failures, segmenter if segmenter is not None else Segmenter(vad_cfg), audio_q, utt_q,
-                  lambda: ingest.generation),
+                  lambda: ingest.generation, *((gate,) if vad_cfg.device == "cuda" else ())),
             name="vad",
             daemon=True,
         ),
@@ -599,6 +653,7 @@ def run(
                 cfg.mpv.live_late_window_s,
                 stop,
                 language_filter,
+                gate,
             ),
             name="asr",
             daemon=True,
@@ -615,6 +670,7 @@ def run(
                 getattr(dual, "playback_position", None),
                 cfg.mpv.live_late_window_s,
                 stop,
+                gate,
             ),
             name="translate",
             daemon=True,
@@ -630,6 +686,7 @@ def run(
     processed_from = ingest.source.start_s
     started = time.monotonic()
     next_stats = started + cfg.stats_interval_s
+    next_diagnostics = started
     last_activity = started
     last_warning = started
     last_guard_key = ""
@@ -640,8 +697,17 @@ def run(
     try:
         while not stop.is_set():
             _raise_worker_failure(failures)
+            if diagnostics is not None and time.monotonic() >= next_diagnostics:
+                next_diagnostics = time.monotonic() + cfg.diagnostics.sample_interval_s
+                from .windows_subprocess import owned_process_status
+                update_metrics(queues={name: q.qsize() for name, q in queues.items()},
+                               workers={"threads": {t.name: t.is_alive() for t in threads},
+                                        "processes": owned_process_status()})
+                emit_event("diagnostics", **diagnostics.snapshot())
             try:
                 item = sub_q.get(timeout=0.5)
+                if stop.is_set():
+                    break
                 last_activity = time.monotonic()
 
                 if item is None:
@@ -659,6 +725,7 @@ def run(
 
                 # Discard subtitles and progress from before the latest seek.
                 if item.generation != ingest.generation:
+                    increment_counter("dropped")
                     continue
 
                 if isinstance(item, AudioProgress):
@@ -710,9 +777,14 @@ def run(
                         max(1, int(cfg.translate.max_identical_cues))):
                     log.info("Suppressed repeat subtitle: gen=%d count=%d text=%r",
                              item.generation, identical_count, item.en[:110])
+                    increment_counter("dropped")
                     continue
 
                 stats.add(item, deadline_s=cfg.mpv.delay_s if ingest.source.live else None)
+                latency = max(0., time.monotonic() - item.timings.audio_read) if item.timings.audio_read else None
+                update_metrics(counters={"latency_s": latency})
+                if latency is not None and latency > max(30., cfg.mpv.delay_s):
+                    record_event("subtitle_latency_spike", latency_s=round(latency, 3), generation=item.generation)
 
                 if session_cache is not None:
                     session_cache.add(item)
@@ -732,6 +804,7 @@ def run(
             else:
                 backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
                 if backlog and now - last_activity > 90.0:
+                    record_event("pipeline_stall", queues=backlog, elapsed_s=now-last_activity)
                     raise RuntimeError(
                         "Haas/PLaMo pipeline stalled with queued work: " + str(backlog)
                     )
@@ -830,6 +903,7 @@ def run(
                     log.warning("shutdown grace expired; worker threads still active: %s", active)
                 else:
                     log.info("all pipeline workers exited before model shutdown")
+                record_event("pipeline_cleanup", active_threads=active)
                 for label, worker in (("Haas", asr), ("PLaMo", translator)):
                     close = getattr(worker, "close", None)
                     if callable(close):

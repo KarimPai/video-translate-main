@@ -13,6 +13,12 @@ secondary_live_mode = "selective" # off, selective, all
 secondary_vod_mode = "all"
 live_timeout_s = 5.0
 vod_timeout_s = 25.0 # Retained for accuracy; discarded cues interrupt the worker early.
+# Only meaningful disagreements with localized weak audio may get a crop retry.
+smart_correction = true
+correction_vod_retries = 1 # 0..2; no extra permanently loaded model
+correction_live_retries = 0 # disabled for live by default
+correction_vod_budget_s = 8.0
+correction_live_budget_s = 2.0
 
 [reconciler]
 enabled = true
@@ -47,9 +53,36 @@ min_top_margin = 0.45
 # Accuracy-first OverlaySubs-style context. Use legacy to restore previous behavior.
 context_profile = "compact" # compact, legacy
 context_lines = 3
-memory_lines = 0
+extended_memory = true
+memory_lines = 16 # bounded rolling history, 0..20; 10..20 recommended
 # Only split long multi-sentence Japanese at reliable written punctuation.
 sentence_context = true
 
 # Whisper does not receive static character-name prompts. The glossary only
 # normalizes names that actually appear in the Japanese transcript.
+
+[chat]
+# Public YouTube chat is weak evidence for terms already present in ASR.
+# Never turns chat messages into spoken subtitles; missing chat never blocks ASR.
+enabled = false
+window_s = 30.0
+max_messages = 100
+poll_interval_s = 5.0
+# Live PCM receipt is an estimate; delay uncertain messages by this allowance.
+# This cannot prove the actual upstream encoder/network delay.
+live_time_uncertainty_s = 5.0 # 0..120 seconds
+
+[safe_playback]
+# Serialize heavy inference while MPV keeps its configured hardware decoding.
+# RTX VSR stays independent; playback resolution is never reduced silently.
+enabled = false
+max_inference_concurrency = 1
+queue_size = 4
+audio_chunks = 32
+max_audio_lead_s = 20.0
+
+[diagnostics]
+enabled = true
+sample_interval_s = 2.0
+max_bytes = 2000000
+backups = 3

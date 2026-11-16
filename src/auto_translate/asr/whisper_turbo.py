@@ -4,6 +4,7 @@ Keep CUDA allocations isolated from Haas Vulkan and llama.cpp. The parent can
 enforce a deadline and release VRAM without leaving a timed-out decode running.
 """
 import logging
+import math
 import os
 from ..windows_subprocess import check_running
 from concurrent.futures import CancelledError
@@ -15,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from ..text_filter import trim_repetition_tail
+from ..runtime_diagnostics import rotate_log
 
 log = logging.getLogger(__name__)
 MODEL = "h2oai/faster-whisper-large-v3-turbo"
@@ -28,7 +30,7 @@ def _audio16(audio):
     return np.ascontiguousarray(np.clip(samples, -1, 1))
 
 
-def _decode(model, samples, beam_size, initial_prompt=None, *, temperature=0.0):
+def _decode(model, samples, beam_size, initial_prompt=None, *, temperature=0.0, with_metadata=False):
     """Never let Whisper auto-detect English or choose the translation task."""
     segments, _ = model.transcribe(
         samples,
@@ -42,10 +44,11 @@ def _decode(model, samples, beam_size, initial_prompt=None, *, temperature=0.0):
         no_speech_threshold=0.6,
         log_prob_threshold=-1.0,
         compression_ratio_threshold=2.4,
-        without_timestamps=True,
+        without_timestamps=False,  # retain model-provided segment spans for targeted retries
         word_timestamps=False,
     )
     phrases = []
+    confidence_segments = []
     for segment in segments:  # faster-whisper decodes lazily.
         if (getattr(segment, "no_speech_prob", 0.0) > 0.75
                 and getattr(segment, "avg_logprob", 0.0) < -0.75):
@@ -53,12 +56,29 @@ def _decode(model, samples, beam_size, initial_prompt=None, *, temperature=0.0):
         value = segment.text.strip()
         if value:
             phrases.append(trim_repetition_tail(value))
-    return " ".join(phrases).strip()
+            evidence = {"text": value[:240]}
+            for name in ("avg_logprob", "no_speech_prob", "compression_ratio", "start", "end"):
+                number = getattr(segment, name, None)
+                if type(number) in (int, float) and math.isfinite(number):
+                    evidence[name] = float(number)
+            confidence_segments.append(evidence)
+    transcript = " ".join(phrases).strip()
+    if not with_metadata:
+        return transcript
+    # These are Whisper's own uncalibrated signals, not probabilities of the
+    # transcript being correct and never a comparable score for Haas.
+    metadata = {"segments": confidence_segments[:24]}
+    for name in ("avg_logprob", "no_speech_prob", "compression_ratio"):
+        values = [part[name] for part in confidence_segments if name in part]
+        if values:
+            metadata[name] = sum(values) / len(values)
+    return transcript, metadata
 
 
 def _worker_main(connection, model_name, device, compute_type, beam_size):
     try:
         Path("logs").mkdir(exist_ok=True)
+        rotate_log(Path("logs/whisper-turbo.log"))
         logging.basicConfig(filename="logs/whisper-turbo.log", encoding="utf-8",
                             level=logging.INFO, force=True)
         from auto_translate.cuda_dlls import setup
@@ -75,9 +95,11 @@ def _worker_main(connection, model_name, device, compute_type, beam_size):
             try:
                 samples = _audio16(command["audio"])
                 prompt = command.get("initial_prompt")
-                transcript = _decode(model, samples, beam_size, initial_prompt=prompt)
+                transcript, confidence = _decode(model, samples, beam_size, initial_prompt=prompt,
+                                                 with_metadata=True)
                 connection.send({"type": "transcript", "text": transcript, "id": command["id"],
-                                 "stop": "complete" if transcript else "unknown"})
+                                 "stop": "complete" if transcript else "unknown",
+                                 "confidence": confidence})
             except Exception as exc:
                 logging.exception("Whisper Turbo decode failed")
                 connection.send({"type": "error", "id": command["id"], "message": str(exc)})
@@ -99,6 +121,7 @@ class WhisperTurboASR:
     def __init__(self, *, model=MODEL, device="cuda", compute_type="int8_float16",
                  beam_size=6, startup_timeout=600):
         self.last_stop = "unknown"
+        self.last_confidence = {}
         self._lock = threading.Lock()
         self._request_id = 0
         self._decode_lock = threading.Lock()
@@ -195,6 +218,8 @@ class WhisperTurboASR:
             log.info("Discarded obsolete Whisper reply request=%d", request_id)
             raise CancelledError("Whisper Turbo reply no longer needed")
         self.last_stop = response.get("stop", "unknown")
+        confidence = response.get("confidence")
+        self.last_confidence = confidence if isinstance(confidence, dict) else {}
         return response["text"]
 
     def close(self):

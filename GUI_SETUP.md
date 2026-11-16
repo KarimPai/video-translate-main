@@ -1,8 +1,8 @@
 # Video Translate Windows GUI
 
 The PySide6 frontend controls the existing Haas + Whisper Large-v3 Turbo +
-LFM + PLaMo backend. Model inference, MPV subtitles and translation timing
-are unchanged.
+LFM + PLaMo backend, including bounded context memory, optional chat context,
+smart disagreement correction, Safe Playback, and runtime diagnostics.
 
 ## What to double-click
 
@@ -26,6 +26,33 @@ or translation models. Installation may require internet access.
 5. Use the **Player** tab for embedded MPV and the **Console** tab for Japanese
    transcripts, English translations, and backend logs.
 6. Choose **Stop Translation** to restore the setup controls; the URL is retained.
+
+Before starting, open the compact settings section to configure translation
+memory/history length, smart correction and its VOD/live retry counts, **Use
+YouTube Chat for Context**, **Safe Playback**, and diagnostic logging. Extended
+memory keeps 16 recent utterances by default; ordinary adjacent translation
+context remains available when it is disabled. Chat and Safe Playback default
+to off. Changes apply to the next translation session.
+
+The diagnostics panel reports measured GPU memory, utilization, temperature,
+power, stage durations, subtitle queues/latency/drops, playback resolution and
+decoder information, and application-owned workers. Unsupported or unverified
+values show as unavailable. RTX VSR request/filter state does not establish
+driver activation; check NVIDIA's activity indicator separately.
+Memory figures describe the whole GPU's dedicated device memory, rather than
+this application's allocation alone; WDDM may not expose every metric.
+
+`Setup.bat` installs the optional NVML telemetry dependency. Existing installs
+can run `uv sync --locked --extra diagnostics`. Monitoring failures must not
+stop translation. Safe Playback bounds inference concurrency and audio queues;
+it keeps the configured hardware decoder and quality, with VSR independent.
+
+The optional diagnostics export uses application log tails. Include filtered
+Windows display/watchdog/WER metadata only when wanted. Review the ZIP before
+sharing: application logs may contain subtitles and video metadata. It does
+not gather cookies, raw chat/user identities, or unrelated files. An OS-wide
+freeze can stop logging entirely; offline tests and the dashboard cannot
+prove that a driver-freeze root cause is fixed.
 
 ## RTX Video Super Resolution (VSR)
 
@@ -70,9 +97,9 @@ and the Windows `CREATE_NO_WINDOW` flag. It still renders inside the Qt
 player and accepts IPC seeking/subtitle commands. The classic CLI is
 unchanged; logs remain in `logs/run.log`, `logs/mpv.log`, and other files.
 
-**No EXE download is needed for this particular console fix.** It changes
-the Python MPV backend. Update the existing Git branch, then reopen the
-already-installed `dist/VideoTranslate/VideoTranslate.exe`.
+For the new settings and diagnostics panel, update both the backend source
+and the frontend EXE from the same commit. Existing compatible full GUI
+installations can use the EXE-only artifact described below.
 
 ## Updating without downloading the entire GUI again
 

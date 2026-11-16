@@ -11,6 +11,8 @@ import logging
 import queue
 import time
 from collections import deque
+from concurrent.futures import CancelledError
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
 
@@ -423,6 +425,7 @@ def run_segmenter(
     in_q: "queue.Queue[AudioChunk | AudioProgress | None]",
     out_q: "queue.Queue[Utterance | AudioProgress | None]",
     get_generation: Callable[[], int] | None = None,
+    gate=None,
 ) -> None:
     """Thread body."""
     awaiting_first_utterance = False
@@ -471,7 +474,18 @@ def run_segmenter(
             )
             continue
 
-        for utt in seg.feed(item):
+        try:
+            operation = (gate.operation("vad", current=get_generation,
+                                        generation=item.generation)
+                         if gate is not None else nullcontext())
+            with operation:
+                utterances = seg.feed(item)
+        except CancelledError:
+            # A seek can invalidate a chunk while admission is waiting.
+            continue
+        if get_generation is not None and item.generation != get_generation():
+            continue
+        for utt in utterances:
             if awaiting_first_utterance:
                 log.info(
                     "first VAD utterance after seek: generation=%d range=%.2f-%.2fs",

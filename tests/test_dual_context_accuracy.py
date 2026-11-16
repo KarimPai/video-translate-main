@@ -24,7 +24,7 @@ class DualContextAccuracyTests(unittest.TestCase):
     def test_accuracy_defaults_keep_original_models(self):
         cfg = TranslateConfig()
         self.assertEqual((cfg.context_profile, cfg.context_lines, cfg.memory_lines),
-                         ("compact", 3, 0))
+                         ("compact", 3, 16))
         self.assertTrue(cfg.sentence_context)
         self.assertIn("radio", _translation_context("ホロGTA", profile="compact"))
 

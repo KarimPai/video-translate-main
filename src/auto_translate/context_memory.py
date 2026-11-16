@@ -21,6 +21,80 @@ _IGNORE_EN = {
 }
 
 
+def _overlap(left: str, right: str) -> int:
+    """Cheap Japanese character-bigram overlap; never infer a missing word."""
+    def grams(text):
+        # Ignore punctuation and one-character particles as matching evidence.
+        chunks = re.findall(r"[ぁ-ヺ一-鿿A-Za-z0-9]{2,}", _word(text))
+        return {chunk[i:i + 2] for chunk in chunks for i in range(len(chunk) - 1)}
+    return len(grams(left) & grams(right))
+
+
+def select_dialogue_history(
+    history: list[tuple[str, str]], current_ja: str, *, context_lines: int = 3,
+    memory_lines: int = 16, max_chars: int = 640,
+) -> list[tuple[str, str]]:
+    """Keep adjacent turns and optionally retrieve one relevant older exchange.
+
+    Selection only reads finalized preceding cues. Results preserve chronology
+    and never contain partial examples; a large history cannot grow the prompt.
+    The immediately preceding cue has priority for omitted referents. An older
+    cue needs two matching bigrams before displacing the oldest recent example.
+    """
+    count = min(20, max(0, context_lines))
+    window = min(20, max(count, memory_lines))
+    recent = history[-window:] if window else []
+    if not recent or not count or max_chars <= 0:
+        return []
+    selected = list(range(max(0, len(recent) - count), len(recent)))
+    older = range(max(0, len(recent) - count))
+    ranked = sorted(older, key=lambda i: (_overlap(current_ja, recent[i][0]), i), reverse=True)
+    if count > 1 and ranked and _overlap(current_ja, recent[ranked[0]][0]) >= 2:
+        selected = sorted([ranked[0]] + selected[1:])
+    used = 0
+    kept = []
+    # Keep the most recent examples when the total character budget is tight.
+    for index in reversed(selected):
+        source, translation = recent[index]
+        size = len(source) + len(translation)
+        if not source.strip() or size > max_chars - used:
+            continue
+        used += size
+        kept.append((source, translation))
+    return list(reversed(kept))
+
+
+def recurring_term_hints(
+    current_ja: str, history: list[tuple[str, str]], glossary,
+) -> list[tuple[str, str]]:
+    """Learn only consistently translated, isolated Katakana term repetitions.
+
+    A reviewed glossary always wins. Ambiguous, conflicting or single prior
+    translations supply no learned hint. Full dialogue and English pronouns are
+    never learned as terminology. These remain weak spelling hints, not facts.
+    """
+    reviewed = {source for source, _ in glossary.find(current_ja)}
+    observations: dict[str, Counter] = {}
+    ambiguous: set[str] = set()
+    for source, english in history[-20:]:
+        term = _word(source)
+        if not _KATAKANA_TERM.fullmatch(term) or term in reviewed:
+            continue
+        translation = english.strip(_TRIM).strip("'\"“”")
+        if (not _EN_TERM.fullmatch(translation) or len(translation.split()) != 1
+                or translation.casefold() in _IGNORE_EN):
+            ambiguous.add(term)
+            continue
+        observations.setdefault(term, Counter())[translation] += 1
+    result = []
+    for source, counts in observations.items():
+        if source in ambiguous or len(counts) != 1 or sum(counts.values()) < 2:
+            continue
+        if re.search(r"(?<![ァ-ヶー])" + re.escape(source) + r"(?![ァ-ヶー])", current_ja):
+            result.append((source, next(iter(counts))))
+    return result[:4]
+
+
 def _word(text: str) -> str:
     return unicodedata.normalize("NFKC", text.strip(_TRIM))
 
@@ -208,19 +282,29 @@ def build_recent_context(
     *,
     context_lines: int = 8,
     memory_lines: int = 24,
+    current_ja: str = "",
+    max_chars: int = 640,
 ) -> str:
-    """Short, non-authoritative memory beyond the normal PLaMO chat history."""
-    recent = history[-max(0, memory_lines):] if memory_lines else []
-    if not recent:
+    """Relevant bounded reference data beyond the normal PLaMo chat history.
+
+    Only current-source glossary terms may carry over into a new cue. This
+    prevents an earlier full stage name overriding a newly spoken nickname.
+    English dialogue is never copied into hints; recurring isolated terms need
+    independent agreement across prior finalized cues.
+    """
+    recent = history[-min(20, max(0, memory_lines)):] if memory_lines else []
+    if not recent or max_chars <= 0:
         return ""
 
     lines: list[str] = []
     found: list[str] = []
     seen: set[str] = set()
+    current_terms = {source for source, _ in glossary.find(current_ja)} if current_ja else None
     # The static glossary is reliable even if past PLaMO output was not.
     for ja, _ in reversed(recent):
         for source, target in glossary.find(ja):
-            if source in seen:
+            if (source in seen or len(source) > 40 or len(target) > 60
+                    or (current_terms is not None and source not in current_terms)):
                 continue
             seen.add(source)
             found.append(f"{source} = {target}")
@@ -231,12 +315,34 @@ def build_recent_context(
     if found:
         lines.append("Recently mentioned glossary names/terms: " + "; ".join(found))
 
+    if current_ja:
+        learned = recurring_term_hints(current_ja, recent, glossary)
+        if learned:
+            lines.append("Consistent prior term spellings (weak data only): "
+                         + "; ".join(f"{source} = {target}" for source, target in learned))
+
     # Do not repeat the model's prior English translations as new hints:
     # a mistaken name or pronoun must not gain authority on later turns.
     # Older JP provides scene continuity, without reinforcing mistranslated
     # English pronouns. Keep it short to minimize tokens and latency.
     older = recent[:-context_lines] if context_lines > 0 else recent
+    if current_ja:
+        older = sorted(
+            ((index, pair) for index, pair in enumerate(older)
+             if _overlap(current_ja, pair[0]) >= 2),
+            key=lambda item: (_overlap(current_ja, item[1][0]), item[0]),
+            reverse=True,
+        )[:3]
+        older = [pair for _, pair in sorted(older)]
     older_ja = [ja.strip()[:64] for ja, _ in older[-3:] if ja.strip()]
     if older_ja:
         lines.append("Earlier Japanese for scene continuity (do not translate): " + " / ".join(older_ja)[:195])
-    return "\n".join(lines)
+    # Do not cut a glossary value or a source fragment mid-line: omit whole
+    # lower-priority lines when the caller's available context budget is tight.
+    bounded = []
+    remaining = max_chars
+    for line in lines:
+        if len(line) + bool(bounded) <= remaining:
+            bounded.append(line)
+            remaining -= len(line) + (len(bounded) > 1)
+    return "\n".join(bounded)

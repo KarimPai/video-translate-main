@@ -11,6 +11,7 @@ MPV video/audio stream-copy output is kept separate from audio processing.
 """
 
 import functools
+from concurrent.futures import CancelledError
 import http.server
 import logging
 import os
@@ -18,7 +19,7 @@ import shutil
 import queue
 import re
 import subprocess
-from .windows_subprocess import owned_popen
+from .windows_subprocess import owned_popen, stopping
 
 from .windows_subprocess import hidden_console_flags
 import tempfile
@@ -1245,6 +1246,8 @@ class Ingest:
                     first,
                     self.separation_cfg.model,
                     generation=generation,
+                    gate=getattr(self, "inference_gate", None),
+                    current=lambda: self.generation,
                 )
 
                 log.info(
@@ -1381,6 +1384,14 @@ class Ingest:
                     len(pending),
                 )
 
+        except CancelledError:
+            # Optional separation admission can be invalidated by a seek or
+            # shutdown. Unwind this audio generation and let run() restart it.
+            gate = getattr(self, "inference_gate", None)
+            if (generation == self.generation and not self._stopped
+                    and not stopping.is_set()
+                    and not (gate is not None and gate.stop.is_set())):
+                raise
         finally:
             finished.set()
             try:

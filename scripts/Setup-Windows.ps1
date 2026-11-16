@@ -102,8 +102,8 @@ try {
     try {
         & uv python install 3.12
         if ($LASTEXITCODE -ne 0) { throw 'uv python install 3.12 failed.' }
-        & uv sync --locked
-        if ($LASTEXITCODE -ne 0) { throw 'uv sync --locked failed. Review Python/CUDA package compatibility.' }
+        & uv sync --locked --extra diagnostics
+        if ($LASTEXITCODE -ne 0) { throw 'uv sync --locked --extra diagnostics failed. Review Python/CUDA package compatibility.' }
     } finally { Pop-Location }
 
     Step 'Installing speech.cpp (official installer)'

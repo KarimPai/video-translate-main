@@ -12,22 +12,26 @@ import secrets
 import select
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QCursor, QFont, QTextCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-    QSlider, QStyle, QStyleOptionSlider, QTabWidget, QVBoxLayout, QWidget,
+    QScrollArea, QSlider, QSpinBox, QStyle, QStyleOptionSlider, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from auto_translate.config import load_config
 from auto_translate.gui_control import parse_event, GUI_SHUTDOWN_MS
+from auto_translate.runtime_diagnostics import open_rotating_log
 from auto_translate.windows_job import WindowsJob, bind_process_tree
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS, READY_MARKER, build_backend_command, discover_project_root,
-    prepare_project, session_launcher, subprocess_environment, valid_youtube_url,
+    diagnostic_rows, prepare_project, session_launcher, subprocess_environment, valid_youtube_url,
 )
 
 log = logging.getLogger(__name__)
@@ -102,6 +106,7 @@ class SeekSlider(QSlider):
 
 class VideoTranslateWindow(QMainWindow):
     FULLSCREEN_CONTROLS_TIMEOUT_S = 3.0
+    diagnosticsExported = Signal(str, str)
 
     def __init__(self, root: Path):
         super().__init__()
@@ -128,6 +133,7 @@ class VideoTranslateWindow(QMainWindow):
         self._was_maximized = False
         self._fullscreen_cursor_pos = None
         self._fullscreen_activity_at = 0.0
+        self._export_thread = None
         self.setWindowTitle("Video Translate - Dual ASR")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
@@ -140,6 +146,7 @@ class VideoTranslateWindow(QMainWindow):
         self._control_timer.setInterval(50)
         self._control_timer.timeout.connect(self._poll_control)
         self._build_ui()
+        self.diagnosticsExported.connect(self._on_diagnostics_exported)
         # Qt mouse events never reach the host while embedded native MPV owns
         # its HWND. Poll the global pointer instead of relying on enter/move.
         self._fullscreen_controls_timer = QTimer(self)
@@ -277,6 +284,7 @@ class VideoTranslateWindow(QMainWindow):
         self.console.setPlaceholderText("Backend output, Japanese ASR and English translations appear here.")
         console_layout.addWidget(self.console)
         self.tabs.addTab(self.console_tab, "Console")
+        self._build_diagnostics_tab()
         layout.addWidget(self.tabs, 1)
 
         self.footer_panel = QWidget()
@@ -291,6 +299,161 @@ class VideoTranslateWindow(QMainWindow):
         footer.addWidget(self.stop_button)
         layout.addWidget(self.footer_panel)
 
+    def _build_diagnostics_tab(self):
+        self.diagnostics_tab = QScrollArea()
+        self.diagnostics_tab.setWidgetResizable(True)
+        self.diagnostics_tab.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        self.diagnostics_tab.setWidget(content)
+        layout = QVBoxLayout(content)
+        self.feature_settings = QGroupBox("Accuracy and playback settings (apply when starting)")
+        settings = QFormLayout(self.feature_settings)
+        self.memory_checkbox = QCheckBox("Translation memory")
+        self.memory_checkbox.setChecked(True)
+        self.memory_lines = QSpinBox()
+        self.memory_lines.setRange(0, 20)
+        self.memory_lines.setValue(16)
+        self.memory_lines.setSuffix(" utterances")
+        memory_row = QHBoxLayout()
+        memory_row.addWidget(self.memory_checkbox)
+        memory_row.addWidget(self.memory_lines)
+        memory_row.addStretch(1)
+        settings.addRow(memory_row)
+        self.memory_checkbox.setToolTip(
+            "Use bounded recent dialogue and recurring terms. Memory clears after seeking or changing videos."
+        )
+        self.memory_checkbox.toggled.connect(self.memory_lines.setEnabled)
+        self.smart_correction_checkbox = QCheckBox("Smart ASR correction")
+        self.smart_correction_checkbox.setChecked(True)
+        settings.addRow(self.smart_correction_checkbox)
+        retry_row = QHBoxLayout()
+        self.vod_retries = QSpinBox()
+        self.vod_retries.setRange(0, 2)
+        self.vod_retries.setValue(1)
+        self.live_retries = QSpinBox()
+        self.live_retries.setRange(0, 2)
+        retry_row.addWidget(QLabel("VOD retries"))
+        retry_row.addWidget(self.vod_retries)
+        retry_row.addWidget(QLabel("Live retries"))
+        retry_row.addWidget(self.live_retries)
+        retry_row.addStretch(1)
+        settings.addRow(retry_row)
+        self.smart_correction_checkbox.toggled.connect(self.vod_retries.setEnabled)
+        self.smart_correction_checkbox.toggled.connect(self.live_retries.setEnabled)
+        self.chat_checkbox = QCheckBox("Use YouTube Chat for Context")
+        self.chat_checkbox.setToolTip(
+            "Optional weak terminology hints from public chat. Chat cannot generate subtitles or override speech."
+        )
+        settings.addRow(self.chat_checkbox)
+        self.safe_playback_checkbox = QCheckBox("Safe Playback")
+        self.safe_playback_checkbox.setToolTip(
+            "Coordinate inference and bound queued audio. Hardware decoding and RTX VSR remain independent."
+        )
+        settings.addRow(self.safe_playback_checkbox)
+        self.diagnostics_checkbox = QCheckBox("Diagnostic logging and resource dashboard")
+        self.diagnostics_checkbox.setChecked(True)
+        settings.addRow(self.diagnostics_checkbox)
+        layout.addWidget(self.feature_settings)
+        self._load_feature_settings()
+
+        dashboard = QGroupBox("Resource dashboard")
+        rows = QFormLayout(dashboard)
+        self.diagnostics_observation_status = QLabel("Waiting for backend observations.")
+        rows.addRow(self.diagnostics_observation_status)
+        self.diagnostic_labels = {}
+        for key, label in (("gpu", "GPU memory"), ("activity", "GPU activity"),
+                           ("stages", "Latest processing"), ("subtitles", "Subtitles"),
+                           ("queues", "Queues"), ("playback", "Playback"),
+                           ("vsr", "RTX VSR"), ("workers", "Owned workers")):
+            value = QLabel("unknown")
+            value.setWordWrap(True)
+            value.setTextFormat(Qt.TextFormat.PlainText)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.diagnostic_labels[key] = value
+            rows.addRow(label, value)
+        layout.addWidget(dashboard)
+        self._update_diagnostics({})
+        export_row = QHBoxLayout()
+        self.include_windows_events = QCheckBox("Include relevant Windows event metadata in export")
+        self.include_windows_events.setChecked(False)
+        self.include_windows_events.setToolTip(
+            "Opt in to display, watchdog and application error metadata. Unrelated event records are excluded."
+        )
+        export_row.addWidget(self.include_windows_events, 1)
+        self.export_diagnostics_button = QPushButton("Export Diagnostics…")
+        self.export_diagnostics_button.clicked.connect(self.export_diagnostics)
+        export_row.addWidget(self.export_diagnostics_button)
+        layout.addLayout(export_row)
+        self.diagnostics_export_status = QLabel("")
+        self.diagnostics_export_status.setWordWrap(True)
+        layout.addWidget(self.diagnostics_export_status)
+        note = QLabel(
+            "Unsupported metrics show unknown. An application cannot reliably record events after Windows freezes."
+        )
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        self.tabs.addTab(self.diagnostics_tab, "Settings / Diagnostics")
+
+    def _load_feature_settings(self):
+        try:
+            cfg = load_config(self.root / "config.toml")
+            self.memory_checkbox.setChecked(getattr(cfg.translate, "extended_memory", True))
+            self.memory_lines.setValue(cfg.translate.memory_lines)
+            self.smart_correction_checkbox.setChecked(getattr(cfg.dual_asr, "smart_correction", True))
+            self.vod_retries.setValue(getattr(cfg.dual_asr, "correction_vod_retries", 1))
+            self.live_retries.setValue(getattr(cfg.dual_asr, "correction_live_retries", 0))
+            self.chat_checkbox.setChecked(getattr(getattr(cfg, "chat", None), "enabled", False))
+            self.safe_playback_checkbox.setChecked(getattr(getattr(cfg, "safe_playback", None), "enabled", False))
+            self.diagnostics_checkbox.setChecked(getattr(getattr(cfg, "diagnostics", None), "enabled", True))
+            self.memory_lines.setEnabled(self.memory_checkbox.isChecked())
+            self.vod_retries.setEnabled(self.smart_correction_checkbox.isChecked())
+            self.live_retries.setEnabled(self.smart_correction_checkbox.isChecked())
+        except (OSError, ValueError):
+            log.exception("Could not load GUI feature settings; using defaults")
+
+    def _update_diagnostics(self, event):
+        for name, value in diagnostic_rows(event).items():
+            self.diagnostic_labels[name].setText(value)
+        self.diagnostics_observation_status.setText(
+            "Latest backend observations." if event.get("event") == "diagnostics"
+            else "Waiting for backend observations."
+        )
+
+    def export_diagnostics(self):
+        if self._export_thread is not None and self._export_thread.is_alive():
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Export application diagnostics", str(self.root / "diagnostics.zip"), "ZIP archive (*.zip)"
+        )
+        if not destination:
+            return
+        include_events = self.include_windows_events.isChecked()
+        self.export_diagnostics_button.setEnabled(False)
+        self.diagnostics_export_status.setText("Collecting application diagnostics…")
+
+        def collect():
+            try:
+                from auto_translate.runtime_diagnostics import export_diagnostics
+                result = export_diagnostics(Path(destination), log_dir=self.root / "logs",
+                                            include_windows_events=include_events)
+            except Exception as exc:
+                if not self._closing:
+                    self.diagnosticsExported.emit("", str(exc))
+            else:
+                if not self._closing:
+                    self.diagnosticsExported.emit(str(result), "")
+
+        self._export_thread = threading.Thread(target=collect, name="diagnostics-export", daemon=True)
+        self._export_thread.start()
+
+    def _on_diagnostics_exported(self, path, error):
+        self.export_diagnostics_button.setEnabled(True)
+        self.diagnostics_export_status.setText(
+            f"Diagnostics export failed: {error}" if error else f"Diagnostics saved to {path}"
+        )
+
     def paste_url(self):
         text = QApplication.clipboard().text().strip()
         if text:
@@ -300,7 +463,7 @@ class VideoTranslateWindow(QMainWindow):
         line = f"session={self._session} {message}"
         self._write_console(line + "\n")
         try:
-            with (self.root / "logs" / "gui-lifecycle.log").open("a", encoding="utf8") as stream:
+            with open_rotating_log(self.root / "logs" / "gui-lifecycle.log") as stream:
                 print(line, file=stream)
         except OSError:
             pass
@@ -432,6 +595,14 @@ class VideoTranslateWindow(QMainWindow):
                 self.root, url, int(self.quality.currentData()), hwnd,
                 frozen=getattr(sys, "frozen", False),
                 rtx_vsr=self.vsr_checkbox.isChecked(),
+                extended_memory=self.memory_checkbox.isChecked(),
+                memory_lines=self.memory_lines.value(),
+                smart_correction=self.smart_correction_checkbox.isChecked(),
+                correction_vod_retries=self.vod_retries.value(),
+                correction_live_retries=self.live_retries.value(),
+                youtube_chat_context=self.chat_checkbox.isChecked(),
+                safe_playback=self.safe_playback_checkbox.isChecked(),
+                diagnostics=self.diagnostics_checkbox.isChecked(),
             )
             env = subprocess_environment(self.root)
             self._session = uuid.uuid4().hex
@@ -454,7 +625,7 @@ class VideoTranslateWindow(QMainWindow):
                 self._job = None
             logging.exception("session=%s launch/containment failed", self._session)
             if (self.root / "logs").is_dir():
-                with (self.root / "logs" / "run.log").open("a", encoding="utf8") as stream:
+                with open_rotating_log(self.root / "logs" / "run.log") as stream:
                     print(f"session={self._session} launch/containment failed: {exc}", file=stream)
             QMessageBox.critical(self, "Cannot start translation", str(exc))
             return
@@ -466,11 +637,13 @@ class VideoTranslateWindow(QMainWindow):
         self._ready = False
         self._stopping = False
         self._reset_player_controls()
+        self._update_diagnostics({"playback": {"vsr_requested": self.vsr_checkbox.isChecked()}})
+        self.feature_settings.setEnabled(False)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.status.setText("Initializing models and loading video... See Console for progress.")
         try:
-            self._log_stream = (self.root / "logs" / "run.log").open("a", encoding="utf-8")
+            self._log_stream = open_rotating_log(self.root / "logs" / "run.log")
         except OSError:
             self._log_stream = None
         proc = self._new_process()
@@ -553,6 +726,9 @@ class VideoTranslateWindow(QMainWindow):
 
     def _on_player_event(self, event: dict):
         action = event.get("event")
+        if action == "diagnostics":
+            self._update_diagnostics(event)
+            return
         if action == "session_error":
             self._session_error = str(event.get("message", ""))
             self.status.setText(self._session_error)
@@ -839,16 +1015,18 @@ class VideoTranslateWindow(QMainWindow):
         self._reset_player_controls()
         self.setup_panel.setVisible(True)
         self.start_button.setEnabled(True)
+        self.feature_settings.setEnabled(True)
         self.stop_button.setEnabled(False)
         self._ready = False
         self._stopping = False
         self.status.setText(reason)
+        self.diagnostics_observation_status.setText("Session ended; showing last observations.")
         if self._closing:
             QTimer.singleShot(0, self.close)
 
     def closeEvent(self, event: QCloseEvent):
+        self._closing = True
         if self.process is not None:
-            self._closing = True
             self.stop_translation()
             event.ignore()
             return

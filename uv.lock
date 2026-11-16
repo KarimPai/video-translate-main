@@ -163,6 +163,9 @@ deepfilter = [
     { name = "deepfilternet-rs" },
     { name = "scipy" },
 ]
+diagnostics = [
+    { name = "nvidia-ml-py" },
+]
 gui = [
     { name = "pyside6" },
 ]
@@ -193,6 +196,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "nvidia-cublas-cu12", specifier = ">=12.9.2.10" },
     { name = "nvidia-cudnn-cu12", specifier = ">=9.27.0.42" },
+    { name = "nvidia-ml-py", marker = "extra == 'diagnostics'", specifier = ">=12.560.30,<14" },
     { name = "onnxruntime-gpu", extras = ["cuda", "cudnn"], specifier = ">=1.31.1" },
     { name = "pyside6", marker = "extra == 'gui'", specifier = ">=6.8,<7" },
     { name = "scipy", marker = "extra == 'deepfilter'" },
@@ -200,7 +204,7 @@ requires-dist = [
     { name = "soundfile", marker = "extra == 'separation'" },
     { name = "torch", marker = "extra == 'separation'", index = "https://download.pytorch.org/whl/cu126" },
 ]
-provides-extras = ["gui", "separation", "deepfilter"]
+provides-extras = ["gui", "diagnostics", "separation", "deepfilter"]
 
 [package.metadata.requires-dev]
 ci = [
@@ -1445,6 +1449,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/73/3ee8e5b4cb891401e603ffd3a59b35c6afe785fd2de123afe7c7029603dc/nvidia_curand-10.4.4.72-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:25c3457ae7a224fdd484dab90b0fc5dc0e842fab5db3012afa4a5bd2af4eb7e5", size = 61498332, upload-time = "2026-09-16T20:42:51.685Z" },
     { url = "https://files.pythonhosted.org/packages/e2/d4/f59ab342b82ff05ff27d674acd470ba625d788bf71338f7da6c89669d6b9/nvidia_curand-10.4.4.72-py3-none-win_amd64.whl", hash = "sha256:e0bce83e083ef25976ee74f59e8f067c15149a74538f1be6c2462e286e7c9c68", size = 56731059, upload-time = "2026-09-16T20:48:53.631Z" },
     { url = "https://files.pythonhosted.org/packages/8f/60/6734d25ee55e688a88d4ea5461d71f2cd9d8f0e8da50d5d10f3e6408f855/nvidia_curand-10.4.4.72-py3-none-win_arm64.whl", hash = "sha256:4635b2c8a727f51b585614f590509cb5c50fb2fc55fa9350f01c22c7f8c0fcdf", size = 65140169, upload-time = "2026-09-16T20:55:30.897Z" },
+]
+
+[[package]]
+name = "nvidia-ml-py"
+version = "13.615.71"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/30/b25216758be3d3e2834825d8193609e2d71c770a8bd7984438c058c90268/nvidia_ml_py-13.615.71.tar.gz", hash = "sha256:bebe4e48f51b1dc75028c0815cb7bfa14a31a5bb80be70c9d980c6036953fc3d", size = 57485, upload-time = "2026-09-25T15:15:28.226Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/a1/1681dfa1c904d4e3e72e51b55a0ff012d50b766843ef832d584abe2113c6/nvidia_ml_py-13.615.71-py3-none-any.whl", hash = "sha256:959bf4adf6fe1308e4bd739e722236b0d1ec8392e2cefad33ff70c311380b9b6", size = 58132, upload-time = "2026-09-25T15:15:26.54Z" },
 ]
 
 [[package]]

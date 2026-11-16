@@ -25,6 +25,8 @@ ci = ["numpy>=1.26", "httpx>=0.27", "ruff>=0.9"]
 [project.optional-dependencies]
 # Lightweight frontend; CLI installs do not require Qt.
 gui = ["PySide6>=6.8,<7"]
+# Optional NVIDIA telemetry. Playback/translation still work without NVML.
+diagnostics = ["nvidia-ml-py>=12.560.30,<14"]
 # Install only the heavy runtime packages for features you actually enable.
 separation = [
     "audio-separator>=0.48.0",

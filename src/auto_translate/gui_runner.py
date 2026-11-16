@@ -4,6 +4,7 @@ A packaged GUI is a frontend for the established project environment. Models,
 MPV, speech.cpp and llama-server remain externally installed/shared.
 """
 import os
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -61,6 +62,12 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
                           *, rtx_vsr: bool = False, frozen: bool = False,
+                          extended_memory: bool = True, memory_lines: int = 16,
+                          smart_correction: bool = True,
+                          correction_vod_retries: int = 1,
+                          correction_live_retries: int = 0,
+                          youtube_chat_context: bool = False,
+                          safe_playback: bool = False, diagnostics: bool = True,
                           executable: str | None = None):
     if not valid_youtube_url(url):
         raise ValueError("Enter a valid YouTube video or livestream URL.")
@@ -68,6 +75,18 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
         raise ValueError("Unsupported video quality.")
     if not isinstance(rtx_vsr, bool):
         raise ValueError("RTX VSR selection must be a boolean.")
+    for name, value in (("Translation memory", extended_memory),
+                        ("Smart correction", smart_correction),
+                        ("YouTube Chat context", youtube_chat_context),
+                        ("Safe Playback", safe_playback),
+                        ("Diagnostics", diagnostics)):
+        if type(value) is not bool:
+            raise ValueError(f"{name} selection must be a boolean.")
+    if type(memory_lines) is not int or not 0 <= memory_lines <= 20:
+        raise ValueError("Translation memory length must be between 0 and 20.")
+    for value in (correction_vod_retries, correction_live_retries):
+        if type(value) is not int or not 0 <= value <= 2:
+            raise ValueError("Correction retry count must be between 0 and 2.")
     if not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Embedded MPV requires a valid native window handle.")
     python = backend_python(root, frozen=frozen, executable=executable)
@@ -83,7 +102,86 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             "--video-quality", str(quality), "--mpv-wid", str(hwnd),
             "--rtx-vsr" if rtx_vsr else "--no-rtx-vsr",
             "--gui-control", "--simple-terminal"]
+    args.extend(["--memory-lines", str(memory_lines),
+                 "--correction-vod-retries", str(correction_vod_retries),
+                 "--correction-live-retries", str(correction_live_retries)])
+    for enabled, flag in ((extended_memory, "extended-memory"),
+                          (smart_correction, "smart-correction"),
+                          (youtube_chat_context, "youtube-chat-context"),
+                          (safe_playback, "safe-playback"),
+                          (diagnostics, "diagnostics")):
+        args.append(f"--{flag}" if enabled else f"--no-{flag}")
     return str(python), args
+
+
+def diagnostic_rows(event: dict) -> dict[str, str]:
+    """Format cached observations without turning requests into confirmations."""
+    def section(name):
+        value = event.get(name)
+        return value if isinstance(value, dict) else {}
+
+    def number(value, suffix="", precision=1):
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            return "unknown"
+        return f"{value:.{precision}f}{suffix}"
+
+    def state(value):
+        return "yes" if value is True else "no" if value is False else "unknown"
+
+    def description(value):
+        if value is None or value == "":
+            return "unknown"
+        if isinstance(value, bool):
+            return state(value)
+        return str(value).replace("\n", " ")[:160]
+
+    gpu, stages, queues = section("gpu"), section("stages"), section("queues")
+    counters, playback, workers = section("counters"), section("playback"), section("workers")
+    gpu_text = (f"VRAM {number(gpu.get('used_gb'), ' GB')} used / "
+                f"{number(gpu.get('total_gb'), ' GB')} total; "
+                f"{number(gpu.get('free_gb'), ' GB')} available")
+    gpu_activity = (f"Utilization {number(gpu.get('utilization_pct', gpu.get('utilization_percent')), '%')}; "
+                    f"temperature {number(gpu.get('temperature_c'), ' °C')}; "
+                    f"power {number(gpu.get('power_w'), ' W')}")
+    stage_text = "; ".join(f"{label} {number(stages.get(key), ' s', 2)}" for label, key in (
+        ("Haas", "haas_s"), ("Whisper", "whisper_s"),
+        ("LFM", "lfm_s"), ("PLaMo", "plamo_s")))
+    pending = counters.get("pending_subtitles", queues.get("subtitles", queues.get("subtitle")))
+    subtitle_text = (f"Pending {number(pending, precision=0)}; "
+                     f"latency {number(counters.get('latency_s'), ' s', 2)}; "
+                     f"dropped {number(counters.get('dropped'), precision=0)}; "
+                     f"expired {number(counters.get('expired'), precision=0)}")
+    queue_text = "; ".join(f"{description(name)}: {number(value, precision=0)}"
+                            for name, value in list(queues.items())[:8]) or "unknown"
+    playback_text = (f"Resolution {description(playback.get('resolution'))}; "
+                     f"decoder {description(playback.get('decoder'))}; "
+                     f"hardware decoding {description(playback.get('hwdec'))}")
+    vsr_text = (f"Requested {state(playback.get('vsr_requested'))}; "
+               f"confirmed active {state(playback.get('vsr_active'))}")
+    worker_parts = []
+    threads = workers.get("threads")
+    if isinstance(threads, dict):
+        thread_status = [f"{description(name)} {'running' if active is True else 'stopped' if active is False else 'unknown'}"
+                         for name, active in list(threads.items())[:8]]
+        worker_parts.append("Threads: " + (", ".join(thread_status) or "none"))
+    processes = workers.get("processes")
+    if isinstance(processes, list):
+        process_status = []
+        for process in processes[:12]:
+            if not isinstance(process, dict):
+                continue
+            status = "running" if process.get("running") is True else (
+                f"exited ({description(process.get('exit_code'))})" if process.get("running") is False
+                else "unknown")
+            process_status.append(f"{description(process.get('name'))} (PID {description(process.get('pid'))}): {status}")
+        worker_parts.append("Processes: " + (", ".join(process_status) or "none"))
+    worker_parts.extend(f"{description(name)}: {description(value)}"
+                        for name, value in list(workers.items())[:12]
+                        if name not in ("threads", "processes"))
+    worker_text = "; ".join(worker_parts) or "unknown"
+    return dict(gpu=gpu_text, activity=gpu_activity, stages=stage_text,
+                subtitles=subtitle_text, queues=queue_text,
+                playback=playback_text, vsr=vsr_text, workers=worker_text)
 
 
 def prepare_project(root: Path):

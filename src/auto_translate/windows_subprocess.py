@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections import deque
 from concurrent.futures import CancelledError
 
 
@@ -19,6 +20,16 @@ def hidden_console_flags() -> int:
 
 # Each backend interpreter serves one translation session.
 stopping = threading.Event()
+_owned = deque(maxlen=64)
+_owned_lock = threading.Lock()
+
+
+def owned_process_status():
+    """Bounded status of this backend's children; never enumerate other apps."""
+    with _owned_lock:
+        processes = list(_owned)
+    return [{"name": name, "pid": proc.pid, "running": proc.poll() is None,
+             "exit_code": proc.returncode} for name, proc in processes]
 
 
 def check_running():
@@ -38,7 +49,11 @@ def guard_gui_spawns():
 def owned_popen(*args, **kwargs):
     check_running()
     proc = subprocess.Popen(*args, **kwargs)
+    command = args[0] if args else kwargs.get("args", [])
+    name = os.path.basename(str(command[0])) if command else "unknown"
+    with _owned_lock:
+        _owned.append((name, proc))
     logging.getLogger(__name__).info("session=%s name=%s pid=%s parent=%s owned=true",
-        os.getenv("VIDEO_TRANSLATE_SESSION", "cli"), os.path.basename(str(args[0][0])),
+        os.getenv("VIDEO_TRANSLATE_SESSION", "cli"), name,
         proc.pid, os.getpid())
     return proc

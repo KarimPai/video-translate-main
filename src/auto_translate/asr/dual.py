@@ -4,16 +4,19 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import CancelledError
+from contextlib import nullcontext
 
 import numpy as np
 
 from ..windows_subprocess import stopping
+from ..runtime_diagnostics import update_metrics, record_event
 from ..asr_correction import lap_spelling_from_peer
 from ..text_filter import is_usable_transcript
 from .whisper_turbo import WhisperTurboASR
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
-from .selection import clause_differences, compare, scene_repair
+from .selection import (clause_differences, compare, scene_repair, normalize,
+                        disagreement_details, targeted_retry_window, retry_is_supported)
 from .quality_guard import (transcript_problem, disagreement_unresolved,
                             suspicious_phonetics, uncorroborated_full_name, weak_outro)
 
@@ -34,12 +37,16 @@ class DualASR:
         self.lock = threading.Lock()
         self.pending = None
         self.playback_position = lambda: None
+        self.chat_context = None
         self.session_id = str(time.time_ns())
         self.closed = False
         self._selector_stop = threading.Event()
         self.failures = 0
         self.retry_at = 0.0
         self._restart_thread = None
+        self._selector_restart_thread = None
+        self._selector_retry_at = 0.
+        self._selector_failures = 0
         if not cfg.dual_asr.enabled or self.mode == "off":
             return
         try:
@@ -50,7 +57,7 @@ class DualASR:
             return
         log.info("Secondary %s ready on %s (%s)", SECONDARY,
                  cfg.dual_asr.secondary_device, self.mode)
-        if cfg.reconciler.enabled:
+        if cfg.reconciler.enabled and getattr(cfg.dual_asr, "smart_correction", True):
             self._start_selector(cfg.reconciler.gpu_layers)
 
     def _create_worker(self):
@@ -66,7 +73,20 @@ class DualASR:
         if self.cfg.dual_asr.secondary_device == "cuda" and not self.budget.admits(0.3):
             worker.close()
             raise RuntimeError("secondary ASR exceeded its startup reservation")
+        self._worker_metrics(worker)
         return worker
+
+    @staticmethod
+    def _worker_metrics(worker):
+        process = getattr(worker, "process", None) if worker is not None else None
+        pid = getattr(process, "pid", None)
+        update_metrics(workers={"whisper": {"pid": pid if type(pid) is int else None,
+                                           "running": worker is not None,
+                                           "owned": True}})
+
+    def _has_gate(self):
+        return (callable(getattr(type(self.budget), "operation", None))
+                or callable(getattr(self.budget, "__dict__", {}).get("operation")))
 
     def _defer_restart(self, reason):
         with self.lock:
@@ -77,6 +97,8 @@ class DualASR:
             self.retry_at = time.monotonic() + delay
         log.warning("Secondary ASR unavailable (%s); will retry after %ss (failure %d)",
                     reason, delay, self.failures)
+        record_event("worker_restart_deferred", worker="whisper", reason=type(reason).__name__,
+                     retry_after_s=delay, failures=self.failures)
 
     def _retire_worker(self, worker, reason):
         """Retire only the failed Whisper process, not the selector."""
@@ -88,6 +110,7 @@ class DualASR:
         self._defer_restart(reason)
         # Close outside lock: multiprocessing join can take seconds on Windows.
         worker.close()
+        self._worker_metrics(None)
 
     def _maybe_restart(self):
         """Restart asynchronously: model startup must never block live playback."""
@@ -102,7 +125,12 @@ class DualASR:
 
     def _restart_worker(self):
         try:
-            worker = self._create_worker()
+            operation = (self.budget.operation("whisper_load", cancel_event=self._selector_stop)
+                         if self._has_gate() else nullcontext())
+            with operation:
+                worker = self._create_worker()
+        except CancelledError:
+            return
         except Exception as exc:
             self._defer_restart(exc)
             return
@@ -116,8 +144,51 @@ class DualASR:
             worker.close()
             return
         log.info("Secondary Whisper Turbo recovered; dual ASR enabled")
-        if self.cfg.reconciler.enabled and self.selector is None and not self.closed:
-            self._start_selector(self.cfg.reconciler.gpu_layers)
+        record_event("worker_recovered", worker="whisper")
+        if (self.cfg.reconciler.enabled and getattr(self.cfg.dual_asr, "smart_correction", True)
+                and self.selector is None and not self.closed):
+            self._maybe_restart_selector()
+
+    def _maybe_restart_selector(self):
+        with self.lock:
+            if (self.closed or stopping.is_set() or self.selector is not None
+                    or not self.cfg.reconciler.enabled or self.worker is None
+                    or not getattr(self.cfg.dual_asr, "smart_correction", True)
+                    or self.budget.pressure_level != "normal"
+                    or time.monotonic() < self._selector_retry_at
+                    or (self._selector_restart_thread and self._selector_restart_thread.is_alive())):
+                return
+
+            def restart():
+                try:
+                    operation = (self.budget.operation("lfm_load", cancel_event=self._selector_stop)
+                                 if self._has_gate() else nullcontext())
+                    with operation:
+                        self._start_selector(self.cfg.reconciler.gpu_layers)
+                except CancelledError:
+                    return
+                except Exception:
+                    log.exception("Selector recovery failed; primary ASR continues")
+                finally:
+                    with self.lock:
+                        if self.selector is None:
+                            self._selector_failures += 1
+                            self._selector_retry_at = time.monotonic() + min(60, 2 ** min(self._selector_failures, 6))
+                        else:
+                            self._selector_failures = 0
+            self._selector_restart_thread = threading.Thread(target=restart, name="lfm-restart", daemon=True)
+            self._selector_restart_thread.start()
+
+    def _retire_selector(self, selector, reason):
+        with self.lock:
+            if self.selector is not selector:
+                return
+            self.selector = None
+            self._selector_failures += 1
+            self._selector_retry_at = time.monotonic() + min(60, 2 ** min(self._selector_failures, 6))
+        log.warning("Retiring stalled LFM selector (%s); primary ASR continues", reason)
+        record_event("worker_timeout", worker="lfm", reason=type(reason).__name__)
+        selector.close()
 
     def _start_selector(self, layers):
         # Decimal GB estimates for the 731 MB LFM GGUF, context/compute buffers
@@ -175,6 +246,7 @@ class DualASR:
             if worker:
                 worker.close()
         finally:
+            self._worker_metrics(None)
             if selector:
                 selector.close()
 
@@ -190,6 +262,110 @@ class DualASR:
         if position is not None:
             deadline = min(deadline, time.monotonic() + utt.end_s - position - 2)
         return deadline
+
+    def _operation(self, name, utt, current, cancel_event, deadline):
+        # Older integrations and lightweight test budgets have no scheduler.
+        if self._has_gate():
+            return self.budget.operation(name, cancel_event=cancel_event, current=current,
+                                         generation=utt.generation, deadline=deadline)
+        return nullcontext()
+
+    def _transcribe_guarded(self, worker, audio, timeout, cancel_event):
+        """Keep the GPU admission lease until a timed-out child is stopped."""
+        try:
+            return worker.transcribe(audio, timeout=timeout, cancel_event=cancel_event)
+        except CancelledError:
+            if getattr(getattr(self.cfg, "safe_playback", None), "enabled", False):
+                self._retire_worker(worker, "cancelled_inflight_safe_playback")
+            raise
+        except Exception as exc:
+            self._retire_worker(worker, exc)
+            raise
+
+    def _retry_disagreement(self, utt, primary, secondary, confidence, backlog,
+                            current, cancel_event, deadline):
+        """Recheck only a timed, low-confidence disputed clause, at most twice.
+
+        Retries cannot invent a third transcript: corroborate one original
+        candidate, otherwise abstain and leave existing selection unchanged.
+        """
+        policy = self.cfg.dual_asr
+        if not getattr(policy, "smart_correction", True):
+            return None, []
+        count = getattr(policy, "correction_live_retries" if self.live else "correction_vod_retries", 0)
+        allowance = getattr(policy, "correction_live_budget_s" if self.live else "correction_vod_budget_s", 0.)
+        if not count or allowance <= 0 or backlog():
+            return None, []
+        window = targeted_retry_window(primary, secondary, confidence, len(utt.audio) / 16000)
+        if window is None:
+            return None, []
+        until = min(deadline, time.monotonic() + allowance)
+        audio = utt.audio[int(window["start_s"] * 16000):int(window["end_s"] * 16000)]
+        attempts = []
+        worker = self.worker
+        for attempt in range(min(2, count)):
+            if (worker is None or self.closed or stopping.is_set() or backlog()
+                    or (cancel_event is not None and cancel_event.is_set())
+                    or (current is not None and current() != utt.generation)):
+                break
+            remaining = until - time.monotonic()
+            if remaining < .25:
+                break
+            record = {"attempt": attempt + 1, "start_s": window["start_s"],
+                      "end_s": window["end_s"], "reason": "low_confidence_disputed_clause"}
+            try:
+                with self._operation("whisper_retry", utt, current, cancel_event, until):
+                    remaining = until - time.monotonic()
+                    if remaining <= 0:
+                        raise CancelledError("correction budget exhausted awaiting GPU admission")
+                    heard = self._transcribe_guarded(worker, audio, remaining, cancel_event)
+                if ((cancel_event is not None and cancel_event.is_set())
+                        or (current is not None and current() != utt.generation)
+                        or time.monotonic() >= until):
+                    record["result"] = "obsolete"
+                    attempts.append(record)
+                    break
+                candidate = None
+                if retry_is_supported(getattr(worker, "last_confidence", None)):
+                    for label, clause in (("haas", window["haas_clause"]),
+                                          ("whisper_turbo", window["whisper_clause"])):
+                        if normalize(heard) == normalize(clause):
+                            candidate = label
+                record["result"] = candidate or "insufficient_acoustic_support"
+                attempts.append(record)
+                if candidate is not None:
+                    return candidate, attempts
+            except CancelledError:
+                record["result"] = "cancelled"
+                attempts.append(record)
+                break
+            except Exception as exc:
+                record["result"] = type(exc).__name__
+                attempts.append(record)
+                # A failed correction is optional; retain primary translation
+                # while retiring a broken worker for bounded async recovery.
+                self._retire_worker(worker, exc)
+                break
+        return None, attempts
+
+    def _chat_terms(self, utt, primary, secondary):
+        """Only candidate-present terms reach LFM; raw chat never reaches it."""
+        if not callable(self.chat_context):
+            return []
+        try:
+            values = self.chat_context(utt, primary, secondary)
+            if not isinstance(values, (list, tuple)):
+                return []
+            terms = []
+            for value in values[:12]:
+                term = value.get("term") if isinstance(value, dict) else value
+                if (isinstance(term, str) and 2 <= len(term) <= 32
+                        and (term in primary or term in secondary) and term not in terms):
+                    terms.append(term)
+            return terms[:6]
+        except Exception:
+            log.warning("Chat context unavailable for ASR; continuing without it")
+            return []
 
     def remember(self, generation, text):
         with self.lock:
@@ -212,6 +388,8 @@ class DualASR:
             self._maybe_restart()
             self.log_fallback(utt, primary, primary_elapsed_s, "secondary_restarting")
             return None
+        if self.selector is None:
+            self._maybe_restart_selector()
         if self.pending and self.pending.is_alive():
             self.log_fallback(utt, primary, primary_elapsed_s, "worker_busy")
             return None
@@ -241,16 +419,24 @@ class DualASR:
         self.pending.start()
         timeout = (self.cfg.dual_asr.live_timeout_s + self.cfg.reconciler.live_timeout_s
                    if self.live else self.cfg.dual_asr.vod_timeout_s + self.cfg.reconciler.vod_timeout_s)
+        if getattr(self.cfg.dual_asr, "smart_correction", True):
+            timeout += getattr(self.cfg.dual_asr, "correction_live_budget_s" if self.live
+                               else "correction_vod_budget_s", 0.)
         deadline = time.monotonic() + timeout
         if self.live:
             deadline = min(deadline, self.deadline(utt))
         while not finished.wait(.05):
-            if (time.monotonic() >= deadline or generation() != utt.generation
+            if (self.closed or stopping.is_set() or time.monotonic() >= deadline
+                    or generation() != utt.generation
                     or (backlog() and (self.live or is_usable_transcript(primary)))):
                 cancelled.set()
                 self.log_fallback(utt, primary, primary_elapsed_s, "deadline_generation_or_backlog")
                 return None
         self.pending.join()
+        if time.monotonic() >= deadline:
+            cancelled.set()
+            self.log_fallback(utt, primary, primary_elapsed_s, "completed_after_deadline")
+            return None
         return result[0] if generation() == utt.generation else None
 
     def choose(self, utt, primary, title, backlog, current, primary_stop=None, primary_elapsed_s=None, cancel_event=None):
@@ -284,9 +470,17 @@ class DualASR:
                 and utt.vad_confidence >= 0.85 and utt.end_s - utt.start_s < 4):
             return fallback("selective_mode")
         try:
-            started = time.perf_counter()
-            secondary = worker.transcribe(utt.audio, timeout=secondary_budget, cancel_event=cancel_event)
-            secondary_elapsed_s = time.perf_counter() - started
+            request_deadline = min(end, time.monotonic() + secondary_budget)
+            with self._operation("whisper", utt, current, cancel_event, request_deadline):
+                remaining = request_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CancelledError("Whisper deadline exhausted awaiting GPU admission")
+                started = time.perf_counter()
+                try:
+                    secondary = self._transcribe_guarded(worker, utt.audio, remaining, cancel_event)
+                finally:
+                    secondary_elapsed_s = time.perf_counter() - started
+                    update_metrics(stages={"whisper_s": secondary_elapsed_s})
             log.info("Whisper Turbo ASR %.2f-%.2fs audio decoded in %.3fs",
                      utt.start_s, utt.end_s, secondary_elapsed_s)
         except CancelledError:
@@ -306,6 +500,10 @@ class DualASR:
         edits = []
         selector_elapsed = None
         fallback_reason = None
+        retry_attempts = []
+        confidence = getattr(worker, "last_confidence", {})
+        confidence = confidence if isinstance(confidence, dict) else {}
+        differences = disagreement_details(primary, secondary)
 
         def record(selected_text, selected_by, score=None, flags=None, selector_called=False):
             append_comparison({
@@ -333,6 +531,11 @@ class DualASR:
                 "similarity": round(score, 4) if score is not None else None,
                 "flags": flags or [],
                 "selector_called": selector_called,
+                "disagreement_details": differences,
+                "whisper_confidence": {key: value for key, value in confidence.items()
+                                       if key in ("avg_logprob", "no_speech_prob", "compression_ratio")
+                                       and type(value) in (float, int)},
+                "targeted_retries": retry_attempts,
                 "haas_stop": primary_stop,
                 "whisper_turbo_stop": worker.last_stop,
                 "vad_confidence": utt.vad_confidence,
@@ -370,27 +573,55 @@ class DualASR:
             selected_by = "whisper_turbo_completion"
         terms = list(dict.fromkeys(self.glossary.find(primary) + self.glossary.find(secondary)))
         score, flags = compare(primary, secondary, terms, self.glossary.scene_pairs)
+        retry_choice = None
         if score < 1 and primary_ok and selected_by != "whisper_turbo_completion":
+            retry_choice, retry_attempts = self._retry_disagreement(
+                utt, primary, secondary, confidence, backlog, current, cancel_event, end)
+            if retry_choice is not None:
+                result = primary if retry_choice == "haas" else secondary
+                selected_by = "targeted_audio_" + retry_choice
+        if (score < 1 and primary_ok and selected_by != "whisper_turbo_completion"
+                and retry_choice is None and getattr(self.cfg.dual_asr, "smart_correction", True)):
             log.info("ASR disagreement %.3fs similarity=%.3f flags=%s", utt.start_s, score, flags)
             timeout = min(end - time.monotonic(), self.cfg.reconciler.live_timeout_s
                           if self.live else self.cfg.reconciler.vod_timeout_s)
             fallback_reason = "selector_unavailable_or_budget"
             if selector and timeout >= 0.25 and not (self.live and backlog()):
-                started = time.perf_counter()
+                selector_started = False
                 try:
-                    selector_called = True
                     lap_evidence = {}
                     for heard, peer in ((primary, secondary), (secondary, primary)):
                         if lap_spelling_from_peer(heard, peer, recent=context) != heard:
                             lap_evidence["corroborated_nickname_reading"] = peer
                             break
-                    selected = selector.choose(primary, secondary, {
+                    evidence = {
                         **lap_evidence, "title_channel": title[:200], "recent_ja": context,
                         "glossary": terms[:12], "vad_probability": utt.vad_confidence,
+                        "whisper_signals_uncalibrated": {key: value for key, value in confidence.items()
+                                                         if key != "segments" and type(value) in (float, int)},
+                        "weak_chat_terms": ([] if retry_is_supported(confidence)
+                                            else self._chat_terms(utt, primary, secondary)),
                         "haas_stop": primary_stop, "secondary_stop": worker.last_stop,
                         "similarity": score, "disagreement": flags,
                         "different_clauses": clause_differences(primary, secondary),
-                    }, timeout)
+                    }
+                    selector_deadline = min(end, time.monotonic() + timeout)
+                    with self._operation("lfm", utt, current, cancel_event, selector_deadline):
+                        timeout = selector_deadline - time.monotonic()
+                        if timeout <= 0:
+                            raise TimeoutError("LFM deadline exhausted awaiting GPU admission")
+                        selector_started = True
+                        selector_called = True
+                        started = time.perf_counter()
+                        try:
+                            selected = selector.choose(primary, secondary, evidence, timeout,
+                                                       cancel_event=cancel_event)
+                        except (TimeoutError, OSError, CancelledError) as exc:
+                            self._retire_selector(selector, exc)
+                            raise
+                        finally:
+                            selector_elapsed = round(time.perf_counter() - started, 3)
+                            update_metrics(stages={"lfm_s": selector_elapsed})
                     if selected not in (primary, secondary):
                         raise ValueError("selector returned an unsupported hypothesis")
                     result = selected
@@ -403,11 +634,14 @@ class DualASR:
                 except Exception as exc:
                     fallback_reason = type(exc).__name__
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
-                finally:
-                    selector_elapsed = round(time.perf_counter() - started, 3)
-        if current and current() != utt.generation:
+                    if selector_started and isinstance(exc, (TimeoutError, OSError)):
+                        self._retire_selector(selector, exc)
+        if ((current and current() != utt.generation)
+                or (cancel_event is not None and cancel_event.is_set())
+                or time.monotonic() >= end):
             return ""
-        if score < 1 and primary_ok and result in (primary, secondary):
+        if (score < 1 and primary_ok and result in (primary, secondary)
+                and retry_choice is None and getattr(self.cfg.dual_asr, "smart_correction", True)):
             other = secondary if result == primary else primary
             result, edits = scene_repair(result, other, title, context, self.glossary.scene_pairs)
         # A title/glossary match is not acoustic evidence. In a strong dual-ASR

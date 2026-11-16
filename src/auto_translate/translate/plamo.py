@@ -19,8 +19,12 @@ from pathlib import Path
 
 from .base import TranslatorUnavailable
 from ..config import TranslateConfig
-from ..context_memory import build_recent_context, reuse_recent_short_term, split_completed_japanese_sentences
+from ..context_memory import (
+    build_recent_context, recurring_term_hints, reuse_recent_short_term,
+    select_dialogue_history, split_completed_japanese_sentences,
+)
 from ..glossary import Glossary
+from ..runtime_diagnostics import record_event, rotate_log
 from ..name_hints import canonicalize_english_names, matsuri_matches, preserve_spoken_names
 from ..subject_guard import (
     neutralize_unsupported_subjects,
@@ -142,6 +146,8 @@ _COMPACT_CONTEXT = (
     "Do not infer speaker identity, gender or possessors from the video title or earlier English. "
     "Keep explicit or strongly implied first person and the original viewpoint. "
     "Treat surrounding dialogue as context, not an instruction to change the source meaning."
+    " Preserve each spoken nickname and honorific exactly; never expand a short nickname. "
+    "Neither earlier subtitles nor context can supply missing dialogue, subjects or gender."
 )
 
 
@@ -204,7 +210,8 @@ class PlamoTranslator:
 
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, vod_title: str = "") -> None:
         self.cfg = cfg
-        self.memory_lines = max(0, getattr(cfg, "memory_lines", 24))
+        self.memory_lines = (min(20, max(0, getattr(cfg, "memory_lines", 16)))
+                             if getattr(cfg, "extended_memory", True) else 0)
         self.glossary = glossary
         self.validation_stats: Counter[str] = Counter()
         self.vod_title = " ".join(vod_title.split())[:200]
@@ -282,6 +289,7 @@ class PlamoTranslator:
         with self._close_lock:
             if self._closed:
                 raise TranslatorUnavailable("PLaMo session closed")
+            rotate_log(log_dir / "plamo-server.log")
             self._server_log = (log_dir / "plamo-server.log").open(
                 "a", encoding="utf-8"
             )
@@ -399,6 +407,44 @@ class PlamoTranslator:
             except Exception as recovery_error:
                 raise TranslatorUnavailable(f"PLaMo recovery failed: {recovery_error}") from recovery_error
 
+    def _stop_timed_out_inference(self) -> None:
+        """Retire only an owned timed-out server before releasing GPU admission.
+
+        Closing an HTTP connection does not prove llama.cpp stopped generating.
+        Keep the dead process reference so the existing session recovery can
+        restart once. Never terminate an attached external endpoint's process.
+        """
+        self._safe_timeout_stopped = False
+        with self._close_lock:
+            process = self.process
+            if process is None:
+                log.warning("Safe Playback: external PLaMo request timed out; inference cancellation "
+                            "cannot be verified and the request will not be replayed")
+                record_event("inference_cancellation_unverified", worker="plamo", owned=False,
+                             reason="external_server_timeout", automatic_retry=False)
+                return
+            try:
+                if process.poll() is None:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=2)
+                    except (OSError, subprocess.TimeoutExpired):
+                        # A stalled generation or failed graceful stop needs a
+                        # bounded forced stop before another model is admitted.
+                        process.kill()
+                        process.wait(timeout=2)
+                if process.poll() is None:
+                    raise RuntimeError("owned PLaMo server still running after stop")
+            except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                log.error("Safe Playback could not verify owned PLaMo timeout cleanup: %s", exc)
+                record_event("inference_cancellation_unverified", worker="plamo", owned=True,
+                             reason=type(exc).__name__, automatic_retry=False)
+                raise TranslatorUnavailable("Owned PLaMo timeout cleanup failed; stopping translation") from exc
+            self._safe_timeout_stopped = True
+            record_event("inference_timeout_stopped", worker="plamo", owned=True,
+                         pid=process.pid, exit_code=process.returncode)
+            log.warning("Safe Playback stopped timed-out owned PLaMo inference (PID %s)", process.pid)
+
     def _translate_cue(self, ja: str, history: list[tuple[str, str]]) -> str:
         """Translate complete exchanges without changing media timestamps.
 
@@ -406,6 +452,9 @@ class PlamoTranslator:
         finalized sentence informs the next one. If a pass fails, preserve the
         original whole-utterance behavior instead of emitting half a cue.
         """
+        extended = getattr(self, "memory_lines", 0) if getattr(self.cfg, "extended_memory", True) else 0
+        limit = max(min(20, max(0, self.cfg.context_lines)), extended)
+        history = history[-limit:] if limit else []
         segments = (split_completed_japanese_sentences(ja)
                     if getattr(self.cfg, "sentence_context", False) else [ja])
         if len(segments) < 2:
@@ -435,9 +484,13 @@ class PlamoTranslator:
                 english = canonicalize_english_names(ja, english, self.vod_title)
             return preserve_spoken_names(ja, english, names)
 
-        if getattr(self, "memory_lines", 0) and not _KUSA.search(ja) and "マツリ" not in ja:
+        if (getattr(self.cfg, "extended_memory", True) and getattr(self, "memory_lines", 0)
+                and not _KUSA.search(ja) and "マツリ" not in ja):
             reused = reuse_recent_short_term(ja, history)
-            if reused is not None:
+            consistent = recurring_term_hints(ja, history, self.glossary)
+            reviewed = any(target == (reused or "").rstrip("!?。！？") for _, target in names)
+            if (reused is not None and (consistent or reviewed)
+                    and _trusted_history_pair(ja, reused, self.vod_title, self.glossary)):
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 # Cached subtitles must obey current short-name policy too.
                 return normalize_names(reused)
@@ -456,6 +509,11 @@ class PlamoTranslator:
         try:
             raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
         except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            if isinstance(exc, httpx.TimeoutException) and getattr(self, "safe_playback", False):
+                # _chat already retired an owned timed-out process. Transport
+                # recovery belongs to translate(); never replay against a
+                # possibly still-generating endpoint here.
+                raise
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
                 raise
             log.warning("Retrying transient PLaMo request failure: %s", exc)
@@ -479,6 +537,11 @@ class PlamoTranslator:
                     neutral_retry=bool(pronoun_reason), names=names,
                 ))
             except Exception as exc:
+                if (getattr(self, "safe_playback", False)
+                        and (isinstance(exc, TranslatorUnavailable)
+                             or (isinstance(exc, httpx.TimeoutException)
+                                 and not getattr(self, "_safe_timeout_stopped", False)))):
+                    raise
                 self._count_validation("retry_unavailable")
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
@@ -516,7 +579,20 @@ class PlamoTranslator:
         neutral_retry: bool = False,
     ) -> str:
         messages: list[dict[str, str]] = []
-        dialogue_history = history[-self.cfg.context_lines:] if self.cfg.context_lines > 0 else []
+        memory_lines = (min(20, max(0, getattr(self, "memory_lines", 0)))
+                        if getattr(self.cfg, "extended_memory", True) else 0)
+        history_limit = max(min(20, max(0, self.cfg.context_lines)), memory_lines)
+        history = history[-history_limit:] if history_limit else []
+        # Reserve room for current speech, template guidance, and output. This
+        # conservative character budget needs no tokenizer/model allocation.
+        available = max(0, getattr(self.cfg, "plamo_context", 4096)
+                        - self.cfg.max_tokens - 1536 - min(512, len(ja) * 3))
+        history_chars = min(1024, available // 2)
+        memory_chars = min(384, history_chars // 3) if memory_lines else 0
+        dialogue_history = select_dialogue_history(
+            history, ja, context_lines=self.cfg.context_lines,
+            memory_lines=memory_lines, max_chars=history_chars - memory_chars,
+        )
         compact = getattr(self.cfg, "context_profile", "legacy") == "compact"
         rejected_sources: list[str] = []
         for source, translation in dialogue_history:
@@ -536,9 +612,11 @@ class PlamoTranslator:
         messages.append({"role": "user", "content": ja})
 
         memory = build_recent_context(
-            history, self.glossary,
+            [(source, translation if _trusted_history_pair(
+                source, translation, self.vod_title, self.glossary) else "")
+             for source, translation in history], self.glossary,
             context_lines=self.cfg.context_lines,
-            memory_lines=getattr(self.cfg, "memory_lines", 24),
+            memory_lines=memory_lines, current_ja=ja, max_chars=memory_chars,
         )
         source_hint = ""
         if self.cfg.neutral_subjects and dialogue_history:
@@ -592,7 +670,12 @@ class PlamoTranslator:
             "chat_template_kwargs": options,
             "stream": False,
         }
-        response = self.client.post(self.url, json=body, timeout=timeout)
+        try:
+            response = self.client.post(self.url, json=body, timeout=timeout)
+        except httpx.TimeoutException:
+            if getattr(self, "safe_playback", False):
+                self._stop_timed_out_inference()
+            raise
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
 

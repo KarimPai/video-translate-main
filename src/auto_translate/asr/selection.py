@@ -1,5 +1,6 @@
 """Conservative Japanese comparison and exact two-candidate selection."""
 import re
+import math
 import unicodedata
 from difflib import SequenceMatcher
 
@@ -86,3 +87,67 @@ def scene_repair(chosen, other, title, history, scene_pairs=()):
                                      peer_clause=peer, context_term=anchor))
                 break
     return "".join(clauses), evidence
+
+
+def disagreement_details(haas, whisper):
+    """Separate harmless width/kana/punctuation differences from lexical edits."""
+    left, right = normalize(haas), normalize(whisper)
+    if left == right:
+        return {"kind": "agreement" if haas == whisper else "orthographic", "edits": []}
+    matcher = SequenceMatcher(None, left, right, autojunk=False)
+    return {"kind": "meaningful", "edits": [
+        {"operation": tag, "haas": left[i:j][:48], "whisper": right[k:l][:48]}
+        for tag, i, j, k, l in matcher.get_opcodes() if tag != "equal"
+    ][:8]}
+
+
+def targeted_retry_window(haas, whisper, confidence, duration_s):
+    """Locate a short disputed Whisper segment; never guess word timestamps.
+
+    Require equal ordered clause boundaries and a confidence-bearing timestamp
+    for that exact clause. No whole-utterance retry or interpolation from text.
+    Return only original candidate clauses so a retry cannot introduce words.
+    """
+    if not isinstance(confidence, dict) or duration_s <= 1:
+        return None
+    left = [part.strip() for part in _CLAUSE_END.split(haas) if part.strip()]
+    right = [part.strip() for part in _CLAUSE_END.split(whisper) if part.strip()]
+    if len(left) != len(right):
+        return None
+    differences = [(a, b) for a, b in zip(left, right) if normalize(a) != normalize(b)]
+    # One localized disagreement only; otherwise a crop cannot select the
+    # complete utterance and LFM must retain its normal abstention contract.
+    if len(differences) != 1:
+        return None
+    a, b = differences[0]
+    segments = confidence.get("segments", [])
+    if not isinstance(segments, list):
+        return None
+    for segment in segments[:24]:
+        if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
+            continue
+        if normalize(segment["text"]) != normalize(b):
+            continue
+        start, end = segment.get("start"), segment.get("end")
+        if any(type(v) not in (float, int) or not math.isfinite(v) for v in (start, end)):
+            continue
+        if not 0 <= start < end <= duration_s + .05:
+            continue
+        low = any(type(segment.get(key)) in (float, int) and math.isfinite(segment[key])
+                  and predicate(segment[key]) for key, predicate in (
+                      ("avg_logprob", lambda x: x <= -.65),
+                      ("no_speech_prob", lambda x: x >= .35),
+                      ("compression_ratio", lambda x: x >= 2.2)))
+        begin, finish = max(0., start - .15), min(duration_s, end + .15)
+        if low and .3 <= finish - begin <= min(4., duration_s * .8):
+            return {"start_s": begin, "end_s": finish, "haas_clause": a, "whisper_clause": b}
+    return None
+
+
+def retry_is_supported(confidence):
+    """A crop may corroborate an existing candidate only with usable signals."""
+    if not isinstance(confidence, dict):
+        return False
+    logprob, silence = confidence.get("avg_logprob"), confidence.get("no_speech_prob")
+    return (type(logprob) in (int, float) and math.isfinite(logprob) and logprob > -.6
+            and type(silence) in (int, float) and math.isfinite(silence) and silence < .35)

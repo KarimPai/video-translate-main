@@ -158,6 +158,11 @@ class LanguageFilterConfig:
 @dataclass
 class DualAsrConfig:
     enabled: bool = True
+    smart_correction: bool = True
+    correction_live_retries: int = 0
+    correction_vod_retries: int = 1
+    correction_live_budget_s: float = 2.0
+    correction_vod_budget_s: float = 8.0
     secondary_model: str = "h2oai/faster-whisper-large-v3-turbo"
     secondary_device: str = "cuda"
     secondary_compute_type: str = "int8_float16"
@@ -170,6 +175,14 @@ class DualAsrConfig:
     vod_timeout_s: float = 25.0
 
     def __post_init__(self):
+        if type(self.smart_correction) is not bool:
+            raise ValueError("smart_correction must be boolean")
+        for retries in (self.correction_live_retries, self.correction_vod_retries):
+            if type(retries) is not int or not 0 <= retries <= 2:
+                raise ValueError("correction retries must be integers in 0..2")
+        for seconds in (self.correction_live_budget_s, self.correction_vod_budget_s):
+            if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 30:
+                raise ValueError("correction budgets must be finite in (0,30] seconds")
         if self.japanese_outro_mode not in ("log", "suppress"):
             raise ValueError("japanese_outro_mode must be log or suppress")
         if not self.secondary_model.strip():
@@ -243,7 +256,8 @@ class TranslateConfig:
     load_timeout_s: float = 300.0
     context_lines: int = 3  # OverlaySubs-style bounded dialogue exchange
     # Prefer reliable recent bilingual pairs to speculative long-term scene memory.
-    memory_lines: int = 0
+    memory_lines: int = 16
+    extended_memory: bool = True
     context_profile: str = "compact"  # compact (accuracy-first) or legacy
     sentence_context: bool = True  # translate clearly separated completed sentences sequentially
     glossary: str = "glossary.toml"
@@ -257,6 +271,11 @@ class TranslateConfig:
     fragment_context: bool = True  # Japanese-only previous cue for ambiguous fragments
 
     def __post_init__(self):
+        if type(self.extended_memory) is not bool:
+            raise ValueError("extended_memory must be boolean")
+        for name in ("context_lines", "memory_lines"):
+            if type(getattr(self, name)) is not int or not 0 <= getattr(self, name) <= 20:
+                raise ValueError(f"translate.{name} must be an integer in 0..20")
         for value in (self.timeout_s, self.load_timeout_s, self.retry_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")
@@ -304,6 +323,64 @@ class MpvConfig:
             raise ValueError("Invalid MPV live cache size")
 
 
+@dataclass
+class ChatConfig:
+    enabled: bool = False
+    window_s: float = 30.0
+    max_messages: int = 100
+    poll_interval_s: float = 5.0
+    live_time_uncertainty_s: float = 5.0
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("chat.enabled must be boolean")
+        if type(self.max_messages) is not int or not 1 <= self.max_messages <= 500:
+            raise ValueError("chat.max_messages must be in 1..500")
+        if not math.isfinite(self.window_s) or not 1 <= self.window_s <= 120:
+            raise ValueError("chat.window_s must be in 1..120")
+        if not math.isfinite(self.poll_interval_s) or not 1 <= self.poll_interval_s <= 60:
+            raise ValueError("chat.poll_interval_s must be in 1..60")
+        if not math.isfinite(self.live_time_uncertainty_s) or not 0 <= self.live_time_uncertainty_s <= 120:
+            raise ValueError("chat.live_time_uncertainty_s must be in 0..120")
+
+
+@dataclass
+class SafePlaybackConfig:
+    enabled: bool = False
+    max_inference_concurrency: int = 1
+    queue_size: int = 4
+    audio_chunks: int = 32
+    max_audio_lead_s: float = 20.0
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("safe_playback.enabled must be boolean")
+        for name, upper in (("max_inference_concurrency", 2), ("queue_size", 16), ("audio_chunks", 64)):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= upper:
+                raise ValueError(f"safe_playback.{name} must be in 1..{upper}")
+        if not math.isfinite(self.max_audio_lead_s) or not 1 <= self.max_audio_lead_s <= 75:
+            raise ValueError("safe_playback.max_audio_lead_s must be in 1..75")
+
+
+@dataclass
+class DiagnosticsConfig:
+    enabled: bool = True
+    sample_interval_s: float = 2.0
+    max_bytes: int = 2_000_000
+    backups: int = 3
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("diagnostics.enabled must be boolean")
+        if not math.isfinite(self.sample_interval_s) or not .5 <= self.sample_interval_s <= 30:
+            raise ValueError("diagnostics.sample_interval_s must be in .5..30")
+        if type(self.max_bytes) is not int or not 1024 <= self.max_bytes <= 20_000_000:
+            raise ValueError("diagnostics.max_bytes must be in 1024..20000000")
+        if type(self.backups) is not int or not 1 <= self.backups <= 10:
+            raise ValueError("diagnostics.backups must be in 1..10")
+
+
 def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
     """Use long, context-rich VOD chunks; bound live chunks for subtitle sync.
 
@@ -322,6 +399,9 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
 
 @dataclass
 class Config:
+    chat: ChatConfig = field(default_factory=ChatConfig)
+    safe_playback: SafePlaybackConfig = field(default_factory=SafePlaybackConfig)
+    diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
     dual_asr: DualAsrConfig = field(default_factory=DualAsrConfig)
     reconciler: ReconcilerConfig = field(default_factory=ReconcilerConfig)
@@ -368,6 +448,9 @@ def load_config(path: Path) -> Config:
     ingest_data.pop("pitch_semitones", None)
 
     return Config(
+        chat=ChatConfig(**data.get("chat", {})),
+        safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),
+        diagnostics=DiagnosticsConfig(**data.get("diagnostics", {})),
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
         dual_asr=DualAsrConfig(**data.get("dual_asr", {})),
         reconciler=ReconcilerConfig(**data.get("reconciler", {})),

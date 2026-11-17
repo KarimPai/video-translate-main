@@ -161,6 +161,41 @@ class VoxtralAdapterTests(unittest.TestCase):
         self.assertEqual(worker.transcribe(np.array([], np.float32)), "")
         self.assertFalse(self.requests_path.exists())
 
+    def test_quiet_audio_gain_is_bounded_without_mutating_input(self):
+        audio = np.tile(np.array([-.004, .004], np.float32), 8000)
+        original = audio.copy()
+        encoded = _audio16(audio)
+        expected = (audio * 4 * 32767).astype("<i2")
+        np.testing.assert_array_equal(encoded, expected)
+        np.testing.assert_array_equal(audio, original)
+        self.assertEqual((encoded.dtype, encoded.shape), (np.dtype("<i2"), audio.shape))
+        self.assertTrue(encoded.flags.c_contiguous)
+
+    def test_normalization_leaves_silence_tiny_noise_and_normal_audio_unchanged(self):
+        for level in (0., .0001, .0009, .02, .2, 1.):
+            with self.subTest(level=level):
+                audio = np.tile(np.array([-level, level], np.float32), 8000)
+                np.testing.assert_array_equal(_audio16(audio), _audio16(audio, normalize=False))
+
+    def test_quiet_audio_gain_respects_target_and_transient_headroom(self):
+        audio = np.tile(np.array([-.01, .01], np.float32), 8000)
+        encoded = _audio16(audio)
+        self.assertAlmostEqual(float(np.max(np.abs(encoded))) / 32767, .02, delta=1 / 32767)
+        audio[0] = .8
+        encoded = _audio16(audio)
+        self.assertLessEqual(int(np.max(np.abs(encoded))), round(.95 * 32767))
+        audio[0] = 1.
+        np.testing.assert_array_equal(_audio16(audio), _audio16(audio, normalize=False))
+
+    def test_transcribe_normalizes_speech_but_not_vad_negative_probes(self):
+        worker = self.start()
+        audio = np.tile(np.array([-.004, .004], np.float32), 8000)
+        with patch("auto_translate.asr.voxtral._audio16", wraps=_audio16) as encode:
+            worker.transcribe(audio)
+            worker.transcribe(audio, probe=True)
+        self.assertEqual([call.kwargs for call in encode.call_args_list],
+                         [{"normalize": True}, {"normalize": False}])
+
     def test_missing_or_corrupt_model_is_explicit(self):
         cfg = AsrConfig(voxtral_server_path=str(self.executable), voxtral_model_path=str(self.model))
         self.model.unlink()

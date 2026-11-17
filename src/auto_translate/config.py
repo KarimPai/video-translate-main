@@ -66,14 +66,14 @@ class VadConfig:
     """
 
     device: str = "cpu"  # keep PyTorch CUDA context off the RTX 3070 by default
-    threshold: float = 0.34  # modest quiet-speech recall improvement; 0.3 is very permissive
-    neg_threshold: float = 0.25
+    threshold: float = 0.30
+    neg_threshold: float = 0.20
     min_silence_ms: int = 550  # wait for genuine phrase-ending silence
     speech_pad_ms: int = 400  # preserve soft/overlapped word starts and tails
-    min_speech_ms: int = 200  # keep short game-sfx rejection; strong short replies still survive
+    min_speech_ms: int = 160
     short_reply_ms: int = 120
     short_reply_probability: float = 0.85
-    onset_ms: int = 50  # recover quieter and short initial speech
+    onset_ms: int = 30
     prob_smooth_frames: int = 5
     max_utterance_s: float = 14.0  # VOD soft cap: more sentence context
     max_split_extension_s: float = 2.0  # VOD hard cap: 16s

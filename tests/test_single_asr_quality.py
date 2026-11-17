@@ -39,9 +39,10 @@ class AccuracyTests(unittest.TestCase):
             with self.subTest(live=live):
                 pcm = np.full(frames * FRAME, .2, dtype=np.float32)
                 probs = np.full(frames, .95)
-                pcm[gap*FRAME:(gap+20)*FRAME] = 0
-                pcm[(gap+20)*FRAME:] = -.15
-                probs[gap:gap+20] = .03
+                # Smoothing trims pause edges; retain 180 ms below the negative threshold.
+                pcm[gap*FRAME:(gap+24)*FRAME] = 0
+                pcm[(gap+24)*FRAME:] = -.15
+                probs[gap:gap+24] = .03
                 cues = process_pcm(pcm, probs, vad_for_source(VadConfig(), live=live))
                 self.assertEqual(len(cues), 2)
                 self.assertAlmostEqual(cues[0].end_s, cues[1].start_s)

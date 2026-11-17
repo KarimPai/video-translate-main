@@ -24,14 +24,14 @@ sample_interval_s = 2.0
 [vad]
 # FireRedVAD stays on CPU; initial segmentation preserves short reactions.
 device = "cpu"
-threshold = 0.34
-neg_threshold = 0.25
+threshold = 0.30
+neg_threshold = 0.20
 min_silence_ms = 550
 speech_pad_ms = 400
-min_speech_ms = 200
+min_speech_ms = 160
 short_reply_ms = 120
 short_reply_probability = 0.85
-onset_ms = 50
+onset_ms = 30
 prob_smooth_frames = 5
 max_utterance_s = 14.0
 max_split_extension_s = 2.0

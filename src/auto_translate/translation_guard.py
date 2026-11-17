@@ -9,7 +9,7 @@ import unicodedata
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 
-from .name_hints import SPOKEN_NAME_FORMS
+from .name_hints import SPOKEN_NAME_FORMS, _aligned_sentence_spans
 from .subtitle_clean import english_output_issue
 
 _SHORT_POSITIVE_JA = re.compile(
@@ -80,35 +80,51 @@ def _mention_value(mention, field, default=None):
 def resolved_name_issue(japanese: str, english: str, mentions, *, names=None) -> str | None:
     """Check independently resolved occurrences, including kanji spellings.
 
-    This checks evidence and exact name counts, not English semantic accuracy.
-    In particular, Miko cannot satisfy Mikochi or Miko-chan, and a name found
-    elsewhere in a mixed cue cannot excuse a missing second mention.
+    This checks exact name counts and clear sentence placement, not semantic
+    accuracy. Miko cannot satisfy Mikochi or Miko-chan; with aligned completed
+    sentences, a name elsewhere cannot satisfy the original occurrence.
     """
     if mentions is None and names is None:
         return None
     expected = Counter()
     literal_families = set()
+    alignment = _aligned_sentence_spans(japanese, english)
+    sentence_expected = [Counter() for _ in alignment or ()]
+    sentence_literals = [set() for _ in alignment or ()]
     for mention in mentions or ():
         source = _mention_value(mention, "source", "")
         start, end = _mention_value(mention, "start", -1), _mention_value(mention, "end", -1)
-        if type(start) is not int or type(end) is not int or japanese[start:end] != source:
+        if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(japanese)
+                or japanese[start:end] != source):
             continue
+        sentence = next((index for index, ((begin, finish), _) in enumerate(alignment or ())
+                         if begin <= start < end <= finish), None)
         classification = _mention_value(mention, "classification")
         family = _mention_value(mention, "family", "")
         if classification == "PERSON":
             target = _mention_value(mention, "target")
             if target:
                 expected[target] += 1
+                if sentence is not None:
+                    sentence_expected[sentence][target] += 1
         elif classification == "COMMON_NOUN":
             literal_families.add(family)
+            if sentence is not None:
+                sentence_literals[sentence].add(family)
     if expected:
         # One English span can satisfy one occurrence only. Matching longest
         # first prevents Natsuiro Matsuri from also satisfying a spoken Matsuri.
         pattern = r"(?<![\w-])(?:" + "|".join(
             re.escape(target) for target in sorted(expected, key=len, reverse=True)) + r")(?![\w-])"
-        actual = Counter(match.group().casefold() for match in re.finditer(pattern, english, re.I))
+        matches = list(re.finditer(pattern, english, re.I))
+        actual = Counter(match.group().casefold() for match in matches)
         if any(actual[target.casefold()] < count for target, count in expected.items()):
             return "proper_name_mismatch"
+        for counts, (_, (begin, finish)) in zip(sentence_expected, alignment or ()):
+            actual_sentence = Counter(match.group().casefold() for match in matches
+                                      if begin <= match.start() < match.end() <= finish)
+            if any(actual_sentence[target.casefold()] < count for target, count in counts.items()):
+                return "proper_name_mismatch"
     supported = set(expected)
     supported.update(target for source, target in (names or ()) if source in japanese)
     for full, family in (("Natsuiro Matsuri", "Matsuri"), ("Sakura Miko", "Miko"),
@@ -143,8 +159,11 @@ def resolved_name_issue(japanese: str, english: str, mentions, *, names=None) ->
         "Matsuri": r"\b(?:festivals?|festivit(?:y|ies)|fairs?|carnivals?|celebrations?|events?|f[eê]tes?)\b",
         "Miko": r"\b(?:shrine\s+(?:maidens?|attendants?)|priestess(?:es)?)\b",
     }
-    if any(not re.search(literal_patterns[family], english, re.I)
-           for family in literal_families if family in literal_patterns):
+    if (any(not re.search(literal_patterns[family], english, re.I)
+            for family in literal_families if family in literal_patterns)
+            or any(not re.search(literal_patterns[family], english[begin:finish], re.IGNORECASE)
+                   for families, (_, (begin, finish)) in zip(sentence_literals, alignment or ())
+                   for family in families if family in literal_patterns)):
         # English can omit/rephrase a noun legitimately. This is a review
         # signal for a bounded retry, never proof warranting a global repair.
         return "possible_literal_noun_loss"

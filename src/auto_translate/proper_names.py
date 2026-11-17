@@ -93,8 +93,13 @@ _BUTTON_PREDICATE = re.compile(
     r"(?:を|が|は|も|に)?(?:押[すしせさそ]|お[すしせさそ]|押下|クリック|連打|長押し)|"
     r"(?:が|は|も)(?:光|点滅|壊れ|取れ|外れ)|の(?:位置|色|設定|配置)")
 _SHRINE = re.compile(r"神社|神主|神職|お祓い|御祓|神楽|境内|神殿|装束|職業")
-_END = re.compile(r"^(?:$|[\s。、！？!?「」『』：:、]|(?:が|は|を|に|へ|も|の|と|で)|"
+_END = re.compile(r"^(?:$|[\s。、！？!?「」『』：:,，]|(?:が|は|を|に|へ|も|の|と|で)|"
                   r"から|まで|より|だけ|なら|来[たてるな]|いた|いる|どこ|すご|かわいい|って|だ|です|おはよう)")
+_GROUP_SUFFIX = re.compile(r"^(?:たち|達|ら)(?=" + _END.pattern[1:] + r")")
+_VOCATIVE = re.compile(
+    r"^[、,，]\s*(?:(?:こっち|こちら|ここ|そっち|そこ|あっち)(?:に|へ)?\s*)?"
+    r"(?:来て|きて|おいで|待って|待て|見て|聞いて|聞け|止まって|止まれ)"
+    r"(?=$|[\s。！？!?、,，]|ね|よ|くれ|ください)")
 
 
 @dataclass(frozen=True)
@@ -119,7 +124,7 @@ def _parts(value):
 
 
 def _boundary(text, match, spelling, family):
-    before, after = text[:match.start()], text[match.end():]
+    before, after = text[:match.start()], _GROUP_SUFFIX.sub("", text[match.end():], count=1)
     # Literal festival compounds are retained for diagnostics and excluded
     # from the glossary individually, rather than hiding a whole subtitle.
     if family == "Matsuri" and _EVENT_PREFIX.search(before):
@@ -138,16 +143,32 @@ def _boundary(text, match, spelling, family):
     return bool(_END.match(after) or after.startswith(spelling))
 
 
-def _explicit_context(previous, family):
-    for match in _PATTERN.finditer(previous[-600:]):
-        spelling, honorific, (_, group, kind) = _parts(match[0])
-        if group != family or not _boundary(previous[-600:], match, spelling, group):
-            continue
-        if kind in {"full", "nickname"}:
-            return True
-        if honorific and spelling not in {"祭", "巫女"} and not _EVENT_PREFIX.search(previous[-600:][:match.start()]):
-            return True
-    return False
+def _explicit_context(previous):
+    if not previous:
+        return set()
+    return {mention.family for mention in resolve_names(previous[-600:])
+            if mention.classification == PERSON}
+
+
+def _literal_evidence(japanese, match, spelling, suffix, family, kind, person_context):
+    before = japanese[:match.start()]
+    after = _GROUP_SUFFIX.sub("", japanese[match.end():], count=1)
+    if family == "Matsuri" and kind != "full":
+        if _EVENT_PREFIX.search(before):
+            return "literal_compound"
+        if not suffix and _EVENT_PREDICATE.match(after):
+            return "literal_predicate"
+    if (family == "Botan" and kind == "ambiguous" and not suffix
+            and (_BUTTON_PREFIX.search(before) or _BUTTON_PREDICATE.match(after))):
+        return "literal_button_context"
+    if family != "Miko" or kind != "ambiguous" or suffix == "ちゃん":
+        return None
+    clause = re.split(r"[。！？!?、]", before)[-1] + match[0] + re.split(r"[。！？!?、]", after)[0]
+    shrine_role = bool(re.search(r"(?:神社|神殿|境内|神楽)[^。！？!?、]{0,8}の$", before))
+    if (_SHRINE.search(clause)
+            and (shrine_role or not person_context or (spelling == "巫女" and suffix == "さん"))):
+        return "literal_shrine_context"
+    return None
 
 
 def _participant(family, participants):
@@ -177,18 +198,20 @@ def resolve_names(japanese: str, *, previous_ja: str = "", video_title: str = ""
         spelling, suffix, (target, family, kind) = _parts(match[0])
         if _boundary(japanese, match, spelling, family):
             matches.append((match, spelling, suffix, target, family, kind))
+    if not matches:
+        return []
+    previous_families = _explicit_context(previous_ja)
     explicit_families = {
-        family for _, spelling, suffix, _, family, kind in matches
-        if kind in {"full", "nickname"} or (suffix and spelling not in {"祭", "巫女"})
+        family for match, spelling, suffix, _, family, kind in matches
+        if (kind in {"full", "nickname"} or (suffix and spelling not in {"祭", "巫女"}))
+        and not _literal_evidence(japanese, match, spelling, suffix, family, kind, True)
     }
     result = []
     for match, spelling, suffix, target, family, kind in matches:
-        before, after = japanese[:match.start()], japanese[match.end():]
-        # Clause-local literal evidence must not suppress a name elsewhere.
-        clause = re.split(r"[。！？!?、]", before)[-1] + match[0] + re.split(r"[。！？!?、]", after)[0]
+        after = _GROUP_SUFFIX.sub("", japanese[match.end():], count=1)
         evidence = []
         person_context = False
-        if _explicit_context(previous_ja, family):
+        if family in previous_families:
             evidence.append("recent_confirmed_name")
             person_context = True
         if _participant(family, confirmed_participants):
@@ -197,18 +220,9 @@ def resolve_names(japanese: str, *, previous_ja: str = "", video_title: str = ""
         if family in explicit_families:
             evidence.append("local_explicit_name")
             person_context = True
-        shrine_role = bool(re.search(r"(?:神社|神殿|境内|神楽)[^。！？!?、]{0,8}の$", before))
-        literal_shrine = (_SHRINE.search(clause) and
-                          (shrine_role or not person_context or (spelling == "巫女" and suffix == "さん")))
-        if family == "Matsuri" and kind != "full" and _EVENT_PREFIX.search(before):
-            label, evidence = COMMON_NOUN, ["literal_compound"]
-        elif family == "Matsuri" and kind != "full" and not suffix and _EVENT_PREDICATE.match(after):
-            label, evidence = COMMON_NOUN, ["literal_predicate"]
-        elif (family == "Botan" and kind == "ambiguous" and not suffix
-              and (_BUTTON_PREFIX.search(before) or _BUTTON_PREDICATE.match(after))):
-            label, evidence = COMMON_NOUN, ["literal_button_context"]
-        elif family == "Miko" and kind == "ambiguous" and literal_shrine and suffix != "ちゃん":
-            label, evidence = COMMON_NOUN, ["literal_shrine_context"]
+        literal = _literal_evidence(japanese, match, spelling, suffix, family, kind, person_context)
+        if literal:
+            label, evidence = COMMON_NOUN, [literal]
         elif kind == "full":
             label, evidence = PERSON, ["explicit_full_name"]
         elif kind == "nickname":
@@ -216,7 +230,7 @@ def resolve_names(japanese: str, *, previous_ja: str = "", video_title: str = ""
         elif suffix and spelling not in {"巫女", "祭"}:
             label, evidence = PERSON, ["spoken_honorific"]
         else:
-            syntax = bool(_PERSON_SYNTAX.match(after))
+            syntax = bool(_PERSON_SYNTAX.match(after) or _VOCATIVE.match(after))
             isolated = japanese.strip(" 。、！？!?「」") == match[0]
             if syntax:
                 evidence.append("person_syntax")

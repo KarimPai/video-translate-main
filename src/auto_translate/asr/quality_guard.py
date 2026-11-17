@@ -55,13 +55,10 @@ def potential_japanese_transcript(text: str) -> bool:
 
 def supports_japanese_transcript(
     text: str, *, language_decision=None, video_context: str = "", confirmed_participants=(),
+    previous_ja: str = "", vad_confidence: float | None = None,
+    duration_s: float | None = None, probe: bool = False,
 ) -> bool:
-    """Validate Latin exceptions using actual Japanese audio or a named person.
-
-    A generic Hololive title cannot authorize Latin reactions. A name-only cue
-    can use an exact reviewed name in participant metadata; this never changes
-    the recognized words or expands a nickname.
-    """
+    """Validate Latin exceptions using acoustic evidence or nearby Japanese speech."""
     if getattr(language_decision, "drop", False) is True or not potential_japanese_transcript(text):
         return False
     if _JA.search(text):
@@ -73,6 +70,12 @@ def supports_japanese_transcript(
             and isinstance(japanese, (int, float)) and japanese >= .5):
         return True
     phrase = _romanized_phrase(text)
+    if (phrase in _ROMAJI_REACTIONS and not probe
+            and duration_s is not None and 0.12 <= duration_s < 2.5
+            and vad_confidence is not None and 0.5 <= vad_confidence <= 1.0
+            and _JA.search(previous_ja)
+            and getattr(language_decision, "language", None) in (None, "unknown", "ja")):
+        return True
     if not _romanized_name(phrase):
         return False
     if isinstance(confirmed_participants, str):

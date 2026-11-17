@@ -482,6 +482,7 @@ class MpvOutput:
         self._user_paused = False
         self._manually_paused = False
         if not ingest.source.live:
+            ingest.enable_vod_restart()
             ingest.enable_vod_playback_pacing(
                 getattr(ingest.cfg, "vod_max_audio_lead_s", 75.0)
             )
@@ -722,9 +723,10 @@ class MpvOutput:
             self._source_finished = False
             self._buffer_condition.notify_all()
 
-    def finish(self) -> None:
-        """Signal that no more translated audio will arrive."""
+    def finish(self, generation: int | None = None) -> None:
         with self._buffer_condition:
+            if generation is not None and generation != self.ingest.generation:
+                return
             self._source_finished = True
             self._buffer_condition.notify_all()
 

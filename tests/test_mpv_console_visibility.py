@@ -20,6 +20,7 @@ class MpvConsoleVisibilityTests(unittest.TestCase):
             ),
             cfg=SimpleNamespace(vod_max_audio_lead_s=75.0),
             video_out=None,
+            enable_vod_restart=MagicMock(),
             enable_vod_playback_pacing=MagicMock(),
         )
         with (

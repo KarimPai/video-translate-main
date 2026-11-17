@@ -9,6 +9,7 @@ from music, laughter and game sound effects. Optional probe mode is retained.
 
 import logging
 import queue
+import threading
 import time
 from collections import deque
 from concurrent.futures import CancelledError
@@ -19,7 +20,7 @@ from typing import Callable
 import numpy as np
 
 from .config import VadConfig
-from .types import SAMPLE_RATE, AudioChunk, AudioProgress, Utterance
+from .types import SAMPLE_RATE, AudioChunk, AudioProgress, SourceEOF, Utterance
 
 log = logging.getLogger(__name__)
 
@@ -429,10 +430,11 @@ class Segmenter:
 
 def run_segmenter(
     seg: Segmenter,
-    in_q: "queue.Queue[AudioChunk | AudioProgress | None]",
-    out_q: "queue.Queue[Utterance | AudioProgress | None]",
+    in_q: "queue.Queue[AudioChunk | AudioProgress | SourceEOF | None]",
+    out_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
     get_generation: Callable[[], int] | None = None,
     gate=None,
+    stop: threading.Event | None = None,
 ) -> None:
     """Thread body."""
     awaiting_first_utterance = False
@@ -440,18 +442,24 @@ def run_segmenter(
     while True:
         item = in_q.get()
 
-        if item is None:
-            for utt in seg.flush():
-                out_q.put(utt)
+        if item is None or isinstance(item, SourceEOF):
+            if isinstance(item, SourceEOF) and (
+                    item.generation != seg._generation
+                    or (get_generation is not None and item.generation != get_generation())):
+                continue
+            if stop is None or not stop.is_set():
+                for utt in seg.flush():
+                    out_q.put(utt)
+                progress = seg.advance_progress(seg._next_frame_sample, force=True)
+                if progress is not None:
+                    out_q.put(progress)
+            out_q.put(item)
+            if item is None:
+                break
+            continue
 
-            progress = seg.advance_progress(seg._next_frame_sample, force=True)
-
-            if progress is not None:
-                out_q.put(progress)
-
-            out_q.put(None)
-            break
-
+        if stop is not None and stop.is_set():
+            continue
         if get_generation is not None and item.generation != get_generation():
             continue
 
@@ -490,7 +498,8 @@ def run_segmenter(
         except CancelledError:
             # A seek can invalidate a chunk while admission is waiting.
             continue
-        if get_generation is not None and item.generation != get_generation():
+        if ((stop is not None and stop.is_set())
+                or (get_generation is not None and item.generation != get_generation())):
             continue
         for utt in utterances:
             if awaiting_first_utterance:

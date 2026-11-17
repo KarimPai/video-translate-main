@@ -155,7 +155,7 @@ class LiveMediaPtsTests(unittest.TestCase):
                 "-af", "asetpts=PTS+15260/TB", "-c:a", "aac",
                 "-f", "hls", "-hls_segment_type", "fmp4", "-hls_time", "1",
                 "-hls_list_size", "0", str(playlist),
-            ], capture_output=True, timeout=20)
+            ], cwd=directory, capture_output=True, timeout=20)
             self.assertEqual(generated.returncode, 0, generated.stderr.decode(errors="replace"))
             ingest = make_ingest()
             ingest.video_out = str(playlist)

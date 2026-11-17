@@ -10,12 +10,12 @@ from auto_translate.config import VadConfig, load_config, vad_for_source
 class VadConfigurationTests(unittest.TestCase):
     def test_recommended_defaults(self):
         cfg = VadConfig()
-        self.assertEqual(cfg.threshold, 0.34)
-        self.assertEqual(cfg.neg_threshold, 0.25)
+        self.assertEqual(cfg.threshold, 0.30)
+        self.assertEqual(cfg.neg_threshold, 0.20)
         self.assertEqual(cfg.speech_pad_ms, 400)
         self.assertEqual(cfg.min_silence_ms, 550)
-        self.assertEqual(cfg.min_speech_ms, 200)
-        self.assertEqual(cfg.onset_ms, 50)
+        self.assertEqual(cfg.min_speech_ms, 160)
+        self.assertEqual(cfg.onset_ms, 30)
         self.assertEqual(cfg.short_reply_ms, 120)
         self.assertEqual(cfg.short_reply_probability, 0.85)
         self.assertEqual(cfg.prob_smooth_frames, 5)
@@ -28,6 +28,15 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.fallback_s, 0.0)
         self.assertEqual(cfg.fallback_min_db, -50.0)
 
+    def test_example_configuration_matches_recommended_vad_defaults(self):
+        example = Path(__file__).resolve().parents[1] / "config.example.toml"
+        self.assertEqual(load_config(example).vad, VadConfig())
+
+    def test_live_source_preserves_quiet_speech_settings(self):
+        cfg = vad_for_source(VadConfig(), live=True)
+        self.assertEqual((cfg.threshold, cfg.neg_threshold, cfg.min_speech_ms, cfg.onset_ms),
+                         (.30, .20, 160, 30))
+
     def test_partial_override_preserves_other_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
@@ -36,8 +45,8 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.threshold, 0.40)
         self.assertEqual(cfg.speech_pad_ms, 400)
         self.assertEqual(cfg.min_silence_ms, 550)
-        self.assertEqual(cfg.min_speech_ms, 200)
-        self.assertEqual(cfg.onset_ms, 50)
+        self.assertEqual(cfg.min_speech_ms, 160)
+        self.assertEqual(cfg.onset_ms, 30)
         self.assertEqual(cfg.max_utterance_s, 14.0)
 
     def test_vod_vs_live_chunk_limits(self):

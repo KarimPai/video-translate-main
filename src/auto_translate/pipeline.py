@@ -36,6 +36,7 @@ from .types import (
     SAMPLE_RATE,
     AudioChunk,
     AudioProgress,
+    SourceEOF,
     Subtitle,
     Transcript,
     Utterance,
@@ -100,8 +101,8 @@ def _expired_live_cue(cue, playback_position, late_window_s: float) -> bool:
 
 def run_asr(
     asr: ASR,
-    in_q: "queue.Queue[Utterance | AudioProgress | None]",
-    out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
+    in_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
+    out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | SourceEOF | None]",
     get_generation: Callable[[], int] | None = None,
     captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
@@ -121,6 +122,7 @@ def run_asr(
 
     name_history = deque(maxlen=4)
     name_generation = None
+    last_transcript_end_s = None
     last_text = ""
     repeated = 0
     # Relative live timestamps can be reused after reconnects. A VOD cache
@@ -137,6 +139,9 @@ def run_asr(
         if item is None:
             break
         if cancelled(item.generation):
+            continue
+        if isinstance(item, SourceEOF):
+            out_q.put(item)
             continue
         if isinstance(item, AudioProgress):
             if item.reset or item.generation != name_generation:
@@ -168,12 +173,15 @@ def run_asr(
             if cancelled(utt.generation):
                 continue
             name_history.append(cached.ja[:160])
+            last_transcript_end_s = utt.end_s
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
         language_decision = None
         if language_filter is not None:
             verdict = language_filter.classify(utt.audio)
             language_decision = verdict
+            if verdict.language not in ("ja", "unknown"):
+                last_transcript_end_s = None
             if verdict.drop:
                 record_event("language_filtered", generation=utt.generation,
                              language=verdict.language, probability=verdict.probability)
@@ -200,10 +208,12 @@ def run_asr(
         if cancelled(utt.generation):
             continue
 
-        # Auto-detected Latin names/reactions need evidence from the original
-        # audio language gate or a verified participant, not a generic title.
+        previous_ja = (name_history[-1] if name_history and last_transcript_end_s is not None
+                       and 0 <= utt.start_s - last_transcript_end_s <= 10.0 else "")
         if not isinstance(text, str) or not supports_japanese_transcript(
-                text, language_decision=language_decision, video_context=vod_title):
+                text, language_decision=language_decision, video_context=vod_title,
+                previous_ja=previous_ja, vad_confidence=utt.vad_confidence,
+                duration_s=len(utt.audio) / SAMPLE_RATE, probe=utt.probe):
             continue
         if asr_cfg is not None and any(term in text for term in asr_cfg.blocklist):
             continue
@@ -256,6 +266,7 @@ def run_asr(
         if cancelled(utt.generation):
             continue
         name_history.append(text[:160])
+        last_transcript_end_s = utt.end_s
         out_q.put(Transcript(utt.start_s, utt.end_s, text, utt.timings,
                              generation=utt.generation, speech_start_s=utt.speech_start_s,
                              name_context=name_context))
@@ -265,8 +276,8 @@ def run_asr(
 def run_translate(
     translator: Translator | None,
     context_lines: int,
-    in_q: "queue.Queue[Transcript | Subtitle | AudioProgress | None]",
-    out_q: "queue.Queue[Subtitle | AudioProgress | None]",
+    in_q: "queue.Queue[Transcript | Subtitle | AudioProgress | SourceEOF | None]",
+    out_q: "queue.Queue[Subtitle | AudioProgress | SourceEOF | None]",
     get_generation: Callable[[], int] | None = None,
     live: bool = False,
     playback_position: Callable[[], float | None] | None = None,
@@ -292,6 +303,10 @@ def run_translate(
         if stop is not None and stop.is_set():
             continue  # do not translate queued cues after player shutdown
 
+        if isinstance(item, SourceEOF):
+            if get_generation is None or item.generation == get_generation():
+                out_q.put(item)
+            continue
         if isinstance(item, AudioProgress):
             if get_generation is not None and item.generation != get_generation():
                 continue
@@ -562,10 +577,10 @@ def run(
     # at most 16 complete utterances/transcripts/subtitles each.
     safe = cfg.safe_playback
     work_size = safe.queue_size if safe.enabled else 16
-    audio_q: queue.Queue[AudioChunk | AudioProgress | None] = queue.Queue(maxsize=safe.audio_chunks if safe.enabled else 64)
-    utt_q: queue.Queue[Utterance | AudioProgress | None] = queue.Queue(maxsize=work_size)
-    text_q: queue.Queue[Transcript | AudioProgress | None] = queue.Queue(maxsize=work_size)
-    sub_q: queue.Queue[Subtitle | AudioProgress | None] = queue.Queue(maxsize=work_size)
+    audio_q: queue.Queue[AudioChunk | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=safe.audio_chunks if safe.enabled else 64)
+    utt_q: queue.Queue[Utterance | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=work_size)
+    text_q: queue.Queue[Transcript | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=work_size)
+    sub_q: queue.Queue[Subtitle | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=work_size)
 
     queues = {
         "audio": audio_q,
@@ -585,7 +600,7 @@ def run(
         threading.Thread(
             target=_guard_stage,
             args=("vad", run_segmenter, failures, segmenter if segmenter is not None else Segmenter(vad_cfg), audio_q, utt_q,
-                  lambda: ingest.generation),
+                  lambda: ingest.generation, None, stop),
             name="vad",
             daemon=True,
         ),
@@ -688,6 +703,12 @@ def run(
                     increment_counter("dropped")
                     continue
 
+                if isinstance(item, SourceEOF):
+                    for out in outputs:
+                        finish = getattr(out, "finish", None)
+                        if finish is not None:
+                            finish(item.generation)
+                    continue
                 if isinstance(item, AudioProgress):
                     progress_s = item.sample / SAMPLE_RATE
                     if item.reset:
@@ -858,15 +879,26 @@ def run(
                     from .gui_control import WORKER_DRAIN_S
                     grace_s = WORKER_DRAIN_S
                 deadline = time.monotonic() + grace_s
-                # Main loop is no longer rendering subtitles: keep draining
-                # completed cues so MT cannot block forever on a full queue.
-                # Stop-aware ASR/MT stages discard pending work and propagate
-                # their existing EOF sentinel when producers exit.
+                sentinels = set()
                 while time.monotonic() < deadline and any(t.is_alive() for t in threads):
-                    try:
-                        sub_q.get(timeout=0.10)
-                    except queue.Empty:
-                        pass
+                    for index, (producer, edge) in enumerate(zip(threads, queues.values())):
+                        consumer = threads[index + 1] if index + 1 < len(threads) else None
+                        if consumer is None or not consumer.is_alive():
+                            # A dead consumer cannot release its blocked producer.
+                            for _ in range(edge.qsize()):
+                                try:
+                                    edge.get_nowait()
+                                except queue.Empty:
+                                    break
+                        elif not producer.is_alive() and index not in sentinels:
+                            try:
+                                edge.put_nowait(None)
+                            except queue.Full:
+                                pass
+                            else:
+                                sentinels.add(index)
+                    for thread in threads:
+                        thread.join(timeout=min(0.025, max(0., deadline - time.monotonic())))
                 for thread in threads:
                     if thread.is_alive():
                         thread.join(timeout=max(0., deadline - time.monotonic()))

@@ -38,6 +38,11 @@ class AudioProgress:
     generation: int = 0
 
 
+@dataclass(frozen=True)
+class SourceEOF:
+    generation: int = 0
+
+
 @dataclass
 class Utterance:
     start_s: float

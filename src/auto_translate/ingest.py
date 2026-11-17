@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from .config import IngestConfig, SeparationConfig, DeepFilterConfig
-from .types import SAMPLE_RATE, AudioChunk
+from .types import SAMPLE_RATE, AudioChunk, SourceEOF
 from .timeline import load_vod_metadata
 from .ytdlp import extract
 from .runtime_diagnostics import record_event, update_metrics
@@ -303,6 +303,7 @@ class Ingest:
         self._proc_lock = threading.Condition()
         self._inputs: list[str] | None = None
         self._stopped = False
+        self._vod_restart_enabled = False
         self._session = 0
         self._generation = 0
 
@@ -450,6 +451,10 @@ class Ingest:
 
             self._terminate_locked(preserve_video=preserve_video_cache)
             return preserve_video_cache
+
+    def enable_vod_restart(self) -> None:
+        if not self.source.live:
+            self._vod_restart_enabled = True
 
     def enable_vod_playback_pacing(self, lead_s: float) -> None:
         """Bound background FFmpeg/ASR processing ahead of direct VOD playback.
@@ -1106,7 +1111,7 @@ class Ingest:
             time.sleep(0.1)
         raise RuntimeError("MPV did not restart the failed shared live session within 60s")
 
-    def run(self, out_q: "queue.Queue[AudioChunk | None]") -> None:
+    def run(self, out_q: "queue.Queue[AudioChunk | SourceEOF | None]") -> None:
         """Read sessions and send audio chunks to the pipeline."""
         try:
             while True:
@@ -1162,6 +1167,16 @@ class Ingest:
 
                 if self.source.live and self.video_out:
                     self._wait_for_shared_live_restart()
+
+                with self._proc_lock:
+                    completed = (self._vod_restart_enabled and not self.source.live
+                                 and not read_failed and not self._stopped
+                                 and self._restart_at is None and generation == self._generation)
+                if completed:
+                    out_q.put(SourceEOF(generation))
+                    with self._proc_lock:
+                        while not self._stopped and self._restart_at is None:
+                            self._proc_lock.wait()
 
                 with self._proc_lock:
                     if self._stopped or self._restart_at is None:

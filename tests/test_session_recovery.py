@@ -14,7 +14,7 @@ from auto_translate.output.mpv import MpvError, MpvOutput
 from auto_translate.pipeline import run_translate
 from auto_translate.translate.base import TranslatorUnavailable
 from auto_translate.translate.plamo import PlamoTranslator
-from auto_translate.types import AudioProgress, SAMPLE_RATE, Transcript
+from auto_translate.types import AudioProgress, SAMPLE_RATE, SourceEOF, Transcript
 
 
 class SessionRecoveryTests(unittest.TestCase):
@@ -94,6 +94,57 @@ class SessionRecoveryTests(unittest.TestCase):
         blocked.kill.assert_called_once()
         self.assertEqual(spawn.call_count, 2)
         self.assertFalse(ingest.video_failed.is_set())
+
+    def test_stopping_wakes_ingest_parked_after_vod_eof(self):
+        ingest = Ingest(Source("synthetic.wav", False), IngestConfig())
+        ingest.enable_vod_restart()
+        outputs = queue.Queue()
+        worker = threading.Thread(target=ingest.run, args=(outputs,), daemon=True)
+        self.addCleanup(ingest.stop)
+        with patch.object(ingest, "_read_session", return_value=False) as read:
+            worker.start()
+            try:
+                self.assertEqual(outputs.get(timeout=3), SourceEOF(0))
+                self.assertTrue(worker.is_alive())
+            finally:
+                ingest.stop()
+                worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(outputs.get_nowait())
+        self.assertTrue(outputs.empty())
+        read.assert_called_once()
+
+    def test_no_player_and_live_eof_remain_terminal(self):
+        for live in (False, True):
+            with self.subTest(live=live):
+                ingest = Ingest(Source("synthetic.wav", live), IngestConfig())
+                if live:
+                    ingest.enable_vod_restart()
+                self.addCleanup(ingest.stop)
+                outputs = queue.Queue()
+                with patch.object(ingest, "_read_session", return_value=False):
+                    ingest.run(outputs)
+                self.assertEqual(list(outputs.queue), [None])
+
+    def test_stale_eof_cannot_mark_new_seek_translation_ready(self):
+        player = object.__new__(MpvOutput)
+        player.ingest = Mock(generation=1)
+        player._buffer_condition = threading.Condition()
+        player._source_finished = False
+        player._now = 20.0
+        player._translated_until = 20.0
+        player._subtitle_cache = None
+        player.finish(0)
+        self.assertFalse(player._translation_ready())
+        player.finish(1)
+        self.assertTrue(player._translation_ready())
+        player.ingest.generation = 2
+        player.reset_buffer(40.0)
+        player._now = 40.0
+        player.finish(1)
+        self.assertFalse(player._translation_ready())
+        player.finish(2)
+        self.assertTrue(player._translation_ready())
 
     def test_transient_pause_rejection_preserves_intent_and_disconnect_propagates(self):
         player = object.__new__(MpvOutput)

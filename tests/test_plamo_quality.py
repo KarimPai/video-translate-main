@@ -47,7 +47,7 @@ class VoxtralPlamoTests(unittest.TestCase):
         self.assertEqual(
             (vad.threshold, vad.min_speech_ms, vad.min_silence_ms,
              vad.speech_pad_ms, vad.onset_ms),
-            (0.34, 200, 550, 400, 50),
+            (0.30, 160, 550, 400, 30),
         )
         self.assertEqual(vad.short_reply_ms, 120)
         self.assertEqual(vad.short_reply_probability, 0.85)

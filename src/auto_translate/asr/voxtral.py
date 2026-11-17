@@ -54,13 +54,20 @@ def _runtime_error(message: str) -> VoxtralError:
     return VoxtralError(f"Voxtral audio.cpp failed: {message[-1600:]}")
 
 
-def _audio16(audio: np.ndarray) -> np.ndarray:
+def _audio16(audio: np.ndarray, *, normalize: bool = True) -> np.ndarray:
     value = np.asarray(audio, dtype=np.float32)
     if value.ndim != 1 or not np.isfinite(value).all():
         raise ValueError("Voxtral requires finite mono float32 audio at 16000 Hz")
     if value.size > 60 * 16000:
         raise ValueError("Voxtral utterance exceeds 60 seconds; check VAD segmentation")
-    return np.ascontiguousarray(np.clip(value, -1, 1) * 32767, dtype="<i2")
+    value = np.clip(value, -1, 1)
+    if normalize and value.size:
+        rms = float(np.sqrt(np.mean(value * value)))
+        if 0.001 <= rms < 0.02:
+            # Bound gain to 12 dB and leave silence and near-silence untouched.
+            gain = max(1.0, min(4.0, 0.02 / rms, 0.95 / float(np.max(np.abs(value)))))
+            value = value * gain
+    return np.ascontiguousarray(value * 32767, dtype="<i2")
 
 
 def _server_config(cfg: AsrConfig, model: Path, port: int) -> dict:
@@ -207,7 +214,7 @@ class VoxtralASR:
         with self._state_lock:
             generation = self._generation
             self.last_raw_transcript = ""
-        pcm = _audio16(audio)
+        pcm = _audio16(audio, normalize=not probe)
         if not pcm.size:
             return ""
         started = time.monotonic()

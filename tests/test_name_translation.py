@@ -114,7 +114,7 @@ class NameTranslationTests(unittest.TestCase):
         self.assertEqual(resolved_name_issue(ja, "Matsuri came to Matsuri.", mentions),
                          "literal_noun_mismatch")
 
-    def test_retry_romanizes_only_confirmed_person_spans_in_translation_input(self):
+    def test_first_pass_and_retry_romanize_only_confirmed_person_spans(self):
         obj = self.translator()
         del obj._chat
         obj.url = "http://127.0.0.1:8000/v1/chat/completions"
@@ -127,9 +127,15 @@ class NameTranslationTests(unittest.TestCase):
         self.assertEqual(obj.translate(ja, [("夏色まつりだよ", "")]),
                          "Matsuri came to the school festival.")
         first, retry = [call.kwargs["json"] for call in obj.client.post.call_args_list]
-        self.assertEqual(first["messages"][-1]["content"], ja)
+        self.assertEqual(first["messages"][-1]["content"], "Matsuriが文化祭に来た")
         self.assertEqual(retry["messages"][-1]["content"], "Matsuriが文化祭に来た")
-        self.assertIn(ja, retry["chat_template_kwargs"]["context"])
+        for body in (first, retry):
+            self.assertIn(ja, body["chat_template_kwargs"]["context"])
+            self.assertIn("not the romanized input", body["chat_template_kwargs"]["context"])
+        self.assertNotIn("prior result failed", first["chat_template_kwargs"]["context"])
+        self.assertIn("prior result failed", retry["chat_template_kwargs"]["context"])
+        self.assertTrue(all(ja[m["start"]:m["end"]] == m["source"]
+                            for m in obj.last_name_diagnostics["mentions"]))
         self.assertIsNone(obj._name_context)
 
     def test_literal_noun_mistranslated_as_name_gets_retry(self):
@@ -239,7 +245,7 @@ class NameTranslationTests(unittest.TestCase):
         PlamoTranslator._chat(obj, "まつりちゃん", [], timeout=1)
         body = obj.client.post.call_args.kwargs["json"]
         self.assertEqual(body["temperature"], 0)
-        self.assertEqual(body["messages"][-1]["content"], "まつりちゃん")
+        self.assertEqual(body["messages"][-1]["content"], "Matsuri-chan")
         self.assertEqual(body["chat_template_kwargs"]["glossary"],
                          [{"source": "まつりちゃん", "target": "Matsuri-chan"}])
         self.assertIn("Current Japanese name occurrences", body["chat_template_kwargs"]["context"])
@@ -255,6 +261,157 @@ class NameTranslationTests(unittest.TestCase):
         self.assertEqual(diagnostics["corrected_english"], diagnostics["raw_english"])
         self.assertEqual({m["target"] for m in diagnostics["mentions"]}, {"Matsuri-chan", "Mikochi"})
         self.assertTrue(all(ja[m["start"]:m["end"]] == m["source"] for m in diagnostics["mentions"]))
+
+    def test_wrong_sentence_name_cannot_satisfy_the_original_occurrence(self):
+        ja = "まつりちゃんは来ない。イベントは明日からだ。"
+        mentions = resolve_names(ja)
+        for english in ("She isn't coming. Matsuri-chan starts tomorrow.",
+                        "She isn't coming. The festival starts tomorrow."):
+            with self.subTest(english=english):
+                self.assertEqual(resolved_name_issue(ja, english, mentions), "proper_name_mismatch")
+        correct = "Matsuri-chan isn't coming. The festival starts tomorrow."
+        self.assertIsNone(resolved_name_issue(ja, correct, mentions))
+        obj = self.translator("She isn't coming. The festival starts tomorrow.", correct)
+        obj.cfg.neutral_subjects = False
+        self.assertEqual(obj.translate(ja, []), correct)
+        self.assertEqual(obj._chat.call_count, 2)
+        self.assertEqual(obj.last_name_diagnostics["retry_reason"], "proper_name_mismatch")
+        self.assertEqual(obj.last_name_diagnostics["raw_english"],
+                         "She isn't coming. The festival starts tomorrow.")
+
+    def test_wrong_sentence_name_retry_remains_bounded_and_abstains(self):
+        ja = "まつりちゃんは来ない。イベントは明日からだ。"
+        wrong = "She isn't coming. Matsuri-chan starts tomorrow."
+        obj = self.translator(wrong, wrong, "Hello!")
+        obj.cfg.neutral_subjects = False
+        self.assertEqual(obj.translate(ja, []), "")
+        self.assertEqual(obj._chat.call_count, 2)
+        self.assertEqual(obj.last_name_diagnostics["unresolved_name_issue"], "proper_name_mismatch")
+        self.assertEqual(obj.translate("こんにちは", []), "Hello!")
+
+    def test_mixed_literal_person_sentences_are_validated_per_occurrence(self):
+        for ja, prior, wrong, correct in (
+            ("まつりが来た。おまつりに行く。", "まつりちゃんだよ",
+             "The festival came. Going to Matsuri.", "Matsuri came. Going to the festival."),
+            ("みこが来た。神社の巫女さんと話した。", "みこちだよ",
+             "The shrine maiden came. Spoke to Miko at the shrine.",
+             "Miko came. Spoke to the shrine maiden at the shrine."),
+            ("ボタンが来た。ボタンを押して。", "ししろんだよ",
+             "The button came. Press Botan.", "Botan came. Press the button."),
+        ):
+            with self.subTest(ja=ja):
+                mentions = resolve_names(ja, previous_ja=prior)
+                self.assertEqual(resolved_name_issue(ja, wrong, mentions), "proper_name_mismatch")
+                self.assertIsNone(resolved_name_issue(ja, correct, mentions))
+
+    def test_repeated_names_and_distinct_names_cannot_migrate_between_sentences(self):
+        for ja, wrong, correct in (
+            ("まつりちゃんが来た。まつりちゃんは帰った。",
+             "Matsuri-chan, Matsuri-chan arrived. Already left.",
+             "Matsuri-chan arrived. Matsuri-chan left."),
+            ("まつりちゃんが来た。みこちは帰った。",
+             "Mikochi arrived. Matsuri-chan left.", "Matsuri-chan arrived. Mikochi left."),
+            ("夏色まつりが来た。まつりちゃんは帰った。",
+             "Matsuri-chan arrived. Natsuiro Matsuri left.",
+             "Natsuiro Matsuri arrived. Matsuri-chan left."),
+        ):
+            with self.subTest(ja=ja):
+                mentions = resolve_names(ja)
+                self.assertEqual(resolved_name_issue(ja, wrong, mentions), "proper_name_mismatch")
+                self.assertIsNone(resolved_name_issue(ja, correct, mentions))
+
+    def test_literal_noun_in_another_sentence_is_only_a_bounded_review_signal(self):
+        ja = "まつりちゃんが来た。お祭りに行く。"
+        mentions = resolve_names(ja)
+        english = "Matsuri-chan came to the festival. Going there."
+        self.assertEqual(resolved_name_issue(ja, english, mentions), "possible_literal_noun_loss")
+        self.assertIsNone(resolved_name_issue(ja, "Matsuri-chan came. Going to the festival.", mentions))
+
+    def test_uncertain_sentence_alignment_does_not_assert_semantic_equivalence(self):
+        ja = "まつりちゃんが来た。みこちは帰った。"
+        mentions = resolve_names(ja)
+        for english in ("Matsuri-chan arrived and Mikochi left.",
+                        "Matsuri-chan arrived. Mikochi left",
+                        "Dr. Matsuri-chan arrived. Mikochi left.",
+                        '"Matsuri-chan arrived." Mikochi left.'):
+            with self.subTest(english=english):
+                self.assertIsNone(resolved_name_issue(ja, english, mentions))
+
+    def test_abbreviation_fragments_do_not_force_false_name_placement(self):
+        ja = "みこちゃんは来ない。田中教授はそう言った。"
+        mentions = resolve_names(ja)
+        for english in ("Prof. Tanaka said Miko-chan isn't coming.",
+                        "Assoc. Tanaka said Miko-chan isn't coming.",
+                        "Capt. Tanaka said Miko-chan isn't coming.",
+                        "According to Prof. Tanaka, Miko-chan isn't coming."):
+            with self.subTest(english=english):
+                self.assertIsNone(resolved_name_issue(ja, english, mentions))
+
+    def test_abbreviated_title_does_not_trigger_retry_or_suppress_correct_name(self):
+        ja = "みこちゃんは来ない。田中教授はそう言った。"
+        english = "Prof. Tanaka said Miko-chan isn't coming."
+        obj = self.translator(english)
+        obj.cfg.neutral_subjects = False
+        self.assertEqual(obj.translate(ja, []), english)
+        obj._chat.assert_called_once()
+        self.assertFalse(obj.last_name_diagnostics["retry"])
+
+    def test_first_request_protects_all_person_spans_and_keeps_raw_diagnostics(self):
+        ja = "まつりちゃんたちが来た。みこちは神社の巫女さんと話した。ボタンを押して。まつりがいる。"
+        expected_input = "Matsuri-chanたちが来た。Mikochiは神社の巫女さんと話した。ボタンを押して。Matsuriがいる。"
+        english = ("Matsuri-chan and the others arrived. Mikochi spoke to a shrine maiden at the shrine. "
+                   "Press the button. Matsuri is here.")
+        obj = self.translator()
+        del obj._chat
+        obj.url = "http://127.0.0.1:8000/v1/chat/completions"
+        obj.client = MagicMock()
+        obj.client.post.return_value.json.return_value = {"choices": [{"message": {"content": english}}]}
+        self.assertEqual(obj.translate(ja, []), english)
+        obj.client.post.assert_called_once()
+        body = obj.client.post.call_args.kwargs["json"]
+        self.assertEqual(body["messages"][-1]["content"], expected_input)
+        self.assertIn(ja, body["chat_template_kwargs"]["context"])
+        self.assertFalse(obj.last_name_diagnostics["retry"])
+        self.assertEqual(obj.last_name_diagnostics["raw_english"], english)
+        self.assertTrue(all(ja[m["start"]:m["end"]] == m["source"]
+                            for m in obj.last_name_diagnostics["mentions"]))
+
+    def test_first_request_leaves_unknown_and_common_noun_spans_unchanged(self):
+        for profile in ("legacy", "compact", "overlay", "hybrid"):
+            with self.subTest(profile=profile):
+                obj = self.translator()
+                del obj._chat
+                obj.cfg.context_profile = profile
+                obj.url = "http://127.0.0.1:8000/v1/chat/completions"
+                obj.client = MagicMock()
+                obj.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "Translation."}}]}
+                ja = "まつりが来た。みこちが来た。お祭りに行く。ボタンを押す。"
+                obj._chat(ja, [], timeout=1)
+                body = obj.client.post.call_args.kwargs["json"]
+                self.assertEqual(body["messages"][-1]["content"],
+                                 "まつりが来た。Mikochiが来た。お祭りに行く。ボタンを押す。")
+                self.assertEqual(body["chat_template_kwargs"]["glossary"],
+                                 [{"source": "みこち", "target": "Mikochi"}])
+                obj.client.post.assert_called_once()
+
+    def test_first_request_span_validation_rejects_stale_or_overlapping_records(self):
+        ja = "まつりちゃんとみこちが来た"
+        mentions = [m.as_dict() for m in resolve_names(ja)]
+        mentions.extend([
+            dict(mentions[0], start=None), dict(mentions[0], start=-1),
+            dict(mentions[0], source="まつりさん"), dict(mentions[0], target=None),
+            dict(mentions[0], end=len(ja) + 1),
+            dict(mentions[0], end=len(ja), source=ja, target="Unsupported"),
+        ])
+        obj = self.translator()
+        del obj._chat
+        obj._active_name_mentions = (ja, mentions)
+        obj.url = "http://127.0.0.1:8000/v1/chat/completions"
+        obj.client = MagicMock()
+        obj.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "Translation."}}]}
+        obj._chat(ja, [], timeout=1, names=[])
+        body = obj.client.post.call_args.kwargs["json"]
+        self.assertEqual(body["messages"][-1]["content"], "Matsuri-chanとMikochiが来た")
 
 
 if __name__ == "__main__":

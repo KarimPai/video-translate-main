@@ -84,7 +84,7 @@ class DualContextAccuracyTests(unittest.TestCase):
         with patch.object(obj.client, "post", wraps=obj.client.post) as request:
             PlamoTranslator._chat(obj, "わためが来た", history, timeout=1)
         body = request.call_args.kwargs["json"]
-        self.assertEqual(body["messages"], [{"role": "user", "content": "わためが来た"}])
+        self.assertEqual(body["messages"], [{"role": "user", "content": "Watameが来た"}])
 
     def test_punctuation_is_required_for_sentence_split(self):
         self.assertEqual(split_completed_japanese_sentences("犯人は北に向かってる今すぐ追って"), ["犯人は北に向かってる今すぐ追って"])

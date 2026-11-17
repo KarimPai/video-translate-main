@@ -19,6 +19,7 @@ def dummy_ingest(*, live=False):
     ing.video_out = None
     ing._proc_lock = threading.Condition()
     ing._stopped = False
+    ing._vod_restart_enabled = False
     ing._generation = 0
     ing._vod_max_audio_lead_s = 0.0
     ing._playback_position_s = 0.0

@@ -1,6 +1,7 @@
 """Deterministic source-text safety checks, not acoustic-accuracy evidence."""
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from auto_translate.glossary import Glossary
 from auto_translate.name_hints import preserve_spoken_names
@@ -156,6 +157,126 @@ class ProperNameResolutionTests(unittest.TestCase):
         for english in ("Festivals aren't here.", "The festivals have left.", "Festivals' hats are here."):
             with self.subTest(english=english):
                 self.assertEqual(preserve_spoken_names(ja, english, name_glossary(mentions), mentions=mentions), english)
+
+    def test_bounded_group_endings_keep_the_spoken_name_span(self):
+        for source, target in (("まつりちゃん", "Matsuri-chan"), ("みこちゃん", "Miko-chan")):
+            for ending in ("たち", "達", "ら"):
+                with self.subTest(source=source, ending=ending):
+                    ja = source + ending + "が来た"
+                    mentions = resolve_names(ja)
+                    self.assertEqual([(m.source, m.classification, m.target) for m in mentions],
+                                     [(source, PERSON, target)])
+                    self.assertEqual(ja[mentions[0].start:mentions[0].end], source)
+        for ja in ("まつりたちばな", "みこちゃんたちばな", "まつりちゃんらしい"):
+            with self.subTest(ja=ja):
+                self.assertEqual(resolve_names(ja), [])
+
+    def test_bare_group_references_still_need_person_evidence(self):
+        for source, prior, target in (("まつり", "夏色まつりだよ", "Matsuri"),
+                                      ("みこ", "みこちだよ", "Miko")):
+            for ending in ("たち", "達", "ら"):
+                with self.subTest(source=source, ending=ending):
+                    ja = source + ending + "が来た"
+                    self.assertEqual(resolve_names(ja, video_title=prior)[0].classification, UNKNOWN)
+                    mention = resolve_names(ja, previous_ja=prior)[0]
+                    self.assertEqual((mention.source, mention.classification, mention.target),
+                                     (source, PERSON, target))
+
+    def test_literal_honorific_does_not_seed_prior_or_local_person_context(self):
+        literal = "神社のみこさんが神楽を舞った"
+        self.assertEqual(resolve_names(literal)[0].classification, COMMON_NOUN)
+        mention = resolve_names("みこが来た", previous_ja=literal)[0]
+        self.assertEqual(mention.classification, UNKNOWN)
+        self.assertNotIn("recent_confirmed_name", mention.evidence)
+        for ja, expected in ((literal + "。みこが来た。", [COMMON_NOUN, UNKNOWN]),
+                             ("みこが来た。" + literal + "。", [UNKNOWN, COMMON_NOUN]),
+                             ("おまつりさんがいる。まつりが来た。", [COMMON_NOUN, UNKNOWN])):
+            with self.subTest(ja=ja):
+                mentions = resolve_names(ja)
+                self.assertEqual([m.classification for m in mentions], expected)
+                self.assertNotIn("local_explicit_name", mentions[expected.index(UNKNOWN)].evidence)
+
+    def test_real_explicit_evidence_survives_literal_honorific_exclusion(self):
+        for prior in ("さくらみこだよ", "みこちだよ", "みこさんが来た"):
+            with self.subTest(prior=prior):
+                self.assertEqual(resolve_names("みこが来た", previous_ja=prior)[0].classification, PERSON)
+                ja = prior + "。神社のみこさんが神楽を舞った。みこが来た。"
+                self.assertEqual([m.classification for m in resolve_names(ja)],
+                                 [PERSON, COMMON_NOUN, PERSON])
+        self.assertEqual(resolve_names("まつりが開催された", previous_ja="まつりちゃんだよ")[0].classification,
+                         COMMON_NOUN)
+
+    def test_prior_evidence_evaluation_is_bounded_and_shared(self):
+        previous = "以前の話。" * 200 + "みこちだよ"
+        with patch("auto_translate.proper_names.resolve_names", wraps=resolve_names) as resolver:
+            mentions = resolver("みこが来た。みこはいる。", previous_ja=previous)
+        self.assertTrue(all(m.classification == PERSON for m in mentions))
+        self.assertEqual(resolver.call_count, 2)
+        self.assertLessEqual(len(resolver.call_args_list[1].args[0]), 600)
+
+    def test_punctuation_vocatives_require_context_and_an_actual_imperative(self):
+        for ja in ("まつり、こっち来て！", "まつり, こっち来て！", "まつり、待って！"):
+            with self.subTest(ja=ja):
+                self.assertEqual(resolve_names(ja, previous_ja="夏色まつりだよ")[0].classification, PERSON)
+                self.assertEqual(resolve_names(ja)[0].classification, UNKNOWN)
+                self.assertEqual(resolve_names(ja, video_title="夏色まつり ホロライブ")[0].classification, UNKNOWN)
+        for ja in ("まつり、明日は雨だ。", "まつり、こっち来てる。"):
+            with self.subTest(ja=ja):
+                self.assertEqual(resolve_names(ja, previous_ja="夏色まつりだよ")[0].classification, UNKNOWN)
+
+    def test_common_noun_repairs_cannot_move_a_name_to_another_sentence(self):
+        cases = (
+            ("まつりちゃんは来ない。イベントは明日からだ。", "She isn't coming. The festival starts tomorrow."),
+            ("まつりちゃんは来ない。催しは明日からだ。", "She isn't coming. The festival starts tomorrow."),
+            ("みこちゃんは来ない。神職は明日からだ。", "She isn't coming. The shrine maiden starts tomorrow."),
+            ("ボタンちゃんは来ない。スイッチを押して。", "She isn't coming. Press the button."),
+        )
+        for ja, english in cases:
+            with self.subTest(ja=ja):
+                mentions = resolve_names(ja)
+                for supplied in (mentions, None):
+                    self.assertEqual(preserve_spoken_names(ja, english, name_glossary(mentions), mentions=supplied),
+                                     english)
+                self.assertTrue(all(ja[m.start:m.end] == m.source for m in mentions))
+
+    def test_abbreviation_fragments_cannot_redirect_common_noun_repairs(self):
+        for source, noun, literal in (("まつりちゃん", "festival", "催しについて話した"),
+                                      ("みこちゃん", "shrine maiden", "神職と話した"),
+                                      ("ボタンちゃん", "button", "スイッチを押した")):
+            ja = "田中教授は" + literal + "。" + source + "は来ない。"
+            mentions = resolve_names(ja)
+            for title in ("Prof.", "Assoc.", "Capt."):
+                english = title + " Tanaka mentioned the " + noun + "; not coming."
+                with self.subTest(source=source, title=title):
+                    self.assertEqual(preserve_spoken_names(ja, english, name_glossary(mentions), mentions=mentions),
+                                     english)
+
+    def test_aligned_name_sentence_can_be_repaired_without_touching_other_sentences(self):
+        for source, target, noun in (("まつりちゃん", "Matsuri-chan", "festival"),
+                                     ("みこちゃん", "Miko-chan", "shrine maiden"),
+                                     ("ボタンちゃん", "Botan-chan", "button")):
+            with self.subTest(source=source):
+                ja = source + "は来ない。天気は晴れだ。"
+                english = "The " + noun + " isn't coming. The weather is clear."
+                mentions = resolve_names(ja)
+                self.assertEqual(preserve_spoken_names(ja, english, name_glossary(mentions), mentions=mentions),
+                                 target + " isn't coming. The weather is clear.")
+
+    def test_ambiguous_multisentence_noun_repairs_abstain_but_spelling_repairs_remain_safe(self):
+        for source, target, noun in (("まつりちゃん", "Matsuri-chan", "festival"),
+                                     ("みこちゃん", "Miko-chan", "shrine maiden"),
+                                     ("ボタンちゃん", "Botan-chan", "button")):
+            ja = source + "は来ない。天気は晴れだ。"
+            mentions = resolve_names(ja)
+            names = name_glossary(mentions)
+            for english in ("The " + noun + " isn't coming in this clear weather.",
+                            "The " + noun + " isn't coming. The weather is clear. Wait!",
+                            "The " + noun + " isn't coming. The weather is clear"):
+                with self.subTest(source=source, english=english):
+                    self.assertEqual(preserve_spoken_names(ja, english, names, mentions=mentions), english)
+            english = target.removesuffix("-chan") + " isn't coming in this clear weather."
+            self.assertEqual(preserve_spoken_names(ja, english, names, mentions=mentions),
+                             target + " isn't coming in this clear weather.")
 
 
 if __name__ == "__main__":

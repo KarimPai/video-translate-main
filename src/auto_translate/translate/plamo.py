@@ -898,17 +898,18 @@ class PlamoTranslator:
             elif source.strip():
                 rejected_sources.append(source.strip()[:100])
         current_input = ja
-        if getattr(self, "_name_retry_context", False):
-            # Translate-only romanization protects confirmed acoustic spans
-            # during the one bounded retry. Never modify the final transcript
-            # or literal/undecided spans, and never infer a longer stage name.
-            for mention in sorted(mentions, key=lambda m: _mention_value(m, "start", -1), reverse=True):
-                start, end = _mention_value(mention, "start"), _mention_value(mention, "end")
-                if (type(start) is int and type(end) is int and 0 <= start < end <= len(ja)
-                        and _mention_value(mention, "classification") == "PERSON"
-                        and ja[start:end] == _mention_value(mention, "source")
-                        and _mention_value(mention, "target")):
-                    current_input = current_input[:start] + _mention_value(mention, "target") + current_input[end:]
+        protected_start = len(ja)
+        # Protect confirmed names before inference without rewriting the source transcript.
+        for mention in sorted(mentions, key=lambda m: _mention_value(m, "start", -1)
+                              if type(_mention_value(m, "start")) is int else -1, reverse=True):
+            start, end = _mention_value(mention, "start"), _mention_value(mention, "end")
+            if (type(start) is int and type(end) is int and 0 <= start < end <= protected_start
+                    and _mention_value(mention, "classification") == "PERSON"
+                    and ja[start:end] == _mention_value(mention, "source")
+                    and isinstance(_mention_value(mention, "target"), str)
+                    and _mention_value(mention, "target")):
+                current_input = current_input[:start] + _mention_value(mention, "target") + current_input[end:]
+                protected_start = start
         messages.append({"role": "user", "content": current_input})
 
         try:
@@ -959,9 +960,7 @@ class PlamoTranslator:
                 "For amusement retain the spoken slang kusa. Do not render kusa as lol."
             )
         if mentions and profile != "overlay":
-            # PLaMo's glossary is lexical: identical source strings cannot
-            # carry two meanings. Give those decisions only as occurrence
-            # reference data and retain the original Japanese user message.
+            # Lexical glossaries cannot distinguish identical source strings with different meanings.
             occurrences = [dict(start=_mention_value(m, "start"), end=_mention_value(m, "end"),
                                 source=_mention_value(m, "source"),
                                 meaning=_mention_value(m, "classification"),
@@ -969,10 +968,13 @@ class PlamoTranslator:
                                 if _mention_value(m, "classification") == "PERSON" else None)
                            for m in mentions[:16]]
             options["context"] += (
-                "\nCurrent Japanese name occurrences (zero-based character spans; reference data): "
+                "\nCurrent Japanese name occurrences (zero-based character spans in the original Japanese "
+                "reference, not the romanized input; reference data): "
                 + json.dumps(occurrences, ensure_ascii=False, separators=(",", ":"))
-                + ". Preserve PERSON names at exactly their spoken length and honorific. "
-                "Translate COMMON_NOUN occurrences literally (festival or shrine maiden as appropriate). "
+                + ". Original Japanese reference: " + json.dumps(ja, ensure_ascii=False)
+                + ". Confirmed PERSON spans in the current input have been romanized at their spoken length; "
+                "preserve those names and honorifics exactly. "
+                "Translate COMMON_NOUN occurrences literally (festival, shrine maiden or button as appropriate). "
                 "UNKNOWN is undecided; never resolve it from a title or a previous English guess. "
                 "Decisions apply only to their individual spans, never to every matching word."
             )
@@ -980,11 +982,9 @@ class PlamoTranslator:
                 options["context"] += (
                     " The prior result failed occurrence-based name/literal validation. "
                     "Recheck each current occurrence separately while preserving all other meaning, "
-                    "negation, grammar and attribution. Confirmed PERSON spans in the current input "
-                    "have been romanized at their spoken length; preserve those names exactly. "
+                    "negation, grammar and attribution. "
                     "Do not introduce a person name unless supported as PERSON or by the supplied current glossary. "
-                    "The occurrence offsets refer to this original Japanese reference data: "
-                    + json.dumps(ja, ensure_ascii=False) + ". Output only the corrected translation."
+                    "Output only the corrected translation."
                 )
         elif getattr(self, "_name_retry_context", False):
             options["context"] += (

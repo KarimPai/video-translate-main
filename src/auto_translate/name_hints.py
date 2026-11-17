@@ -33,11 +33,11 @@ _FAMILIES = {
     "Watame": ("Watame Watamee", r"(?:Tsunomaki )?Watamee?"),
     "Marine": ("Senchou", r"(?:Houshou )?Marine|Senchou"),
     "Suisei": ("Sui-chan", r"(?:Hoshimachi )?Suisei|Sui"),
-    "Pekora": ("Peko-chan Pekoora", r"(?:Usada )?Pekora|Pekoora|Peko"),
+    "Pekora": ("Pekora Peko-chan Pekoora", r"(?:Usada )?Pekora|Pekoora|Peko"),
     "Fubuki": ("Fubu-chan", r"(?:Shirakami )?Fubuki|Fubu"),
     "Korone": ("Koro-san", r"(?:Inugami )?Korone|Koro"),
     "Okayu": ("Okayun", r"(?:Nekomata )?Okayun?"),
-    "Botan": ("Shishiron", r"(?:Shishiro )?Botan|Shishiron"),
+    "Botan": ("Botan Botan-chan Botan-san Botan-sama Shishiron", r"(?:Shishiro )?Botan|Shishiron"),
     "Towa": ("Towa-sama", r"(?:Tokoyami )?Towa"),
     "Kanata": ("Kanatan", r"(?:Amane )?Kanatan?"),
     "Nene": ("Nenechi", r"(?:Momosuzu )?Nene(?:chi)?"),
@@ -102,6 +102,16 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]], *
                 aliases += r"|(?:the |a )?shrine maiden"
         if family == "Marine" and "マリン" not in ja:
             aliases += r"|(?:the )?captain"
+        if family == "Botan":
+            # Mixed person/button speech needs model span alignment. Only
+            # repair an unambiguous mistranslated name in an isolated family.
+            rest = ja.replace(source, "", 1)
+            rows = [(item.as_dict() if hasattr(item, "as_dict") else item)
+                    for item in (mentions or [])]
+            literal_other = any(row.get("family") == "Botan"
+                                and row.get("classification") != "PERSON" for row in rows)
+            if not literal_other and not re.search(r"ぼたん|ボタン|釦", rest):
+                aliases += r"|(?:the |a )?button(?!s\b)"
         pattern = re.compile(r"(?<![\w-])(?:" + aliases + r")(?:[ -](?:chan|san|sama|nee))?(?![\w-])", re.I)
         hits = list(pattern.finditer(english))
         if len(hits) == 1:

@@ -6,10 +6,12 @@ translator drops the cache. MPV remains responsible for its separate video cache
 """
 from bisect import bisect_left
 from collections import defaultdict
+from dataclasses import replace
 from math import floor
 from threading import RLock
 
 from .types import Subtitle
+from .subtitle_clean import sanitize_english_output
 
 
 class SessionSubtitleCache:
@@ -26,8 +28,10 @@ class SessionSubtitleCache:
 
     def add(self, sub: Subtitle) -> bool:
         """Save one translated cue, keeping the first result for a timestamp."""
-        if not sub.en.strip():
+        cleaned = sanitize_english_output(sub.en)
+        if not cleaned:
             return False
+        sub = replace(sub, en=cleaned)
         if sub.end_s <= sub.start_s:
             return False
         key = (round(sub.start_s * 100), round(sub.end_s * 100))
@@ -59,10 +63,12 @@ class SessionSubtitleCache:
             ]
             if not matching:
                 return None
-            return min(
+            matched = min(
                 matching,
                 key=lambda sub: abs(sub.start_s - start_s) + abs(sub.end_s - end_s),
             )
+            cleaned = sanitize_english_output(matched.en)
+            return replace(matched, en=cleaned) if cleaned else None
 
     def active_at(self, now: float, minimum_s: float = 0.0) -> list[Subtitle]:
         """Return already translated cues that should be visible at this time."""
@@ -77,7 +83,9 @@ class SessionSubtitleCache:
                     seen.add(id(sub))
                     onset = sub.speech_start_s if sub.speech_start_s is not None else sub.start_s
                     if onset <= now < max(sub.end_s, onset + minimum_s):
-                        items.append(sub)
+                        cleaned = sanitize_english_output(sub.en)
+                        if cleaned:
+                            items.append(replace(sub, en=cleaned))
         return sorted(items, key=lambda sub: sub.start_s)
 
     def record_processed(self, start_s: float, end_s: float) -> None:

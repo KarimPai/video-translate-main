@@ -99,6 +99,8 @@
 "雪花ラミィ" = "Yukihana Lamy"
 "桃鈴ねね" = "Momosuzu Nene"
 "獅白ぼたん" = "Shishiro Botan"
+"獅白ボタン" = "Shishiro Botan"
+"ししろぼたん" = "Shishiro Botan"
 "尾丸ポルカ" = "Omaru Polka"
 "ラプラス・ダークネス" = "Laplus"
 "鷹嶺ルイ" = "Takane Lui"
@@ -344,9 +346,17 @@
 # https://hololive.hololivepro.com/en/talents/moona-hoshinova/
 # https://hololive.hololivepro.com/en/talents/kaela-kovalskia/
 # https://hololive.hololivepro.com/en/talents/mococo-abyssgard/
-# Ambiguous Matsuri/Miko entries below are always occurrence-gated by the
+# Ambiguous Matsuri/Miko/Botan entries below are always occurrence-gated by the
 # proper-name resolver; listing a spelling never proves that it is a name.
 [nicknames]
+"ボタン" = "Botan"
+"ぼたん" = "Botan"
+"ボタンちゃん" = "Botan-chan"
+"ぼたんちゃん" = "Botan-chan"
+"ボタンさん" = "Botan-san"
+"ぼたんさん" = "Botan-san"
+"シシロン" = "Shishiron"
+"ペコラ" = "Pekora"
 "ラプ" = "Lap"
 "らぷ" = "Lap"
 "らぷ様" = "Lap-sama"

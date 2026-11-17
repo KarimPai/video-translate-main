@@ -34,6 +34,13 @@ _FORMS = {
     "みこ": ("Miko", "Miko", "ambiguous"),
     "ミコ": ("Miko", "Miko", "ambiguous"),
     "巫女": ("Miko", "Miko", "ambiguous"),
+    "獅白ぼたん": ("Shishiro Botan", "Botan", "full"),
+    "獅白ボタン": ("Shishiro Botan", "Botan", "full"),
+    "ししろぼたん": ("Shishiro Botan", "Botan", "full"),
+    "ぼたん": ("Botan", "Botan", "ambiguous"),
+    "ボタン": ("Botan", "Botan", "ambiguous"),
+    "ししろん": ("Shishiron", "Botan", "nickname"),
+    "シシロン": ("Shishiron", "Botan", "nickname"),
     "みこち": ("Mikochi", "Miko", "nickname"),
     "ミコチ": ("Mikochi", "Miko", "nickname"),
     "ラプ": ("Lap", "Lap", "nickname"),
@@ -43,6 +50,25 @@ _FORMS = {
     "わため": ("Watame", "Watame", "nickname"),
     "ワタメ": ("Watame", "Watame", "nickname"),
     "わためぇ": ("Watamee", "Watame", "nickname"),
+    # Existing reviewed glossary forms also need occurrence-level guidance;
+    # a short spoken form never licenses expansion to a full stage name.
+    "すいちゃん": ("Sui-chan", "Suisei", "nickname"),
+    "ぺこら": ("Pekora", "Pekora", "nickname"),
+    "ペコラ": ("Pekora", "Pekora", "nickname"),
+    "ぺこーら": ("Pekoora", "Pekora", "nickname"),
+    "ぺこちゃん": ("Peko-chan", "Pekora", "nickname"),
+    "フブちゃん": ("Fubu-chan", "Fubuki", "nickname"),
+    "ころさん": ("Koro-san", "Korone", "nickname"),
+    "おかゆん": ("Okayun", "Okayu", "nickname"),
+    "トワ様": ("Towa-sama", "Towa", "nickname"),
+    "かなたん": ("Kanatan", "Kanata", "nickname"),
+    "ねねち": ("Nenechi", "Nene", "nickname"),
+    "ポルポル": ("Polpol", "Polka", "nickname"),
+    "こよちゃん": ("Koyo-chan", "Koyori", "nickname"),
+    "ルイ姉": ("Lui-nee", "Lui", "nickname"),
+    "あくたん": ("Akutan", "Aqua", "nickname"),
+    "フワワ": ("Fuwawa", "Fuwawa", "nickname"),
+    "イオフィ": ("Iofi", "Iofi", "nickname"),
     # Short forms independently used in the official talent profile text:
     # hololive.hololivepro.com/en/talents/{moona-hoshinova,kaela-kovalskia,mococo-abyssgard}/
     "ムーナ": ("Moona", "Moona", "nickname"),
@@ -57,11 +83,15 @@ _PERSON_SYNTAX = re.compile(
     r"配信|ログイン|話[すした]|遊[ぶん]|やっ|やる|待っ|見[たて])|"
     r"と(?:話|遊|通話|一緒|いっしょ)|の(?:配信|声|視点|チャンネル)|"
     r"に(?:会|聞|話|言|渡|あげ)|"
-    r"(?:が|は|も)[^。！？!?、]{0,24}(?:来た|来る|いる|いた|行く|遊[ぶん]|話[すし]|配信)")
+    r"(?:が|は|も)[^。！？!?、]{0,24}(?:来た|来る|いる|いた|行く|遊[ぶん]|話[すし]|配信|を押[すし])")
 _EVENT_PREFIX = re.compile(r"(?:お|御|夏|秋|春|冬|文化|学園|ひな|雛|血|雪|収穫|体育|前夜)$")
 _EVENT_PREDICATE = re.compile(
     r"(?:に|へ)(?:行[くっかき]|い[くっかき]|来[たるて]|きた|向か|参加|出かけ|到着)|"
     r"(?:を|が|は)(?:開催|開[くかき]|中止|延期)|(?:の)(?:屋台|開催|会場|日程|準備)")
+_BUTTON_PREFIX = re.compile(r"(?:電源|停止|再生|終了|決定|確認|操作|録画|リセット|スタート|キャンセル)$")
+_BUTTON_PREDICATE = re.compile(
+    r"(?:を|が|は|も|に)?(?:押[すしせさそ]|お[すしせさそ]|押下|クリック|連打|長押し)|"
+    r"(?:が|は|も)(?:光|点滅|壊れ|取れ|外れ)|の(?:位置|色|設定|配置)")
 _SHRINE = re.compile(r"神社|神主|神職|お祓い|御祓|神楽|境内|神殿|装束|職業")
 _END = re.compile(r"^(?:$|[\s。、！？!?「」『』：:、]|(?:が|は|を|に|へ|も|の|と|で)|"
                   r"から|まで|より|だけ|なら|来[たてるな]|いた|いる|どこ|すご|かわいい|って|だ|です|おはよう)")
@@ -94,6 +124,8 @@ def _boundary(text, match, spelling, family):
     # from the glossary individually, rather than hiding a whole subtitle.
     if family == "Matsuri" and _EVENT_PREFIX.search(before):
         return True
+    if family == "Botan" and _BUTTON_PREFIX.search(before):
+        return True
     left = (not before or not before[-1].isalnum() or before[-1] in "がはをとにでのも"
             or before.endswith(spelling))
     if not left:
@@ -120,7 +152,8 @@ def _explicit_context(previous, family):
 
 def _participant(family, participants):
     aliases = {"Matsuri": r"夏色まつり|Natsuiro Matsuri|^Matsuri$|^まつり$",
-               "Miko": r"さくらみこ|Sakura Miko|^Miko$|^みこ$"}
+               "Miko": r"さくらみこ|Sakura Miko|^Miko$|^みこ$",
+               "Botan": r"獅白ぼたん|獅白ボタン|Shishiro Botan|^Botan$|^ぼたん$|^ボタン$|^Shishiron$"}
     return any(re.search(aliases.get(family, r"(?!)"), str(value), re.I)
                for value in participants)
 
@@ -171,6 +204,9 @@ def resolve_names(japanese: str, *, previous_ja: str = "", video_title: str = ""
             label, evidence = COMMON_NOUN, ["literal_compound"]
         elif family == "Matsuri" and kind != "full" and not suffix and _EVENT_PREDICATE.match(after):
             label, evidence = COMMON_NOUN, ["literal_predicate"]
+        elif (family == "Botan" and kind == "ambiguous" and not suffix
+              and (_BUTTON_PREFIX.search(before) or _BUTTON_PREDICATE.match(after))):
+            label, evidence = COMMON_NOUN, ["literal_button_context"]
         elif family == "Miko" and kind == "ambiguous" and literal_shrine and suffix != "ちゃん":
             label, evidence = COMMON_NOUN, ["literal_shrine_context"]
         elif kind == "full":
@@ -196,6 +232,20 @@ def resolve_names(japanese: str, *, previous_ja: str = "", video_title: str = ""
                                   target + _HONORIFICS.get(suffix, "") if label == PERSON else None,
                                   label, tuple(evidence), family))
     return result
+
+
+def reviewed_spoken_name_forms() -> frozenset[str]:
+    """Reviewed Latin spellings, without asserting that a token is a person.
+
+    ASR may retain a narrow candidate for further acoustic/context checks.
+    Membership alone never proves Japanese speech or a name mention.
+    """
+    forms = set()
+    for target, _, _ in _FORMS.values():
+        forms.add(target)
+        if not re.search(r"-(?:chan|san|sama|senpai|kun|nee)$", target):
+            forms.update(target + suffix for suffix in _HONORIFICS.values())
+    return frozenset(forms)
 
 
 def name_glossary(mentions) -> list[tuple[str, str]]:

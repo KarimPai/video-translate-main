@@ -32,13 +32,15 @@ Double-click **Start GUI.vbs** to launch the console-free GUI. Enter a YouTube U
 
 ## Playback, timing, and names
 
-MPV retains hardware decoding, ordinary video scaling, fullscreen, VOD seeking, and the requested video quality. The native MPV OSC remains disabled when Qt owns playback controls, preserving the seekbar fix. YouTube Live and VOD ingestion keep their existing timing paths.
+MPV retains hardware decoding, ordinary video scaling, fullscreen, VOD seeking, and the requested video quality. The native MPV OSC remains disabled when Qt owns playback controls, preserving the seekbar fix.
+
+Live subtitles use the shared HLS media presentation timestamps: FFmpeg records the first decoded PCM sample's PTS, and MPV reports playback on that same timeline. Subtitles wait for their speech onset even when translation finishes early. Startup placeholders, buffering and configured playback delay do not redefine the source clock. Timestamp discontinuities invalidate the alignment and restart the shared playback generation. Diagnostics record anchors, discontinuities, enqueue/display positions and processing checkpoints.
 
 FireRedVAD retains the existing segmentation baseline and meaningful short Japanese reactions. Audio.cpp currently provides no Voxtral word timestamps, so subtitle timing comes from the original VAD utterance. Seek, stop, restart, and video-switch generation checks prevent an expired result from becoming a new subtitle. A seek invalidates the active response; the persistent server can finish that bounded request before the next request begins. Stop and timeout terminate the application's owned server, and a later session loads it again.
 
 Voxtral's upstream model detects language automatically; the backend has no verified Japanese-language forcing option. The existing CPU spoken-language filter and Japanese text checks protect Japanese-only translation. Low-confidence short reactions are retained. Non-LLM repetition, noise, and hallucination checks reject unusable transcripts without inventing dialogue.
 
-The Hololive glossary and context policies preserve the spoken forms: ラプ → **Lap**, ラプ様 → **Lap-sama**, ラプちゃん → **Lap-chan**, ラプラス → **Laplus**, みこ → **Miko**, みこち → **Mikochi**, わため → **Watame**. Names do not expand into full stage names. Matsuri/festival, Miko/shrine maiden, and grass/laughter require supporting dialogue context. Translation memory and neutral-pronoun safeguards remain enabled.
+The Hololive glossary and context policies preserve the spoken forms: ラプ → **Lap**, ラプ様 → **Lap-sama**, ラプちゃん → **Lap-chan**, ラプラス → **Laplus**, みこ → **Miko**, みこち → **Mikochi**, わため → **Watame**, ししろん → **Shishiron**. Names do not expand into full stage names. Botan/button, Matsuri/festival, Miko/shrine maiden, and grass/laughter require supporting dialogue context. Translation memory and neutral-pronoun safeguards remain enabled. Japanese passthrough and mixed Japanese fragments are rejected before English history, caching and display. Balanced quotation marks and apostrophes are preserved; unmatched double quotes are removed.
 
 ## RTX 3070 memory and diagnostics
 
@@ -50,7 +52,7 @@ The translation memory, relevance-selected terminology, optional YouTube chat co
 
 ## Windows executable
 
-The [Windows GUI frontend build](https://github.com/KarimPai/video-translate-main/actions/workflows/windows-gui.yml) workflow builds **VideoTranslate.exe** with PyInstaller, runs the offline regression suite and Windows/Qt lifecycle checks, launches the packaged EXE to verify Qt startup, and uploads `VideoTranslate-Voxtral-Windows-GUI`. Extract the complete artifact, run its `Setup.bat`, then open `VideoTranslate.exe`. Keep the packaged `_internal` directory beside the EXE. The artifact contains the source backend and setup files; it deliberately does not contain model weights or a Python runtime environment. An EXE-only artifact is for updating an already matching complete artifact.
+The [Windows GUI frontend build](https://github.com/KarimPai/video-translate-main/actions/workflows/windows-gui.yml) workflow builds **VideoTranslate.exe** with PyInstaller, runs the offline regression suite and Windows/Qt lifecycle checks, launches the packaged EXE to verify Qt startup, and uploads `VideoTranslate-Voxtral-Windows-GUI`. Extract the complete artifact, run its `Setup.bat`, then open `VideoTranslate.exe`. Keep the packaged `_internal` directory beside the EXE. The artifact contains the source backend and setup files; it deliberately does not contain model weights or a Python runtime environment. An EXE-only artifact is for updating an already matching complete artifact. Synchronization and translation fixes also require the updated backend source, supplied in the full artifact or by updating this existing branch.
 
 ## Tests and physical validation
 
@@ -65,6 +67,8 @@ uv run --no-sync python -m unittest discover -s tests -v
 ```
 
 Add `--extra gui` to the regular project installation for Qt smoke tests. Offline mocked protocol tests establish request handling, failure behavior, generation resets, filters, and cleanup; they do not establish transcription accuracy or GPU compatibility. `scripts/benchmark_quality.py` compares reviewed, time-aligned Japanese references with actual output and flags English lines for human review.
+
+`python scripts/benchmark_names.py` checks the authored name/noun and nickname fixtures. `python scripts/benchmark_plamo_context.py tests/fixtures/plamo_context_cases.csv` previews identical cases under the current compact, OverlaySubs-style (`overlay`), and hybrid profiles. Add `--run-model` to evaluate an already-running local PLaMo server, then review the actual outputs for fidelity and naturalness. These authored text cases do not measure acoustic ASR accuracy. The compact profile remains the default until reviewed model results support a change. Token-truncated completions receive at most one context-bounded larger completion; failed candidates are suppressed.
 
 On the target Windows 11 / RTX 3070 system, verify Japanese audio with known reference text, nickname accuracy, short reactions, 3–15-second utterances, live subtitle delay, forward/backward seeking, video switching, each quality setting, GPU memory peaks, and closing during inference. Approximately 20 seconds of live delay is a target, not a measured guarantee. Exercise missing runtime/model files and allocation failures, then confirm that unrelated processes survive and owned processes exit. This repository's CI cannot establish those physical hardware results.
 

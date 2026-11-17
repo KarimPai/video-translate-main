@@ -5,7 +5,7 @@ import unittest
 from auto_translate.glossary import Glossary
 from auto_translate.name_hints import preserve_spoken_names
 from auto_translate.proper_names import (
-    COMMON_NOUN, PERSON, UNKNOWN, name_glossary, resolve_names,
+    COMMON_NOUN, PERSON, UNKNOWN, name_glossary, resolve_names, reviewed_spoken_name_forms,
 )
 
 
@@ -123,6 +123,32 @@ class ProperNameResolutionTests(unittest.TestCase):
         mentions = resolve_names(ja, previous_ja="みこちだよ")
         english = "The shrine maiden is with a shrine maiden at the shrine."
         self.assertEqual(preserve_spoken_names(ja, english, name_glossary(mentions), mentions=mentions), english)
+
+    def test_botan_glossary_cannot_bypass_occurrence_evidence(self):
+        glossary = Glossary.load(Path("glossary.toml"))
+        for source in ("ボタン", "ぼたん"):
+            with self.subTest(source=source):
+                self.assertNotIn((source, "Botan"), glossary.find(source + "が来た"))
+                self.assertIn((source, "Botan"), glossary.find(
+                    source + "が来た", previous_ja="ししろんだよ"))
+                self.assertNotIn((source, "Botan"), glossary.find(
+                    source + "を押して", previous_ja="獅白ぼたんだよ"))
+        self.assertIn(("ボタンちゃん", "Botan-chan"), glossary.find("ボタンちゃんが来た"))
+
+    def test_mixed_button_name_spelling_is_not_globally_repaired(self):
+        ja = "ボタンがボタンを押した"
+        mentions = resolve_names(ja, previous_ja="ししろんだよ")
+        self.assertEqual([m.classification for m in mentions], [PERSON, COMMON_NOUN])
+        self.assertEqual(name_glossary(mentions), [])
+        original = "The button pressed the button."
+        self.assertEqual(preserve_spoken_names(ja, original, [], mentions=mentions), original)
+
+    def test_reviewed_latin_forms_do_not_double_honorifics(self):
+        forms = reviewed_spoken_name_forms()
+        for target in ("Botan", "Botan-chan", "Matsuri-san", "Sui-chan", "Moona"):
+            self.assertIn(target, forms)
+        self.assertNotIn("Sui-chan-chan", forms)
+        self.assertNotIn("Sakura Mikochi", forms)
 
     def test_plural_literal_repairs_do_not_break_verb_agreement(self):
         ja = "まつりちゃんはここにいない"

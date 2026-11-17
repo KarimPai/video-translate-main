@@ -10,7 +10,7 @@ from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 from .name_hints import SPOKEN_NAME_FORMS
-from .subtitle_clean import has_generation_loop, looks_like_prompt_echo
+from .subtitle_clean import english_output_issue
 
 _SHORT_POSITIVE_JA = re.compile(
     r"^(?:すごい|凄い|すげえ|すげー|いいね|良いね|よかった|良かった|"
@@ -70,7 +70,7 @@ def _number_values(text: str, japanese: bool) -> Counter:
     return counts
 # Only distinctive entity names. Ordinary descriptive glossary terms can be
 # rendered naturally and should not trigger unnecessary retries.
-_GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "subaru", "haachama", "laplus"})
+_GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "subaru", "haachama", "laplus", "botan", "shishiron"})
 
 
 def _mention_value(mention, field, default=None):
@@ -112,11 +112,13 @@ def resolved_name_issue(japanese: str, english: str, mentions, *, names=None) ->
     supported = set(expected)
     supported.update(target for source, target in (names or ()) if source in japanese)
     for full, family in (("Natsuiro Matsuri", "Matsuri"), ("Sakura Miko", "Miko"),
+                         ("Shishiro Botan", "Botan"),
                          ("Tsunomaki Watame", "Watame"), ("Fuwawa Abyssgard", "Fuwawa")):
         if (any(target == family or target.startswith(family + "-") for target in supported)
                 and full not in supported and re.search(r"\b" + re.escape(full) + r"\b", english, re.I)):
             return "proper_name_expansion"
     for family, pattern in (("Matsuri", r"\b(?:Natsuiro\s+)?Matsuri\b"),
+                            ("Botan", r"\b(?:Shishiro\s+)?Botan\b"),
                             ("Miko", r"\b(?:Sakura\s+)?Miko(?:chi)?\b")):
         if family in literal_families:
             allowed = sum(count for target, count in expected.items()
@@ -131,12 +133,13 @@ def resolved_name_issue(japanese: str, english: str, mentions, *, names=None) ->
         allowed_pattern = r"(?<![\w-])(?:" + "|".join(
             re.escape(target) for target in sorted(supported, key=len, reverse=True)) + r")(?![\w-])"
         remaining = re.sub(allowed_pattern, lambda m: "\0" * len(m.group()), remaining, flags=re.I)
-    distinctive = (r"(?:Natsuiro\s+)?Matsuri|(?:Sakura\s+)?Miko(?:chi)?|"
+    distinctive = (r"(?:Natsuiro\s+)?Matsuri|(?:Sakura\s+)?Miko(?:chi)?|(?:Shishiro\s+)?Botan|Shishiron|"
                    r"(?:Tsunomaki\s+)?Watamee?|Laplus|Haachama|Fuwawa|Iofi")
     if re.search(r"(?<![\w-])(?:" + distinctive
                  + r")(?:-(?:chan|san|sama|senpai|kun))?(?![\w-])", remaining, re.I):
         return "unsupported_proper_name"
     literal_patterns = {
+        "Botan": r"\b(?:buttons?|switch(?:es)?|controls?|knobs?)\b",
         "Matsuri": r"\b(?:festivals?|festivit(?:y|ies)|fairs?|carnivals?|celebrations?|events?|f[eê]tes?)\b",
         "Miko": r"\b(?:shrine\s+(?:maidens?|attendants?)|priestess(?:es)?)\b",
     }
@@ -157,10 +160,9 @@ def suspicious_translation(
 ) -> str | None:
     """Return a reason for at most one context-reduced retry, or None."""
     en = english.strip()
-    if not en:
-        return "empty_english"
-    if has_generation_loop(en) or looks_like_prompt_echo(en):
-        return "prompt_echo_or_loop"
+    output_issue = english_output_issue(en)
+    if output_issue:
+        return output_issue
 
     jp = unicodedata.normalize("NFKC", japanese).strip()
     name_issue = resolved_name_issue(japanese, en, mentions, names=names)

@@ -139,6 +139,18 @@ class VoxtralAdapterTests(unittest.TestCase):
         actual = [worker.transcribe(np.ones(16000, np.float32)) for _ in texts]
         self.assertEqual(actual, ["ラプちゃん。", "草", "うん", "", "", ""])
 
+    def test_raw_transcript_is_preserved_before_normalization_and_loop_trim(self):
+        raw = "  ホ\u3099タンちゃんが来た。あいうえお" + "あいうえお" * 8 + "\n"
+        worker = self.start([{"text": raw}, {"text": "Botan-chan!"}])
+        self.assertEqual(worker.transcribe(np.ones(48000, np.float32)), "ボタンちゃんが来た。")
+        self.assertEqual(worker.last_raw_transcript, raw)
+        # The adapter keeps only narrow Latin candidates; original-audio and
+        # metadata evidence belongs to run_asr's final language gate.
+        self.assertEqual(worker.transcribe(np.ones(16000, np.float32)), "Botan-chan!")
+        self.assertEqual(worker.last_raw_transcript, "Botan-chan!")
+        worker.cancel_pending()
+        self.assertEqual(worker.last_raw_transcript, "")
+
     def test_input_validation_clipping_and_empty(self):
         np.testing.assert_array_equal(_audio16(np.array([-2., -.5, 0, .5, 2.])),
                                       np.array([-32767, -16383, 0, 16383, 32767], dtype="<i2"))

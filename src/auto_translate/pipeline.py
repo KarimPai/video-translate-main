@@ -14,14 +14,17 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
-from .asr.quality_guard import transcript_problem
+from .asr.quality_guard import transcript_problem, supports_japanese_transcript
 from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .proper_names import resolve_names
 from .text_filter import is_usable_transcript
-from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
+from .subtitle_clean import (
+    clean_english_output, has_generation_loop, normalized_cue,
+    looks_like_prompt_echo, sanitize_english_output,
+)
 from .config import AsrConfig, Config, vad_for_source
 from .gui_control import emit_event
 from .runtime_diagnostics import update_metrics, increment_counter, record_event
@@ -120,6 +123,10 @@ def run_asr(
     name_generation = None
     last_text = ""
     repeated = 0
+    # Relative live timestamps can be reused after reconnects. A VOD cache
+    # must never supply cues or name context for a different live generation.
+    if live:
+        session_cache = None
 
     def cancelled(generation):
         return ((stop is not None and stop.is_set())
@@ -155,13 +162,18 @@ def run_asr(
         cached = (session_cache.match(utt.start_s, utt.end_s)
                   if session_cache is not None else None)
         if cached is not None:
+            cleaned = sanitize_english_output(cached.en)
+            cached = replace(cached, en=cleaned) if cleaned else None
+        if cached is not None:
             if cancelled(utt.generation):
                 continue
             name_history.append(cached.ja[:160])
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
+        language_decision = None
         if language_filter is not None:
             verdict = language_filter.classify(utt.audio)
+            language_decision = verdict
             if verdict.drop:
                 record_event("language_filtered", generation=utt.generation,
                              language=verdict.language, probability=verdict.probability)
@@ -180,12 +192,18 @@ def run_asr(
             continue
         utt.timings.asr_end = time.monotonic()
         update_metrics(stages={"voxtral_s": utt.timings.asr_end - utt.timings.asr_start})
+        record_event("asr_complete", generation=utt.generation,
+                     source_start_s=utt.start_s, speech_start_s=utt.speech_start_s,
+                     source_end_s=utt.end_s, pcm_start_sample=round(utt.start_s * SAMPLE_RATE),
+                     segmented_at=utt.timings.segmented,
+                     asr_completed_at=utt.timings.asr_end)
         if cancelled(utt.generation):
             continue
 
-        # Voxtral auto-detects language. Keep the original-audio language gate,
-        # and never translate a purely foreign-language transcription as Japanese.
-        if not isinstance(text, str) or not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text):
+        # Auto-detected Latin names/reactions need evidence from the original
+        # audio language gate or a verified participant, not a generic title.
+        if not isinstance(text, str) or not supports_japanese_transcript(
+                text, language_decision=language_decision, video_context=vod_title):
             continue
         if asr_cfg is not None and any(term in text for term in asr_cfg.blocklist):
             continue
@@ -221,6 +239,9 @@ def run_asr(
         if not is_usable_transcript(text) or cancelled(utt.generation):
             continue
         name_context = {"japanese": text, "voxtral": original}
+        raw_transcript = getattr(asr, "last_raw_transcript", None)
+        if isinstance(raw_transcript, str):
+            name_context["voxtral_raw"] = raw_transcript
         try:
             mentions = resolve_names(text, previous_ja=" ".join(name_history), video_title=vod_title)
             name_context["mentions"] = [mention.as_dict() for mention in mentions]
@@ -256,6 +277,10 @@ def run_translate(
     """Translate transcripts while retaining recent context and forwarding progress."""
     consecutive_failures = 0
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
+    if getattr(getattr(translator, "cfg", None), "context_profile", None) in ("overlay", "hybrid"):
+        # Profiles select three trusted exchanges from a bounded candidate
+        # window, including when extended memory is disabled.
+        history_limit = 20
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
     memory_generation: int | None = None
 
@@ -301,8 +326,13 @@ def run_translate(
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.
         if isinstance(tr, Subtitle):
-            if tr.ja and tr.en:
-                history.append((tr.ja, tr.en))
+            cleaned = sanitize_english_output(tr.en)
+            if not cleaned:
+                increment_counter("dropped")
+                continue
+            tr = replace(tr, en=cleaned)
+            if tr.ja:
+                history.append((tr.ja, cleaned))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
             out_q.put(tr)
@@ -386,6 +416,10 @@ def run_translate(
                     if not en:
                         suppressed = True
 
+            en = sanitize_english_output(en)
+            if not en:
+                suppressed = True
+
             if en:
                 history.append((tr.ja, en))
 
@@ -402,6 +436,9 @@ def run_translate(
         tr.timings.mt_end = time.monotonic()
         record_event("translation_complete", generation=tr.generation,
                      elapsed_s=tr.timings.mt_end-tr.timings.mt_start,
+                     source_start_s=tr.start_s, speech_start_s=tr.speech_start_s,
+                     source_end_s=tr.end_s, asr_completed_at=tr.timings.asr_end,
+                     mt_completed_at=tr.timings.mt_end,
                      suppressed=suppressed, history_repaired=before_history != tr.ja)
         if suppressed:
             increment_counter("dropped")
@@ -501,6 +538,9 @@ def run(
     diagnostics=None,
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
+
+    if ingest.source.live:
+        session_cache = None
 
     vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
     log.info(
@@ -682,6 +722,16 @@ def run(
                         item.generation,
                         item.start_s,
                     )
+
+                if item.en:
+                    cleaned = sanitize_english_output(item.en)
+                    if not cleaned:
+                        increment_counter("dropped")
+                        continue
+                    item = replace(item, en=cleaned)
+                elif translator is not None:
+                    increment_counter("dropped")
+                    continue
 
                 if item.generation != last_guard_generation:
                     last_guard_key, last_guard_end, identical_count = "", -float("inf"), 0

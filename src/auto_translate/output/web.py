@@ -11,11 +11,12 @@ import queue
 import socket
 import threading
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ..types import Subtitle
+from ..subtitle_clean import sanitize_english_output
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,11 @@ class WebOutput:
                  _lan_ip() if host == "0.0.0.0" else host, port, port)
 
     def show(self, sub: Subtitle) -> None:
+        if sub.en:
+            cleaned = sanitize_english_output(sub.en)
+            if not cleaned:
+                return
+            sub = replace(sub, en=cleaned)
         payload = {k: v for k, v in asdict(sub).items() if k != "timings"}
         with self._lock:
             event = _Event(self._next_id, json.dumps(payload, ensure_ascii=False))

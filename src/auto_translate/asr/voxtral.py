@@ -10,7 +10,6 @@ from __future__ import annotations
 import http.client
 import json
 import logging
-import re
 import shutil
 import socket
 import subprocess
@@ -27,10 +26,9 @@ from ..config import AsrConfig
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
 from ..windows_subprocess import check_running, hidden_console_flags, owned_popen
-from .quality_guard import transcript_problem
+from .quality_guard import potential_japanese_transcript, transcript_problem
 
 log = logging.getLogger(__name__)
-_JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _MAX_RESPONSE_BYTES = 1_048_576
 _MODEL_ID = "voxtral"
 
@@ -88,6 +86,7 @@ class VoxtralASR:
         self.process = None
         self.last_failed = False
         self.last_stop = None
+        self.last_raw_transcript = ""
         self._state_lock = threading.Lock()
         self._inference_lock = threading.Lock()
         self._generation = 0
@@ -202,13 +201,15 @@ class VoxtralASR:
         """Invalidate seek/session results without unloading the model weights."""
         with self._state_lock:
             self._generation += 1
+            self.last_raw_transcript = ""
 
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
+        with self._state_lock:
+            generation = self._generation
+            self.last_raw_transcript = ""
         pcm = _audio16(audio)
         if not pcm.size:
             return ""
-        with self._state_lock:
-            generation = self._generation
         started = time.monotonic()
         with self._inference_lock:
             with self._state_lock:
@@ -263,10 +264,11 @@ class VoxtralASR:
             with self._state_lock:
                 if generation != self._generation or self._closed:
                     return ""
+                self.last_raw_transcript = text
             self.last_failed = False
             text = trim_repetition_tail(unicodedata.normalize("NFC", text).strip())
             problem = transcript_problem(text, pcm.size / 16000)
-            if problem or not _JAPANESE.search(text) or any(word in text for word in self.cfg.blocklist):
+            if problem or not potential_japanese_transcript(text) or any(word in text for word in self.cfg.blocklist):
                 log.debug("Discarding Voxtral output (%s): %s", problem or "language/blocklist", text)
                 return ""
             elapsed = time.monotonic() - started

@@ -1,3 +1,6 @@
+from dataclasses import replace
+
+from ..subtitle_clean import sanitize_english_output
 from ..types import Subtitle
 
 
@@ -13,6 +16,11 @@ class TerminalOutput:
         self.simple = simple
 
     def show(self, sub: Subtitle) -> None:
+        if sub.en:
+            cleaned = sanitize_english_output(sub.en)
+            if not cleaned:
+                return
+            sub = replace(sub, en=cleaned)
         if self.simple:
             # Send both transcript lines in a single flushed write. Windows
             # console I/O is synchronous; avoid two flushes per utterance.
@@ -34,6 +42,11 @@ class TerminalOutput:
 
 
 def print_subtitle(sub: Subtitle) -> None:
+    if sub.en:
+        cleaned = sanitize_english_output(sub.en)
+        if not cleaned:
+            return
+        sub = replace(sub, en=cleaned)
     tm = sub.timings
     lat = (f"vad {tm.segmented - tm.audio_read:.2f}s · wait {tm.asr_start - tm.segmented:.2f}s · "
            f"asr {tm.asr_end - tm.asr_start:.2f}s · mt {tm.mt_end - tm.mt_start:.2f}s")

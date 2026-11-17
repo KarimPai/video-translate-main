@@ -116,6 +116,35 @@ class LongformBoundaryTests(unittest.TestCase):
         self.assertEqual(sum(len(u.audio) for u in result), len(pcm))
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in result]), pcm))
 
+    def test_forced_cut_during_pause_uses_next_speech_onset_not_silent_remainder(self):
+        frames = 170
+        pcm = np.full(frames * FRAME, .3, dtype=np.float32)
+        probs = np.full(frames, .95, dtype=np.float32)
+        pcm[65 * FRAME:110 * FRAME] = 0.
+        probs[65:110] = .01
+        result = self._process(pcm, probs, VadConfig(
+            max_utterance_s=1., max_split_extension_s=0., prob_smooth_frames=1,
+            adaptive_split=False,
+        ))
+        self.assertGreaterEqual(len(result), 2)
+        self.assertLess(result[1].start_s, 1.1)  # retained silent ASR context
+        self.assertAlmostEqual(result[1].speech_start_s, 1.1, places=6)
+        np.testing.assert_array_equal(np.concatenate([u.audio for u in result]), pcm)
+
+    def test_pre_roll_keeps_name_audio_but_does_not_advance_speech_timestamp(self):
+        pcm = np.zeros(250 * FRAME, dtype=np.float32)
+        pcm[100 * FRAME:170 * FRAME] = .15
+        probs = np.full(250, .01, dtype=np.float32)
+        probs[100:170] = .95
+        result = self._process(pcm, probs, VadConfig(prob_smooth_frames=1))
+        self.assertEqual(len(result), 1)
+        cue = result[0]
+        self.assertAlmostEqual(cue.speech_start_s, 1., places=6)
+        self.assertAlmostEqual(cue.start_s, .6, places=6)
+        voice = cue.audio[round((1. - cue.start_s) * SAMPLE_RATE):
+                          round((1.7 - cue.start_s) * SAMPLE_RATE)]
+        np.testing.assert_array_equal(voice, pcm[100 * FRAME:170 * FRAME])
+
     def test_accuracy_first_vod_hard_cap_does_not_lose_pcm(self):
         # A 17-second uninterrupted utterance is segmented by the 16s cap,
         # without audio gaps or double-processing at the boundary.

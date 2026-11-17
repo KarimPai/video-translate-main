@@ -14,6 +14,7 @@ import functools
 from concurrent.futures import CancelledError
 import http.server
 import logging
+import math
 import os
 import shutil
 import queue
@@ -36,6 +37,7 @@ from .config import IngestConfig, SeparationConfig, DeepFilterConfig
 from .types import SAMPLE_RATE, AudioChunk
 from .timeline import load_vod_metadata
 from .ytdlp import extract
+from .runtime_diagnostics import record_event, update_metrics
 
 log = logging.getLogger(__name__)
 
@@ -307,6 +309,17 @@ class Ingest:
         self.first_pts: float | None = None
         self.first_pts_at = 0.0
         self.first_pts_ready = threading.Event()
+        # first_pts/first_pts_at are PCM readiness, used for latency/chat only.
+        # A presentation anchor must come from the decoded media, never from
+        # when a pipe read happened to complete.
+        self.audio_media_pts: float | None = None
+        self.audio_media_pts_ready = threading.Event()
+        self._audio_pts_samples = 0
+        self._audio_pts_rate = 0
+        self._audio_pts_invalid = False
+        self._source_pts_origin: float | None = None
+        self._source_pts_samples = 0
+        self._source_pts_rate = 0
 
         self._restart_at: float | None = None
         self._go = threading.Event()
@@ -416,6 +429,14 @@ class Ingest:
             # Reuse the same VOD audio URL across seeks. A failed read
             # already refreshes expired URLs and retries the alternate client.
             self.first_pts = None
+            self.audio_media_pts = None
+            self.audio_media_pts_ready.clear()
+            self._audio_pts_samples = 0
+            self._audio_pts_rate = 0
+            self._audio_pts_invalid = False
+            self._source_pts_origin = None
+            self._source_pts_samples = 0
+            self._source_pts_rate = 0
             self._restart_at = start_s
             self.first_pts_ready.clear()
 
@@ -684,7 +705,7 @@ class Ingest:
             "-hide_banner",
             "-nostats",
             "-loglevel",
-            "warning",
+            "info" if self.source.live else "warning",
             "-copyts",
         ]
 
@@ -703,15 +724,23 @@ class Ingest:
         else:
             output_rate = SAMPLE_RATE
 
-        audio_filters = self._pitch_filter(output_rate)
+        audio_filters = []
+        if self.source.live and abs(self.pitch_semitones) >= 1e-6:
+            # atempo generates continuous output PTS and can hide a source
+            # timestamp jump. Validate the real source before that transform.
+            audio_filters += [f"aresample={output_rate}", f"asettb=1/{output_rate}",
+                              "ashowinfo@source"]
+        audio_filters += self._pitch_filter(output_rate)
         output_layout = "stereo" if self.separation_enabled else "mono"
-        # PCM bytes are the authoritative audio clock; _read_session()
-        # initializes first_pts from the first decoded chunk, including for
-        # fallback fMP4 playback. No per-frame ashowinfo filter is needed.
+        # Raw PCM has no timestamps. Keep the first *output* sample's PTS and
+        # validate subsequent PTS against sample counts before removing them.
+        # The stderr consumer discards frame diagnostics without logging them.
         audio_filters += [
             f"aresample={output_rate}",
             f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
         ]
+        if self.source.live:
+            audio_filters += [f"asettb=1/{output_rate}", "ashowinfo"]
         log.info(
             "ASR audio from fMP4 cache: source_start=%.3fs playlist_offset=%.3fs rate=%dHz",
             self.source.start_s,
@@ -763,16 +792,15 @@ class Ingest:
         session: int,
         capture_pts: bool = True,
     ) -> None:
-        """Read FFmpeg warnings/errors and optional video progress heartbeats.
-
-        PCM sample arrival initializes first_pts in _read_session(), avoiding
-        unnecessary per-frame audio timestamp diagnostics.
-        """
+        """Consume timestamp evidence privately and retain warning diagnostics."""
         receiver_gone = False
 
         last_output_time = None
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
+            if capture_pts and "ashowinfo" in line:
+                self._capture_audio_pts(line, session)
+                continue
 
             # FFmpeg emits a progress heartbeat when transcoding fallback video.
             if not capture_pts and line.startswith("out_time_us=") and line != last_output_time:
@@ -816,6 +844,85 @@ class Ingest:
                 log.error("ffmpeg: %s", line)
             elif receiver_gone:
                 log.debug("ffmpeg: %s", line)
+
+    def live_clock_anchor(self) -> tuple[int, float, float] | None:
+        """Atomic (generation, PCM origin, shared media PTS) evidence."""
+        with self._proc_lock:
+            if (self.audio_media_pts is None or self._audio_pts_invalid
+                    or self.first_pts is None):
+                return None
+            return self._generation, float(self.first_pts), self.audio_media_pts
+
+    def _capture_audio_pts(self, line: str, session: int) -> None:
+        frame = re.search(r"\bn:(\d+)\b", line)
+        pts = re.search(r"\bpts:(-?\d+)\b", line)
+        rate = re.search(r"\brate:(\d+)\b", line)
+        samples = re.search(r"\bnb_samples:(\d+)\b", line)
+        if not all((frame, pts, rate, samples)):
+            return
+        try:
+            sample_rate = int(rate[1])
+            if sample_rate <= 0:
+                return
+            media_s = int(pts[1]) / sample_rate
+            count = int(samples[1])
+            frame_number = int(frame[1])
+        except (ValueError, OverflowError):
+            return
+        if not math.isfinite(media_s) or sample_rate <= 0 or count <= 0:
+            return
+        with self._proc_lock:
+            if session != self._session or self._stopped or self._audio_pts_invalid:
+                return
+            if "ashowinfo@source" in line:
+                # This observer detects source gaps only; it must never
+                # establish an output PCM anchor or signal media readiness.
+                if self._source_pts_origin is None:
+                    if frame_number != 0:
+                        return
+                    self._source_pts_origin = media_s
+                    self._source_pts_rate = sample_rate
+                expected = self._source_pts_origin + self._source_pts_samples / self._source_pts_rate
+                if sample_rate != self._source_pts_rate or abs(media_s - expected) > 0.1:
+                    self._invalidate_audio_clock(expected, media_s, "pre_pitch")
+                else:
+                    self._source_pts_samples += count
+                return
+            if self.audio_media_pts is None:
+                # A later frame cannot establish where the unobserved first
+                # PCM samples belonged. Fail closed and let readiness recover.
+                if frame_number != 0:
+                    return
+                self.audio_media_pts = media_s
+                self._audio_pts_rate = sample_rate
+                self.audio_media_pts_ready.set()
+                record_event("audio_media_anchor", generation=self._generation,
+                             pcm_origin_s=self.source.start_s, media_pts_s=media_s,
+                             sample_rate=sample_rate)
+            expected = self.audio_media_pts + self._audio_pts_samples / self._audio_pts_rate
+            error = media_s - expected
+            # asettb makes integer PTS use the output sample rate. Do not use
+            # pts_time's rounded decimal at multi-hour HLS origins.
+            if sample_rate != self._audio_pts_rate or abs(error) > 0.1:
+                self._invalidate_audio_clock(expected, media_s, "pcm_output")
+                return
+            previous_samples = self._audio_pts_samples
+            self._audio_pts_samples += count
+            if previous_samples == 0 or previous_samples // sample_rate != self._audio_pts_samples // sample_rate:
+                update_metrics(playback={"audio_media_pts_s": media_s,
+                                         "audio_pcm_s": self.source.start_s + self._audio_pts_samples / sample_rate,
+                                         "audio_clock_error_s": error})
+
+    def _invalidate_audio_clock(self, expected: float, media_s: float, stage: str) -> None:
+        """Called under the process lock by either media timestamp observer."""
+        self._audio_pts_invalid = True
+        self.audio_media_pts_ready.clear()
+        self._video_failed.set()
+        record_event("audio_clock_discontinuity", generation=self._generation,
+                     expected_pts_s=expected, media_pts_s=media_s,
+                     error_s=media_s - expected, stage=stage)
+        log.warning("Shared audio timeline discontinuity (%.3fs, %s); restarting alignment",
+                    media_s - expected, stage)
 
     def _watch_video_progress(self, proc: subprocess.Popen) -> None:
         """Warn when FFmpeg stops reporting output progress for too long."""
@@ -868,15 +975,23 @@ class Ingest:
         if abs(semitones) < 1e-6:
             return []
 
-        ratio = 2 ** (semitones / 12.0)
-        tempo = 1.0 / ratio
+        # asetrate rounds its rate to an integer. Use that same effective
+        # ratio for the inverse tempo so a long stream does not drift.
+        shifted_rate = round(sample_rate * 2 ** (semitones / 12.0))
+        tempo = sample_rate / shifted_rate
 
         log.info("ASR audio pitch shift: %.1f semitones", semitones)
 
         return [
-            f"asetrate={sample_rate * ratio:.8f}",
+            # Native YouTube audio is commonly 48kHz. Relabelling it as
+            # ~18kHz before this conversion would almost triple its duration.
             f"aresample={sample_rate}",
-            f"atempo={tempo:.8f}",
+            f"asetrate={shifted_rate}",
+            f"aresample={sample_rate}",
+            f"atempo={tempo:.12f}",
+            # asetrate also scales the absolute PTS origin. Restore that
+            # origin, while retaining atempo's contiguous output samples.
+            f"asetpts=PTS-STARTPTS+STARTPTS*{shifted_rate}/{sample_rate}",
         ]
 
     def _audio_start_s(self) -> float:
@@ -1298,9 +1413,9 @@ class Ingest:
                 if not data:
                     break
 
-                # PTS logging can be absent or report N/A for fMP4 audio.
-                # The decoded PCM stream itself is proof that the audio clock
-                # is available, so never leave MPV blocked waiting for stderr.
+                # Byte arrival establishes decoding readiness and the delay
+                # timer only. Shared live presentation alignment separately
+                # requires the output filter's actual media timestamp.
                 with self._proc_lock:
                     if (
                         generation == self._generation

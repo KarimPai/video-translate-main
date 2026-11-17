@@ -35,6 +35,9 @@ from ..subject_guard import (
     neutralize_unwarranted_possessives,
 )
 from ..translation_guard import suspicious_translation, _mention_value
+from ..subtitle_clean import (
+    english_output_issue, sanitize_english_output, unmatched_double_quote_cleanup,
+)
 from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
@@ -163,15 +166,22 @@ _COMPACT_CONTEXT = (
     "Neither earlier subtitles nor context can supply missing dialogue, subjects or gender."
 )
 
+_MINIMAL_CONTEXT = (
+    "Translate the current Japanese into concise, natural English subtitles. "
+    "Preserve names, spoken nicknames, honorifics, numbers, negation, viewpoint and uncertainty. "
+    "Use prior exchanges only to resolve supported references; never invent missing speech or subjects."
+)
+
 
 def _translation_context(vod_title: str, *, neutral_retry: bool = False, profile: str = "legacy") -> str:
     # The default parameter preserves direct callers and the original long prompt.
-    context = _COMPACT_CONTEXT if profile == "compact" else _NEUTRAL_SUBJECT_CONTEXT
+    context = (_MINIMAL_CONTEXT if profile in ("overlay", "hybrid") else
+               _COMPACT_CONTEXT if profile == "compact" else _NEUTRAL_SUBJECT_CONTEXT)
     if profile == "compact" and _HOLOGTA_TITLE.search(vod_title):
         context = "Scene: Hololive GTA police and emergency radio roleplay. " + context
     if neutral_retry:
         context += " " + _STRICT_NEUTRAL_RETRY_CONTEXT
-    if vod_title:
+    if vod_title and profile != "overlay":
         return f"Video title: {vod_title}\n{context}"
     return context
 
@@ -182,7 +192,10 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
     These are conservative checks, not proof of semantic correctness.
     """
     source, translation = source.strip(), translation.strip()
+    translation = unmatched_double_quote_cleanup(translation)
     if not source or not translation or len(source) > 180 or len(translation) > 240:
+        return False
+    if english_output_issue(translation):
         return False
     if unsupported_person_reference(source, translation):
         return False
@@ -514,6 +527,8 @@ class PlamoTranslator:
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         self.last_name_diagnostics = _empty_name_diagnostics()
+        self._truncation_retry_used = False
+        self._last_completion_truncated = False
         try:
             if getattr(self, "_gpu_relief_requested", False):
                 with self._close_lock:
@@ -600,6 +615,8 @@ class PlamoTranslator:
         """
         extended = getattr(self, "memory_lines", 0) if getattr(self.cfg, "extended_memory", True) else 0
         limit = max(min(20, max(0, self.cfg.context_lines)), extended)
+        if getattr(self.cfg, "context_profile", "legacy") in ("overlay", "hybrid") and limit:
+            limit = 20  # bounded candidate window; validate before selecting three pairs
         history = history[-limit:] if limit else []
         segments = (split_completed_japanese_sentences(ja)
                     if getattr(self.cfg, "sentence_context", False) else [ja])
@@ -612,14 +629,19 @@ class PlamoTranslator:
             for segment in segments:
                 translated = self._translate_one(segment, recent)
                 segment_records.append(dict(getattr(self, "last_name_diagnostics", {}), source=segment))
-                if not translated.strip() and getattr(self, "last_name_diagnostics", {}).get("unresolved_name_issue"):
+                if not translated.strip() and any(getattr(self, "last_name_diagnostics", {}).get(key)
+                                                  for key in ("unresolved_name_issue", "invalid_english")):
                     # Do not spend another whole-cue pass after the bounded
                     # name retry has already failed, or emit a partial cue.
                     self._combine_name_diagnostics(ja, segment_records, "")
                     return ""
                 if not translated.strip() or suspicious_translation(segment, translated):
                     raise ValueError("unreliable sentence translation")
-                english.append(translated.strip())
+                translated = sanitize_english_output(translated)
+                if not translated:
+                    self._combine_name_diagnostics(ja, segment_records, "")
+                    return ""
+                english.append(translated)
                 recent.append((segment, translated))
         except httpx.TransportError:
             raise
@@ -631,7 +653,7 @@ class PlamoTranslator:
             self.last_name_diagnostics["segments"] = segment_records
             self.last_name_diagnostics["sentence_fallback"] = True
             return result
-        result = " ".join(english)
+        result = sanitize_english_output(" ".join(english))
         self._combine_name_diagnostics(ja, segment_records, result)
         return result
 
@@ -646,7 +668,7 @@ class PlamoTranslator:
             combined["abstained"] |= bool(record.get("abstained"))
             if record.get("error") and not combined["error"]:
                 combined["error"] = record["error"]
-            for key in ("retry_reason", "retry_error", "unresolved_name_issue", "literal_noun_review"):
+            for key in ("retry_reason", "retry_error", "unresolved_name_issue", "literal_noun_review", "invalid_english"):
                 if record.get(key):
                     combined[key] = record[key]
             for pair in record.get("matched_glossary", []):
@@ -694,7 +716,7 @@ class PlamoTranslator:
                     and _trusted_history_pair(ja, reused, self.vod_title, self.glossary)):
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 # Cached subtitles must obey current short-name policy too.
-                result = normalize_names(reused)
+                result = sanitize_english_output(normalize_names(reused))
                 diagnostics.update(raw_english=reused, corrected_english=result, reused=True)
                 return result
 
@@ -710,6 +732,7 @@ class PlamoTranslator:
             return neutralize_unsupported_subjects(ja, normalize_names(translated))
 
         try:
+            self._last_completion_truncated = False
             raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
         except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
             if _cuda_allocation_failure(exc):
@@ -729,10 +752,12 @@ class PlamoTranslator:
             unsupported_person_reference(ja, english)
             if self.cfg.neutral_subjects else None
         )
-        reason = pronoun_reason or suspicious_translation(ja, english, names=names, mentions=mentions)
+        reason = ("output_truncated" if getattr(self, "_last_completion_truncated", False) else
+                  english_output_issue(english) or pronoun_reason
+                  or suspicious_translation(ja, english, names=names, mentions=mentions))
         if reason:
             self._count_validation("flag:" + reason)
-        if reason and self.cfg.retry_suspicious:
+        if reason and reason != "output_truncated" and self.cfg.retry_suspicious:
             diagnostics["retry"] = True
             diagnostics["retry_reason"] = reason
             self._name_retry_context = reason in ("proper_name_mismatch", "proper_name_expansion", "literal_noun_mismatch",
@@ -742,6 +767,7 @@ class PlamoTranslator:
             try:
                 # Extra neutral instruction only when the first pass introduced
                 # unsupported person/gender references. No new model is loaded.
+                self._last_completion_truncated = False
                 candidate = normalized(self._chat(
                     ja, [], timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s),
                     neutral_retry=bool(pronoun_reason), names=names,
@@ -756,10 +782,11 @@ class PlamoTranslator:
                 diagnostics["retry_error"] = type(exc).__name__
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
-                retry_reason = (
+                retry_reason = ("output_truncated" if getattr(self, "_last_completion_truncated", False) else
+                    english_output_issue(candidate) or (
                     unsupported_person_reference(ja, candidate)
                     if self.cfg.neutral_subjects else None
-                ) or suspicious_translation(ja, candidate, names=names, mentions=mentions)
+                ) or suspicious_translation(ja, candidate, names=names, mentions=mentions))
                 if retry_reason is None:
                     english = candidate
                     diagnostics["retry_accepted"] = True
@@ -793,6 +820,15 @@ class PlamoTranslator:
             english = ""
         elif unresolved == "possible_literal_noun_loss":
             diagnostics["literal_noun_review"] = unresolved
+        invalid = english_output_issue(english)
+        if reason == "output_truncated":
+            invalid = "output_truncated"
+        if invalid:
+            diagnostics["invalid_english"] = invalid
+            diagnostics["abstained"] = True
+            self._count_validation("suppressed:" + invalid)
+            english = ""
+        english = sanitize_english_output(english)
         diagnostics["corrected_english"] = english
         return english
 
@@ -815,10 +851,22 @@ class PlamoTranslator:
         except Exception as exc:
             log.warning("Skipping unavailable name hints: %s", exc)
             mentions, hits = [], []
+        profile = getattr(self.cfg, "context_profile", "legacy")
         memory_lines = (min(20, max(0, getattr(self, "memory_lines", 0)))
                         if getattr(self.cfg, "extended_memory", True) else 0)
+        if profile == "overlay":
+            memory_lines = 0
+        elif profile == "hybrid":
+            memory_lines = min(6, memory_lines)
+        context_lines = min(3, self.cfg.context_lines) if profile in ("overlay", "hybrid") else self.cfg.context_lines
         history_limit = max(min(20, max(0, self.cfg.context_lines)), memory_lines)
+        if profile in ("overlay", "hybrid") and history_limit:
+            history_limit = 20
         history = history[-history_limit:] if history_limit else []
+        pair_history = history
+        if profile in ("overlay", "hybrid"):
+            pair_history = [pair for pair in history
+                            if _trusted_history_pair(*pair, self.vod_title, self.glossary)]
         # Reserve room for current speech, template guidance, and output. This
         # conservative character budget needs no tokenizer/model allocation.
         available = max(0, getattr(self.cfg, "plamo_context", 4096)
@@ -826,11 +874,16 @@ class PlamoTranslator:
         history_chars = min(1024, available // 2)
         memory_chars = min(384, history_chars // 3) if memory_lines else 0
         dialogue_history = select_dialogue_history(
-            history, ja, context_lines=self.cfg.context_lines,
-            memory_lines=memory_lines, max_chars=history_chars - memory_chars,
+            pair_history, ja, context_lines=context_lines,
+            memory_lines=0 if profile in ("overlay", "hybrid") else memory_lines,
+            max_chars=history_chars - memory_chars,
         )
-        compact = getattr(self.cfg, "context_profile", "legacy") == "compact"
+        compact = profile in ("compact", "overlay", "hybrid")
         rejected_sources: list[str] = []
+        if profile == "hybrid":
+            rejected_sources = [source.strip()[:100] for source, translation in history[-2:]
+                                if source.strip() and not _trusted_history_pair(
+                                    source, translation, self.vod_title, self.glossary)]
         for source, translation in dialogue_history:
             # The compact profile borrows OverlaySubs' paired PFML examples,
             # but only after basic quality and unsupported-pronoun checks.
@@ -840,7 +893,7 @@ class PlamoTranslator:
                 messages.append({"role": "user", "content": source})
                 messages.append({
                     "role": "assistant",
-                    "content": neutralize_unsupported_subjects(source, translation),
+                    "content": sanitize_english_output(neutralize_unsupported_subjects(source, translation)),
                 })
             elif source.strip():
                 rejected_sources.append(source.strip()[:100])
@@ -863,15 +916,17 @@ class PlamoTranslator:
                 [(source, translation if _trusted_history_pair(
                     source, translation, self.vod_title, self.glossary) else "")
                  for source, translation in history], self.glossary,
-                context_lines=self.cfg.context_lines,
+                context_lines=context_lines,
                 memory_lines=memory_lines, current_ja=ja, max_chars=memory_chars,
                 current_terms=hits,
             )
         except Exception as exc:
             log.warning("Skipping unavailable translation memory hints: %s", exc)
             memory = ""
+        if profile == "overlay":
+            memory = ""
         source_hint = ""
-        if self.cfg.neutral_subjects and dialogue_history:
+        if self.cfg.neutral_subjects and dialogue_history and profile != "overlay":
             # Don't echo source text that's already present in trusted pairs.
             previous = (rejected_sources[-2:] if compact else
                         [source.strip()[:100] for source, _ in dialogue_history[-2:] if source.strip()])
@@ -879,7 +934,7 @@ class PlamoTranslator:
                 source_hint = ("\nRecent Japanese (context only, not speech to translate; "
                                "never infer speaker gender from it): " + " / ".join(previous))
         fragment_hint = ""
-        if (self.cfg.fragment_context and dialogue_history
+        if (self.cfg.fragment_context and dialogue_history and profile != "overlay"
                 and _needs_fragment_context(ja)):
             # Past JP is evidence for a short omitted referent; past English
             # may be an incorrect guess. Never translate the prior line again.
@@ -903,7 +958,7 @@ class PlamoTranslator:
                 "Use grass or weeds for vegetation, mowing, gathering or feeding animals. "
                 "For amusement retain the spoken slang kusa. Do not render kusa as lol."
             )
-        if mentions:
+        if mentions and profile != "overlay":
             # PLaMo's glossary is lexical: identical source strings cannot
             # carry two meanings. Give those decisions only as occurrence
             # reference data and retain the original Japanese user message.
@@ -954,14 +1009,47 @@ class PlamoTranslator:
             "chat_template_kwargs": options,
             "stream": False,
         }
-        try:
-            response = self.client.post(self.url, json=body, timeout=timeout)
-        except httpx.TimeoutException:
-            if getattr(self, "safe_playback", False):
-                self._stop_timed_out_inference()
-            raise
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        # A missing stop punctuation is not truncation evidence: Japanese
+        # speech may itself be unfinished. Only llama.cpp's actual completion
+        # reason permits one bounded regeneration with a larger output budget.
+        self._last_completion_truncated = False
+        started = time.monotonic()
+        for attempt in range(2):
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                self._last_completion_truncated = True
+                return ""
+            try:
+                response = self.client.post(self.url, json=body, timeout=remaining)
+            except httpx.TimeoutException:
+                if getattr(self, "safe_playback", False):
+                    self._stop_timed_out_inference()
+                raise
+            response.raise_for_status()
+            payload = response.json()
+            choice = payload["choices"][0]
+            if choice.get("finish_reason") != "length":
+                return choice["message"]["content"] or ""
+            self._count_validation("output_truncated")
+            record_event("plamo_output_truncated", max_tokens=body["max_tokens"],
+                         source_chars=len(ja), correction_attempt=attempt)
+            self._last_completion_truncated = True
+            larger_budget = min(384, self.cfg.max_tokens * 2)
+            prompt_tokens = payload.get("usage", {}).get("prompt_tokens")
+            # The model's actual prompt token count includes its PFML
+            # template/history. A character estimate cannot prove that a
+            # larger completion fits n_ctx. Abstain when usage is absent.
+            if type(prompt_tokens) is not int or prompt_tokens < 0:
+                self._count_validation("truncation_missing_prompt_usage")
+                return ""
+            larger_budget = min(larger_budget, self.cfg.plamo_context - prompt_tokens - 8)
+            if (attempt or getattr(self, "_truncation_retry_used", False)
+                    or larger_budget <= body["max_tokens"]):
+                return ""
+            self._truncation_retry_used = True
+            body = dict(body, max_tokens=larger_budget)
+            self._last_completion_truncated = False
+        return ""
 
 
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -999,4 +1087,4 @@ def _clean(text: str) -> str:
     line = " ".join(lines)
     if line.upper().startswith(("EN:", "ENGLISH:")):
         line = line.split(":", 1)[1].strip()
-    return line.strip('"“”「」')
+    return unmatched_double_quote_cleanup(line.strip('「」'))

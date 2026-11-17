@@ -13,6 +13,32 @@ from auto_translate.translation_guard import resolved_name_issue, suspicious_tra
 
 
 class NameTranslationTests(unittest.TestCase):
+    def test_botan_name_and_literal_button_are_validated_separately(self):
+        ja = "ボタンを押して"
+        mentions = resolve_names(ja, previous_ja="獅白ぼたんだよ")
+        self.assertEqual(suspicious_translation(ja, "Press Botan.", mentions=mentions),
+                         "literal_noun_mismatch")
+        self.assertIsNone(suspicious_translation(ja, "Press the button.", mentions=mentions))
+
+    def test_botan_short_form_and_nickname_never_expand(self):
+        for ja, target in (("ボタンちゃんが来た", "Botan-chan"), ("ししろんが来た", "Shishiron")):
+            with self.subTest(ja=ja):
+                obj = self.translator("Shishiro Botan arrived.")
+                self.assertEqual(obj.translate(ja, []), target + " arrived.")
+                obj._chat.assert_called_once()
+
+    def test_mixed_botan_button_cue_keeps_literal_object(self):
+        obj = self.translator("Botan-chan pressed the button.")
+        self.assertEqual(obj.translate("ボタンちゃんがボタンを押した", []),
+                         "Botan-chan pressed the button.")
+        obj._chat.assert_called_once()
+
+    def test_unknown_botan_is_not_forced_from_title(self):
+        obj = self.translator("Botan arrived.", "Botan arrived.")
+        obj.vod_title = "ホロライブ 獅白ぼたん"
+        self.assertEqual(obj.translate("ボタンが来た", []), "")
+        self.assertEqual(obj._chat.call_count, 2)
+
     def translator(self, *responses):
         obj = object.__new__(PlamoTranslator)
         obj.cfg = TranslateConfig()

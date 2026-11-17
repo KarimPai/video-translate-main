@@ -156,7 +156,7 @@ class FailurePathTests(unittest.TestCase):
 
     def test_long_cue_multiline_translation_and_session_cache(self):
         text = _clean('EN: “The first customer arrived.\n\nThe next customer is still outside.”')
-        self.assertEqual(text, "The first customer arrived. The next customer is still outside.")
+        self.assertEqual(text, "“The first customer arrived. The next customer is still outside.”")
         cue = Subtitle(60, 76, "長い発話", text)
         cache = SessionSubtitleCache()
         self.assertTrue(cache.add(cue))

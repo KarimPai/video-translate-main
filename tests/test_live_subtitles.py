@@ -33,11 +33,11 @@ class EnglishLiveSubtitleTests(unittest.TestCase):
         self.assertEqual(p._source_time_from_mpv(560000.0), 0.0)
         self.assertEqual(p._source_time_from_mpv(560006.5), 6.5)
 
-    def test_live_clock_without_anchor_starts_at_audio_origin(self):
+    def test_live_clock_without_measured_anchor_is_unavailable(self):
         p = self.player()
         p._clock_source_anchor = 12.0
         p._mpv_anchor = None
-        self.assertEqual(p._source_time_from_mpv(999999.0), 12.0)
+        self.assertIsNone(p._source_time_from_mpv(999999.0))
 
     def test_vod_direct_playback_still_uses_absolute_timeline(self):
         p = self.player(live=False)

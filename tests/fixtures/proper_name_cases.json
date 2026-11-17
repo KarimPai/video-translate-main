@@ -1,18 +1,30 @@
 {
-  "version": 1,
+  "version": 2,
   "evidence": "Authored Japanese text and English repair expectations, not recorded audio or model-generated translations.",
   "cases": [
     {
       "id": "matsuri-explicit-honorific-no-title",
       "ja": "まつりちゃんはどこ？",
-      "expected": [{"source": "まつりちゃん", "classification": "PERSON", "target": "Matsuri-chan"}],
+      "expected": [
+        {
+          "source": "まつりちゃん",
+          "classification": "PERSON",
+          "target": "Matsuri-chan"
+        }
+      ],
       "raw_english": "Where is the festival?",
       "expected_english": "Where is Matsuri-chan?"
     },
     {
       "id": "matsuri-full-name",
       "ja": "夏色まつりがいる",
-      "expected": [{"source": "夏色まつり", "classification": "PERSON", "target": "Natsuiro Matsuri"}],
+      "expected": [
+        {
+          "source": "夏色まつり",
+          "classification": "PERSON",
+          "target": "Natsuiro Matsuri"
+        }
+      ],
       "raw_english": "Natsuiro Matsuri is here.",
       "expected_english": "Natsuiro Matsuri is here."
     },
@@ -20,21 +32,43 @@
       "id": "matsuri-local-confirmed-dialogue",
       "ja": "まつりが来た",
       "previous_ja": "夏色まつりと話した",
-      "expected": [{"source": "まつり", "classification": "PERSON", "target": "Matsuri"}],
+      "expected": [
+        {
+          "source": "まつり",
+          "classification": "PERSON",
+          "target": "Matsuri"
+        }
+      ],
       "raw_english": "The festival arrived.",
       "expected_english": "Matsuri arrived."
     },
     {
       "id": "matsuri-katakana-participant",
       "ja": "マツリと遊んだ",
-      "confirmed_participants": ["Matsuri"],
-      "expected": [{"source": "マツリ", "classification": "PERSON", "target": "Matsuri"}]
+      "confirmed_participants": [
+        "Matsuri"
+      ],
+      "expected": [
+        {
+          "source": "マツリ",
+          "classification": "PERSON",
+          "target": "Matsuri"
+        }
+      ]
     },
     {
       "id": "matsuri-kanji-participant",
       "ja": "祭りが来た",
-      "confirmed_participants": ["Matsuri"],
-      "expected": [{"source": "祭り", "classification": "PERSON", "target": "Matsuri"}],
+      "confirmed_participants": [
+        "Matsuri"
+      ],
+      "expected": [
+        {
+          "source": "祭り",
+          "classification": "PERSON",
+          "target": "Matsuri"
+        }
+      ],
       "raw_english": "The festival arrived.",
       "expected_english": "Matsuri arrived."
     },
@@ -42,14 +76,24 @@
       "id": "festival-polite-prefix",
       "ja": "お祭りに行く",
       "video_title": "ホロライブ 夏色まつり",
-      "expected": [{"source": "祭り", "classification": "COMMON_NOUN"}],
+      "expected": [
+        {
+          "source": "祭り",
+          "classification": "COMMON_NOUN"
+        }
+      ],
       "raw_english": "Going to the festival.",
       "expected_english": "Going to the festival."
     },
     {
       "id": "festival-summer-compound",
       "ja": "夏祭りが始まった",
-      "expected": [{"source": "祭り", "classification": "COMMON_NOUN"}],
+      "expected": [
+        {
+          "source": "祭り",
+          "classification": "COMMON_NOUN"
+        }
+      ],
       "raw_english": "The summer festival has begun.",
       "expected_english": "The summer festival has begun."
     },
@@ -58,8 +102,16 @@
       "ja": "まつりが文化祭に来た",
       "previous_ja": "夏色まつりと話した",
       "expected": [
-        {"source": "まつり", "classification": "PERSON", "target": "Matsuri"},
-        {"source": "祭", "occurrence": 0, "classification": "COMMON_NOUN"}
+        {
+          "source": "まつり",
+          "classification": "PERSON",
+          "target": "Matsuri"
+        },
+        {
+          "source": "祭",
+          "occurrence": 0,
+          "classification": "COMMON_NOUN"
+        }
       ],
       "raw_english": "Matsuri came to the school festival.",
       "expected_english": "Matsuri came to the school festival."
@@ -68,8 +120,16 @@
       "id": "matsuri-and-festival-same-spelling",
       "ja": "祭りちゃんはお祭りに行った",
       "expected": [
-        {"source": "祭りちゃん", "classification": "PERSON", "target": "Matsuri-chan"},
-        {"source": "祭り", "occurrence": 1, "classification": "COMMON_NOUN"}
+        {
+          "source": "祭りちゃん",
+          "classification": "PERSON",
+          "target": "Matsuri-chan"
+        },
+        {
+          "source": "祭り",
+          "occurrence": 1,
+          "classification": "COMMON_NOUN"
+        }
       ],
       "raw_english": "Matsuri-chan went to the festival.",
       "expected_english": "Matsuri-chan went to the festival."
@@ -78,31 +138,58 @@
       "id": "matsuri-title-alone-is-weak",
       "ja": "まつりが来た",
       "video_title": "ホロライブ 夏色まつり",
-      "expected": [{"source": "まつり", "classification": "UNKNOWN"}]
+      "expected": [
+        {
+          "source": "まつり",
+          "classification": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "matsuri-missing-title",
       "ja": "まつりが来た",
-      "expected": [{"source": "まつり", "classification": "UNKNOWN"}]
+      "expected": [
+        {
+          "source": "まつり",
+          "classification": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "festival-history-does-not-confirm-person",
       "ja": "まつりが来た",
       "previous_ja": "夏祭りの話をしていた",
       "video_title": "ホロライブ",
-      "expected": [{"source": "まつり", "classification": "UNKNOWN"}]
+      "expected": [
+        {
+          "source": "まつり",
+          "classification": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "miko-explicit-nickname",
       "ja": "みこちと遊んだ",
-      "expected": [{"source": "みこち", "classification": "PERSON", "target": "Mikochi"}],
+      "expected": [
+        {
+          "source": "みこち",
+          "classification": "PERSON",
+          "target": "Mikochi"
+        }
+      ],
       "raw_english": "Played with Sakura Miko.",
       "expected_english": "Played with Mikochi."
     },
     {
       "id": "miko-honorific",
       "ja": "みこちゃんはどこ？",
-      "expected": [{"source": "みこちゃん", "classification": "PERSON", "target": "Miko-chan"}],
+      "expected": [
+        {
+          "source": "みこちゃん",
+          "classification": "PERSON",
+          "target": "Miko-chan"
+        }
+      ],
       "raw_english": "Where is the shrine maiden?",
       "expected_english": "Where is Miko-chan?"
     },
@@ -110,28 +197,55 @@
       "id": "miko-local-dialogue",
       "ja": "みこが来た",
       "previous_ja": "さくらみこだよ",
-      "expected": [{"source": "みこ", "classification": "PERSON", "target": "Miko"}],
+      "expected": [
+        {
+          "source": "みこ",
+          "classification": "PERSON",
+          "target": "Miko"
+        }
+      ],
       "raw_english": "The shrine maiden arrived.",
       "expected_english": "Miko arrived."
     },
     {
       "id": "miko-katakana-participant",
       "ja": "ミコと遊んだ",
-      "confirmed_participants": ["Miko"],
-      "expected": [{"source": "ミコ", "classification": "PERSON", "target": "Miko"}]
+      "confirmed_participants": [
+        "Miko"
+      ],
+      "expected": [
+        {
+          "source": "ミコ",
+          "classification": "PERSON",
+          "target": "Miko"
+        }
+      ]
     },
     {
       "id": "miko-kanji-participant",
       "ja": "巫女が来た",
-      "confirmed_participants": ["Miko"],
-      "expected": [{"source": "巫女", "classification": "PERSON", "target": "Miko"}],
+      "confirmed_participants": [
+        "Miko"
+      ],
+      "expected": [
+        {
+          "source": "巫女",
+          "classification": "PERSON",
+          "target": "Miko"
+        }
+      ],
       "raw_english": "The shrine maiden arrived.",
       "expected_english": "Miko arrived."
     },
     {
       "id": "shrine-maiden-at-shrine",
       "ja": "巫女さんが神社にいる",
-      "expected": [{"source": "巫女さん", "classification": "COMMON_NOUN"}],
+      "expected": [
+        {
+          "source": "巫女さん",
+          "classification": "COMMON_NOUN"
+        }
+      ],
       "raw_english": "A shrine maiden is at the shrine.",
       "expected_english": "A shrine maiden is at the shrine."
     },
@@ -139,7 +253,12 @@
       "id": "shrine-literal-overrides-title",
       "ja": "巫女さんが神社にいる",
       "video_title": "ホロライブ さくらみこ",
-      "expected": [{"source": "巫女さん", "classification": "COMMON_NOUN"}],
+      "expected": [
+        {
+          "source": "巫女さん",
+          "classification": "COMMON_NOUN"
+        }
+      ],
       "raw_english": "A shrine maiden is at the shrine.",
       "expected_english": "A shrine maiden is at the shrine."
     },
@@ -147,8 +266,15 @@
       "id": "miko-and-shrine-maiden",
       "ja": "みこちは神社の巫女さんと話した",
       "expected": [
-        {"source": "みこち", "classification": "PERSON", "target": "Mikochi"},
-        {"source": "巫女さん", "classification": "COMMON_NOUN"}
+        {
+          "source": "みこち",
+          "classification": "PERSON",
+          "target": "Mikochi"
+        },
+        {
+          "source": "巫女さん",
+          "classification": "COMMON_NOUN"
+        }
       ],
       "raw_english": "Mikochi spoke to a shrine maiden at the shrine.",
       "expected_english": "Mikochi spoke to a shrine maiden at the shrine."
@@ -157,45 +283,85 @@
       "id": "miko-title-alone-is-weak",
       "ja": "みこが来た",
       "video_title": "ホロライブ さくらみこ",
-      "expected": [{"source": "みこ", "classification": "UNKNOWN"}]
+      "expected": [
+        {
+          "source": "みこ",
+          "classification": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "miko-missing-title",
       "ja": "みこが来た",
-      "expected": [{"source": "みこ", "classification": "UNKNOWN"}]
+      "expected": [
+        {
+          "source": "みこ",
+          "classification": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "lap-short-form",
       "ja": "ラプが来た",
-      "expected": [{"source": "ラプ", "classification": "PERSON", "target": "Lap"}],
+      "expected": [
+        {
+          "source": "ラプ",
+          "classification": "PERSON",
+          "target": "Lap"
+        }
+      ],
       "raw_english": "Laplus arrived.",
       "expected_english": "Lap arrived."
     },
     {
       "id": "lap-sama",
       "ja": "ラプ様が来た",
-      "expected": [{"source": "ラプ様", "classification": "PERSON", "target": "Lap-sama"}],
+      "expected": [
+        {
+          "source": "ラプ様",
+          "classification": "PERSON",
+          "target": "Lap-sama"
+        }
+      ],
       "raw_english": "Laplus arrived.",
       "expected_english": "Lap-sama arrived."
     },
     {
       "id": "lap-chan",
       "ja": "ラプちゃんはどこ？",
-      "expected": [{"source": "ラプちゃん", "classification": "PERSON", "target": "Lap-chan"}],
+      "expected": [
+        {
+          "source": "ラプちゃん",
+          "classification": "PERSON",
+          "target": "Lap-chan"
+        }
+      ],
       "raw_english": "Where is Laplus?",
       "expected_english": "Where is Lap-chan?"
     },
     {
       "id": "laplus-preserves-longer-spoken-form",
       "ja": "ラプラスが来た",
-      "expected": [{"source": "ラプラス", "classification": "PERSON", "target": "Laplus"}],
+      "expected": [
+        {
+          "source": "ラプラス",
+          "classification": "PERSON",
+          "target": "Laplus"
+        }
+      ],
       "raw_english": "Laplus arrived.",
       "expected_english": "Laplus arrived."
     },
     {
       "id": "watame-short-form",
       "ja": "わためが来た",
-      "expected": [{"source": "わため", "classification": "PERSON", "target": "Watame"}],
+      "expected": [
+        {
+          "source": "わため",
+          "classification": "PERSON",
+          "target": "Watame"
+        }
+      ],
       "raw_english": "Tsunomaki Watame arrived.",
       "expected_english": "Watame arrived."
     },
@@ -203,8 +369,16 @@
       "id": "two-distinct-names",
       "ja": "まつりちゃんとみこちが来た",
       "expected": [
-        {"source": "まつりちゃん", "classification": "PERSON", "target": "Matsuri-chan"},
-        {"source": "みこち", "classification": "PERSON", "target": "Mikochi"}
+        {
+          "source": "まつりちゃん",
+          "classification": "PERSON",
+          "target": "Matsuri-chan"
+        },
+        {
+          "source": "みこち",
+          "classification": "PERSON",
+          "target": "Mikochi"
+        }
       ],
       "raw_english": "Matsuri-chan and Mikochi arrived.",
       "expected_english": "Matsuri-chan and Mikochi arrived."
@@ -224,6 +398,382 @@
       "expected": [],
       "raw_english": "Sang some rap.",
       "expected_english": "Sang some rap."
+    },
+    {
+      "id": "botan-honorific-katakana",
+      "ja": "ボタンちゃんが来た",
+      "expected": [
+        {
+          "source": "ボタンちゃん",
+          "classification": "PERSON",
+          "target": "Botan-chan"
+        }
+      ],
+      "raw_english": "The button arrived.",
+      "expected_english": "Botan-chan arrived."
+    },
+    {
+      "id": "botan-honorific-hiragana",
+      "ja": "ぼたんさんと話した",
+      "expected": [
+        {
+          "source": "ぼたんさん",
+          "classification": "PERSON",
+          "target": "Botan-san"
+        }
+      ]
+    },
+    {
+      "id": "botan-full-name",
+      "ja": "獅白ぼたんが来た",
+      "expected": [
+        {
+          "source": "獅白ぼたん",
+          "classification": "PERSON",
+          "target": "Shishiro Botan"
+        }
+      ]
+    },
+    {
+      "id": "botan-full-katakana-asr",
+      "ja": "獅白ボタンが来た",
+      "expected": [
+        {
+          "source": "獅白ボタン",
+          "classification": "PERSON",
+          "target": "Shishiro Botan"
+        }
+      ]
+    },
+    {
+      "id": "botan-full-hiragana",
+      "ja": "ししろぼたんが来た",
+      "expected": [
+        {
+          "source": "ししろぼたん",
+          "classification": "PERSON",
+          "target": "Shishiro Botan"
+        }
+      ]
+    },
+    {
+      "id": "botan-nickname",
+      "ja": "ししろんが来た",
+      "expected": [
+        {
+          "source": "ししろん",
+          "classification": "PERSON",
+          "target": "Shishiron"
+        }
+      ],
+      "raw_english": "Shishiro Botan arrived.",
+      "expected_english": "Shishiron arrived."
+    },
+    {
+      "id": "botan-nickname-katakana",
+      "ja": "シシロンが来た",
+      "expected": [
+        {
+          "source": "シシロン",
+          "classification": "PERSON",
+          "target": "Shishiron"
+        }
+      ]
+    },
+    {
+      "id": "botan-confirmed-dialogue",
+      "ja": "ボタンが来た",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "PERSON",
+          "target": "Botan"
+        }
+      ],
+      "previous_ja": "獅白ぼたんだよ",
+      "raw_english": "The button arrived.",
+      "expected_english": "Botan arrived."
+    },
+    {
+      "id": "botan-confirmed-nickname",
+      "ja": "ぼたんはどこ？",
+      "expected": [
+        {
+          "source": "ぼたん",
+          "classification": "PERSON",
+          "target": "Botan"
+        }
+      ],
+      "previous_ja": "ししろんと話した",
+      "raw_english": "Where is Shishiro Botan?",
+      "expected_english": "Where is Botan?"
+    },
+    {
+      "id": "botan-verified-participant",
+      "ja": "ボタンがいる",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "PERSON",
+          "target": "Botan"
+        }
+      ],
+      "confirmed_participants": [
+        "Shishiro Botan"
+      ]
+    },
+    {
+      "id": "botan-title-alone-is-weak",
+      "ja": "ボタンが来た",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "UNKNOWN"
+        }
+      ],
+      "video_title": "ホロライブ 獅白ぼたん"
+    },
+    {
+      "id": "botan-no-context",
+      "ja": "ぼたんが来た",
+      "expected": [
+        {
+          "source": "ぼたん",
+          "classification": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "literal-button-press",
+      "ja": "ボタンを押して",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "raw_english": "Press the button.",
+      "expected_english": "Press the button."
+    },
+    {
+      "id": "literal-button-overrides-confirmed-person",
+      "ja": "ボタンを押して",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "previous_ja": "獅白ぼたんが来た",
+      "raw_english": "Press the button.",
+      "expected_english": "Press the button."
+    },
+    {
+      "id": "literal-button-hiragana",
+      "ja": "ぼたんを押した",
+      "expected": [
+        {
+          "source": "ぼたん",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "previous_ja": "ししろんが来た"
+    },
+    {
+      "id": "literal-button-position",
+      "ja": "ボタンの位置を変える",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "previous_ja": "獅白ぼたんが来た"
+    },
+    {
+      "id": "literal-button-broken",
+      "ja": "ボタンが壊れた",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "previous_ja": "ししろんだよ"
+    },
+    {
+      "id": "literal-power-button-compound",
+      "ja": "電源ボタンを押す",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "previous_ja": "獅白ぼたんだよ"
+    },
+    {
+      "id": "literal-button-history-not-person",
+      "ja": "ボタンが来た",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "UNKNOWN"
+        }
+      ],
+      "previous_ja": "電源ボタンを押した"
+    },
+    {
+      "id": "botan-and-button-same-spelling",
+      "ja": "ボタンがボタンを押した",
+      "previous_ja": "ししろんだよ",
+      "expected": [
+        {
+          "source": "ボタン",
+          "classification": "PERSON",
+          "target": "Botan"
+        },
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "raw_english": "Botan pressed the button.",
+      "expected_english": "Botan pressed the button."
+    },
+    {
+      "id": "botan-chan-and-button",
+      "ja": "ボタンちゃんがボタンを押した",
+      "expected": [
+        {
+          "source": "ボタンちゃん",
+          "classification": "PERSON",
+          "target": "Botan-chan"
+        },
+        {
+          "source": "ボタン",
+          "classification": "COMMON_NOUN"
+        }
+      ],
+      "raw_english": "Botan-chan pressed the button.",
+      "expected_english": "Botan-chan pressed the button."
+    },
+    {
+      "id": "watamee-keeps-spoken-ending",
+      "ja": "わためぇが来た",
+      "expected": [
+        {
+          "source": "わためぇ",
+          "classification": "PERSON",
+          "target": "Watamee"
+        }
+      ],
+      "raw_english": "Tsunomaki Watame arrived.",
+      "expected_english": "Watamee arrived."
+    },
+    {
+      "id": "sui-chan-keeps-nickname",
+      "ja": "すいちゃんが来た",
+      "expected": [
+        {
+          "source": "すいちゃん",
+          "classification": "PERSON",
+          "target": "Sui-chan"
+        }
+      ],
+      "raw_english": "Hoshimachi Suisei arrived.",
+      "expected_english": "Sui-chan arrived."
+    },
+    {
+      "id": "pekora-short-keeps-name",
+      "ja": "ぺこらが来た",
+      "expected": [
+        {
+          "source": "ぺこら",
+          "classification": "PERSON",
+          "target": "Pekora"
+        }
+      ],
+      "raw_english": "Usada Pekora arrived.",
+      "expected_english": "Pekora arrived."
+    },
+    {
+      "id": "pekoora-keeps-long-vowel",
+      "ja": "ぺこーらが来た",
+      "expected": [
+        {
+          "source": "ぺこーら",
+          "classification": "PERSON",
+          "target": "Pekoora"
+        }
+      ],
+      "raw_english": "Usada Pekora arrived.",
+      "expected_english": "Pekoora arrived."
+    },
+    {
+      "id": "en-fuwawa-short",
+      "ja": "フワワが来た",
+      "expected": [
+        {
+          "source": "フワワ",
+          "classification": "PERSON",
+          "target": "Fuwawa"
+        }
+      ],
+      "raw_english": "Fuwawa Abyssgard arrived.",
+      "expected_english": "Fuwawa arrived."
+    },
+    {
+      "id": "en-mococo-short",
+      "ja": "モココが来た",
+      "expected": [
+        {
+          "source": "モココ",
+          "classification": "PERSON",
+          "target": "Mococo"
+        }
+      ],
+      "raw_english": "Mococo Abyssgard arrived.",
+      "expected_english": "Mococo arrived."
+    },
+    {
+      "id": "id-iofi-short",
+      "ja": "イオフィが来た",
+      "expected": [
+        {
+          "source": "イオフィ",
+          "classification": "PERSON",
+          "target": "Iofi"
+        }
+      ],
+      "raw_english": "Airani Iofifteen arrived.",
+      "expected_english": "Iofi arrived."
+    },
+    {
+      "id": "id-moona-short",
+      "ja": "ムーナが来た",
+      "expected": [
+        {
+          "source": "ムーナ",
+          "classification": "PERSON",
+          "target": "Moona"
+        }
+      ],
+      "raw_english": "Moona Hoshinova arrived.",
+      "expected_english": "Moona arrived."
+    },
+    {
+      "id": "id-kaela-short",
+      "ja": "カエラが来た",
+      "expected": [
+        {
+          "source": "カエラ",
+          "classification": "PERSON",
+          "target": "Kaela"
+        }
+      ],
+      "raw_english": "Kaela Kovalskia arrived.",
+      "expected_english": "Kaela arrived."
     }
   ]
 }

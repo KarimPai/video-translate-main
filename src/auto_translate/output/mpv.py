@@ -14,6 +14,7 @@ import ctypes
 import os
 import json
 import logging
+import math
 import queue
 import shutil
 import socket
@@ -23,7 +24,7 @@ import sys
 import threading
 import time
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -36,6 +37,7 @@ from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
 from ..session_cache import SessionSubtitleCache
 from ..timeline import record_session_anchor
+from ..subtitle_clean import sanitize_english_output
 
 log = logging.getLogger(__name__)
 
@@ -294,6 +296,12 @@ class MpvIpc:
                     if isinstance(name, str) and name:
                         self._properties[name] = msg.get("data")
                 elif "event" in msg:
+                    if msg["event"] == "start-file":
+                        # A new local playlist can reuse the old PTS origin.
+                        # Do not expose the preceding file's cached position
+                        # while waiting for its first fresh observation.
+                        self._properties["time-pos"] = None
+                        self._properties["eof-reached"] = None
                     self.events.put(msg)
                 elif "request_id" in msg:
                     self._responses.put(msg)
@@ -469,6 +477,8 @@ class MpvOutput:
         self._native_seek_at: float | None = None
         self._last_live_mpv_pos: float | None = None
         self._last_live_sample_at: float | None = None
+        self._clock_generation: int | None = None
+        self._live_clock_discontinuity = False
         self._user_paused = False
         self._manually_paused = False
         if not ingest.source.live:
@@ -555,7 +565,7 @@ class MpvOutput:
         try:
             self.ipc = MpvIpc(ipc_path)
 
-            for observer, prop in enumerate(("time-pos", "pause", "eof-reached",
+            for observer, prop in enumerate(("time-pos", "pause", "paused-for-cache", "eof-reached",
                                               "video-params", "video-codec", "hwdec-current"), start=1):
                 self.ipc.command("observe_property", observer, prop)
             # Wait for the idle MPV IPC endpoint to become responsive.
@@ -607,6 +617,10 @@ class MpvOutput:
     def show(self, sub: Subtitle) -> None:
         if sub.end_s < self._session_start:
             return
+
+        cleaned = sanitize_english_output(sub.en)
+        if cleaned != sub.en:
+            sub = replace(sub, en=cleaned)
 
         if not sub.en.strip():
             log.error(
@@ -660,6 +674,11 @@ class MpvOutput:
             self._lines.append(line)
             pending = sum(ln.show_from > (self._now if self._now is not None else -1) for ln in self._lines)
         update_metrics(counters={"pending_subtitles": pending})
+        record_event("subtitle_enqueued", generation=sub.generation,
+                     speech_start_s=speech_start, speech_end_s=sub.end_s,
+                     pcm_start_s=sub.start_s, asr_completed_at=sub.timings.asr_end,
+                     translation_completed_at=sub.timings.mt_end,
+                     show_from_s=show_from, show_until_s=line.show_until)
         self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
@@ -956,7 +975,9 @@ class MpvOutput:
                     return
 
         if self.ingest.source.live:
-            if not self._wait_live_ready(self.ingest.first_pts_ready, "audio PTS", 60.0):
+            if not self._wait_live_ready(self.ingest.first_pts_ready, "decoded PCM", 60.0):
+                return
+            if not self._wait_live_ready(self.ingest.audio_media_pts_ready, "media timestamps", 15.0):
                 return
             self._session_start = self.ingest.source.start_s
 
@@ -967,6 +988,8 @@ class MpvOutput:
         self._anchor_reason = "seek" if self.ingest.generation > 0 else "initial"
         self._last_live_mpv_pos = None
         self._last_live_sample_at = None
+        self._clock_generation = None
+        self._live_clock_discontinuity = False
         current_pos = self.ipc.get("time-pos")
         # An HLS live clock may initially report 0 (or a placeholder) and
         # jump to the playlist's multi-hour media PTS after file-loaded.
@@ -1068,8 +1091,13 @@ class MpvOutput:
                     self._video_retries = 0
             if pos is not None:
                 if self.ingest.source.live:
-                    self._sample_live_clock(float(pos), time.monotonic())
-                if self._mpv_anchor is None:
+                    aligned = self._sample_live_clock(float(pos), time.monotonic())
+                    if self._live_clock_discontinuity:
+                        self._recover_video_stream()
+                        return
+                else:
+                    aligned = True
+                if self._mpv_anchor is None and not self.ingest.source.live:
                     self._mpv_anchor = float(pos)
                     record_session_anchor(
                         self.ingest.source.timeline,
@@ -1087,13 +1115,19 @@ class MpvOutput:
                         if self.ingest.source.duration is not None else "?",
                     )
 
-                self._now = self._source_time_from_mpv(float(pos))
-                if not self.ingest.source.live:
-                    self.ingest.set_playback_position(self._now)
-                if self.ingest.source.duration is not None:
-                    self._now = min(self._now, self.ingest.source.duration)
+                if aligned:
+                    self._now = self._source_time_from_mpv(float(pos))
+                    if not self.ingest.source.live:
+                        self.ingest.set_playback_position(self._now)
+                    if self.ingest.source.duration is not None:
+                        self._now = min(self._now, self.ingest.source.duration)
 
-                self._render(self._now)
+                    # A paused startup sample is not audible speech. Preserve
+                    # an existing overlay on manual pause without drawing a
+                    # newly completed cue until playback resumes.
+                    cache_paused = getattr(self.ipc, "_properties", {}).get("paused-for-cache") is True
+                    if not self.ingest.source.live or not (paused or mpv_paused is True or cache_paused):
+                        self._render(self._now)
 
             if getattr(self.cfg, "window_id", None):
                 self._emit_gui_status(mpv_paused is True)
@@ -1141,6 +1175,7 @@ class MpvOutput:
         )
 
         self._player_command("set_property", "pause", True)
+        self._player_command("osd-overlay", id=OVERLAY_ID, format="none", data="")
         self._now = None
         self._shown = ""
         with self._lock:
@@ -1157,6 +1192,9 @@ class MpvOutput:
         self._clock_source_anchor = restart_at
         self._mpv_anchor = None
         self._anchor_reason = "video-recovery"
+        update_metrics(playback={"live_clock_aligned": False,
+                                 "timeline_generation": self.ingest.generation,
+                                 "source_to_mpv_offset_s": None})
         return True
 
     def queue_gui_command(self, action: str, value: float | None) -> None:
@@ -1353,37 +1391,78 @@ class MpvOutput:
         self._restart_audio_at(source_target)
         return True
 
-    def _sample_live_clock(self, mpv_pos: float, sampled_at: float) -> None:
-        """Keep PCM-relative live subtitle time continuous across HLS PTS jumps.
+    def _sample_live_clock(self, mpv_pos: float, sampled_at: float) -> bool:
+        """Map shared media PTS to PCM samples; never infer origin from arrival.
 
-        Some YouTube HLS streams initially expose time-pos=0 in MPV and then
-        switch to a multi-hour media timestamp. Rebase on that discontinuity
-        rather than treating new subtitles as hours late. Ordinary realtime
-        advancement, including long scheduler stalls, must not trigger rebasing.
+        Both readers consume the same fMP4 media. FFmpeg preserves PTS until
+        its output filter reports sample zero, while MPV disables start-time
+        rebasing. Buffering/delay therefore change position, never the mapping.
+        A discontinuity invalidates this generation rather than carrying old
+        subtitle positions into unrelated media.
         """
+        anchor = self.ingest.live_clock_anchor()
+        if anchor is None or not math.isfinite(mpv_pos):
+            self._now = None
+            if anchor is None and self._clock_generation is not None:
+                self._mpv_anchor = None
+                self._live_clock_discontinuity = True
+            update_metrics(playback={"live_clock_aligned": False})
+            return False
+        generation, source_origin, media_origin = anchor
+        if self._clock_generation is not None and generation != self._clock_generation:
+            self._now = None
+            self._live_clock_discontinuity = True
+            self._mpv_anchor = None
+            update_metrics(playback={"live_clock_aligned": False,
+                                     "source_to_mpv_offset_s": None})
+            return False
+        if mpv_pos < media_origin - 0.25 and self._last_live_mpv_pos is None:
+            # MPV's placeholder zero is not sample zero when the audio starts
+            # at a large HLS PTS. Wait for a position in the measured timeline.
+            self._now = None
+            update_metrics(playback={"live_clock_aligned": False})
+            return False
+        if self._clock_generation is None:
+            self._clock_generation = generation
+            self._clock_source_anchor = source_origin
+            self._mpv_anchor = media_origin
+            record_event("live_clock_anchor", generation=generation,
+                         pcm_origin_s=source_origin, media_pts_s=media_origin,
+                         mpv_position_s=mpv_pos, offset_s=source_origin - media_origin)
+            log.info("Live shared media anchor: generation=%d PCM=%.6f media PTS=%.6f MPV=%.6f",
+                     generation, source_origin, media_origin, mpv_pos)
         previous_pos = self._last_live_mpv_pos
         previous_at = self._last_live_sample_at
         if previous_pos is not None and previous_at is not None:
             elapsed = max(0.0, sampled_at - previous_at)
             raw_step = mpv_pos - previous_pos
-            if raw_step < -5.0 or raw_step > elapsed + 5.0:
-                source_now = (
-                    self._now
-                    if self._now is not None
-                    else self._clock_source_anchor
-                )
-                self._mpv_anchor = (
-                    mpv_pos - (source_now - self._clock_source_anchor)
-                )
+            if raw_step < -0.5 or raw_step > elapsed + 0.5:
+                self._now = None
+                self._mpv_anchor = None
+                self._live_clock_discontinuity = True
+                update_metrics(playback={"live_clock_aligned": False,
+                                         "source_to_mpv_offset_s": None})
+                record_event("mpv_clock_discontinuity", generation=generation,
+                             previous_pts_s=previous_pos, media_pts_s=mpv_pos,
+                             elapsed_s=elapsed)
                 log.warning(
                     "MPV live clock discontinuity: %.3f -> %.3f "
-                    "(elapsed=%.3fs); reanchored subtitles at %.3fs",
-                    previous_pos, mpv_pos, elapsed, source_now,
+                    "(elapsed=%.3fs); invalidating shared session",
+                    previous_pos, mpv_pos, elapsed,
                 )
+                return False
         self._last_live_mpv_pos = mpv_pos
         self._last_live_sample_at = sampled_at
+        properties = getattr(getattr(self, "ipc", None), "_properties", {})
+        update_metrics(playback={"timeline_generation": generation,
+                                 "source_to_mpv_offset_s": media_origin - source_origin,
+                                 "live_clock_aligned": True,
+                                 "live_playback_delay_s": self.cfg.delay_s,
+                                 "live_buffering": properties.get("paused-for-cache"),
+                                 "live_paused": properties.get("pause")})
+        return True
 
-    def _source_time_from_mpv(self, mpv_pos: float) -> float:
+    def _source_time_from_mpv(self, mpv_pos: float) -> float | None:
         """Map MPV clock to absolute audio/subtitle timestamp.
 
         Direct YouTube/local VOD playback already exposes the real video
@@ -1391,11 +1470,8 @@ class MpvOutput:
         after repeated seeks. Only the fMP4 fallback needs a relative clock.
         """
         if self.ingest.source.live:
-            # MPV HLS time-pos may be a playlist timestamp, whereas FFmpeg
-            # advances the ASR clock from decoded PCM seconds. Anchor the two
-            # clocks to their initial playback positions, not absolute PTS.
             if self._mpv_anchor is None:
-                return self._clock_source_anchor
+                return None
             return self._clock_source_anchor + mpv_pos - self._mpv_anchor
         if getattr(self, "_uses_original_timeline", False):
             return mpv_pos
@@ -1492,9 +1568,12 @@ class MpvOutput:
         return found
 
     def _render(self, now: float) -> None:
+        live = self.ingest.source.live
+        generation = getattr(self.ingest, "generation", None)
         with self._lock:
             self._lines = [
                 ln for ln in self._lines if ln.show_until > now - 60
+                and (not live or generation is None or ln.sub.generation == generation)
             ]
             active = [
                 ln for ln in self._lines
@@ -1506,7 +1585,7 @@ class MpvOutput:
         # The per-video text cache survives seek resets and the rolling
         # in-memory display list. Ask it for cues at the current timestamp.
         cache = getattr(self, "_subtitle_cache", None)
-        if cache is not None:
+        if cache is not None and not live:
             active = [
                 _Line(
                     sub,
@@ -1564,6 +1643,18 @@ class MpvOutput:
                 return
             if text and not self._shown:
                 log.debug("MPV subtitle overlay accepted at %.3fs", now)
+            if text:
+                anchor = getattr(self, "_mpv_anchor", None)
+                for line in active:
+                    onset = line.sub.speech_start_s
+                    if onset is None:
+                        onset = line.sub.start_s
+                    record_event("subtitle_displayed", generation=line.sub.generation,
+                                 speech_start_s=onset, speech_end_s=line.sub.end_s,
+                                 source_position_s=now, onset_lateness_s=now - onset,
+                                 mpv_position_s=getattr(self, "_last_live_mpv_pos", None),
+                                 source_to_mpv_offset_s=(anchor - self._clock_source_anchor)
+                                 if anchor is not None else None)
             self._shown = text
 
 
@@ -1588,10 +1679,11 @@ def _ass_many(
         head = r"{\an2\bord2.5\3c&H000000&\4c&H80000000&}"
         rows: list[str] = []
 
-        if sub.en:
+        english = sanitize_english_output(sub.en)
+        if english:
             rows.append(
                 rf"{{\fs{cfg.en_size}\1c&HFFFFFF&}}"
-                + esc(sub.en)
+                + esc(english)
             )
 
         if not rows:

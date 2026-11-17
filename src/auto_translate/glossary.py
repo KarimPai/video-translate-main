@@ -62,7 +62,7 @@ class Glossary:
         for term, en in self.terms:
             if term not in ja:
                 continue
-            if re.fullmatch(r"(?:Natsuiro )?Matsuri(?:-(?:chan|san|sama))?|(?:Sakura )?Miko(?:chi)?(?:-(?:chan|san|sama))?", en):
+            if re.fullmatch(r"(?:Natsuiro )?Matsuri(?:-(?:chan|san|sama))?|(?:Sakura )?Miko(?:chi)?(?:-(?:chan|san|sama))?|(?:Shishiro )?Botan(?:-(?:chan|san|sama))?|Shishiron", en):
                 # Central resolution owns these ambiguous families, including
                 # kanji spellings and mixed person/common-noun occurrences.
                 continue

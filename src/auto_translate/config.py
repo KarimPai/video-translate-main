@@ -202,7 +202,7 @@ class TranslateConfig:
     # Prefer reliable recent bilingual pairs to speculative long-term scene memory.
     memory_lines: int = 16
     extended_memory: bool = True
-    context_profile: str = "compact"  # compact (accuracy-first) or legacy
+    context_profile: str = "compact"  # compact/legacy; overlay and hybrid are benchmark alternatives
     sentence_context: bool = True  # translate clearly separated completed sentences sequentially
     glossary: str = "glossary.toml"
     remove_fillers: bool = True
@@ -217,6 +217,8 @@ class TranslateConfig:
     def __post_init__(self):
         if type(self.extended_memory) is not bool:
             raise ValueError("extended_memory must be boolean")
+        if self.context_profile not in ("compact", "legacy", "overlay", "hybrid"):
+            raise ValueError("translate.context_profile must be compact, legacy, overlay or hybrid")
         for name in ("context_lines", "memory_lines"):
             if type(getattr(self, name)) is not int or not 0 <= getattr(self, name) <= 20:
                 raise ValueError(f"translate.{name} must be an integer in 0..20")

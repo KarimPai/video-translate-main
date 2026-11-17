@@ -97,13 +97,17 @@ live_back_cache_mib = 1024
 # Readability: keep cues up long enough to read (characters per second, capped),
 # wrap at max_line_chars into balanced lines, and split longer cues into
 # chunks of at most max_cue_lines that follow the speech.
-min_subtitle_duration_s = 1.2
-reading_cps = 17
+# en_size is relative to a 720-pixel-high screen, so it scales with the window.
+en_size = 32
+min_subtitle_duration_s = 1.5
+reading_cps = 15
 max_subtitle_duration_s = 7.0
 max_line_chars = 42
 max_cue_lines = 2
 # Wrapped rows across stacked cues.
 max_subtitle_rows = 4
+# Dark box behind the outlined text, 0..1 (0 = outline only).
+background_opacity = 0.3
 
 [holodex]
 # Optional: a Holodex API key (holodex.net > Account Settings) adds the

@@ -36,7 +36,8 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `translate.context_english` | `false` (opt in to show earlier English in context) |
 | `translate.style` | `简洁直白` (Hy-MT2 style prompt: plain and concise; `""` disables) |
 | `translate.merge_fragments` | `true` (join a mid-sentence cue with the next cue within `merge_max_gap_s` = `0.6`; live holds it until playback is `live_merge_margin_s` = `1.5` from its onset) |
-| `mpv.reading_cps`, `mpv.max_subtitle_duration_s` | `17` characters/second, capped at `7.0` seconds |
+| `mpv.reading_cps`, `mpv.max_subtitle_duration_s` | `15` characters/second, capped at `7.0` seconds (minimum `1.5`) |
+| `mpv.en_size`, `mpv.background_opacity` | `32` (relative to a 720-pixel-high screen), `0.3` dark box behind the text (`0` = outline only) |
 | `mpv.max_line_chars`, `mpv.max_cue_lines`, `mpv.max_subtitle_rows` | `42`, `2` (longer cues split into timed chunks), `4` wrapped rows |
 | `holodex.api_key` | `""` (optional; or `HOLODEX_API_KEY`, adds the tagged collab cast) |
 | `asr.recent_context_lines` | `2` previous transcripts in the ASR prompt |

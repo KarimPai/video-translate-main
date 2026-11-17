@@ -72,7 +72,7 @@ class MpvReadabilityTests(unittest.TestCase):
     def test_show_extends_short_cue_to_reading_time(self):
         output = self.make_output()
         output.show(Subtitle(0, 1, "あ", "x" * 51, speech_start_s=0.5))
-        self.assertAlmostEqual(output._lines[0].show_until, 3.5)
+        self.assertAlmostEqual(output._lines[0].show_until, 3.9)  # 51 chars at 15 cps
 
     def test_render_wraps_rows_and_shows_one_chunk_of_long_cue(self):
         output = self.make_output()
@@ -101,15 +101,23 @@ class MpvReadabilityTests(unittest.TestCase):
         cache = SessionSubtitleCache()
         cache.add(Subtitle(10, 10.5, "あ", "x" * 68))
         output._subtitle_cache = cache
-        output._render(13.9)
+        output._render(14.4)
         self.assertIn("xxxx", output._shown)
-        output._render(14.1)
+        output._render(14.7)
         self.assertEqual(output._shown, "")
 
     def test_ass_wraps_long_english(self):
         cfg = MpvConfig()
         rendered = _ass_many([Subtitle(0, 4, "あ", "Isn't it time for everyone to go to bed? Right?")], cfg)
         self.assertIn(r"bed?\NRight?", rendered)
+
+    def test_background_box_opacity(self):
+        sub = [Subtitle(0, 4, "あ", "Hello.")]
+        self.assertIn(r"\4a&HB2&", _ass_many(sub, MpvConfig()))  # 30% opaque
+        self.assertIn(r"\4a&HFF&", _ass_many(sub, MpvConfig(background_opacity=0)))
+        for bad in (-0.1, 1.5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                MpvConfig(background_opacity=bad)
 
 
 if __name__ == "__main__":

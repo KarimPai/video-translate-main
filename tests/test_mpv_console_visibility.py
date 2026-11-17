@@ -44,6 +44,7 @@ class MpvConsoleVisibilityTests(unittest.TestCase):
         self.assertIn("--no-terminal", command)
         self.assertIn("--hwdec=auto-safe", command)
         self.assertIn("--osc=no", command)
+        self.assertIn("--osd-border-style=background-box", command)
         self.assertFalse(any(x.startswith("--vf=") for x in command))
         self.assertTrue(any(x.startswith("--input-ipc-server=") for x in command))
         self.assertTrue(any(x.startswith("--log-file=") for x in command))

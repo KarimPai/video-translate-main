@@ -302,15 +302,16 @@ class MpvConfig:
     )
     live_forward_cache_mib: int = 1024
     live_back_cache_mib: int = 1024
-    en_size: int = 28
+    en_size: int = 32
     ja_size: int = 0
-    min_subtitle_duration_s: float = 1.2
+    min_subtitle_duration_s: float = 1.5
     max_subtitle_rows: int = 4  # wrapped screen rows across stacked cues
     # Readability: extend short cues to a reading speed, wrap and split long ones.
-    reading_cps: float = 17.0  # 0 disables reading-speed extension
+    reading_cps: float = 15.0  # 0 disables reading-speed extension
     max_subtitle_duration_s: float = 7.0
     max_line_chars: int = 42  # 0 disables wrapping and splitting
     max_cue_lines: int = 2
+    background_opacity: float = 0.3  # dark box behind subtitles; 0 draws outline only
 
     def __post_init__(self):
         for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):
@@ -326,6 +327,10 @@ class MpvConfig:
             raise ValueError("mpv.max_line_chars must be 0 or in 16..120")
         if type(self.max_cue_lines) is not int or not 1 <= self.max_cue_lines <= 4:
             raise ValueError("mpv.max_cue_lines must be in 1..4")
+        if type(self.background_opacity) not in (int, float) or not 0 <= self.background_opacity <= 1:
+            raise ValueError("mpv.background_opacity must be in 0..1")
+        if type(self.en_size) is not int or not 8 <= self.en_size <= 96:
+            raise ValueError("mpv.en_size must be in 8..96")
         if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
             raise ValueError("Invalid MPV live cache size")
 

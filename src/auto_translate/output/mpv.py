@@ -540,6 +540,7 @@ class MpvOutput:
             # The embedded player already has a Qt timeline.
             "--osc=no" if cfg.window_id else "--osc=yes",
             "--osd-on-seek=no",
+            *(["--osd-border-style=background-box"] if cfg.background_opacity > 0 else []),
             f"--input-conf={GUI_INPUT_CONF if cfg.window_id else INPUT_CONF}",
 
             # Hardware video decoding.
@@ -1690,9 +1691,11 @@ def _ass_many(
         )
 
     blocks: list[str] = []
+    # ASS alpha is transparency: 00 opaque, FF invisible.
+    box_alpha = round((1 - cfg.background_opacity) * 255)
+    head = rf"{{\an2\bord2.5\3c&H000000&\4c&H000000&\4a&H{box_alpha:02X}&}}"
 
     for sub in subtitles:
-        head = r"{\an2\bord2.5\3c&H000000&\4c&H80000000&}"
         rows: list[str] = []
 
         english = sanitize_english_output(sub.en)

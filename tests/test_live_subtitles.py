@@ -79,7 +79,7 @@ class MinimumDurationTests(unittest.TestCase):
         player = EnglishLiveSubtitleTests.player()
         sub = Subtitle(1.0, 1.1, "え", "Huh?")
         player.show(sub)
-        self.assertEqual(player._lines[0].show_until, 2.2)
+        self.assertEqual(player._lines[0].show_until, 2.5)  # 1.5 s minimum
         cache = SessionSubtitleCache()
         cache.add(sub)
         self.assertEqual(cache.active_at(2.1, 1.2), [sub])

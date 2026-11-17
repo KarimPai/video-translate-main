@@ -226,6 +226,18 @@ def _loopback_port_available(url: str) -> bool:
         return True
 
 
+def _cuda_allocation_failure(exc: Exception) -> bool:
+    """Recognize explicit device allocation errors, not ordinary HTTP failures."""
+    if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code < 500:
+        return False
+    detail = exc.response.text[:8192]
+    return bool(re.search(
+        r"cuda.{0,100}(?:out of memory|alloc)|out of (?:device|gpu) memory|"
+        r"ggml_cuda.{0,100}alloc|cudaMalloc",
+        detail, re.I | re.S,
+    ))
+
+
 class PlamoTranslator:
     """Japanese-to-English PLaMo translator; inference stays on the local machine."""
 
@@ -243,6 +255,7 @@ class PlamoTranslator:
         self._close_lock = threading.Lock()
         self._closed = False
         self._restart_used = False
+        self._gpu_relief_requested = False
         self._name_context = None
         self._active_name_mentions = None
         self.last_name_diagnostics = {}
@@ -342,7 +355,7 @@ class PlamoTranslator:
         while time.monotonic() < deadline:
             check_running()
             if process.poll() is not None:
-                self.close()
+                self._retire_owned_server()
                 raise RuntimeError(
                     "llama-server exited during startup. See logs\\plamo-server.log."
                 )
@@ -351,7 +364,7 @@ class PlamoTranslator:
                 return
             time.sleep(0.5)
 
-        self.close()
+        self._retire_owned_server()
         raise TimeoutError(
             f"llama-server did not become ready within "
             f"{self.cfg.load_timeout_s:.0f}s. See logs\\plamo-server.log."
@@ -420,6 +433,68 @@ class PlamoTranslator:
         records = [dict(m) if isinstance(m, dict) else m.as_dict() for m in list(mentions)[:16]]
         self._name_context = (japanese, records)
 
+    def request_gpu_relief(self) -> bool:
+        """Schedule a smaller GPU allocation at the next serialized cue.
+
+        The memory sampler never stops a model during inference. An attached
+        external server remains under its owner's control.
+        """
+        with self._close_lock:
+            if self._closed or self.process is None or self.cfg.plamo_gpu_layers <= 0:
+                return False
+            self._gpu_relief_requested = True
+            return True
+
+    def _retire_owned_server(self) -> bool:
+        """Stop this translator's server without closing its reusable client."""
+        with self._close_lock:
+            process = self.process
+            if process is None:
+                return False
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    process.kill()
+                    process.wait(timeout=2)
+            if process.poll() is None:
+                raise TranslatorUnavailable("Owned PLaMo process did not stop before reload")
+            self.process = None
+            if self._server_log is not None:
+                self._server_log.close()
+                self._server_log = None
+            return True
+
+    def _reload_owned_server(self, *, reduce_layers: bool, reason: str) -> None:
+        """Reduce offloading until an owned replacement starts, ending at CPU."""
+        if not self._retire_owned_server():
+            raise TranslatorUnavailable("Cannot reconfigure an externally managed PLaMo server")
+        while True:
+            with self._close_lock:
+                if self._closed:
+                    raise TranslatorUnavailable("PLaMo session closed during reload")
+                previous = self.cfg.plamo_gpu_layers
+                if reduce_layers and previous > 0:
+                    self.cfg.plamo_gpu_layers = previous // 2
+                layers = self.cfg.plamo_gpu_layers
+            if layers != previous:
+                log.warning("PLaMo GPU offload reduced from %d to %d layers (%s)",
+                            previous, layers, reason)
+                record_event("plamo_gpu_offload_reduced", previous_layers=previous,
+                             gpu_layers=layers, reason=reason)
+            try:
+                self._start_server()
+                return
+            except (RuntimeError, OSError, TimeoutError) as exc:
+                # _start_server has already retired a failed owned process.
+                # Never turn an unavailable external endpoint into a new one.
+                if isinstance(exc, ExistingServerUnavailable) or layers <= 0:
+                    raise TranslatorUnavailable(f"PLaMo reload failed: {exc}") from exc
+                self._retire_owned_server()
+                reduce_layers = True
+                reason = "reload_allocation_failure"
+
     def _mentions_for(self, ja: str, previous: str = ""):
         context = getattr(self, "_name_context", None)
         if context is not None:
@@ -440,6 +515,12 @@ class PlamoTranslator:
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         self.last_name_diagnostics = _empty_name_diagnostics()
         try:
+            if getattr(self, "_gpu_relief_requested", False):
+                with self._close_lock:
+                    relief = self._gpu_relief_requested
+                    self._gpu_relief_requested = False
+                if relief:
+                    self._reload_owned_server(reduce_layers=True, reason="measured_memory_pressure")
             return self._translate_with_recovery(ja, history)
         except Exception as exc:
             self.last_name_diagnostics["error"] = type(exc).__name__
@@ -450,25 +531,27 @@ class PlamoTranslator:
             self._name_retry_context = False
 
     def _translate_with_recovery(self, ja: str, history: list[tuple[str, str]]) -> str:
-        try:
-            return self._translate_cue(ja, history)
-        except httpx.TransportError as exc:
-            with self._close_lock:
-                if self._closed or self.process is None or self.process.poll() is None:
-                    raise
-                if self._restart_used:
-                    raise TranslatorUnavailable("PLaMo exited again after recovery") from exc
-                self._restart_used = True
-                self.process = None
-                if self._server_log is not None:
-                    self._server_log.close()
-                    self._server_log = None
-            log.warning("Owned PLaMo server exited. Restarting and retrying the subtitle.")
+        while True:
             try:
-                self._start_server()
                 return self._translate_cue(ja, history)
-            except Exception as recovery_error:
-                raise TranslatorUnavailable(f"PLaMo recovery failed: {recovery_error}") from recovery_error
+            except httpx.HTTPStatusError as exc:
+                if not _cuda_allocation_failure(exc):
+                    raise
+                with self._close_lock:
+                    if self._closed or self.process is None:
+                        raise
+                    if self.cfg.plamo_gpu_layers <= 0:
+                        raise TranslatorUnavailable("PLaMo allocation failed after CPU fallback") from exc
+                self._reload_owned_server(reduce_layers=True, reason="cuda_allocation_failure")
+            except httpx.TransportError as exc:
+                with self._close_lock:
+                    if self._closed or self.process is None or self.process.poll() is None:
+                        raise
+                    if self._restart_used:
+                        raise TranslatorUnavailable("PLaMo exited again after recovery") from exc
+                    self._restart_used = True
+                log.warning("Owned PLaMo server exited. Reducing offload before retrying the subtitle.")
+                self._reload_owned_server(reduce_layers=True, reason="owned_server_exit")
 
     def _stop_timed_out_inference(self) -> None:
         """Retire only an owned timed-out server before releasing GPU admission.
@@ -541,6 +624,8 @@ class PlamoTranslator:
         except httpx.TransportError:
             raise
         except Exception as exc:
+            if _cuda_allocation_failure(exc):
+                raise
             log.warning("Sentence context fallback to whole utterance: %s", exc)
             result = self._translate_one(ja, history)
             self.last_name_diagnostics["segments"] = segment_records
@@ -627,6 +712,8 @@ class PlamoTranslator:
         try:
             raw = self._chat(ja, history, timeout=self.cfg.timeout_s, names=names)
         except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            if _cuda_allocation_failure(exc):
+                raise
             if isinstance(exc, httpx.TimeoutException) and getattr(self, "safe_playback", False):
                 # _chat already retired an owned timed-out process. Transport
                 # recovery belongs to translate(); never replay against a

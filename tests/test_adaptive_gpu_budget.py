@@ -8,12 +8,12 @@ from auto_translate.vad import Segmenter
 
 
 class AdaptiveMemoryTests(unittest.TestCase):
-    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(7.70, 8.59))
+    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(7.40, 8.59))
     def test_no_fixed_7_5gb_ceiling(self, sample):
         budget = GpuBudget(GpuBudgetConfig())
         self.assertEqual(budget.pressure_level, "normal")
-        self.assertTrue(budget.admits(0.20))  # 7.70 GB in use is allowed.
-        self.assertFalse(budget.admits(0.40))  # Reserve must fit plus headroom.
+        self.assertTrue(budget.admits(0.15))  # 7.40 GB in use is allowed.
+        self.assertFalse(budget.admits(0.30))  # Reserve must fit plus headroom.
 
     @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(8.19, 8.59))
     def test_low_physical_headroom_only(self, sample):
@@ -31,8 +31,8 @@ class AdaptiveMemoryTests(unittest.TestCase):
 
     def test_invalid_guard_parameters(self):
         for kwargs in ({"startup_headroom_gb": -0.1},
-                       {"low_free_gb": 0.8},
-                       {"emergency_free_gb": 0.60},
+                       {"low_free_gb": 1.1},
+                       {"emergency_free_gb": 0.80},
                        {"sample_interval_s": 0.01}):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(ValueError):
@@ -49,11 +49,9 @@ class CpuVadTests(unittest.TestCase):
             self.assertEqual(seg.min_silence, 55)
             self.assertEqual(seg.pad, 40)  # 400 ms of audio at 10 ms/frame
 
-    def test_cuda_is_still_opt_in(self):
-        cfg = VadConfig(device="cuda")
-        with patch("auto_translate.vad.StreamingFireRedVAD") as ctor:
-            Segmenter(cfg)
-            ctor.assert_called_once_with(cfg.threshold, "cuda")
+    def test_cuda_vad_is_rejected_to_preserve_asr_headroom(self):
+        with self.assertRaisesRegex(ValueError, "must use cpu"):
+            VadConfig(device="cuda")
 
     def test_reject_other_devices(self):
         with self.assertRaises(ValueError):

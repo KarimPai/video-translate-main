@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Local Japanese-to-English subtitles for live streams and VOD using Haas, Whisper and PLaMo"
+description = "Local Japanese-to-English subtitles for live streams and VOD using Voxtral and PLaMo"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }
@@ -10,13 +10,10 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
     "audioread>=3.1.0",
-    "fireredvad[gpu]>=0.0.2",
-    "faster-whisper>=1.2.1",
+    "fireredvad[cpu]>=0.0.2",
     "httpx>=0.27",
     "huggingface-hub>=0.34.0",
-    "nvidia-cublas-cu12>=12.9.2.10",
-    "nvidia-cudnn-cu12>=9.27.0.42",
-    "onnxruntime-gpu[cuda,cudnn]>=1.31.1",
+    "onnxruntime>=1.31.1",
 ]
 
 [dependency-groups]
@@ -47,11 +44,11 @@ requires = ["uv_build>=0.12.22,<0.13.0"]
 build-backend = "uv_build"
 
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu126" }
-torchvision = { index = "pytorch-cu126" }
-torchaudio = { index = "pytorch-cu126" }
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }

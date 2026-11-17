@@ -93,23 +93,6 @@
       "expected": [{"source": "まつり", "classification": "UNKNOWN"}]
     },
     {
-      "id": "weak-peer-without-person-context",
-      "ja": "まつりが来た",
-      "haas": "まつりが来た",
-      "whisper": "祭りが来た",
-      "expected": [{"source": "まつり", "classification": "UNKNOWN"}]
-    },
-    {
-      "id": "contradictory-peer-does-not-invent-name",
-      "ja": "待っていて",
-      "haas": "待っていて",
-      "whisper": "夏色まつり",
-      "video_title": "ホロライブ 夏色まつり",
-      "expected": [],
-      "raw_english": "Wait here.",
-      "expected_english": "Wait here."
-    },
-    {
       "id": "miko-explicit-nickname",
       "ja": "みこちと遊んだ",
       "expected": [{"source": "みこち", "classification": "PERSON", "target": "Mikochi"}],

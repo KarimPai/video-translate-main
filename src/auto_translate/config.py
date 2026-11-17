@@ -101,45 +101,47 @@ class VadConfig:
         for key in ("speech_pad_ms", "split_context_ms", "max_split_extension_s", "live_max_split_extension_s", "fallback_s"):
             if not getattr(self, key) >= 0:
                 raise ValueError(f"vad.{key} must be nonnegative")
-        if self.device not in ("cpu", "cuda"):
-            raise ValueError("VAD device must be cpu or cuda")
+        if self.device != "cpu":
+            raise ValueError("FireRedVAD must use cpu to preserve GPU memory for Voxtral and playback")
 
 
 @dataclass
 class AsrConfig:
-    haas_model: str = "haas-ja-v1.0"
-    haas_device: str = "Vulkan0"
-    haas_decode_on_cpu: bool = False
-    # Opt in only after benchmarking reviewed audio on the installed model.
-    haas_keywords_enabled: bool = False
-    haas_keywords_alpha: float = 1.0
+    """Persistent CUDA Voxtral service; complete VAD utterances use offline ASR.
+
+    The model is loaded once by audio.cpp. Its decoder runs greedy ASR with a
+    fixed seed; word timing comes from the original VAD utterance boundaries.
+    """
+
+    voxtral_model_path: str = "models/voxtral/voxtral-mini-4b-realtime-2602-q4_k.gguf"
+    voxtral_server_path: str = ".runtime/audio-v0.9.5-cuda12/audiocpp_server.exe"
+    cuda_device: int = 0
+    threads: int = 8
     blocklist: list[str] = field(default_factory=list)
-    response_timeout_s: float = 24.0  # per-utterance VOD recognition watchdog
-    live_response_timeout_s: float = 12.0  # prevent stalled Vulkan decode from delaying live cues
-    startup_timeout_s: float = 120.0  # model cold starts may take longer than decode
-    retry_empty_speech: bool = True  # VOD only; no music-only speculative decoding
-    retry_min_confidence: float = 0.80
-    retry_min_duration_s: float = 0.6
-    retry_max_duration_s: float = 10.0
+    response_timeout_s: float = 45.0
+    live_response_timeout_s: float = 20.0
+    startup_timeout_s: float = 180.0
 
     def __post_init__(self):
-        if type(self.haas_keywords_enabled) is not bool:
-            raise ValueError("haas_keywords_enabled must be boolean")
-        if (type(self.haas_keywords_alpha) not in (int, float)
-                or not math.isfinite(self.haas_keywords_alpha)
-                or not 0 < self.haas_keywords_alpha <= 2):
-            raise ValueError("haas_keywords_alpha must be finite in (0,2]")
+        for name in ("voxtral_model_path", "voxtral_server_path"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"asr.{name} must be a nonempty path")
+        if type(self.cuda_device) is not int or self.cuda_device < 0:
+            raise ValueError("asr.cuda_device must be a nonnegative integer")
+        if type(self.threads) is not int or not 1 <= self.threads <= 256:
+            raise ValueError("asr.threads must be an integer in 1..256")
         if not isinstance(self.blocklist, list) or any(not isinstance(x, str) or not x.strip() for x in self.blocklist):
             raise ValueError("asr.blocklist requires nonempty strings")
-        if not 0 <= self.retry_min_confidence <= 1 or not 0 < self.retry_min_duration_s <= self.retry_max_duration_s:
-            raise ValueError("Invalid ASR retry thresholds")
-        if min(self.startup_timeout_s, self.response_timeout_s, self.live_response_timeout_s) <= 0:
-            raise ValueError("ASR timeouts must be positive")
+        for name in ("startup_timeout_s", "response_timeout_s", "live_response_timeout_s"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"asr.{name} must be finite and positive")
 
 
 @dataclass
 class LanguageFilterConfig:
-    """Drop only confidently English/Indonesian speech before Japanese ASR.
+    """Drop only confidently non-Japanese speech before Japanese ASR.
 
     Ambiguous or very short utterances stay in the original Japanese path to
     avoid losing Japanese speech during VTuber code-switching.
@@ -165,121 +167,11 @@ class LanguageFilterConfig:
 
 
 @dataclass
-class DualAsrConfig:
-    enabled: bool = True
-    smart_correction: bool = True
-    correction_live_retries: int = 0
-    correction_vod_retries: int = 1
-    correction_live_budget_s: float = 2.0
-    correction_vod_budget_s: float = 8.0
-    secondary_model: str = "h2oai/faster-whisper-large-v3-turbo"
-    secondary_device: str = "cuda"
-    secondary_compute_type: str = "int8_float16"
-    secondary_beam_size: int = 6
-    secondary_patience: float = 1.0
-    secondary_length_penalty: float = 1.0
-    secondary_temperature: float = 0.0
-    secondary_best_of: int = 5
-    secondary_repetition_penalty: float = 1.0
-    secondary_no_repeat_ngram_size: int = 0
-    secondary_word_timestamps: bool = False
-    secondary_log_prob_threshold: float = -1.0
-    secondary_no_speech_threshold: float = 0.6
-    secondary_compression_ratio_threshold: float = 2.4
-    secondary_suppress_tokens: list[int] = field(default_factory=lambda: [-1])
-    secondary_max_new_tokens: int | None = None
-    # Only an audio-grounded per-utterance hint may be supplied by the caller.
-    secondary_prompt_mode: str = "none"  # none, hotwords, initial_prompt
-    japanese_outro_mode: str = "log"  # log or suppress weak uncorroborated candidates
-    whisper_name_hints: bool = False  # deprecated/ignored: no unconditional Whisper name prompts
-    secondary_live_mode: str = "selective"
-    secondary_vod_mode: str = "all"
-    live_timeout_s: float = 5.0
-    vod_timeout_s: float = 25.0
-
-    def __post_init__(self):
-        if type(self.smart_correction) is not bool:
-            raise ValueError("smart_correction must be boolean")
-        for retries in (self.correction_live_retries, self.correction_vod_retries):
-            if type(retries) is not int or not 0 <= retries <= 2:
-                raise ValueError("correction retries must be integers in 0..2")
-        for seconds in (self.correction_live_budget_s, self.correction_vod_budget_s):
-            if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 30:
-                raise ValueError("correction budgets must be finite in (0,30] seconds")
-        if self.japanese_outro_mode not in ("log", "suppress"):
-            raise ValueError("japanese_outro_mode must be log or suppress")
-        if not self.secondary_model.strip():
-            raise ValueError("secondary model identifier must be nonempty")
-        if self.secondary_device not in ("cuda", "cpu"):
-            raise ValueError("secondary_device must be cuda or cpu")
-        if self.secondary_compute_type not in ("int8_float16", "float16", "int8", "float32"):
-            raise ValueError("invalid Whisper Turbo compute_type")
-        if self.secondary_device == "cpu" and self.secondary_compute_type in ("int8_float16", "float16"):
-            raise ValueError("CPU Whisper Turbo requires int8 or float32 compute_type")
-        if type(self.secondary_beam_size) is not int or not 1 <= self.secondary_beam_size <= 10:
-            raise ValueError("secondary_beam_size must be in 1..10")
-        for name in ("secondary_patience", "secondary_repetition_penalty",
-                     "secondary_compression_ratio_threshold"):
-            value = getattr(self, name)
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 10:
-                raise ValueError(name + " must be finite in (0,10]")
-        for name, low, high in (("secondary_temperature", 0, 1),
-                                ("secondary_length_penalty", 0, 10),
-                                ("secondary_log_prob_threshold", -20, 0),
-                                ("secondary_no_speech_threshold", 0, 1)):
-            value = getattr(self, name)
-            if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
-                raise ValueError(name + " is out of range")
-        for name, low, high in (("secondary_best_of", 1, 10),
-                                ("secondary_no_repeat_ngram_size", 0, 20)):
-            if type(getattr(self, name)) is not int or not low <= getattr(self, name) <= high:
-                raise ValueError(name + " is out of range")
-        if type(self.secondary_word_timestamps) is not bool:
-            raise ValueError("secondary_word_timestamps must be boolean")
-        if (not isinstance(self.secondary_suppress_tokens, list)
-                or len(self.secondary_suppress_tokens) > 512
-                or any(type(token) is not int or not -1 <= token < 60000
-                       for token in self.secondary_suppress_tokens)):
-            raise ValueError("secondary_suppress_tokens must contain Whisper token IDs")
-        if (self.secondary_max_new_tokens is not None
-                and (type(self.secondary_max_new_tokens) is not int
-                     or not 1 <= self.secondary_max_new_tokens <= 448)):
-            raise ValueError("secondary_max_new_tokens must be in 1..448 or omitted")
-        if self.secondary_prompt_mode not in ("none", "hotwords", "initial_prompt"):
-            raise ValueError("secondary_prompt_mode must be none, hotwords or initial_prompt")
-        for mode in (self.secondary_live_mode, self.secondary_vod_mode):
-            if mode not in ("off", "selective", "all"):
-                raise ValueError("secondary mode must be off, selective or all")
-        validate_timing(self)
-
-
-def validate_timing(cfg):
-    if type(cfg.enabled) is not bool:
-        raise ValueError("enabled must be a boolean")
-    for timeout in (cfg.live_timeout_s, cfg.vod_timeout_s):
-        if type(timeout) not in (float, int) or not 0 < timeout <= 120:
-            raise ValueError("request timeout must be in (0, 120] seconds")
-
-
-@dataclass
-class ReconcilerConfig:
-    enabled: bool = True
-    gpu_layers: int = 99
-    live_timeout_s: float = 4.0
-    vod_timeout_s: float = 20.0
-
-    def __post_init__(self):
-        validate_timing(self)
-        if type(self.gpu_layers) is not int or not 0 <= self.gpu_layers <= 99:
-            raise ValueError("gpu_layers must be an integer between 0 and 99")
-
-
-@dataclass
 class GpuBudgetConfig:
     """GPU capacity-relative headroom; no fixed application VRAM limit."""
 
-    startup_headroom_gb: float = 0.65
-    low_free_gb: float = 0.55
+    startup_headroom_gb: float = 1.0
+    low_free_gb: float = 0.75
     emergency_free_gb: float = 0.25
     sample_interval_s: float = 2.0
 
@@ -351,7 +243,6 @@ class MpvConfig:
     start_wait_s: float = 3.0
     port: int = 9137
     hwdec: str = "auto-safe"
-    rtx_vsr: bool = False  # optional NVIDIA RTX enhancement (Windows/D3D11)
     window_id: int | None = None  # optional native Qt HWND for MPV embedding
     live_late_window_s: float = 7.0  # reject extremely stale spoken cues
     ytdlp_format: str = (
@@ -455,8 +346,6 @@ class Config:
     safe_playback: SafePlaybackConfig = field(default_factory=SafePlaybackConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
-    dual_asr: DualAsrConfig = field(default_factory=DualAsrConfig)
-    reconciler: ReconcilerConfig = field(default_factory=ReconcilerConfig)
     gpu_budget: GpuBudgetConfig = field(default_factory=GpuBudgetConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
@@ -493,21 +382,13 @@ def load_config(path: Path) -> Config:
     for key in data.keys() - {section.name for section in fields(Config)}:
         logging.getLogger(__name__).warning("Ignoring unknown config section %s", key)
 
-    # Ignore legacy fields so existing config.toml files remain compatible.
-    ingest_data = dict(data.get("ingest", {}))
-    # Older configs may contain a -3 semitone ASR pitch workaround. Natural pitch
-    # is the default for Haas Japanese recognition; ignore that legacy override.
-    ingest_data.pop("pitch_semitones", None)
-
     return Config(
         chat=ChatConfig(**data.get("chat", {})),
         safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),
         diagnostics=DiagnosticsConfig(**data.get("diagnostics", {})),
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
-        dual_asr=DualAsrConfig(**data.get("dual_asr", {})),
-        reconciler=ReconcilerConfig(**data.get("reconciler", {})),
         gpu_budget=GpuBudgetConfig(**data.get("gpu_budget", {})),
-        ingest=IngestConfig(**ingest_data),
+        ingest=IngestConfig(**data.get("ingest", {})),
         separation=SeparationConfig(**data.get("separation", {})),
         deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),

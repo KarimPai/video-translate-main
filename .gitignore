@@ -23,3 +23,9 @@ config.toml.local-backup
 config.separation-test.toml
 pretrained_models/
 temp/
+
+.runtime/
+dist/
+build/
+*.spec
+logs/

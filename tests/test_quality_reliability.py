@@ -1,7 +1,4 @@
 """CPU-only coverage for adaptive speech, safe retries and quality telemetry."""
-import io
-import json
-import queue
 import threading
 import unittest
 from types import SimpleNamespace
@@ -9,13 +6,12 @@ from unittest.mock import patch
 
 import numpy as np
 
-from auto_translate.asr.haas import HaasASR
-from auto_translate.config import AsrConfig, MpvConfig, TranslateConfig, VadConfig, vad_for_source
+from auto_translate.config import MpvConfig, TranslateConfig, VadConfig, vad_for_source
 from auto_translate.glossary import Glossary
 from auto_translate.output.mpv import MpvOutput
-from auto_translate.pipeline import Stats, run_asr
+from auto_translate.pipeline import Stats
 from auto_translate.translate.plamo import PlamoTranslator, _needs_fragment_context
-from auto_translate.types import AudioChunk, Subtitle, Timings, Utterance
+from auto_translate.types import AudioChunk, Subtitle, Timings
 from auto_translate.vad import FRAME, Segmenter
 
 
@@ -51,55 +47,6 @@ class AdaptiveVadTests(unittest.TestCase):
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in utterances]), pcm))
 
 
-class HaasRecoveryTests(unittest.TestCase):
-    def _read(self, results, *, live=False, vad_confidence=.95):
-        class MockASR:
-            def __init__(self):
-                self.calls = []
-            def transcribe(self, audio, probe=False):
-                self.calls.append((len(audio), probe))
-                return results[len(self.calls) - 1]
-
-        asr = MockASR()
-        in_q, out_q = queue.Queue(), queue.Queue()
-        utt = Utterance(0.0, 1.0, np.ones(16000, dtype=np.float32),
-                        vad_confidence=vad_confidence)
-        in_q.put(utt)
-        in_q.put(None)
-        run_asr(asr, in_q, out_q, asr_cfg=AsrConfig(), live=live)
-        received = []
-        while True:
-            item = out_q.get_nowait()
-            if item is None:
-                break
-            received.append(item)
-        self.assertLessEqual(len(received), 1)
-        return asr.calls, received[0] if received else None
-
-    def test_vod_high_confidence_empty_uses_one_padded_retry(self):
-        calls, transcript = self._read(["", "確認した"])
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[1][0], 22400)
-        self.assertEqual(transcript.ja, "確認した")
-
-    def test_live_does_not_retry(self):
-        calls, transcript = self._read(["確認した"], live=True)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(transcript.ja, "確認した")
-
-    def test_no_low_confidence_retry(self):
-        calls, transcript = self._read([""], vad_confidence=.2)
-        self.assertEqual(len(calls), 1)
-        self.assertIsNone(transcript)
-
-    def test_hung_worker_stdout_returns_error_not_hang(self):
-        asr = object.__new__(HaasASR)
-        asr.cfg = AsrConfig(response_timeout_s=0.01)
-        asr._responses = queue.Queue()
-        asr._responses.put(None)
-        asr.process = SimpleNamespace(poll=lambda: 1)
-        with self.assertRaises(RuntimeError):
-            asr._read_response()
 
 
 class PLaMoQualityTests(unittest.TestCase):

@@ -1,14 +1,14 @@
 @echo off
 setlocal DisableDelayedExpansion
 chcp 65001 >nul
-rem Prefer the CUDA llama.cpp binary installed by Setup.bat.
-set "LLAMA_PATH_FILE=%LOCALAPPDATA%\HaasPLaMo\dual-llama-bin-path.txt"
+rem Runtime paths are relative to this independent checkout.
+set "LLAMA_PATH_FILE=%~dp0.cache\llama-bin-path.txt"
 if exist "%LLAMA_PATH_FILE%" (
     for /f "usebackq delims=" %%P in ("%LLAMA_PATH_FILE%") do (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
     )
 )
-title Haas + Whisper Turbo + LFM + PLaMo
+title Voxtral + PLaMo
 cd /d "%~dp0"
 if errorlevel 1 (
     echo ERROR: Cannot enter the project directory.
@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 echo.
 echo ========================================
-echo   Haas + Whisper Turbo Japanese Dual ASR
+echo   Voxtral Japanese ASR + PLaMo
 echo ========================================
 echo.
 set "VIDEO_URL="
@@ -51,29 +51,16 @@ if not defined VIDEO_QUALITY (
 )
 echo YouTube video quality: up to %VIDEO_QUALITY%p (lower if unavailable)
 
-set "RTX_VSR_ARG="
-echo.
-echo NVIDIA App ^> System ^> Video: enable RTX Video Super Resolution and select High quality.
-set "RTX_VSR_CHOICE="
-set /p "RTX_VSR_CHOICE=Enable optional RTX VSR enhancement? [y/N]: "
-if /I "!RTX_VSR_CHOICE!"=="Y" set "RTX_VSR_ARG=--rtx-vsr"
-if defined RTX_VSR_ARG (
-    echo RTX VSR requested: NVIDIA D3D11 scaling; NVIDIA App controls enhancement quality.
-) else (
-    echo RTX VSR off ^(standard MPV playback^).
-)
-
 if not exist "config.toml" copy /y "config.example.toml" "config.toml" >nul
-if exist "%LOCALAPPDATA%\Programs\speech.cpp\current\speech.exe" set "PATH=%LOCALAPPDATA%\Programs\speech.cpp\current;%PATH%"
 if not exist "logs" mkdir "logs"
 if defined PYTHONPATH (
     set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 ) else (
     set "PYTHONPATH=%~dp0src"
 )
-uv run --no-sync python -c "import numpy, fireredvad, faster_whisper, auto_translate" >nul 2>nul
+uv run --no-sync python -c "import numpy, fireredvad, onnxruntime, auto_translate" >nul 2>nul
 if errorlevel 1 (
-    echo Installing Haas + PLaMo pipeline Python dependencies...
+    echo Installing Voxtral + PLaMo pipeline Python dependencies...
     uv sync --locked
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.
@@ -82,14 +69,13 @@ if errorlevel 1 (
     )
 )
 echo.
-echo Starting Haas + Whisper Turbo ASR, LFM reconciler, PLaMo 3 Translate...
-echo Original 16 kHz audio, FireRedVAD, Haas + budget-admitted Whisper Turbo ASR, LFM reconciliation, PLaMo translation.
-echo Active models, VRAM readings and fallback reasons: logs\run.log
-echo Whisper Turbo model downloads automatically on first launch ^(~1.6 GB^).
+echo Starting persistent Voxtral CUDA ASR and PLaMo 3 Translate...
+echo Original 16 kHz audio, CPU FireRedVAD, offline Voxtral utterances, English subtitles.
+echo Runtime and VRAM diagnostics: logs\run.log
 echo.
 
 set "VIDEO_TRANSLATE_CLI_LOG=1"
-uv run --no-sync python -m auto_translate --mode auto --mpv --shared-gpu-playback --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% %RTX_VSR_ARG% --simple-terminal
+uv run --no-sync python -m auto_translate --mode auto --mpv --shared-gpu-playback --no-web --hwdec auto-safe --video-quality %VIDEO_QUALITY% --simple-terminal
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%EXIT_CODE%"=="0" (

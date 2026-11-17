@@ -1,4 +1,4 @@
-"""Offline tests for Japanese-only output with CPU EN/ID audio filtering.
+"""Offline tests for Japanese-only output with conservative CPU acoustic filtering.
 
 No model download or ONNX runtime needed to run these mocked regressions.
 """
@@ -40,6 +40,17 @@ class DropOnlyLanguageTests(unittest.TestCase):
     def test_confident_indonesian_is_dropped(self):
         filt = make_filter([("id", .93, .015, .87)])
         self.assertTrue(filt.classify(audio()).drop)
+
+    def test_other_confident_foreign_languages_are_dropped(self):
+        for language in ("zh", "ko", "fr", "de"):
+            with self.subTest(language=language):
+                filt = make_filter([(language, .97, .01, .91)])
+                self.assertTrue(filt.classify(audio()).drop)
+
+    def test_foreign_borrowed_word_or_uncertain_classification_is_preserved(self):
+        for result in (("zh", .82, .18, .52), ("ko", .65, .03, .3)):
+            filt = make_filter([result])
+            self.assertFalse(filt.classify(audio()).drop)
 
     def test_japanese_always_passes(self):
         filt = make_filter([("ja", .93, .93, .80)])

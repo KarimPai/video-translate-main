@@ -6,7 +6,7 @@ from auto_translate.config import TranslateConfig
 
 from auto_translate.asr_correction import correct_known_asr_terms, lap_spelling_from_peer
 from auto_translate.glossary import Glossary
-from auto_translate.name_hints import whisper_name_prompt, canonicalize_english_names
+from auto_translate.name_hints import canonicalize_english_names
 from auto_translate.translate.plamo import PlamoTranslator, _current_glossary_matches
 from auto_translate.translation_guard import suspicious_translation
 from pathlib import Path
@@ -119,12 +119,6 @@ class HololiveNameHintsTests(unittest.TestCase):
             correct_known_asr_terms(ja, video_context="ホロGTA", caption=ja), ja,
         )
 
-    def test_whisper_prompt_not_global(self):
-        # No static name seed may bias Whisper for unrelated dialogue.
-        self.assertIsNone(whisper_name_prompt("ホロGTA 3日目"))
-        self.assertIsNone(whisper_name_prompt("ホロGTA 3日目", enabled=True))
-        self.assertIsNone(whisper_name_prompt("普通のニュース放送"))
-        self.assertIsNone(whisper_name_prompt("ホロGTA", enabled=False))
 
     def test_english_name_spelling_only_when_evidenced(self):
         self.assertEqual(

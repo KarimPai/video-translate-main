@@ -10,7 +10,7 @@ from pathlib import Path
 from auto_translate.config import MpvConfig
 from auto_translate.windows_subprocess import hidden_console_flags
 from auto_translate.gui_runner import (
-    QUALITY_OPTIONS, READY_MARKER, backend_python, build_backend_command,
+    QUALITY_OPTIONS, READY_MARKER, build_backend_command,
     discover_project_root, prepare_project, subprocess_environment, valid_youtube_url,
 )
 
@@ -51,24 +51,11 @@ class GuiRunnerTests(unittest.TestCase):
             self.assertEqual(argv0, str(venv.with_name("pythonw.exe") if sys.platform == "win32" else venv))
             self.assertEqual(args[args.index("--mpv-wid") + 1], "24680")
             self.assertEqual(args[args.index("--video-quality") + 1], "720")
-            self.assertIn("--no-rtx-vsr", args)
-            self.assertNotIn("--rtx-vsr", args)
-            _, vsr_args = build_backend_command(
-                root, "https://www.youtube.com/watch?v=jd7Bp0prwiI",
-                480, 24680, rtx_vsr=True, frozen=True,
-            )
-            self.assertIn("--rtx-vsr", vsr_args)
-            self.assertNotIn("--no-rtx-vsr", vsr_args)
-            _, off_args = build_backend_command(
-                root, "https://www.youtube.com/watch?v=jd7Bp0prwiI",
-                480, 24680, rtx_vsr=False, frozen=True,
-            )
-            self.assertIn("--no-rtx-vsr", off_args)
             for quality in (360, 480, 720, 1080):
-                _, args_on = build_backend_command(root, "https://youtu.be/jd7Bp0prwiI",
-                                                   quality, 24680, rtx_vsr=True, frozen=True)
-                self.assertIn("--rtx-vsr", args_on)
-                self.assertEqual(args_on[args_on.index("--video-quality") + 1], str(quality))
+                _, quality_args = build_backend_command(root, "https://youtu.be/jd7Bp0prwiI",
+                                                       quality, 24680, frozen=True)
+                self.assertEqual(quality_args[quality_args.index("--video-quality") + 1], str(quality))
+                self.assertEqual(quality_args[quality_args.index("--hwdec") + 1], "auto-safe")
             for flag in ("-u", "--mpv", "--no-web", "--shared-gpu-playback",
                          "--simple-terminal", "--hwdec", "--gui-control"):
                 self.assertIn(flag, args)

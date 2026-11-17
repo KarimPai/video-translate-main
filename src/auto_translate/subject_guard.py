@@ -8,7 +8,7 @@ edits run locally after translation and never make a second model request.
 import re
 
 # Only explicit first-/second-person wording licenses the corresponding English
-# pronoun. Japanese pronouns may appear in kana or kanji in Haas transcripts.
+# pronoun. Japanese pronouns may appear in kana or kanji in Voxtral transcripts.
 _FIRST_PERSON = re.compile(
     r"私|わたし|ワタシ|わたくし|ワタクシ|僕|ぼく|ボク|俺|おれ|オレ|"
     r"あたし|アタシ|あたい|オイラ|わし|ワシ|うちら|僕ら|俺ら|私たち|我々|われわれ|ワレワレ"

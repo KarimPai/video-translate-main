@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from auto_translate.asr.quality_guard import weak_outro
 from auto_translate.captions import CaptionMatch
 from auto_translate.glossary import Glossary
 from auto_translate.ingest import _prune_abandoned_sessions
@@ -27,13 +26,6 @@ class AccuracyTests(unittest.TestCase):
         for text in ("待って待って待って", "まだまだまだ", "そうです。" + "はい" * 10):
             self.assertEqual(trim_repetition_tail(text), text)
 
-    def test_outro_evidence(self):
-        phrase = "ご視聴ありがとうございました"
-        audio = np.full(16000, .001)
-        self.assertTrue(weak_outro(phrase, "", 1., .45, audio))
-        self.assertFalse(weak_outro(phrase, phrase, 1., .45, audio))
-        self.assertFalse(weak_outro(phrase, "", 3., .9, audio))
-        self.assertFalse(weak_outro(phrase, "", 1., .45, audio * 100))
 
     def test_short_glossary_term_preserves_compounds(self):
         glossary = Glossary({"敵": "enemy", "石": "gem", "草": "LOL"})
@@ -47,7 +39,7 @@ class AccuracyTests(unittest.TestCase):
         with self.assertNoLogs("auto_translate.translation_guard"):
             self.assertIsNone(suspicious_translation("必ず行きます", "I will go."))
 
-    def test_empty_audio_transcript_requires_creator_caption(self):
+    def test_empty_audio_transcript_never_invents_caption_dialogue(self):
         for manual in (True, False):
             with self.subTest(manual=manual):
                 audio = queue.Queue()
@@ -59,7 +51,7 @@ class AccuracyTests(unittest.TestCase):
                 captions.match.return_value = CaptionMatch("まだいるよ", 2., 1., True, manual)
                 run_asr(asr, audio, output, captions=captions)
                 result = output.get_nowait()
-                self.assertEqual(result.ja if result else None, "まだいるよ" if manual else None)
+                self.assertEqual(result.ja if result else None, None)
 
 
 class RecoveryTests(unittest.TestCase):

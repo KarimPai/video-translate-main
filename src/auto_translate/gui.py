@@ -134,7 +134,7 @@ class VideoTranslateWindow(QMainWindow):
         self._fullscreen_cursor_pos = None
         self._fullscreen_activity_at = 0.0
         self._export_thread = None
-        self.setWindowTitle("Video Translate - Dual ASR")
+        self.setWindowTitle("Video Translate - Voxtral")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
         self._control_server = None
@@ -216,14 +216,6 @@ class VideoTranslateWindow(QMainWindow):
             self.quality.addItem(f"{value}p", value)
         self.quality.setCurrentIndex(self.quality.findData(720))
         settings_row.addWidget(self.quality)
-        self.vsr_checkbox = QCheckBox("RTX Video Super Resolution")
-        self.vsr_checkbox.setChecked(False)
-        self.vsr_checkbox.setToolTip(
-            "Optional NVIDIA RTX Video Super Resolution. Requires an eligible "
-            "source, compatible MPV/D3D11, and RTX VSR enabled in "
-            "NVIDIA settings. Check activation in the NVIDIA app."
-        )
-        settings_row.addWidget(self.vsr_checkbox)
         settings_row.addStretch(1)
         self.start_button = QPushButton("Start Translation")
         self.start_button.setObjectName("start")
@@ -308,6 +300,14 @@ class VideoTranslateWindow(QMainWindow):
         layout = QVBoxLayout(content)
         self.feature_settings = QGroupBox("Accuracy and playback settings (apply when starting)")
         settings = QFormLayout(self.feature_settings)
+        self.voxtral_model = QLineEdit()
+        self.voxtral_model.setPlaceholderText("Path to the Voxtral Q4_K GGUF checkpoint")
+        self.voxtral_model.setToolTip("Local model checkpoint used for complete Japanese utterances.")
+        settings.addRow("Voxtral checkpoint", self.voxtral_model)
+        self.audio_cpp_path = QLineEdit()
+        self.audio_cpp_path.setPlaceholderText("Path to audiocpp_server.exe")
+        self.audio_cpp_path.setToolTip("Windows CUDA audio.cpp server installed by Setup.bat.")
+        settings.addRow("Voxtral backend", self.audio_cpp_path)
         self.memory_checkbox = QCheckBox("Translation memory")
         self.memory_checkbox.setChecked(True)
         self.memory_lines = QSpinBox()
@@ -323,23 +323,6 @@ class VideoTranslateWindow(QMainWindow):
             "Use bounded recent dialogue and recurring terms. Memory clears after seeking or changing videos."
         )
         self.memory_checkbox.toggled.connect(self.memory_lines.setEnabled)
-        self.smart_correction_checkbox = QCheckBox("Smart ASR correction")
-        self.smart_correction_checkbox.setChecked(True)
-        settings.addRow(self.smart_correction_checkbox)
-        retry_row = QHBoxLayout()
-        self.vod_retries = QSpinBox()
-        self.vod_retries.setRange(0, 2)
-        self.vod_retries.setValue(1)
-        self.live_retries = QSpinBox()
-        self.live_retries.setRange(0, 2)
-        retry_row.addWidget(QLabel("VOD retries"))
-        retry_row.addWidget(self.vod_retries)
-        retry_row.addWidget(QLabel("Live retries"))
-        retry_row.addWidget(self.live_retries)
-        retry_row.addStretch(1)
-        settings.addRow(retry_row)
-        self.smart_correction_checkbox.toggled.connect(self.vod_retries.setEnabled)
-        self.smart_correction_checkbox.toggled.connect(self.live_retries.setEnabled)
         self.chat_checkbox = QCheckBox("Use YouTube Chat for Context")
         self.chat_checkbox.setToolTip(
             "Optional weak terminology hints from public chat. Chat cannot generate subtitles or override speech."
@@ -347,7 +330,7 @@ class VideoTranslateWindow(QMainWindow):
         settings.addRow(self.chat_checkbox)
         self.safe_playback_checkbox = QCheckBox("Safe Playback")
         self.safe_playback_checkbox.setToolTip(
-            "Coordinate inference and bound queued audio. Hardware decoding and RTX VSR remain independent."
+            "Coordinate inference and bound queued audio while preserving hardware video decoding."
         )
         settings.addRow(self.safe_playback_checkbox)
         self.diagnostics_checkbox = QCheckBox("Diagnostic logging and resource dashboard")
@@ -364,7 +347,7 @@ class VideoTranslateWindow(QMainWindow):
         for key, label in (("gpu", "GPU memory"), ("activity", "GPU activity"),
                            ("stages", "Latest processing"), ("subtitles", "Subtitles"),
                            ("queues", "Queues"), ("playback", "Playback"),
-                           ("vsr", "RTX VSR"), ("workers", "Owned workers")):
+                           ("workers", "Owned workers")):
             value = QLabel("unknown")
             value.setWordWrap(True)
             value.setTextFormat(Qt.TextFormat.PlainText)
@@ -399,17 +382,14 @@ class VideoTranslateWindow(QMainWindow):
     def _load_feature_settings(self):
         try:
             cfg = load_config(self.root / "config.toml")
+            self.voxtral_model.setText(cfg.asr.voxtral_model_path)
+            self.audio_cpp_path.setText(cfg.asr.voxtral_server_path)
             self.memory_checkbox.setChecked(getattr(cfg.translate, "extended_memory", True))
             self.memory_lines.setValue(cfg.translate.memory_lines)
-            self.smart_correction_checkbox.setChecked(getattr(cfg.dual_asr, "smart_correction", True))
-            self.vod_retries.setValue(getattr(cfg.dual_asr, "correction_vod_retries", 1))
-            self.live_retries.setValue(getattr(cfg.dual_asr, "correction_live_retries", 0))
             self.chat_checkbox.setChecked(getattr(getattr(cfg, "chat", None), "enabled", False))
             self.safe_playback_checkbox.setChecked(getattr(getattr(cfg, "safe_playback", None), "enabled", False))
             self.diagnostics_checkbox.setChecked(getattr(getattr(cfg, "diagnostics", None), "enabled", True))
             self.memory_lines.setEnabled(self.memory_checkbox.isChecked())
-            self.vod_retries.setEnabled(self.smart_correction_checkbox.isChecked())
-            self.live_retries.setEnabled(self.smart_correction_checkbox.isChecked())
         except (OSError, ValueError):
             log.exception("Could not load GUI feature settings; using defaults")
 
@@ -594,12 +574,10 @@ class VideoTranslateWindow(QMainWindow):
             command, args = build_backend_command(
                 self.root, url, int(self.quality.currentData()), hwnd,
                 frozen=getattr(sys, "frozen", False),
-                rtx_vsr=self.vsr_checkbox.isChecked(),
+                voxtral_model=self.voxtral_model.text().strip() or None,
+                audio_cpp_path=self.audio_cpp_path.text().strip() or None,
                 extended_memory=self.memory_checkbox.isChecked(),
                 memory_lines=self.memory_lines.value(),
-                smart_correction=self.smart_correction_checkbox.isChecked(),
-                correction_vod_retries=self.vod_retries.value(),
-                correction_live_retries=self.live_retries.value(),
                 youtube_chat_context=self.chat_checkbox.isChecked(),
                 safe_playback=self.safe_playback_checkbox.isChecked(),
                 diagnostics=self.diagnostics_checkbox.isChecked(),
@@ -637,7 +615,7 @@ class VideoTranslateWindow(QMainWindow):
         self._ready = False
         self._stopping = False
         self._reset_player_controls()
-        self._update_diagnostics({"playback": {"vsr_requested": self.vsr_checkbox.isChecked()}})
+        self._update_diagnostics({})
         self.feature_settings.setEnabled(False)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -653,12 +631,6 @@ class VideoTranslateWindow(QMainWindow):
         proc.setProgram(command)
         proc.setArguments(args)
         self._lifecycle(f"Starting translation backend gui_pid={os.getpid()}")
-        if "--rtx-vsr" in args:
-            self._write_console(
-                "RTX VSR requested: NVIDIA D3D11 scaling. "
-                "Actual activation requires MPV filter support and RTX VSR "
-                "enabled in NVIDIA settings.\n"
-            )
         # Keep the native video host visible while MPV attaches to its HWND.
         # The user can open Console during startup to inspect model logs.
         proc.start()

@@ -6,12 +6,10 @@ an ambiguous noun is a person. The Japanese source is never rewritten here.
 """
 from dataclasses import asdict, dataclass
 import re
-from typing import Mapping
 
 PERSON = "PERSON"
 COMMON_NOUN = "COMMON_NOUN"
 UNKNOWN = "UNKNOWN"
-_LABELS = {PERSON, COMMON_NOUN, UNKNOWN}
 _HONORIFICS = {"ちゃん": "-chan", "さん": "-san", "さま": "-sama",
                "様": "-sama", "先輩": "-senpai", "せんぱい": "-senpai",
                "くん": "-kun", "君": "-kun"}
@@ -78,7 +76,6 @@ class NameMention:
     classification: str
     evidence: tuple[str, ...]
     family: str
-    alternatives: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -128,25 +125,20 @@ def _participant(family, participants):
                for value in participants)
 
 
-def resolve_names(japanese: str, *, haas: str = "", whisper: str = "",
-                  previous_ja: str = "", video_title: str = "",
-                  confirmed_participants=(), classifications: Mapping | None = None) -> list[NameMention]:
+def resolve_names(japanese: str, *, previous_ja: str = "", video_title: str = "",
+                  confirmed_participants=()) -> list[NameMention]:
     """Resolve only reviewed forms present in the current Japanese source.
 
-    `classifications` is a bounded LFM decision map keyed by stringified
-    start offset. It cannot override literal compounds, explicit names, or
-    establish person identity from metadata alone. `video_title` is accepted
-    as diagnostic context, deliberately never used as person evidence.
+    Only spoken syntax and confirmed Japanese dialogue can resolve ambiguous
+    forms. `video_title` is diagnostic context and never person evidence.
     """
     if not isinstance(japanese, str) or not japanese:
         return []
     previous_ja = previous_ja if isinstance(previous_ja, str) else ""
-    haas, whisper = (value if isinstance(value, str) else "" for value in (haas, whisper))
     if isinstance(confirmed_participants, str):
         confirmed_participants = (confirmed_participants,)
     elif not isinstance(confirmed_participants, (tuple, list, set, frozenset)):
         confirmed_participants = ()
-    classifications = classifications if isinstance(classifications, Mapping) else {}
     matches = []
     for match in _PATTERN.finditer(japanese):
         spelling, suffix, (target, family, kind) = _parts(match[0])
@@ -200,32 +192,9 @@ def resolve_names(japanese: str, *, haas: str = "", whisper: str = "",
             else:
                 label = UNKNOWN
                 evidence.append("insufficient_evidence")
-            decision = classifications.get(str(match.start()), classifications.get(match.start()))
-            if isinstance(decision, dict):
-                decision = decision.get("classification")
-            if label == UNKNOWN and isinstance(decision, str) and decision in _LABELS:
-                if decision == COMMON_NOUN:
-                    label = COMMON_NOUN
-                    evidence.append("model_common_noun")
-                elif decision == PERSON and person_context:
-                    label = PERSON
-                    evidence.append("model_person_with_evidence")
-                elif decision == PERSON:
-                    evidence.append("model_person_abstained_without_evidence")
-        alternatives = []
-        for hypothesis in (haas, whisper):
-            if not hypothesis:
-                continue
-            for peer in _PATTERN.finditer(hypothesis[:1000]):
-                peer_spelling, _, (_, peer_family, _) = _parts(peer[0])
-                if peer_family == family and _boundary(hypothesis[:1000], peer, peer_spelling, family):
-                    if peer[0] not in alternatives:
-                        alternatives.append(peer[0])
-        if alternatives:
-            evidence.append("asr_spellings_retained")
         result.append(NameMention(match.start(), match.end(), match[0],
                                   target + _HONORIFICS.get(suffix, "") if label == PERSON else None,
-                                  label, tuple(evidence), family, tuple(alternatives)))
+                                  label, tuple(evidence), family))
     return result
 
 

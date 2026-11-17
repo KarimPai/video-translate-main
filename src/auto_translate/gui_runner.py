@@ -1,7 +1,7 @@
 """Qt-independent Windows GUI launch helpers (also unit-testable on Linux).
 
 A packaged GUI is a frontend for the established project environment. Models,
-MPV, speech.cpp and llama-server remain externally installed/shared.
+MPV, audio.cpp and llama-server remain externally installed/shared.
 """
 import os
 import math
@@ -61,11 +61,9 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
 
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
-                          *, rtx_vsr: bool = False, frozen: bool = False,
+                          *, frozen: bool = False,
                           extended_memory: bool = True, memory_lines: int = 16,
-                          smart_correction: bool = True,
-                          correction_vod_retries: int = 1,
-                          correction_live_retries: int = 0,
+                          voxtral_model: str | None = None, audio_cpp_path: str | None = None,
                           youtube_chat_context: bool = False,
                           safe_playback: bool = False, diagnostics: bool = True,
                           executable: str | None = None):
@@ -73,10 +71,7 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
         raise ValueError("Enter a valid YouTube video or livestream URL.")
     if quality not in QUALITY_OPTIONS:
         raise ValueError("Unsupported video quality.")
-    if not isinstance(rtx_vsr, bool):
-        raise ValueError("RTX VSR selection must be a boolean.")
     for name, value in (("Translation memory", extended_memory),
-                        ("Smart correction", smart_correction),
                         ("YouTube Chat context", youtube_chat_context),
                         ("Safe Playback", safe_playback),
                         ("Diagnostics", diagnostics)):
@@ -84,9 +79,9 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             raise ValueError(f"{name} selection must be a boolean.")
     if type(memory_lines) is not int or not 0 <= memory_lines <= 20:
         raise ValueError("Translation memory length must be between 0 and 20.")
-    for value in (correction_vod_retries, correction_live_retries):
-        if type(value) is not int or not 0 <= value <= 2:
-            raise ValueError("Correction retry count must be between 0 and 2.")
+    for name, value in (("Voxtral checkpoint", voxtral_model), ("audio.cpp backend", audio_cpp_path)):
+        if value is not None and (not isinstance(value, str) or not value.strip() or "\x00" in value):
+            raise ValueError(f"{name} path must be nonempty text.")
     if not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Embedded MPV requires a valid native window handle.")
     python = backend_python(root, frozen=frozen, executable=executable)
@@ -100,13 +95,12 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             "--mode", "auto", "--mpv", "--shared-gpu-playback",
             "--no-web", "--hwdec", "auto-safe",
             "--video-quality", str(quality), "--mpv-wid", str(hwnd),
-            "--rtx-vsr" if rtx_vsr else "--no-rtx-vsr",
             "--gui-control", "--simple-terminal"]
-    args.extend(["--memory-lines", str(memory_lines),
-                 "--correction-vod-retries", str(correction_vod_retries),
-                 "--correction-live-retries", str(correction_live_retries)])
+    args.extend(["--memory-lines", str(memory_lines)])
+    for flag, value in (("--voxtral-model", voxtral_model), ("--audio-cpp-path", audio_cpp_path)):
+        if value is not None:
+            args.extend([flag, value.strip()])
     for enabled, flag in ((extended_memory, "extended-memory"),
-                          (smart_correction, "smart-correction"),
                           (youtube_chat_context, "youtube-chat-context"),
                           (safe_playback, "safe-playback"),
                           (diagnostics, "diagnostics")):
@@ -144,8 +138,7 @@ def diagnostic_rows(event: dict) -> dict[str, str]:
                     f"temperature {number(gpu.get('temperature_c'), ' °C')}; "
                     f"power {number(gpu.get('power_w'), ' W')}")
     stage_text = "; ".join(f"{label} {number(stages.get(key), ' s', 2)}" for label, key in (
-        ("Haas", "haas_s"), ("Whisper", "whisper_s"),
-        ("LFM", "lfm_s"), ("PLaMo", "plamo_s")))
+        ("Voxtral", "voxtral_s"), ("PLaMo", "plamo_s")))
     pending = counters.get("pending_subtitles", queues.get("subtitles", queues.get("subtitle")))
     subtitle_text = (f"Pending {number(pending, precision=0)}; "
                      f"latency {number(counters.get('latency_s'), ' s', 2)}; "
@@ -156,8 +149,6 @@ def diagnostic_rows(event: dict) -> dict[str, str]:
     playback_text = (f"Resolution {description(playback.get('resolution'))}; "
                      f"decoder {description(playback.get('decoder'))}; "
                      f"hardware decoding {description(playback.get('hwdec'))}")
-    vsr_text = (f"Requested {state(playback.get('vsr_requested'))}; "
-               f"confirmed active {state(playback.get('vsr_active'))}")
     worker_parts = []
     threads = workers.get("threads")
     if isinstance(threads, dict):
@@ -181,7 +172,7 @@ def diagnostic_rows(event: dict) -> dict[str, str]:
     worker_text = "; ".join(worker_parts) or "unknown"
     return dict(gpu=gpu_text, activity=gpu_activity, stages=stage_text,
                 subtitles=subtitle_text, queues=queue_text,
-                playback=playback_text, vsr=vsr_text, workers=worker_text)
+                playback=playback_text, workers=worker_text)
 
 
 def prepare_project(root: Path):
@@ -198,19 +189,17 @@ def subprocess_environment(root: Path, original: dict[str, str] | None = None) -
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONUTF8"] = "1"
     env["VIDEO_TRANSLATE_GUI"] = "1"
-    extra = []
     if os.name == "nt":
-        local = Path(env.get("LOCALAPPDATA", ""))
-        marker = local / "HaasPLaMo" / "dual-llama-bin-path.txt"
-        if marker.is_file():
-            path = Path(marker.read_text(encoding="utf-8-sig").strip())
-            if (path / "llama-server.exe").is_file():
-                extra.append(str(path))
-        speech = local / "Programs" / "speech.cpp" / "current"
-        if (speech / "speech.exe").is_file():
-            extra.append(str(speech))
-    if extra:
-        env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+        extra = []
+        for marker_name, executable in (("llama-bin-path.txt", "llama-server.exe"),
+                                        ("voxtral-bin-path.txt", "audiocpp_server.exe")):
+            marker = root / ".cache" / marker_name
+            if marker.is_file():
+                directory = Path(marker.read_text(encoding="utf-8-sig").strip())
+                if (directory / executable).is_file():
+                    extra.append(str(directory))
+        if extra:
+            env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
     return env
 
 

@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
-from .asr.diagnostics import append_comparison
 from .asr.quality_guard import transcript_problem
 from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
@@ -106,285 +105,139 @@ def run_asr(
     session_cache: SessionSubtitleCache | None = None,
     asr_cfg: AsrConfig | None = None,
     live: bool = False,
-    dual=None,
+    playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
     language_filter=None,
     gate=None,
+    chat_context=None,
 ) -> None:
-    """Transcribe Japanese speech; drop only confident English/Indonesian audio."""
+    """Recognize complete VAD utterances, retaining their original media times."""
+    import re
+    import numpy as np
+
     name_history = deque(maxlen=4)
     name_generation = None
+    last_text = ""
+    repeated = 0
+
+    def cancelled(generation):
+        return ((stop is not None and stop.is_set())
+                or (get_generation is not None and generation != get_generation()))
+
     while True:
         item = in_q.get()
-
         if item is None:
             break
-        if stop is not None and stop.is_set():
-            continue  # discard queued ASR work after player shutdown
-
+        if cancelled(item.generation):
+            continue
         if isinstance(item, AudioProgress):
-            if get_generation is not None and item.generation != get_generation():
-                continue
-
             if item.reset or item.generation != name_generation:
                 name_history.clear()
-                reset_names = getattr(dual, "reset_name_context", None)
-                if callable(reset_names):
-                    reset_names(item.generation)
+                last_text, repeated = "", 0
+                cancel = getattr(asr, "cancel_pending", None)
+                if callable(cancel):
+                    cancel()
             name_generation = item.generation
             out_q.put(item)
             continue
-
         utt = item
-
-        if get_generation is not None and utt.generation != get_generation():
-            continue
         if utt.generation != name_generation:
             name_history.clear()
+            last_text, repeated = "", 0
+            cancel = getattr(asr, "cancel_pending", None)
+            if callable(cancel):
+                cancel()
             name_generation = utt.generation
-        if (live and dual is not None and _expired_live_cue(
-                utt, getattr(dual, "playback_position", None), live_late_window_s)):
-            log.info("Skipping expired live ASR cue %.2f-%.2fs", utt.start_s, utt.end_s)
+        if live and _expired_live_cue(utt, playback_position, live_late_window_s):
             increment_counter("expired")
             continue
-
-        # Reuse complete Japanese+English results when a backward seek
-        # revisits an utterance with matching VAD boundaries.
-        cached = (
-            session_cache.match(utt.start_s, utt.end_s)
-            if session_cache is not None else None
-        )
+        cached = (session_cache.match(utt.start_s, utt.end_s)
+                  if session_cache is not None else None)
         if cached is not None:
-            if get_generation is not None and utt.generation != get_generation():
+            if cancelled(utt.generation):
                 continue
-            log.debug(
-                "reusing translated VOD cue %.2f-%.2fs after seek",
-                cached.start_s, cached.end_s,
-            )
             name_history.append(cached.ja[:160])
-            if dual is not None:
-                dual.remember(utt.generation, cached.ja)
-            out_q.put(replace(
-                cached,
-                generation=utt.generation,
-                timings=utt.timings,
-            ))
+            out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
-
-        # Language is determined from ORIGINAL audio, not Japanese-forced ASR.
-        # Never send confidently English or Indonesian speech to Haas/Whisper Turbo,
-        # PLaMo, terminal, web or MPV. No English/Indonesian subtitles exist.
-        session = getattr(dual, "session_id", None)
-        cue = dict(session_id=session, generation=utt.generation,
-                   start_s=round(utt.start_s, 3), end_s=round(utt.end_s, 3))
         if language_filter is not None:
-            started = time.monotonic()
             verdict = language_filter.classify(utt.audio)
-            if session:
-                append_comparison(dict(cue, stage="language_filter", language=verdict.language,
-                                       probability=verdict.probability, dropped=verdict.drop,
-                                       reason=verdict.reason, elapsed_s=time.monotonic()-started))
             if verdict.drop:
-                log.info(
-                    "Filtered non-Japanese audio %.2f-%.2fs: %s "
-                    "(confidence=%.3f, Japanese=%.3f); no subtitle",
-                    utt.start_s, utt.end_s,
-                    verdict.language, verdict.probability,
-                    verdict.japanese_probability,
-                )
+                record_event("language_filtered", generation=utt.generation,
+                             language=verdict.language, probability=verdict.probability)
                 continue
-            if verdict.language in ("en", "id") or verdict.reason == "inference_error":
-                log.debug(
-                    "Language filter passed ambiguous cue %.2f-%.2fs: "
-                    "language=%s confidence=%.3f reason=%s",
-                    utt.start_s, utt.end_s, verdict.language,
-                    verdict.probability, verdict.reason,
-                )
-
+        if cancelled(utt.generation):
+            continue
         utt.timings.asr_start = time.monotonic()
-        # No English or Indonesian passthrough: only accepted Japanese speech
-        # proceeds to Haas and Whisper Turbo after the original-audio filter.
-        if get_generation is not None and utt.generation != get_generation():
-            continue
-        if stop is not None and stop.is_set():
-            continue
         try:
-            with (gate.operation("haas", current=get_generation, generation=utt.generation)
+            with (gate.operation("voxtral", current=get_generation, generation=utt.generation)
                   if gate is not None else nullcontext()):
-                if live and dual is not None and _expired_live_cue(
-                        utt, getattr(dual, "playback_position", None), live_late_window_s):
+                if live and _expired_live_cue(utt, playback_position, live_late_window_s):
                     increment_counter("expired")
                     continue
-                model_started = time.monotonic()
-                keywords = []
-                hint_provider = getattr(dual, "name_keywords", None)
-                if (asr_cfg is not None and getattr(asr_cfg, "haas_keywords_enabled", False)
-                        and not utt.probe and callable(hint_provider)):
-                    try:
-                        keywords = hint_provider(utt.generation)
-                    except Exception:
-                        log.warning("Name keyword context unavailable; using ordinary Haas decode")
-                text = (asr.transcribe(utt.audio, utt.probe, keywords=keywords)
-                        if keywords else asr.transcribe(utt.audio, utt.probe))
+                text = asr.transcribe(utt.audio, utt.probe)
         except CancelledError:
             continue
-        primary_elapsed_s = time.monotonic() - model_started
-        keyword_diagnostic = getattr(asr, "last_keyword_diagnostics", {})
-        primary_keyword_diagnostic = (dict(keyword_diagnostic)
-                                      if isinstance(keyword_diagnostic, dict) else {})
-        update_metrics(stages={"haas_s": primary_elapsed_s})
-        if stop is not None and stop.is_set():
-            continue
-        if get_generation is not None and utt.generation != get_generation():
-            continue
-        choice = (dual.select_segment(utt, text, vod_title,
-                                      lambda: (in_q.qsize() > (1 if live else 5)
-                                               or out_q.qsize() > (1 if live else 5)), get_generation,
-                                      getattr(asr, "last_stop", None),
-                                      primary_elapsed_s)
-                  if dual is not None else None)
-        original_haas = text
-        if choice is not None:
-            text = choice
-            if not text:
-                log.info(
-                    "VAD-detected speech %.2f-%.2fs omitted by dual-ASR quality selection "
-                    "(VAD confidence=%.2f)",
-                    utt.start_s, utt.end_s, utt.vad_confidence or 0.0,
-                )
-                continue
-        # Do not re-decode music, low-confidence noise or live audio.
-        # Edge silence sometimes helps Haas terminate an omitted short cue.
-        duration = utt.end_s - utt.start_s
-        if (choice is None and not live and asr_cfg is not None and asr_cfg.retry_empty_speech
-                and not getattr(asr, "last_failed", False)
-                and not utt.probe and not is_usable_transcript(text)
-                and utt.vad_confidence is not None
-                and utt.vad_confidence >= asr_cfg.retry_min_confidence
-                and asr_cfg.retry_min_duration_s <= duration <= asr_cfg.retry_max_duration_s):
-            import numpy as np
-            pad = int(0.2 * SAMPLE_RATE)
-            try:
-                with (gate.operation("haas_retry", current=get_generation, generation=utt.generation)
-                      if gate is not None else nullcontext()):
-                    candidate = asr.transcribe(np.pad(utt.audio, (pad, pad)), False)
-            except CancelledError:
-                continue
-            if is_usable_transcript(candidate):
-                text = candidate
-                log.info("Recovered VAD-positive silent Haas result at %.2f-%.2fs",
-                         utt.start_s, utt.end_s)
-            else:
-                log.debug("VAD-positive Haas retry produced no usable speech at %.2fs",
-                          utt.start_s)
         utt.timings.asr_end = time.monotonic()
-
-        # Caption evidence can correct a proper name regardless of whether
-        # the reconciler selected Haas or Parakeet. Previously a non-None
-        # dual-ASR selection skipped ALL caption matching and name repairs.
-        before_caption = text
-        caption_match = (
-            captions.match(utt.start_s, utt.end_s)
-            if captions is not None else None
-        )
-        if text and caption_match is not None and caption_match.reliable:
-            text = reconcile_caption(text, caption_match.text)
-
-        if (
-            choice is None and not text and caption_match is not None
-            and caption_match.reliable and caption_match.creator_uploaded
-            and is_usable_transcript(caption_match.text)
-        ):
-            text = caption_match.text
-            log.debug(
-                "using aligned YouTube caption because Haas returned no text "
-                "(%.2f-%.2fs, coverage=%.0f%%): %s",
-                utt.start_s, utt.end_s, caption_match.coverage * 100, text,
-            )
-
-        if not text or not is_usable_transcript(text):
-            log.info(
-                "VAD-detected speech %.2f-%.2fs produced no usable Japanese transcript "
-                "(Haas/Parakeet/caption stage, VAD confidence=%.2f)",
-                utt.start_s, utt.end_s, utt.vad_confidence or 0.0,
-            )
-            continue
-        quality_issue = transcript_problem(text, utt.end_s - utt.start_s)
-        if quality_issue:
-            log.warning("Suppressed suspect ASR at %.2f-%.2fs: %s", utt.start_s, utt.end_s, quality_issue)
+        update_metrics(stages={"voxtral_s": utt.timings.asr_end - utt.timings.asr_start})
+        if cancelled(utt.generation):
             continue
 
-        # Corrections must apply to the FINAL selected Japanese hypothesis.
-        # These rules use explicit caption/video context and do not synthesize
-        # new speech; never repair phonetic Watanabe against an explicit caption.
-        before_name = text
-        corrected = correct_asr_name(
-            text,
-            vod_title=vod_title,
-            caption=caption_match.text if caption_match and caption_match.reliable else "",
-        )
-        if corrected != text:
-            log.info("Watame ASR name correction: %s -> %s", text, corrected)
-            text = corrected
-
-        repaired = correct_known_asr_terms(
-            text,
-            video_context=vod_title,
-            caption=caption_match.text if caption_match and caption_match.reliable else "",
-        )
-        if repaired != text:
-            log.info("Verified context ASR term: %r -> %r", text, repaired)
-            text = repaired
-
-        if get_generation is not None and utt.generation != get_generation():
+        # Voxtral auto-detects language. Keep the original-audio language gate,
+        # and never translate a purely foreign-language transcription as Japanese.
+        if not isinstance(text, str) or not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text):
             continue
-        if stop is not None and stop.is_set():
+        if asr_cfg is not None and any(term in text for term in asr_cfg.blocklist):
             continue
-
-        # Resolve against the final Japanese after caption/term repairs. Model
-        # classifications only apply to the exact source whose spans were read.
-        name_context = dict(getattr(utt, "name_disambiguation", {}) or {})
-        classifications = (name_context.get("classifications")
-                           if name_context.get("japanese") == text else None)
+        issue = transcript_problem(text, utt.end_s - utt.start_s)
+        if issue:
+            increment_counter("dropped")
+            record_event("asr_suppressed", reason=issue, generation=utt.generation)
+            continue
+        compact = re.sub(r"[\W_]+", "", text.casefold())
+        repeated = repeated + 1 if compact == last_text else 1
+        last_text = compact
+        # Retain spoken repeated reactions; only suppress sustained long loops.
+        if len(compact) >= 12 and repeated >= 4:
+            increment_counter("dropped")
+            continue
+        # Familiar hallucinated outros on faint, sub-second non-speech are
+        # insufficient evidence for a subtitle. Never reject a normal short reply.
+        if (text.strip(" 。！？!?") in ("ご視聴ありがとうございました", "チャンネル登録よろしくお願いします")
+                and utt.end_s - utt.start_s < 1.3
+                and utt.vad_confidence is not None and utt.vad_confidence < .55
+                and len(utt.audio) and float(np.mean(np.square(utt.audio))) < .0001):
+            increment_counter("dropped")
+            continue
+        original = text
+        caption_match = captions.match(utt.start_s, utt.end_s) if captions is not None else None
+        caption_text = caption_match.text if caption_match and caption_match.reliable else ""
+        if caption_text:
+            text = reconcile_caption(text, caption_text)
+        # Captions only corroborate recognized words; an empty recognition is
+        # never replaced by dialogue that was not heard in this utterance.
+        text = correct_asr_name(text, vod_title=vod_title, caption=caption_text)
+        text = correct_known_asr_terms(text, video_context=vod_title, caption=caption_text)
+        if not is_usable_transcript(text) or cancelled(utt.generation):
+            continue
+        name_context = {"japanese": text, "voxtral": original}
         try:
-            mentions = resolve_names(
-                text, haas=original_haas, whisper=name_context.get("whisper", ""),
-                previous_ja=" ".join(name_history), video_title=vod_title,
-                classifications=classifications,
-            )
+            mentions = resolve_names(text, previous_ja=" ".join(name_history), video_title=vod_title)
             name_context["mentions"] = [mention.as_dict() for mention in mentions]
-            name_context["resolver_error"] = None
         except Exception as exc:
-            # An optional resolver failure cannot stop later subtitles.
-            log.warning("Name resolver unavailable at %.2fs: %s", utt.start_s, exc)
+            log.warning("Name resolver unavailable: %s", exc)
             name_context["mentions"] = []
-            name_context["resolver_error"] = type(exc).__name__
-        name_context.update(japanese=text, haas=original_haas,
-                            haas_keywords=primary_keyword_diagnostic)
+        if chat_context is not None:
+            try:
+                name_context["chat_evidence"] = chat_context(utt, text)
+            except Exception as exc:
+                log.debug("Public chat context unavailable: %s", exc)
+        if cancelled(utt.generation):
+            continue
         name_history.append(text[:160])
-        if dual is not None:
-            dual.remember(utt.generation, text)
-            if session:
-                append_comparison(dict(cue, stage="japanese", haas=original_haas,
-                                       selected_ja=choice, after_asr_retry=before_caption,
-                                       after_caption=before_name, after_name=corrected,
-                                       after_term_repair=text, speech_start_s=utt.speech_start_s,
-                                       name_resolution=name_context,
-                                       asr_elapsed_s=utt.timings.asr_end-utt.timings.asr_start))
-        out_q.put(
-            Transcript(
-                utt.start_s,
-                utt.end_s,
-                text,
-                utt.timings,
-                generation=utt.generation,
-                speech_start_s=utt.speech_start_s,
-                diagnostic_session=session,
-                name_context=name_context,
-            )
-        )
-
+        out_q.put(Transcript(utt.start_s, utt.end_s, text, utt.timings,
+                             generation=utt.generation, speech_start_s=utt.speech_start_s,
+                             name_context=name_context))
     out_q.put(None)
 
 
@@ -547,14 +400,9 @@ def run_translate(
                 )
 
         tr.timings.mt_end = time.monotonic()
-        if tr.diagnostic_session:
-            append_comparison(dict(stage="translation", session_id=tr.diagnostic_session,
-                                   generation=tr.generation, start_s=round(tr.start_s, 3),
-                                   end_s=round(tr.end_s, 3), final_ja=tr.ja if translator else None,
-                                   history_repair_from=before_history if before_history != tr.ja else None,
-                                   final_en=en, suppressed=suppressed,
-                                   name_translation=getattr(translator, "last_name_diagnostics", {}),
-                                   mt_elapsed_s=tr.timings.mt_end-tr.timings.mt_start))
+        record_event("translation_complete", generation=tr.generation,
+                     elapsed_s=tr.timings.mt_end-tr.timings.mt_start,
+                     suppressed=suppressed, history_repaired=before_history != tr.ja)
         if suppressed:
             increment_counter("dropped")
             log.info(
@@ -645,7 +493,8 @@ def run(
     captions: CaptionIndex | PendingCaptions | None = None,
     vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
-    dual=None,
+    playback_position: Callable[[], float | None] | None = None,
+    chat_context=None,
     language_filter=None,
     segmenter=None,
     gate=None,
@@ -696,7 +545,7 @@ def run(
         threading.Thread(
             target=_guard_stage,
             args=("vad", run_segmenter, failures, segmenter if segmenter is not None else Segmenter(vad_cfg), audio_q, utt_q,
-                  lambda: ingest.generation, *((gate,) if vad_cfg.device == "cuda" else ())),
+                  lambda: ingest.generation),
             name="vad",
             daemon=True,
         ),
@@ -712,11 +561,12 @@ def run(
                 session_cache,
                 cfg.asr,
                 bool(ingest.source.live),
-                dual,
+                playback_position,
                 cfg.mpv.live_late_window_s,
                 stop,
                 language_filter,
                 gate,
+                chat_context,
             ),
             name="asr",
             daemon=True,
@@ -730,7 +580,7 @@ def run(
                 sub_q,
                 lambda: ingest.generation,
                 bool(ingest.source.live),
-                getattr(dual, "playback_position", None),
+                playback_position,
                 cfg.mpv.live_late_window_s,
                 stop,
                 gate,
@@ -745,6 +595,7 @@ def run(
 
     stats = Stats()
     last_subtitle_generation: int | None = None
+    observed_generation = ingest.generation
     processed_generation = ingest.generation
     processed_from = ingest.source.start_s
     started = time.monotonic()
@@ -759,6 +610,12 @@ def run(
 
     try:
         while not stop.is_set():
+            # Generation checks in each worker discard an in-flight old cue.
+            # The ASR worker flushes its adapter before the next generation;
+            # a delayed main-loop tick must never cancel a new-generation cue.
+            if ingest.generation != observed_generation:
+                observed_generation = ingest.generation
+                record_event("inference_generation_reset", generation=observed_generation)
             _raise_worker_failure(failures)
             if diagnostics is not None and time.monotonic() >= next_diagnostics:
                 next_diagnostics = time.monotonic() + cfg.diagnostics.sample_interval_s
@@ -869,11 +726,11 @@ def run(
                 if backlog and now - last_activity > 90.0:
                     record_event("pipeline_stall", queues=backlog, elapsed_s=now-last_activity)
                     raise RuntimeError(
-                        "Haas/PLaMo pipeline stalled with queued work: " + str(backlog)
+                        "Voxtral/PLaMo pipeline stalled with queued work: " + str(backlog)
                     )
                 if backlog and now - last_activity > 30.0 and now - last_warning > 30.0:
                     last_warning = now
-                    log.warning("Haas/PLaMo pipeline waiting with queued work: %s", backlog)
+                    log.warning("Voxtral/PLaMo pipeline waiting with queued work: %s", backlog)
 
             for name, q in queues.items():
                 stats.max_q[name] = max(
@@ -919,9 +776,15 @@ def run(
         log.info("stopping (Ctrl+C)")
 
     finally:
-        # Stop producers and MPV first; never close Haas or PLaMo while
-        # an ASR/MT thread is still actively using the model.
+        # Stop producers and MPV, then interrupt the owned ASR server so a
+        # pending request cannot keep the application alive after closing.
         stop.set()
+        close_asr = getattr(asr, "close", None)
+        if callable(close_asr):
+            try:
+                close_asr()
+            except Exception:
+                log.exception("Voxtral interruption failed during shutdown")
         try:
             for out in outputs:
                 try:
@@ -938,15 +801,11 @@ def run(
                 # VAD -> ASR -> MT. Give in-flight VOD requests time to finish.
                 grace_s = max(15.0, min(120.0,
                     cfg.asr.response_timeout_s
-                    + cfg.dual_asr.vod_timeout_s
-                    + cfg.reconciler.vod_timeout_s
                     + cfg.translate.timeout_s
                     + cfg.translate.retry_timeout_s))
                 from .windows_subprocess import stopping
                 if stopping.is_set():
                     from .gui_control import WORKER_DRAIN_S
-                    if dual:
-                        dual.release()
                     grace_s = WORKER_DRAIN_S
                 deadline = time.monotonic() + grace_s
                 # Main loop is no longer rendering subtitles: keep draining
@@ -967,7 +826,7 @@ def run(
                 else:
                     log.info("all pipeline workers exited before model shutdown")
                 record_event("pipeline_cleanup", active_threads=active)
-                for label, worker in (("Haas", asr), ("PLaMo", translator)):
+                for label, worker in (("Voxtral", asr), ("PLaMo", translator)):
                     close = getattr(worker, "close", None)
                     if callable(close):
                         try:

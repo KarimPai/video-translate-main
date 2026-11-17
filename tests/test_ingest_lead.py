@@ -92,7 +92,6 @@ class PlaybackPacingTests(unittest.TestCase):
         player._read_player_events = lambda: (False, 0.0)
         player._pending_seek = None
         player._native_seek_at = None
-        player._check_vsr_health = lambda: None
         player._lock = threading.Lock()
         player._lines = []
         with patch("auto_translate.output.mpv.time.monotonic", side_effect=[0, 5, 5]):

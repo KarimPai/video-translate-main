@@ -27,19 +27,10 @@ def nickname_boundary(text: str, start: int, end: int, *, joined=False, marine=F
 
 
 class Glossary:
-    def __init__(self, terms: dict[str, str], *, scene_pairs=(), name_guards=(), nicknames=None) -> None:
+    def __init__(self, terms: dict[str, str], *, nicknames=None) -> None:
         # Longest first, so "てぇてぇ" is matched before any shorter term inside it.
         self.nicknames = dict(nicknames or {})
         self.terms = sorted((terms | self.nicknames).items(), key=lambda kv: len(kv[0]), reverse=True)
-        # Optional ASR-only rules: acoustic peer comparison, not inferred words.
-        self.scene_pairs = tuple(
-            (rule["heard"], rule["correct"], tuple(rule.get("anchors", ())))
-            for rule in scene_pairs
-        )
-        self.name_guards = tuple(
-            (re.compile(rule["full"]), re.compile(rule["mention"]))
-            for rule in name_guards
-        )
 
     @classmethod
     def load(cls, path: Path) -> "Glossary":
@@ -48,11 +39,8 @@ class Glossary:
             return cls({})
         with path.open("rb") as f:
             data = tomllib.load(f)
-            rules = data.get("asr_rules", {})
             return cls(data.get("terms", {}),
-                       nicknames=data.get("nicknames"),
-                       scene_pairs=rules.get("scene_pairs", ()),
-                       name_guards=rules.get("name_guards", ()))
+                       nicknames=data.get("nicknames"))
 
     def find(self, ja: str, *, previous_ja: str = "", miko_context: bool = False,
              name_mentions=None) -> list[tuple[str, str]]:

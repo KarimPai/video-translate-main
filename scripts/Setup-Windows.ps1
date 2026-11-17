@@ -1,5 +1,5 @@
-﻿# Windows 11 x64, NVIDIA CUDA + Vulkan; run through ../Setup.bat.
-# Installer sources: WinGet, nyosegawa/speech.cpp, ggml-org/llama.cpp.
+# Windows 11 x64, NVIDIA CUDA; run through ../Setup.bat.
+# Installer sources: WinGet, 0xShug0/audio.cpp, ggml-org/llama.cpp.
 param([Parameter(Mandatory = $true)][string]$ProjectDir)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -73,7 +73,7 @@ try {
     }
     $adapterNames = @((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name))
     if (@($adapterNames | Where-Object { $_ -match 'NVIDIA' }).Count -eq 0) {
-        throw 'This branch requires an NVIDIA GPU with CUDA and a Vulkan-capable driver for FireRedVAD/Haas.'
+        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Voxtral.'
     }
     Write-Host 'Detected video adapters:' ($adapterNames -join '; ')
 
@@ -102,51 +102,70 @@ try {
     try {
         & uv python install 3.12
         if ($LASTEXITCODE -ne 0) { throw 'uv python install 3.12 failed.' }
-        & uv sync --locked --extra diagnostics
-        if ($LASTEXITCODE -ne 0) { throw 'uv sync --locked --extra diagnostics failed. Review Python/CUDA package compatibility.' }
+        & uv sync --locked --extra gui --extra diagnostics
+        if ($LASTEXITCODE -ne 0) { throw 'uv sync --locked --extra gui --extra diagnostics failed. Review Python/CUDA package compatibility.' }
     } finally { Pop-Location }
 
-    Step 'Installing speech.cpp (official installer)'
-    if (-not (Get-Command speech -ErrorAction SilentlyContinue) -or
-        ((& speech --version) -join '') -notlike 'speech.cpp 0.10.1,*') {
-        $speechScript = Join-Path $env:TEMP ('speech-install-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    Step 'Installing pinned audio.cpp Windows CUDA 12.4 runtime'
+    $audioRoot = Join-Path $ProjectDir '.runtime\audio-v0.9.5-cuda12'
+    New-Item -ItemType Directory -Path $audioRoot -Force | Out-Null
+    $audioServer = Get-ChildItem -LiteralPath $audioRoot -Recurse -Filter 'audiocpp_server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $audioServer) {
+        $headers = @{ 'User-Agent' = 'VideoTranslate-Voxtral-Setup'; 'Accept' = 'application/vnd.github+json' }
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/0xShug0/audio.cpp/releases/tags/v0.9.5' -Headers $headers
+        $build = $release.assets | Where-Object name -eq 'audio-v0.9.5-bin-windows-x64-cuda12.4.zip'
+        $runtime = $release.assets | Where-Object name -eq 'audio-v0.9.5-cudart-windows-x64-cuda12.4.zip'
+        if (-not $build -or -not $runtime) { throw 'Pinned audio.cpp CUDA 12.4 Windows release assets are missing.' }
+        $downloadDir = Join-Path $ProjectDir ('.cache\audio-download-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
         try {
-            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nyosegawa/speech.cpp/03555100287c118b41d1b475044e5ab1e07baa8c/install.ps1' -OutFile $speechScript -UseBasicParsing
-            if ((Get-FileHash -LiteralPath $speechScript -Algorithm SHA256).Hash -ine '5fe606f8dd49e6faf8e5a00b1d08ee620a2992e3b3f0e5d59539584820588c09') {
-                throw 'speech.cpp installer SHA256 mismatch'
-            }
-            & $speechScript -Version 0.10.1
-            if (-not $?) { throw 'speech.cpp installer failed.' }
-            $env:Path = "$env:LOCALAPPDATA\Programs\speech.cpp\current;$env:Path"
-        } finally { Remove-Item -LiteralPath $speechScript -Force -ErrorAction SilentlyContinue }
-    } else { Write-Host 'speech.cpp already installed.' }
-    Require-Command speech 'Check the speech.cpp Windows Vulkan installer'
-    Step 'Downloading Haas-ja-v1.0 ASR model'
-    & speech pull haas-ja-v1.0
-    if ($LASTEXITCODE -ne 0) { throw 'speech pull haas-ja-v1.0 failed.' }
-    & speech info haas-ja-v1.0
-    if ($LASTEXITCODE -ne 0) { throw 'speech info haas-ja-v1.0 failed.' }
-    Write-Host 'Available speech.cpp devices:'
-    & speech devices
-    if ($LASTEXITCODE -ne 0) { throw 'speech devices failed. Check your Vulkan driver.' }
-    Write-Host 'The selected Haas device must be Vulkan0 (see device list above).'
+            $buildZip = Join-Path $downloadDir 'audio.zip'
+            $runtimeZip = Join-Path $downloadDir 'cudart.zip'
+            Fetch-Asset $build $buildZip 81f38a0a62935bdf4b2605541a21d50223b2e12b661887031705dd8a369f844b
+            Fetch-Asset $runtime $runtimeZip fa55dfaff1d4b5c6e8fac460d64f380b9df76cd46435f187c39b05700f623a7e
+            Expand-Archive -LiteralPath $buildZip -DestinationPath $audioRoot -Force
+            Expand-Archive -LiteralPath $runtimeZip -DestinationPath $audioRoot -Force
+        } finally { Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue }
+        $audioServer = Get-ChildItem -LiteralPath $audioRoot -Recurse -Filter 'audiocpp_server.exe' -File | Select-Object -First 1
+        if (-not $audioServer) { throw 'audiocpp_server.exe missing from the official audio.cpp archive.' }
+    } else { Write-Host 'audio.cpp CUDA runtime already installed.' }
+    $audioBin = $audioServer.Directory.FullName
+    foreach ($dll in @('ggml-cuda.dll', 'cudart64_12.dll', 'cublas64_12.dll', 'cublasLt64_12.dll', 'cufft64_11.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $audioBin $dll))) {
+            $found = Get-ChildItem -LiteralPath $audioRoot -Recurse -Filter $dll -File | Select-Object -First 1
+            if (-not $found) { throw "Missing audio.cpp CUDA runtime component: $dll. Remove only .runtime\audio-v0.9.5-cuda12 and rerun Setup.bat." }
+            Copy-Item -LiteralPath $found.FullName -Destination $audioBin -Force
+        }
+    }
+    # v0.9.5 archives place binaries at the archive root; this matches the
+    # independent branch configuration. The marker also exposes DLLs to launchers.
+    [IO.File]::WriteAllText((Join-Path $cache 'voxtral-bin-path.txt'), $audioBin)
+    $env:Path = "$audioBin;$env:Path"
+    & $audioServer.FullName --help
+    if ($LASTEXITCODE -ne 0) { throw 'audio.cpp cannot start. Install Microsoft Visual C++ x64 Redistributable and update the NVIDIA driver; verify the bundled CUDA DLLs.' }
+    Refresh-Path
+    if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) {
+        throw 'nvidia-smi.exe is unavailable. Install a current NVIDIA driver, restart Windows, then rerun Setup.bat.'
+    }
+    & nvidia-smi.exe --query-gpu=name,driver_version,memory.total,memory.free --format=csv
+    if ($LASTEXITCODE -ne 0) { throw 'NVIDIA driver query failed. Repair/update the NVIDIA driver before using Voxtral CUDA.' }
 
     Step 'Installing CUDA 12.4 llama.cpp binaries and matching runtime'
-    $installRoot = Join-Path $env:LOCALAPPDATA 'HaasPLaMo'
+    $installRoot = Join-Path $ProjectDir '.runtime'
     # b12318 recognizes tokenizer.ggml.model=plamo3 in the translator GGUF.
     $llamaRoot = Join-Path $installRoot 'llama-b12318-cuda12'
-    $pathFile = Join-Path $installRoot 'dual-llama-bin-path.txt'
+    $pathFile = Join-Path $cache 'llama-bin-path.txt'
     New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
-        $headers = @{ 'User-Agent' = 'HaasPLaMo-Setup'; 'Accept' = 'application/vnd.github+json' }
+        $headers = @{ 'User-Agent' = 'VideoTranslate-Voxtral-Setup'; 'Accept' = 'application/vnd.github+json' }
         $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b12318' -Headers $headers
         $build = $release.assets | Where-Object name -eq 'llama-b12318-bin-win-cuda-12.4-x64.zip'
         $runtime = $release.assets | Where-Object name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'
         if (-not $build -or -not $runtime) {
             throw 'No matching CUDA 12.4 llama.cpp Windows release found. See https://github.com/ggml-org/llama.cpp/releases'
         }
-        $downloadDir = Join-Path $env:TEMP ('haas-plamo-' + [guid]::NewGuid().ToString('N'))
+        $downloadDir = Join-Path $ProjectDir ('.cache\voxtral-plamo-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
         try {
             $buildZip = Join-Path $downloadDir 'llama.zip'
@@ -160,7 +179,7 @@ try {
         if (-not $existingServer) { throw 'llama-server.exe missing after extracting official archives.' }
     } else { Write-Host 'CUDA 12.4 llama-server.exe already downloaded.' }
     $binDir = $existingServer.Directory.FullName
-    Set-Content -LiteralPath $pathFile -Value $binDir -Encoding ASCII
+    [IO.File]::WriteAllText($pathFile, $binDir)
     $env:Path = "$binDir;$env:Path"
     & $existingServer.FullName --version
     if ($LASTEXITCODE -ne 0) { throw 'llama-server.exe failed to launch. Update the NVIDIA driver or check CUDA runtime DLLs.' }
@@ -168,16 +187,18 @@ try {
     Step 'Checking Python environment'
     Push-Location -LiteralPath $ProjectDir
     try {
-        & uv run --no-sync python -c 'import numpy, fireredvad, auto_translate'
+        & uv run --no-sync python -c 'import numpy, fireredvad, torch, onnxruntime, PySide6, auto_translate; assert torch.version.cuda is None'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
+        & uv run --no-sync python -m auto_translate.voxtral_model
+        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Voxtral Q4_K. Rerun Setup to resume.' }
         & uv run --no-sync python -m auto_translate.plamo_model
         if ($LASTEXITCODE -ne 0) { throw 'Could not prefetch PLaMo GGUF. Rerun Setup to resume.' }
-        Write-Host 'Python dependency and PLaMo model checks OK'
+        Write-Host 'Python dependencies, Voxtral Q4_K integrity and PLaMo model checks OK'
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host 'Haas downloaded; PLaMo 3 Translate 2B Q4_K_M (1.81 GB) ready in the model cache.'
-    Write-Host 'A CUDA-capable NVIDIA driver and working Vulkan0 device are required.'
+    Write-Host 'Voxtral Q4_K ready under models\voxtral; PLaMo Q4_K_M ready in the model cache.'
+    Write-Host 'A CUDA-capable NVIDIA driver is required. FireRedVAD runs on CPU.'
     exit 0
 } catch {
     Write-Host "`nSETUP ERROR: $($_.Exception.Message)" -ForegroundColor Red

@@ -1,6 +1,6 @@
 """Conservative cleanup for concise English-only subtitles.
 
-Preserve Haas/PLaMo meaning while removing only evident disfluencies,
+Preserve Voxtral/PLaMo meaning while removing only evident disfluencies,
 annotation-only laughs, and repeated interjections. Never rewrite substantive
 words, negate speech, hallucinate shorter paraphrases, or remove profanity.
 """

@@ -4,9 +4,18 @@ Only exact, reviewed HoloGTA/Hololive variants are corrected. This is not a
 generic fuzzy spellchecker: never infer unheard dialogue, names or negation.
 """
 import re
+import unicodedata
 
 from .glossary import nickname_boundary
-from .asr.selection import normalize
+from .text_filter import KATA_TO_HIRA
+
+
+def normalize(text: str) -> str:
+    """Fold spelling width/kana for exact aligned-caption comparisons only."""
+    value = unicodedata.normalize("NFC", text)
+    value = re.sub(r"[！-～｡-ﾟ]+", lambda m: unicodedata.normalize("NFKC", m[0]), value)
+    value = value.translate(KATA_TO_HIRA)
+    return re.sub(r"(?<![0-9])[.,]|[.,](?![0-9])|[\s、。！？!?「」『』…]", "", value)
 
 _HOLO = re.compile(r"ホロ|holo", re.IGNORECASE)
 _GTA_ALIASES = re.compile(

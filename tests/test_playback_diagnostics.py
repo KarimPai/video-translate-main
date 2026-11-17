@@ -7,15 +7,14 @@ from unittest.mock import Mock, patch
 
 from auto_translate.config import MpvConfig
 from auto_translate.output.mpv import MpvOutput
-from auto_translate.output.rtx_vsr import VSR_LABEL
 from auto_translate.runtime_diagnostics import RuntimeDiagnostics
 from auto_translate.types import Subtitle
 from auto_translate.windows_subprocess import owned_process_status
 
 
-def player(*, live=False, now=10.0, generation=2, rtx_vsr=False):
+def player(*, live=False, now=10.0, generation=2):
     output = object.__new__(MpvOutput)
-    output.cfg = MpvConfig(rtx_vsr=rtx_vsr)
+    output.cfg = MpvConfig()
     output.ingest = SimpleNamespace(generation=generation,
                                    source=SimpleNamespace(live=live, duration=None if live else 600.0))
     output.ipc = SimpleNamespace(_properties={}, get=Mock(side_effect=AssertionError("unexpected IPC read")))
@@ -77,32 +76,6 @@ class PlaybackObservationTests(unittest.TestCase):
         self.assertEqual(output.cfg.hwdec, "auto-safe")
         output.ipc.get.assert_not_called()
 
-    def test_accepted_vsr_filter_does_not_confirm_nvidia_ai_activity(self):
-        output = player(rtx_vsr=True)
-        output.ipc._properties = {"vf": [{"label": VSR_LABEL, "name": "d3d11vpp"}]}
-        output._vsr_active = True  # Existing player flag means filter accepted.
-        update, _ = self.observe(output)
-        values = update.call_args.kwargs["playback"]
-        self.assertTrue(values["vsr_requested"])
-        self.assertTrue(values["vsr_filter_present"])
-        self.assertIsNone(values["vsr_active"])
-        output.ipc.get.assert_not_called()
-
-    def test_unrequested_vsr_reports_false_without_claiming_activation(self):
-        output = player(rtx_vsr=False)
-        update, _ = self.observe(output)
-        values = update.call_args.kwargs["playback"]
-        self.assertFalse(values["vsr_requested"])
-        self.assertFalse(values["vsr_active"])
-
-    def test_original_vsr_user_request_survives_effective_playback_fallback(self):
-        output = player(rtx_vsr=False)
-        output._vsr_user_requested = True
-        update, _ = self.observe(output)
-        values = update.call_args.kwargs["playback"]
-        self.assertTrue(values["vsr_requested"])
-        self.assertFalse(values["vsr_active"])
-
     def test_monitoring_is_throttled_without_additional_player_requests(self):
         output = player()
         with patch("auto_translate.output.mpv.time.monotonic", side_effect=[10., 10.1, 10.6, 12.]), patch(
@@ -155,13 +128,13 @@ class OwnedProcessObservationTests(unittest.TestCase):
         ended = Mock(pid=1202, returncode=7)
         ended.poll.return_value = 7
         unrelated = Mock(pid=9901)
-        registry = deque([("speech.exe", active), ("ffmpeg.exe", ended)], maxlen=64)
+        registry = deque([("audiocpp_server.exe", active), ("ffmpeg.exe", ended)], maxlen=64)
         with patch("auto_translate.windows_subprocess._owned", registry), patch(
                 "auto_translate.windows_subprocess.subprocess.Popen", side_effect=AssertionError("no child spawn")), patch(
                 "auto_translate.windows_subprocess.subprocess.check_output", side_effect=AssertionError("no process enumeration")):
             observed = owned_process_status()
         self.assertEqual(observed, [
-            {"name": "speech.exe", "pid": 1201, "running": True, "exit_code": None},
+            {"name": "audiocpp_server.exe", "pid": 1201, "running": True, "exit_code": None},
             {"name": "ffmpeg.exe", "pid": 1202, "running": False, "exit_code": 7},
         ])
         active.poll.assert_called_once_with()

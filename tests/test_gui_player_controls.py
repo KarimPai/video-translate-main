@@ -210,6 +210,6 @@ class PauseIntentTests(unittest.TestCase):
             player.ipc.get = lambda name: True if name == "pause" else None
             player._settle_seek = Mock(return_value=False)
             player._emit_gui_status = Mock()
-            player._check_vsr_health = player.stop.set
+            player._subtitle_ready.wait = lambda timeout, current=player: current.stop.set()
             player._play_session(False)
             self.assertEqual(("set_property", "pause", False) in player.ipc.calls, not manual)

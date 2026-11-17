@@ -108,7 +108,7 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
             AudioChunk(16000, np.empty(0), 0, reset=True, generation=1),
             AudioChunk(16000, np.ones(160), 0, generation=1),
         )
-        with gate.operation("haas"):
+        with gate.operation("voxtral"):
             gate._slots.waiting.clear()
             thread, errors = self.spawn(lambda: run_segmenter(seg, incoming, output,
                                                               lambda: generation[0], gate))
@@ -170,7 +170,7 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
     def test_separation_backpressure_put_cancels_after_seek(self):
         gate, generation = self.gate(), [0]
         with patch("auto_translate.separation.VocalSeparator") as model:
-            with gate.operation("haas"):
+            with gate.operation("voxtral"):
                 gate._slots.waiting.clear()
                 worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: generation[0])
                 self.assertTrue(gate._slots.waiting.wait(timeout=1))
@@ -192,7 +192,7 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
     def test_separation_failed_worker_with_full_input_queue_does_not_deadlock_close(self):
         gate = self.gate()
         with patch("auto_translate.separation.VocalSeparator", side_effect=RuntimeError("fixture model failure")):
-            with gate.operation("haas"):
+            with gate.operation("voxtral"):
                 gate._slots.waiting.clear()
                 worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: 0)
                 self.assertTrue(gate._slots.waiting.wait(timeout=1))
@@ -243,7 +243,7 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
     def test_separation_shutdown_unblocks_producer_and_simultaneous_close(self):
         gate = self.gate()
         with patch("auto_translate.separation.VocalSeparator") as model:
-            with gate.operation("haas"):
+            with gate.operation("voxtral"):
                 gate._slots.waiting.clear()
                 worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: 0)
                 self.assertTrue(gate._slots.waiting.wait(timeout=1))

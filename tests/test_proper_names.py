@@ -105,31 +105,12 @@ class ProperNameResolutionTests(unittest.TestCase):
             with self.subTest(ja=ja):
                 self.assertEqual(resolve_names(ja, video_title="ホロライブ"), [])
 
-    def test_unreliable_asr_spellings_are_evidence_not_identity_proof(self):
-        mentions = resolve_names("まつりが来た", haas="祭りが来た", whisper="マツリが来た",
-                                 video_title="夏色まつり ホロライブ")
-        self.assertEqual(mentions[0].classification, UNKNOWN)
-        self.assertEqual(mentions[0].alternatives, ("祭り", "マツリ"))
 
     def test_prior_literal_noun_is_not_confirmed_person_context(self):
         self.assertEqual(resolve_names("まつりが来た", previous_ja="夏祭りの話だよ")[0].classification, UNKNOWN)
 
-    def test_model_cannot_promote_title_or_weak_context(self):
-        mention = resolve_names("まつりが来た", video_title="夏色まつり", classifications={"0": PERSON})[0]
-        self.assertEqual(mention.classification, UNKNOWN)
-        self.assertIn("model_person_abstained_without_evidence", mention.evidence)
-        self.assertEqual(resolve_names("お祭りに行く", classifications={"1": PERSON})[0].classification, COMMON_NOUN)
 
-    def test_model_can_interpret_grammar_beyond_simple_patterns(self):
-        ja = "まつりから返事があった"
-        self.assertEqual(resolve_names(ja, previous_ja="まつりちゃんだよ")[0].classification, UNKNOWN)
-        mention = resolve_names(ja, previous_ja="まつりちゃんだよ", classifications={"0": PERSON})[0]
-        self.assertEqual((mention.classification, mention.target), (PERSON, "Matsuri"))
 
-    def test_malformed_classifications_abstain(self):
-        for value in ([], ["PERSON"], "PERSON", {"0": []}, {"0": {"classification": []}}):
-            with self.subTest(value=value):
-                self.assertEqual(resolve_names("まつりが来た", classifications=value)[0].classification, UNKNOWN)
 
     def test_glossary_uses_resolver_without_title_boolean_bypass(self):
         glossary = Glossary.load(Path("glossary.toml"))

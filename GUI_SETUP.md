@@ -1,205 +1,55 @@
-# Video Translate Windows GUI
+# Windows GUI setup and executable
 
-The PySide6 frontend controls the existing Haas + Whisper Large-v3 Turbo +
-LFM + PLaMo backend, including bounded context memory, optional chat context,
-smart disagreement correction, Safe Playback, and runtime diagnostics.
+The GUI starts the Voxtral speech backend and PLaMo translator from this checkout. Use Windows 11 x64 with a current NVIDIA driver; the intended GPU is an RTX 3070 8 GiB. The implementation and automated tests do not substitute for a real audio/playback validation on that machine.
 
-## What to double-click
+## Install and launch
 
-- **Start GUI.vbs** in the project root is the primary silent launcher.
-- **VideoTranslate.exe** in `dist\VideoTranslate\` is an optional packaged
-  launcher; only present after downloading the GitHub Actions build artifact.
-- **Setup.bat** is for initial runtime installation or repairing dependencies.
-- **Start translate.bat** remains an optional command-line fallback for
-  troubleshooting and comparisons.
+1. Clone `experiment/voxtral-mini-4b-single-asr` into its own folder, or extract the complete `VideoTranslate-Voxtral-Windows-GUI` workflow artifact.
+2. Run `Setup.bat`. It installs dependencies and verifies the pinned audio.cpp CUDA runtime, Voxtral Q4_K checkpoint, and llama.cpp runtime. Successful model downloads are reused.
+3. Double-click `Start GUI.vbs`, or `VideoTranslate.exe` when using a packaged artifact. Keep the complete `_internal` folder beside the executable.
+4. Enter a YouTube URL and select the video resolution. Start translation. The **Console** tab retains translations and logs when the URL controls hide.
 
-`Start GUI.vbs` automatically installs PySide6 using `uv` on first launch if
-needed. It preserves existing Python dependencies and does not redownload ASR
-or translation models. Installation may require internet access.
+`Start GUI.vbs` uses `pythonw.exe`; application-owned native helpers suppress external console windows. Setup itself has a console so installation errors remain visible. The launcher logs startup failures to `logs/gui-startup.log` and displays a Windows error dialog when necessary.
 
-## GUI operation
+The full artifact includes `src/`, `scripts/`, `web/`, the glossary, example configuration, launchers, and dependency lockfile. Setup creates `.venv/` and downloads runtimes/models after extraction. Neither a model checkpoint nor a preexisting environment is embedded in `VideoTranslate.exe`. An EXE-only artifact requires the matching complete distribution.
 
-1. Open `C:\Games\video-translate-dual-asr\Start GUI.vbs`.
-2. Paste a YouTube live or VOD URL, select 360p, 480p, 720p (default), or 1080p.
-3. Choose **Start Translation**.
-4. Once MPV confirms the video is loaded, the URL and quality controls hide.
-5. Use the **Player** tab for embedded MPV and the **Console** tab for Japanese
-   transcripts, English translations, and backend logs.
-6. Choose **Stop Translation** to restore the setup controls; the URL is retained.
+## Controls
 
-Before starting, open the compact settings section to configure translation
-memory/history length, smart correction and its VOD/live retry counts, **Use
-YouTube Chat for Context**, **Safe Playback**, and diagnostic logging. Extended
-memory keeps 16 recent utterances by default; ordinary adjacent translation
-context remains available when it is disabled. Chat and Safe Playback default
-to off. Changes apply to the next translation session.
+The player retains pause/resume, timeline seeking for VOD, fullscreen, and 360p/480p/720p/1080p selection. MPV retains standard hardware decoding and scaling. Qt owns the seekbar while MPV's competing OSC is disabled. Fullscreen retains playback controls, hides them after inactivity, and reveals them on mouse movement.
 
-The diagnostics panel reports measured GPU memory, utilization, temperature,
-power, stage durations, subtitle queues/latency/drops, playback resolution and
-decoder information, and application-owned workers. Unsupported or unverified
-values show as unavailable. RTX VSR request/filter state does not establish
-driver activation; check NVIDIA's activity indicator separately.
-Memory figures describe the whole GPU's dedicated device memory, rather than
-this application's allocation alone; WDDM may not expose every metric.
+Translation memory is enabled by default with 16 recent pairs and at most 20. Seeking and switching videos reset translation context. Optional YouTube chat supplies limited candidate-present terminology evidence. Safe Playback bounds inference concurrency and queues. Diagnostics reports available GPU observations, Voxtral/PLaMo timings, playback facts, and owned workers; unsupported metrics display as unavailable.
 
-`Setup.bat` installs the optional NVML telemetry dependency. Existing installs
-can run `uv sync --locked --extra diagnostics`. Monitoring failures must not
-stop translation. Safe Playback bounds inference concurrency and audio queues;
-it keeps the configured hardware decoder and quality, with VSR independent.
+Voxtral processes each completed CPU FireRedVAD utterance offline using a resident local audio.cpp server. VAD timestamps determine subtitle timing. A seek invalidates pending results without repeatedly reloading weights; stop/timeout closes the owned server. There is no streaming delay control in the utterance-based backend.
 
-The optional diagnostics export uses application log tails. Include filtered
-Windows display/watchdog/WER metadata only when wanted. Review the ZIP before
-sharing: application logs may contain subtitles and video metadata. It does
-not gather cookies, raw chat/user identities, or unrelated files. An OS-wide
-freeze can stop logging entirely; offline tests and the dashboard cannot
-prove that a driver-freeze root cause is fixed.
+## Configuration and local paths
 
-## RTX Video Super Resolution (VSR)
+Copy `config.example.toml` to `config.toml` for local overrides. Use the new schema provided on this branch.
 
-The **RTX Video Super Resolution** checkbox is available at all four qualities.
-It defaults to off and keeps its setting when you change resolution or start another
-video in the same window. Enable RTX VSR under **System → Video** in the NVIDIA
-app and check its activity indicator during playback.
-
-MPV requests the NVIDIA D3D11 video processor using the actual decoded height.
-The filter targets 1440p with a maximum 3× scale. A 360p source scales to 1080p.
-Filter acceptance and playback fallback reasons appear in `logs/run.log`.
-Only the driver can confirm enhancement.
-
-## Playback controls
-
-The **Player** tab has a complete **VOD timeline** showing the current playback
-position and video duration. Click anywhere on the timeline for an instant
-jump, drag the slider handle and release to seek, or use **-10s / +10s** to
-jump. Keyboard arrow, Page Up/Down, Home and End actions on the focused
-slider also seek. The Console tab logs `GUI: seek requested` when a command
-is sent, `GUI player command queued` when received, and `GUI seek command`
-when MPV starts processing it; the Player status reports the acknowledgement.
-Seeking goes to the backend's MPV scheduler, which synchronizes the audio
-reader and English subtitles (and reuses RAM-backed translations when possible).
-
-Select **Fullscreen** to expand the embedded MPV player across the screen.
-**The playback bar and full-duration VOD seekbar auto-hide after 3 seconds**
-without mouse movement, expanding the video. **Move the mouse anywhere over
-the embedded video to reveal them again**. The bar stays visible while dragging
-the seek slider. The button becomes **Exit Fullscreen**, so you can click it
-after moving the mouse; **F11**, **F**, double-clicking the video, or **Esc**
-also switch/exit fullscreen. Outside fullscreen, the controls remain visible.
-The fullscreen switch belongs to the Qt host, since MPV is embedded through
-a native HWND.
-
-For **livestreams**, the seek slider and seek buttons are disabled to avoid
-breaking the delayed live subtitle alignment. Pause remains available.
-
-The GUI launches `pythonw.exe` and suppresses external console windows,
-including the embedded `mpv.exe`. In GUI mode, MPV uses `--no-terminal`
-and the Windows `CREATE_NO_WINDOW` flag. It still renders inside the Qt
-player and accepts IPC seeking/subtitle commands. The classic CLI is
-unchanged; logs remain in `logs/run.log`, `logs/mpv.log`, and other files.
-
-For the new settings and diagnostics panel, update both the backend source
-and the frontend EXE from the same commit. Existing compatible full GUI
-installations can use the EXE-only artifact described below.
-
-## Updating without downloading the entire GUI again
-
-For an existing EXE installation, the **Windows GUI frontend build** GitHub
-Actions workflow now uploads two choices:
-
-- **`VideoTranslate-EXE-Only`**: small incremental download containing only
-  `VideoTranslate.exe`. Use for ordinary GUI code changes; keep the existing
-  `_internal` folder untouched.
-- **`VideoTranslate-Windows-GUI`**: complete package containing EXE and Qt
-  runtime. Use for first installation, missing/corrupt `_internal`, or when
-  the workflow announces an incompatible runtime/dependency update.
-
-Update the existing Git branch first so the Python backend source is current.
-After installing the full process-cleanup release, compatible subsequent builds can use
-the following incremental procedure. Close VideoTranslate, download and extract the EXE-only artifact into
-`C:\Games\video-translate-dual-asr\dist\VideoTranslate\`, and overwrite only
-`VideoTranslate.exe`. Start the EXE normally. **Do not delete `_internal`.**
-
-The GUI build pins the Python, PySide6 and PyInstaller versions to match the
-existing November 14 full-runtime release. EXE-only patches require an
-already-working compatible full install, not just the EXE file. If it fails,
-download the full artifact instead.
-
-The EXE is **not a standalone model bundle**. It uses the original project's
-`.venv`, installed MPV/speech.cpp/llama.cpp, shared model caches, and
-`config.toml`.
-
-## Troubleshooting
-
-- If the launcher reports a missing Python environment, run `Setup.bat`.
-- If double-clicking `Start GUI.vbs` opens no window, inspect
-  `logs\\gui-startup.log`. The launcher now shows errors from
-  `auto_translate.gui_bootstrap` in a Windows dialog.
-- To diagnose without the silent launcher, open CMD in the project folder and run:
-  `set PYTHONPATH=%CD%\\src && .venv\\Scripts\\python.exe -m auto_translate.gui_bootstrap`.
-  Any startup traceback also goes to `logs\\gui-startup.log`.
-- If Qt installation fails, ensure `uv` is installed and internet is available,
-  then open `Start GUI.vbs` again.
-- If the player remains blank, inspect `logs\mpv.log` and `logs\run.log`.
-- Embedded MPV and RTX 3070 GPU translation still require testing on the
-  actual Windows machine. CI verifies GUI startup and EXE packaging, not
-  local video rendering.
-
-## Windows session cleanup and verification
-
-Pull the matching backend source and replace the frontend EXE from the same
-commit. The Windows GUI workflow builds `VideoTranslate-EXE-Only` alongside the
-full package. For the first upgrade from the previous GUI, install the full package. The
-old runtime lacks the native ctypes extension and libffi used for Job Objects.
-Use EXE-only updates once the installed runtime matches the build.
-
-Each Start writes a fresh 32-character session ID to `logs/gui-lifecycle.log`
-and `logs/run.log`. The frontend job covers the first launcher instruction.
-The windowless base-Python gate joins the named session job before it runs the
-venv interpreter. A restrictive host job or assignment failure aborts launch.
-The backend also owns a nested job, so hard backend exit releases its workers.
-
-| Process creation path | Owner and shutdown |
+| Setting | Default |
 | --- | --- |
-| Qt QProcess, base Python, venv redirector and backend | GUI lifetime job; gate, redirector and backend additionally inside the per-Start job. |
-| Haas speech.cpp, including CPU retries | PrimaryASR owns the pipe worker; close terminates, waits, escalates and closes streams. |
-| Whisper multiprocessing spawn, including restarts | DualASR releases its worker. The backend job also contains the Windows spawn interpreter. |
-| Reconciler and locally launched PLaMo | The creating adapter retains its Popen handle. Existing PLaMo endpoints are HTTP clients only. |
-| MPV and its yt-dlp / Deno helpers | Backend job membership is inherited at creation. MPV also has IPC quit and its player-specific job. |
-| FFmpeg, yt-dlp metadata/captions, Deno, GPU monitor probes | Ingest registers media processes under its lock. All helpers and their descendants inherit the job, including short-lived probes. |
-| Live fMP4 cache | Orderly ingest stop closes the cache server and removes the temporary directory. An abrupt process death can leave files until the next live-cache startup prunes them. |
+| `asr.voxtral_server_path` | `.runtime/audio-v0.9.5-cuda12/audiocpp_server.exe` |
+| `asr.voxtral_model_path` | `models/voxtral/voxtral-mini-4b-realtime-2602-q4_k.gguf` |
+| `asr.cuda_device` | `0` |
+| `asr.threads` | `8` |
+| `asr.startup_timeout_s` | `180` |
+| `asr.response_timeout_s` | `45` |
+| `asr.live_response_timeout_s` | `20` |
+| `vad.device` | `cpu` |
 
-Stop and window close send authenticated quit. The backend listens during
-initialization. GUI control loss sets the same stop event. On explicit GUI stop,
-pipeline workers have a three-second drain after output/ingest closure. The GUI
-allows 20 seconds total, then terminates the session job and launcher. It checks
-job membership asynchronously for up to three further seconds and logs the result.
+Setup records discovered MPV and runtime paths in `.cache/`. All required project paths are relative to the independent clone; no paths to another checkout are required. Checkpoint integrity uses the exact pinned Hugging Face revision and SHA256, and only the specified Q4_K Voxtral checkpoint is downloaded by default.
 
-From PowerShell in the checkout, inspect the latest session before or after exit.
-For concurrent GUI instances substitute the exact session ID from the relevant log.
-This command only opens the named job for query. An empty list means there are
-no current members; a Windows query error other than a missing job is reported.
+## Build and troubleshooting
 
-```powershell
-$entry = Select-String -Path .\logs\gui-lifecycle.log -Pattern '^session=([0-9a-f]{32}) Starting translation backend' | Select-Object -Last 1
-if (-not $entry) { throw 'No session recorded by the updated GUI' }
-$sessionId = $entry.Matches[0].Groups[1].Value
-$env:PYTHONPATH = (Resolve-Path .\src).Path
-& .\.venv\Scripts\python.exe -c "import sys; from auto_translate.windows_job import session_members; print(session_members(sys.argv[1]))" $sessionId
+The `windows-gui.yml` GitHub Actions workflow runs Windows/Qt regression checks, builds the frontend with Python 3.12 and PyInstaller, includes the source backend/setup, and uploads the complete distribution. Pushes on this branch or `workflow_dispatch` can trigger it. Download artifacts from a successful run; a checked-in workflow is not evidence of a successful EXE build.
+
+For a local frontend build after installing PySide6 and PyInstaller:
+
+```cmd
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics src/auto_translate/gui.py
 ```
 
-The model-free Windows integration tests use an offscreen Qt frontend, actual
-Job Objects, a spawned multiprocessing worker and sleeping native processes.
-They pin each original process with a Windows handle before shutdown, then check
-those handles for exit and confirm the unrelated control process survives.
-Run with a Python installation containing PySide6:
+Place the complete frontend distribution inside the installed checkout, or include the same source/setup files as the workflow. Launch from the independent project directory.
 
-```powershell
-$env:PYTHONPATH = (Resolve-Path .\src).Path
-python -m unittest discover -s tests -p test_session_lifecycle.py -v
-```
+If audio.cpp cannot start, verify the complete `.runtime/audio-v0.9.5-cuda12/` directory, Microsoft Visual C++ x64 Redistributable, and NVIDIA driver. Setup checks the bundled CUDA runtime DLLs and native executable startup. If Voxtral cannot load or runs out of CUDA memory, inspect `logs/voxtral-server.log` and the GPU dashboard. Keep unrelated GPU workloads modest, preserve the selected checkpoint, and allow PLaMo CPU fallback. Do not infer runtime memory from the model's download size.
 
-For hardware verification on Windows 11, capture the session ID while a real
-Hololive stream is translating, run the query to confirm membership, stop the
-session, then repeat it. Repeat during VOD seek and cold model startup. For the
-crash case, end only the selected GUI PID. Verify an externally started PLaMo
-endpoint still answers and the new session starts without stale CUDA allocations.
+Stop and close the GUI during startup and transcription as part of hardware validation. The application should terminate its own session, MPV, audio.cpp, and any owned translation server while preserving unrelated external processes. No hardware accuracy or latency result is claimed by a GUI launch smoke test.

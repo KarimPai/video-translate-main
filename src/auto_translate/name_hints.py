@@ -24,15 +24,6 @@ def matsuri_matches(ja, title, previous):
     return name_glossary([mention for mention in mentions if mention.family == "Matsuri"])
 
 
-def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None:
-    """Legacy compatibility hook. Never seed Whisper with unspoken names.
-
-    Existing configs can still contain whisper_name_hints; the dual-ASR
-    pipeline no longer calls this hook or supplies an initial name prompt.
-    """
-    return None
-
-
 # Only substitute an existing English mention. Family membership is also
 # used to avoid collapsing two different spoken forms in the same cue.
 _FAMILIES = {

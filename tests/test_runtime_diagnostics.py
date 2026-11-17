@@ -64,6 +64,19 @@ class GpuMonitoringTests(unittest.TestCase):
         self.assertAlmostEqual(total, 8192 * 1048576 / 1e9)
         self.assertEqual(read.call_args.kwargs["timeout"], 2)
 
+    def test_observed_peak_and_headroom_survive_transient_telemetry_loss(self):
+        samples = [(3., 8.), (7., 8.), (4., 8.), (None, None)]
+        with patch.object(gpu_budget, "gpu_memory_gb", side_effect=samples):
+            budget = GpuBudget(GpuBudgetConfig())
+            budget.refresh()
+            budget.refresh()
+            budget.refresh()
+        snapshot = budget.snapshot()
+        self.assertIsNone(snapshot["used_gb"])
+        self.assertEqual(snapshot["peak_used_gb"], 7.)
+        self.assertEqual(snapshot["minimum_free_gb"], 1.)
+        self.assertEqual(snapshot["pressure"], "unknown")
+
     def test_snapshot_never_polls_gpu(self):
         with patch.object(gpu_budget, "gpu_memory_gb", return_value=(3.0, 8.0)) as read:
             budget = GpuBudget(GpuBudgetConfig())
@@ -93,14 +106,14 @@ class DiagnosticsTests(unittest.TestCase):
     def test_nested_metrics_merge_and_snapshot_is_detached(self):
         with tempfile.TemporaryDirectory() as directory:
             recorder = self.create(directory)
-            recorder.update(stages={"haas_s": 1.5}, counters={"expired": 1})
-            recorder.update(stages={"whisper_s": 0.9})
+            recorder.update(stages={"voxtral_s": 1.5}, counters={"expired": 1})
+            recorder.update(stages={"plamo_s": 0.9})
             recorder.increment("expired", 2)
             snapshot = recorder.snapshot()
-            self.assertEqual(snapshot["stages"], {"haas_s": 1.5, "whisper_s": 0.9})
+            self.assertEqual(snapshot["stages"], {"voxtral_s": 1.5, "plamo_s": 0.9})
             self.assertEqual(snapshot["counters"]["expired"], 3)
             snapshot["stages"].clear()
-            self.assertIn("haas_s", recorder.snapshot()["stages"])
+            self.assertIn("voxtral_s", recorder.snapshot()["stages"])
             recorder.close()
 
     def test_log_records_are_structured_and_rotation_is_bounded(self):
@@ -186,8 +199,8 @@ class DiagnosticsTests(unittest.TestCase):
             invalid.write_text("not a directory")
             recorder = diagnostics.RuntimeDiagnostics(SimpleNamespace(enabled=True), invalid)
             self.assertFalse(recorder.enabled)
-            recorder.update(stages={"haas_s": 1})
-            self.assertEqual(recorder.snapshot()["stages"]["haas_s"], 1)
+            recorder.update(stages={"voxtral_s": 1})
+            self.assertEqual(recorder.snapshot()["stages"]["voxtral_s"], 1)
             recorder.close()
 
     def test_rotating_gui_stream_handles_large_chunks(self):

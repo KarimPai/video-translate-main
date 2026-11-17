@@ -54,7 +54,7 @@ def rejection_reason(text: str) -> str | None:
     if compact == "草":
         return None
 
-    # Haas may spell the same laugh in hiragana or katakana.
+    # The decoder may spell the same laugh in hiragana or katakana.
     laugh_kana = compact.translate(KATA_TO_HIRA)
     without_laughter = _LAUGHTER.sub("", laugh_kana)
     if compact and not without_laughter:
@@ -77,7 +77,7 @@ def rejection_reason(text: str) -> str | None:
                     return None
                 return "repeated_kana_loop"
 
-    # Whisper Turbo can loop a complete kana phrase throughout a cue.
+    # An ASR decoder can loop a complete kana phrase throughout a cue.
     # Require six identical copies with no other words to preserve emphasis.
     if len(compact) >= 24 and re.fullmatch(r"([ぁ-ヿ]{4,16})\1{5,}", compact):
         return "repeated_kana_loop"

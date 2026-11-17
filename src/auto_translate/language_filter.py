@@ -1,4 +1,4 @@
-"""Conservative drop-only EN/Indonesian spoken-language filter.
+"""Conservative acoustic language gate for Japanese-only transcription.
 
 Classify original 16 kHz PCM BEFORE Japanese ASR. Never derive speech language
 from Japanese-forced transcripts; that text is unreliable for code-switching.
@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 _MODEL_REPO = "krut42/voice-lid-ecapa-voxlingua107"
 _MODEL_FILE = "lid-ecapa-voxlingua107.int8.onnx"
 _LABEL_FILE = "lid-labels.txt"
-_DROP_LANGS = frozenset(("en", "id"))
+
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class LanguageFilter:
         label_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_LABEL_FILE)
         with open(label_path, "r", encoding="utf-8-sig") as file:
             self.labels = [line.strip().lower() for line in file if line.strip()]
-        if len(self.labels) != 107 or "ja" not in self.labels or not _DROP_LANGS.issubset(self.labels):
+        if len(self.labels) != 107 or "ja" not in self.labels or not {"en", "id"}.issubset(self.labels):
             raise RuntimeError("VoxLingua107 label set is invalid or incomplete")
 
         options = ort.SessionOptions()
@@ -64,7 +64,7 @@ class LanguageFilter:
         if "wav" not in model_inputs or "logp" not in model_outputs:
             raise RuntimeError("Unexpected VoxLingua107 ONNX input/output schema")
         self.japanese_idx = self.labels.index("ja")
-        log.info("CPU VoxLingua107 language filter ready; filtering only en/id")
+        log.info("CPU VoxLingua107 language filter ready; preserving Japanese and uncertain speech")
 
     def _predict(self, audio: np.ndarray) -> tuple[str, float, float, float]:
         # The model takes raw mono 16k float32 PCM and internally extracts FBANKs.
@@ -117,10 +117,10 @@ class LanguageFilter:
             return LanguageDecision("unknown", 0., 0., False, "inference_error")
 
         # Require ALL windows to be strongly non-Japanese, and only when
-        # classifying an explicitly unwanted language (en/id). This avoids
+        # classifying non-Japanese speech. This avoids
         # suppressing Japanese speech inside code-switched utterances.
         strong = [
-            (lang in _DROP_LANGS and confidence >= self.cfg.drop_probability
+            (lang != "ja" and lang != "unknown" and confidence >= self.cfg.drop_probability
              and japanese <= self.cfg.max_japanese_probability
              and margin >= self.cfg.min_top_margin)
             for lang, confidence, japanese, margin in predicted

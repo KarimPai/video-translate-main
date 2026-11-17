@@ -43,15 +43,13 @@ class Utterance:
     start_s: float
     end_s: float
     audio: np.ndarray  # float32 mono 16 kHz
-    probe: bool = False  # VAD heard no speech; send fallback audio to Haas
+    probe: bool = False  # VAD heard no speech; mark speculative audio for conservative filtering
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None  # first FireRed speech-positive frame; excludes VAD pre-roll
     vad_confidence: float | None = None  # mean VAD speech confidence
     speaker_handoff: bool = False  # future-compatible boundary metadata
     speaker_split: bool = False
-    # Optional per-cue evidence; never shared through mutable worker globals.
-    name_disambiguation: dict = field(default_factory=dict)
 
 @dataclass
 class Transcript:
@@ -62,7 +60,6 @@ class Transcript:
     generation: int = 0
     speech_start_s: float | None = None
 
-    diagnostic_session: str | None = None
     name_context: dict = field(default_factory=dict)
 
 

@@ -1,13 +1,12 @@
-"""Offline regression tests for the Haas + PLaMo retest feature branch."""
+"""Offline regression tests for the Voxtral + PLaMo application."""
 
 import queue
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 from auto_translate.config import (
-    Config, IngestConfig, TranslateConfig, VadConfig, load_config,
+    Config, TranslateConfig, VadConfig, load_config,
     mpv_youtube_format,
 )
 from auto_translate.pipeline import run_translate
@@ -29,7 +28,7 @@ class FakePLaMo:
         return self.text
 
 
-class HaasPlamoRetestTests(unittest.TestCase):
+class VoxtralPlamoTests(unittest.TestCase):
     def _translate(self, text, japanese="これで大丈夫"):
         model = FakePLaMo(text)
         inp, out = queue.Queue(), queue.Queue()
@@ -55,10 +54,8 @@ class HaasPlamoRetestTests(unittest.TestCase):
         self.assertEqual(vad.max_utterance_s + vad.max_split_extension_s, 16.0)
         self.assertEqual(vad.fallback_s, 0.0)
 
-    def test_glossary_and_haas_and_plamo_preserved(self):
+    def test_glossary_and_plamo_preserved(self):
         cfg = Config()
-        self.assertEqual(cfg.asr.haas_model, "haas-ja-v1.0")
-        self.assertEqual(cfg.asr.haas_device, "Vulkan0")
         self.assertEqual(cfg.translate.plamo_hf_model,
                          "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M")
         self.assertEqual((cfg.translate.context_lines,

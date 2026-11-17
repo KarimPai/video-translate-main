@@ -14,8 +14,9 @@ class SharedGpuPlaybackTests(unittest.TestCase):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
                 cfg = load_config(Path("config.example.toml"))
-                original = (cfg.asr.haas_device, cfg.reconciler.gpu_layers,
-                            cfg.ingest.vod_max_audio_lead_s)
+                original = cfg.ingest.vod_max_audio_lead_s
+                cfg.safe_playback.enabled = False
+                original_asr = (cfg.asr.voxtral_model_path, cfg.asr.cuda_device)
                 argv = ["auto-translate", "https://example.org/video", "--mpv"]
                 if enabled:
                     argv.append("--shared-gpu-playback")
@@ -27,9 +28,7 @@ class SharedGpuPlaybackTests(unittest.TestCase):
                       patch("sys.stdout"), patch("sys.stderr"),
                       self.assertRaises(StopIteration)):
                     main()
-                self.assertEqual((cfg.asr.haas_device, cfg.reconciler.gpu_layers,
-                                  cfg.ingest.vod_max_audio_lead_s),
-                                 ("Vulkan0", 99, 30) if enabled else original)
-                self.assertFalse(cfg.asr.haas_decode_on_cpu)
-                self.assertTrue(cfg.dual_asr.enabled)
-                self.assertEqual(cfg.dual_asr.secondary_device, "cuda")
+                self.assertEqual(cfg.ingest.vod_max_audio_lead_s,
+                                 min(original, 30) if enabled else original)
+                self.assertEqual((cfg.asr.voxtral_model_path, cfg.asr.cuda_device), original_asr)
+                self.assertEqual(cfg.vad.device, "cpu")

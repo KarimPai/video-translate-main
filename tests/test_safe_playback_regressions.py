@@ -113,7 +113,7 @@ class SafePlaybackRegressions(unittest.TestCase):
 
     def test_disabled_gate_preserves_normal_parallelism(self):
         gate = self.gate(enabled=False)
-        with gate.operation("haas"):
+        with gate.operation("voxtral"):
             with gate.operation("plamo", deadline=float("inf")):
                 pass
 
@@ -125,12 +125,12 @@ class SafePlaybackRegressions(unittest.TestCase):
 
         def waiting():
             try:
-                with gate.operation("whisper", cancel_event=cancel):
+                with gate.operation("voxtral", cancel_event=cancel):
                     called.append(True)
             except CancelledError:
                 cancelled.append(True)
 
-        with gate.operation("haas"):
+        with gate.operation("voxtral"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(waiting)
             self.assertTrue(gate._slots.attempted.wait(1))
@@ -153,7 +153,7 @@ class SafePlaybackRegressions(unittest.TestCase):
             except CancelledError:
                 cancelled.append(True)
 
-        with gate.operation("haas"):
+        with gate.operation("voxtral"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(waiting)
             self.assertTrue(gate._slots.attempted.wait(1))
@@ -168,13 +168,13 @@ class SafePlaybackRegressions(unittest.TestCase):
 
         def waiting():
             try:
-                with gate.operation("lfm", deadline=11.0):
+                with gate.operation("plamo", deadline=11.0):
                     self.fail("expired selector entered model")
             except CancelledError:
                 cancelled.append(True)
 
         with patch("auto_translate.safe_playback.time.monotonic", side_effect=lambda: clock[0]):
-            with gate.operation("haas"):
+            with gate.operation("voxtral"):
                 gate._slots.attempted.clear()
                 worker, errors = self.spawn(waiting)
                 self.assertTrue(gate._slots.attempted.wait(1))
@@ -189,7 +189,7 @@ class SafePlaybackRegressions(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "failed"):
             with gate.operation("plamo"):
                 raise RuntimeError("model failed")
-        with gate.operation("haas"):
+        with gate.operation("voxtral"):
             pass
 
     def test_seek_while_waiting_for_translation_discards_old_cue_and_memory(self):
@@ -200,7 +200,7 @@ class SafePlaybackRegressions(unittest.TestCase):
             Transcript(0, 1, "古い会話", generation=0),
             Transcript(20, 21, "待って", generation=1),
         )
-        with gate.operation("haas"):
+        with gate.operation("voxtral"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(lambda: pipeline.run_translate(
                 translator, 3, incoming, outgoing,
@@ -256,16 +256,13 @@ class SafePlaybackRegressions(unittest.TestCase):
         subtitles = [item for item in outgoing.queue if isinstance(item, Subtitle)]
         self.assertEqual([item.start_s for item in subtitles], [20])
 
-    def test_shutdown_during_primary_asr_skips_secondary_and_transcript(self):
+    def test_shutdown_during_asr_discards_transcript(self):
         stop = threading.Event()
         primary = Mock()
         primary.transcribe.side_effect = lambda *args: stop.set() or "待って"
-        dual = Mock(session_id=None)
         incoming, outgoing = self.queues(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
-        pipeline.run_asr(primary, incoming, outgoing, dual=dual, stop=stop,
+        pipeline.run_asr(primary, incoming, outgoing, stop=stop,
                          gate=self.gate(stop=stop))
-        dual.select_segment.assert_not_called()
-        dual.remember.assert_not_called()
         self.assertEqual(list(outgoing.queue), [None])
 
     def test_recoverable_translation_failures_do_not_poison_context_or_slots(self):
@@ -370,7 +367,7 @@ class SafePlaybackRegressions(unittest.TestCase):
         position = [2.0]
         translator = RecordingTranslator()
         incoming, outgoing = self.queues(Transcript(2, 3, "待って"))
-        with gate.operation("whisper"):
+        with gate.operation("voxtral"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(lambda: pipeline.run_translate(
                 translator, 3, incoming, outgoing, live=True,
@@ -387,14 +384,11 @@ class SafePlaybackRegressions(unittest.TestCase):
         position = [2.0]
         primary = Mock()
         primary.transcribe.return_value = "待って"
-        dual = Mock(session_id=None)
-        dual.playback_position = lambda: position[0]
-        dual.select_segment.return_value = None
         incoming, outgoing = self.queues(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
         with gate.operation("plamo"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(lambda: pipeline.run_asr(
-                primary, incoming, outgoing, live=True, dual=dual,
+                primary, incoming, outgoing, live=True, playback_position=lambda: position[0],
                 live_late_window_s=7, gate=gate))
             self.assertTrue(gate._slots.attempted.wait(1))
             position[0] = 20.0

@@ -32,8 +32,7 @@ _EXPORT_FILE_BYTES = 512 * 1024
 _MAX_EXPORT_BYTES = 8 * 1024 * 1024
 _LOG_NAME = re.compile(
     r"(?:diagnostics\.jsonl|run\.log|gui-lifecycle\.log|gui-startup\.log|"
-    r"mpv\.log|reconciler\.log|plamo-server\.log|whisper-turbo\.log|"
-    r"asr-comparison(?:\.previous)?\.jsonl)(?:\.[0-9]+)?\Z"
+    r"mpv\.log|plamo-server\.log|voxtral-server\.log)(?:\.[0-9]+)?\Z"
 )
 _SECRETS = re.compile(
     r"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?|(?:token|password|cookie|api[_-]?key)"

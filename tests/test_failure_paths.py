@@ -11,11 +11,9 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import numpy as np
 
-from auto_translate.asr.haas import HaasASR
 from auto_translate.captions import CaptionIndex
-from auto_translate.config import AsrConfig, load_config
+from auto_translate.config import load_config
 from auto_translate.ingest import parse_time, start_from_url
 from auto_translate.output.mpv import MpvIpc, MpvOutput, _WindowsPipe, _create_kill_job
 from auto_translate.output.web import BACKLOG, WebOutput
@@ -26,28 +24,6 @@ from auto_translate.ytdlp import cache_key
 
 
 class FailurePathTests(unittest.TestCase):
-    def test_fake_haas_child_ignores_noise_at_startup_and_decode(self):
-        script = """
-import json, sys
-print('Vulkan device selected', flush=True)
-print('{"type":"ready"}', flush=True)
-for line in sys.stdin:
-    req = json.loads(line)
-    if req['type'] == 'transcribe':
-        print('runtime statistics', flush=True)
-        print('[]', flush=True)
-        print(json.dumps(dict(type='end', id=req['id'], text='こんにちは')), flush=True)
-"""
-        popen = subprocess.Popen
-
-        def launch(_command, **kwargs):
-            return popen([sys.executable, "-u", "-c", script], **kwargs)
-
-        with patch("auto_translate.asr.haas.shutil.which", return_value="speech"), patch(
-                "auto_translate.asr.haas.subprocess.Popen", side_effect=launch):
-            worker = HaasASR(AsrConfig(startup_timeout_s=5))
-            self.addCleanup(worker.close)
-            self.assertEqual(worker.transcribe(np.zeros(16000)), "こんにちは")
 
     def test_scheduler_failure_stops_backend(self):
         player = object.__new__(MpvOutput)

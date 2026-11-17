@@ -1,62 +1,53 @@
-# Copy sections into your existing config.toml to override defaults.
-[dual_asr]
-enabled = true
-# Whisper Turbo is Japanese-only; the independent CPU filter drops confident EN/ID audio.
-# There is no secondary language-routing toggle.
-secondary_model = "h2oai/faster-whisper-large-v3-turbo"
-secondary_device = "cuda"
-secondary_compute_type = "int8_float16"
-# Keep beam 6 until reviewed audio supports beam 8 or optional beam 10.
-secondary_beam_size = 6
-secondary_patience = 1.0
-secondary_length_penalty = 1.0
-secondary_temperature = 0.0 # beam decoding; best_of applies only above zero
-secondary_best_of = 5
-secondary_repetition_penalty = 1.0
-secondary_no_repeat_ngram_size = 0
-secondary_word_timestamps = false
-secondary_log_prob_threshold = -1.0
-secondary_no_speech_threshold = 0.6
-secondary_compression_ratio_threshold = 2.4
-secondary_suppress_tokens = [-1]
-# secondary_max_new_tokens = 192 # omit to retain the runtime default
-# Per-utterance hints require spoken evidence; never seed names from the title.
-secondary_prompt_mode = "none" # none, hotwords, initial_prompt
-# Unsupported optional controls are omitted using the installed runtime signature.
-# Legacy compatibility setting; name prompts are disabled even if set true.
-whisper_name_hints = false
-secondary_live_mode = "selective" # off, selective, all
-secondary_vod_mode = "all"
-live_timeout_s = 5.0
-vod_timeout_s = 25.0 # Retained for accuracy; discarded cues interrupt the worker early.
-# Only meaningful disagreements with localized weak audio may get a crop retry.
-smart_correction = true
-correction_vod_retries = 1 # 0..2; no extra permanently loaded model
-correction_live_retries = 0 # disabled for live by default
-correction_vod_budget_s = 8.0
-correction_live_budget_s = 2.0
-
-[reconciler]
-enabled = true
-gpu_layers = 99
-live_timeout_s = 4.0
-vod_timeout_s = 20.0
+# Copy to config.toml. Relative paths are resolved from the project directory.
+# YouTube/MPV audio -> CPU FireRedVAD -> CUDA Voxtral -> PLaMo -> subtitles.
+[asr]
+voxtral_model_path = "models/voxtral/voxtral-mini-4b-realtime-2602-q4_k.gguf"
+voxtral_server_path = ".runtime/audio-v0.9.5-cuda12/audiocpp_server.exe"
+cuda_device = 0
+threads = 8
+startup_timeout_s = 180
+response_timeout_s = 45
+live_response_timeout_s = 20
+# Optional exact phrases to suppress in recognized text.
+blocklist = []
+# The service keeps the checkpoint resident and transcribes complete utterances.
+# Greedy decoding and a fixed seed are configured by the backend.
 
 [gpu_budget]
-# No artificial VRAM hard limit; monitor physical GPU free memory.
-startup_headroom_gb = 0.65
-low_free_gb = 0.55
+# Decimal GB of actual device free memory, sampled through NVML/nvidia-smi.
+# Aim for about 0.7-1 GiB free; reduce PLaMo GPU offload before sacrificing ASR.
+startup_headroom_gb = 1.0
+low_free_gb = 0.75
 emergency_free_gb = 0.25
 sample_interval_s = 2.0
 
 [vad]
-# FireRedVAD stays the same model, now on CPU to avoid PyTorch CUDA overhead.
+# FireRedVAD stays on CPU; initial segmentation preserves short reactions.
 device = "cpu"
+threshold = 0.34
+neg_threshold = 0.25
+min_silence_ms = 550
+speech_pad_ms = 400
+min_speech_ms = 200
+short_reply_ms = 120
+short_reply_probability = 0.85
+onset_ms = 50
+prob_smooth_frames = 5
+max_utterance_s = 14.0
+max_split_extension_s = 2.0
+live_max_utterance_s = 7.0
+live_max_split_extension_s = 1.0
+adaptive_split = true
+adaptive_split_s = 6.5
+live_adaptive_split_s = 4.0
+adaptive_pause_ms = 180
+split_pause_min_ms = 120
+split_context_ms = 160
+fallback_s = 0.0
 
 [language_filter]
-# Drop confidently English or Indonesian VAD utterances BEFORE Japanese ASR.
-# Uncertain/short and Japanese speech continue unchanged.
-# Uses CPU-only VoxLingua107 ECAPA INT8 (~27MB, auto-downloaded once).
+# CPU-only VoxLingua107 ECAPA INT8 (~27MB); uncertain and short speech survives.
+# Drop only confidently non-Japanese speech before Japanese ASR.
 enabled = true
 min_duration_s = 2.5
 max_window_s = 5.0
@@ -64,47 +55,35 @@ drop_probability = 0.80
 max_japanese_probability = 0.12
 min_top_margin = 0.45
 
-
 [translate]
-# Accuracy-first OverlaySubs-style context. Use legacy to restore previous behavior.
-context_profile = "compact" # compact, legacy
+# PLaMo uses adaptive partial GPU offload and CPU fallback.
+plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
+plamo_context = 4096
+plamo_gpu_layers = 99
+context_profile = "compact"
 context_lines = 3
 extended_memory = true
-memory_lines = 16 # bounded rolling history, 0..20; 10..20 recommended
-# Only split long multi-sentence Japanese at reliable written punctuation.
+memory_lines = 16
 sentence_context = true
-
-# Whisper never receives static character-name prompts. The glossary only
-# normalizes names supported by the Japanese utterance and occurrence resolver.
-
-[asr]
-startup_timeout_s = 120
-response_timeout_s = 24
-live_response_timeout_s = 12
-# Experimental opt-in: first benchmark alpha 1.0/1.5/2.0 on reviewed audio.
-haas_keywords_enabled = false
-haas_keywords_alpha = 1.0
-# Only bounded recent spoken-name hints are used. Guarding is always enabled.
-# Requires actual worker model.options vocabulary support; old GGUFs fall back.
+glossary = "glossary.toml"
+neutral_subjects = true
 
 [mpv]
+hwdec = "auto-safe"
 live_forward_cache_mib = 1024
 live_back_cache_mib = 1024
 
 [chat]
-# Public YouTube chat is weak evidence for terms already present in ASR.
-# Never turns chat messages into spoken subtitles; missing chat never blocks ASR.
+# Public YouTube chat is weak evidence for terms already present in speech.
+# Chat is never converted into subtitles and missing chat never blocks ASR.
 enabled = false
 window_s = 30.0
 max_messages = 100
 poll_interval_s = 5.0
-# Live PCM receipt is an estimate; delay uncertain messages by this allowance.
-# This cannot prove the actual upstream encoder/network delay.
-live_time_uncertainty_s = 5.0 # 0..120 seconds
+live_time_uncertainty_s = 5.0
 
 [safe_playback]
-# Serialize heavy inference while MPV keeps its configured hardware decoding.
-# RTX VSR stays independent; playback resolution is never reduced silently.
+# Serialize heavy inference and bound queues while MPV retains its resolution.
 enabled = false
 max_inference_concurrency = 1
 queue_size = 4

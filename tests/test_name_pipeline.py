@@ -1,15 +1,11 @@
 """Per-cue name evidence must survive queues, seeks and optional failures."""
-import json
-from pathlib import Path
 import queue
-import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
 
-from auto_translate.asr.diagnostics import append_comparison, flush_comparisons
 from auto_translate.pipeline import run_asr, run_translate
 from auto_translate.proper_names import resolve_names
 from auto_translate.session_cache import SessionSubtitleCache
@@ -45,7 +41,7 @@ class NamePipelineTests(unittest.TestCase):
         with patch("auto_translate.pipeline.resolve_names",
                    side_effect=[RuntimeError("optional failure"), resolve_names("みこちが来た")]):
             first, second = self.run_source(["まつりちゃんが来た", "みこちが来た"])
-        self.assertEqual(first.name_context["resolver_error"], "RuntimeError")
+        self.assertEqual(first.name_context["mentions"], [])
         self.assertEqual(second.name_context["mentions"][0]["target"], "Mikochi")
 
     def test_translation_receives_exact_cue_evidence(self):
@@ -94,19 +90,6 @@ class NamePipelineTests(unittest.TestCase):
         self.assertEqual((result.start_s, result.en), (2, "Hello!"))
         self.assertIsNone(outgoing.get_nowait())
 
-    def test_raw_audio_and_full_history_cannot_enter_comparison_logs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "comparison.jsonl"
-            append_comparison({"stage": "name", "audio": np.ones(100000),
-                               "history": ["private prior dialogue"],
-                               "mentions": [{"source": "祭り", "classification": "COMMON_NOUN"}],
-                               "raw_english": "a" * 100000}, path)
-            self.assertTrue(flush_comparisons())
-            record = json.loads(path.read_text(encoding="utf8"))
-            self.assertNotIn("audio", record)
-            self.assertNotIn("history", record)
-            self.assertEqual(record["mentions"][0]["classification"], "COMMON_NOUN")
-            self.assertLess(path.stat().st_size, 65536)
 
 
 if __name__ == "__main__":

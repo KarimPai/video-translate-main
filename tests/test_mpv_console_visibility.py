@@ -41,6 +41,9 @@ class MpvConsoleVisibilityTests(unittest.TestCase):
         command = call.args[0]
         self.assertIn("--wid=24680", command)
         self.assertIn("--no-terminal", command)
+        self.assertIn("--hwdec=auto-safe", command)
+        self.assertIn("--osc=no", command)
+        self.assertFalse(any(x.startswith("--vf=") for x in command))
         self.assertTrue(any(x.startswith("--input-ipc-server=") for x in command))
         self.assertTrue(any(x.startswith("--log-file=") for x in command))
         self.assertEqual(call.kwargs["creationflags"], 0x08000000)
@@ -52,6 +55,8 @@ class MpvConsoleVisibilityTests(unittest.TestCase):
         call = self._launch(embedded=False)
         command = call.args[0]
         self.assertNotIn("--no-terminal", command)
+        self.assertIn("--hwdec=auto-safe", command)
+        self.assertIn("--osc=yes", command)
         self.assertFalse(any(x.startswith("--wid=") for x in command))
         self.assertEqual(call.kwargs["creationflags"], 0)
         self.assertIsNone(call.kwargs["stdin"])

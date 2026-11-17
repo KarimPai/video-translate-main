@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main, feature/haas-whisper-turbo-dual-asr-20261114]
+    branches: [experiment/voxtral-mini-4b-single-asr]
   pull_request:
 
 jobs:

@@ -240,13 +240,13 @@ def download_vod_captions(
             selected.replace(cached)
 
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("Japanese caption download failed; continuing with Haas: %s", exc)
+        log.warning("Japanese caption download failed; continuing with Voxtral: %s", exc)
         return None
 
     try:
         index = CaptionIndex.from_file(cached)
     except (OSError, UnicodeError) as exc:
-        log.warning("could not parse downloaded captions; continuing with Haas: %s", exc)
+        log.warning("could not parse downloaded captions; continuing with Voxtral: %s", exc)
         return None
 
     index.creator_uploaded = cached == creator_cache

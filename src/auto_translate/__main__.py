@@ -42,9 +42,8 @@ def _main(resources: ExitStack) -> None:
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--shared-gpu-playback", action="store_true",
-                        help="limit VOD inference read-ahead during dual-ASR playback")
+                        help="limit VOD inference read-ahead during Voxtral playback")
     for name, help_text in (("extended-memory", "bounded extended translation memory"),
-                            ("smart-correction", "evidence-gated ASR correction"),
                             ("youtube-chat-context", "optional public YouTube chat context"),
                             ("safe-playback", "coordinate inference and bound audio read-ahead")):
         option = parser.add_mutually_exclusive_group()
@@ -52,8 +51,8 @@ def _main(resources: ExitStack) -> None:
                             help=help_text)
         option.add_argument(f"--no-{name}", dest=name.replace("-", "_"), action="store_false")
     parser.add_argument("--memory-lines", type=int, choices=range(21), metavar="0..20")
-    parser.add_argument("--correction-vod-retries", type=int, choices=range(3))
-    parser.add_argument("--correction-live-retries", type=int, choices=range(3))
+    parser.add_argument("--voxtral-model", type=Path, help="Voxtral Q4_K GGUF checkpoint")
+    parser.add_argument("--audio-cpp-path", type=Path, help="audio.cpp CUDA audiocpp_server executable")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
     parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
@@ -66,11 +65,6 @@ def _main(resources: ExitStack) -> None:
     parser.add_argument("--gui-control-token")
     parser.add_argument("--mpv-wid", type=int, metavar="HWND",
                         help="embed MPV into the supplied Windows native widget handle")
-    vsr_option = parser.add_mutually_exclusive_group()
-    vsr_option.add_argument("--rtx-vsr", action="store_true",
-                            help="request NVIDIA RTX VSR for the selected video quality; enable VSR in NVIDIA App")
-    vsr_option.add_argument("--no-rtx-vsr", action="store_true",
-                            help="disable RTX VSR even when enabled in config.toml")
     diagnostics_option = parser.add_mutually_exclusive_group()
     diagnostics_option.add_argument("--diagnostics", action="store_true", default=None,
                                     help="record bounded application diagnostics")
@@ -140,12 +134,13 @@ def _main(resources: ExitStack) -> None:
     from .translate import create_translator
 
     cfg = load_config(args.config)
+    if args.voxtral_model is not None:
+        cfg.asr.voxtral_model_path = str(args.voxtral_model)
+    if args.audio_cpp_path is not None:
+        cfg.asr.voxtral_server_path = str(args.audio_cpp_path)
     for option, section, field_name in (
         ("extended_memory", cfg.translate, "extended_memory"),
         ("memory_lines", cfg.translate, "memory_lines"),
-        ("smart_correction", cfg.dual_asr, "smart_correction"),
-        ("correction_vod_retries", cfg.dual_asr, "correction_vod_retries"),
-        ("correction_live_retries", cfg.dual_asr, "correction_live_retries"),
         ("youtube_chat_context", cfg.chat, "enabled"),
         ("safe_playback", cfg.safe_playback, "enabled"),
         ("diagnostics", cfg.diagnostics, "enabled"),
@@ -177,10 +172,6 @@ def _main(resources: ExitStack) -> None:
         cfg.mpv.delay_s = args.delay
     if args.hwdec is not None:
         cfg.mpv.hwdec = args.hwdec
-    if args.rtx_vsr:
-        cfg.mpv.rtx_vsr = True
-    elif args.no_rtx_vsr:
-        cfg.mpv.rtx_vsr = False
     if args.gui_control and not (args.gui_control_token and args.gui_control_port
                                  and 0 < args.gui_control_port <= 65535):
         parser.error("GUI control socket missing. Update the GUI launcher and backend together.")
@@ -195,9 +186,9 @@ def _main(resources: ExitStack) -> None:
     if cfg.safe_playback.enabled:
         lead = cfg.ingest.vod_max_audio_lead_s
         cfg.ingest.vod_max_audio_lead_s = min(lead, cfg.safe_playback.max_audio_lead_s) if lead else cfg.safe_playback.max_audio_lead_s
-        log.info("Safe Playback: at most %d simultaneous inference calls; audio lead %.1fs; MPV decoder and VSR settings preserved",
+        log.info("Safe Playback: at most %d simultaneous inference calls; audio lead %.1fs; MPV decoder settings preserved",
                  cfg.safe_playback.max_inference_concurrency, cfg.ingest.vod_max_audio_lead_s)
-    if args.shared_gpu_playback and cfg.dual_asr.enabled:
+    if args.shared_gpu_playback:
         cfg.ingest.vod_max_audio_lead_s = min(cfg.ingest.vod_max_audio_lead_s, 30.0)
         log.info("Shared GPU playback: VOD audio lead capped at %.1fs",
                  cfg.ingest.vod_max_audio_lead_s)
@@ -221,7 +212,7 @@ def _main(resources: ExitStack) -> None:
         )
 
     # Fetch VOD captions in parallel with model loading. Captions are optional:
-    # any download/parse failure leaves the Haas-only pipeline unchanged.
+    # any download/parse failure leaves Voxtral recognition available.
     captions = None
     video_id = (
         source.timeline.get("video_id")
@@ -237,7 +228,7 @@ def _main(resources: ExitStack) -> None:
                     str(video_id), source.location, cfg.ingest
                 )
             except Exception:
-                log.exception("caption preparation failed; continuing with Haas")
+                log.exception("caption preparation failed; continuing with Voxtral")
 
         caption_thread = threading.Thread(
             target=load_captions,
@@ -257,7 +248,6 @@ def _main(resources: ExitStack) -> None:
 
     # Load models before starting ingest.
     from .gpu_budget import GpuBudget
-    from .asr.dual import DualASR
     from dataclasses import replace
     from .config import vad_for_source
     from .vad import Segmenter
@@ -269,63 +259,53 @@ def _main(resources: ExitStack) -> None:
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
                       if source.live else cfg.asr.response_timeout_s)
     timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
-    primary_cfg = timed_cfg if budget.admits(1.35) else replace(timed_cfg, haas_device="cpu")
-    log.info("Haas per-cue timeout=%.1fs (startup timeout=%.1fs)",
+    log.info("Voxtral CUDA offline ASR timeout=%.1fs; model startup timeout=%.1fs",
              decode_timeout, timed_cfg.startup_timeout_s)
-    log.info("Primary Haas device=%s; GPU capacity=%s GB; free=%s GB; no fixed software ceiling",
-             primary_cfg.haas_device, budget.total, budget.free)
     t0 = time.perf_counter()
-    try:
-        check_running()
-        asr = create_asr(primary_cfg)
-    except (RuntimeError, OSError):
-        if primary_cfg.haas_device.lower() == "cpu":
-            raise
-        log.warning("Haas Vulkan startup failed; retrying on CPU", exc_info=True)
-        asr = create_asr(replace(primary_cfg, haas_device="cpu"))
-
+    check_running()
+    asr = create_asr(timed_cfg)
     resources.callback(asr.close)
-    asr_model = cfg.asr.haas_model
-    log.info(
-        "ASR ready (%s, Haas) in %.1fs",
-        asr_model,
-        time.perf_counter() - t0,
-    )
+    budget.refresh()
+    record_event("voxtral_loaded", gpu=budget.snapshot())
+    log.info("Voxtral Q4_K ready in %.1fs; measured GPU free=%s GB",
+             time.perf_counter()-t0, budget.free)
 
     t0 = time.perf_counter()
     check_running()
     glossary = Glossary.load(Path(cfg.translate.glossary))
-    try:
-        # Preserve room for two ASRs, the reconciler, and MPV/VSR on 8 GiB GPUs.
-        # A single 12-layer PLaMo server has proven fast enough; avoid 99-layer
-        # offload that may prevent the secondary model from loading.
-        if cfg.dual_asr.enabled and (budget.total is None or budget.total < 10.0):
-            cfg.translate.plamo_gpu_layers = min(cfg.translate.plamo_gpu_layers, 12)
-            log.info("Shared 8 GiB-class GPU: reserve PLaMo offload at 12 layers for dual ASR")
-        elif not budget.admits(2.8):
-            cfg.translate.plamo_gpu_layers = 0
-        log.info("PLaMo GPU layer limit=%s", cfg.translate.plamo_gpu_layers)
-        from .translate.plamo import ExistingServerUnavailable
+    # Load translation after Voxtral. Select offload using observed device
+    # memory after each actual model load/warmup, never GGUF file size.
+    if budget.total is None or budget.total < 10.0:
+        cfg.translate.plamo_gpu_layers = min(cfg.translate.plamo_gpu_layers, 12)
+    if budget.free is not None and budget.free < cfg.gpu_budget.startup_headroom_gb:
+        cfg.translate.plamo_gpu_layers = 0
+    from .translate.plamo import ExistingServerUnavailable
+    while True:
+        layers = cfg.translate.plamo_gpu_layers
         try:
             translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
         except ExistingServerUnavailable:
             raise
         except (RuntimeError, OSError):
-            if not cfg.translate.plamo_gpu_layers:
+            if layers == 0:
                 raise
-            log.warning("PLaMo GPU startup failed; retrying on CPU", exc_info=True)
-            cfg.translate.plamo_gpu_layers = 0
-            translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
-    except BaseException:
-        close = getattr(asr, "close", None)
-        if callable(close):
-            close()
-        raise
-    log.info(
-        "PLaMo 3 Translate 2B ready (%d glossary terms) in %.1fs",
-        len(glossary.terms),
-        time.perf_counter() - t0,
-    )
+            cfg.translate.plamo_gpu_layers = layers // 2
+            log.warning("PLaMo startup failed; retrying with %s GPU layers",
+                        cfg.translate.plamo_gpu_layers, exc_info=True)
+            continue
+        budget.refresh()
+        record_event("plamo_loaded", gpu=budget.snapshot(), requested_gpu_layers=layers)
+        if (layers > 0 and budget.free is not None
+                and budget.free < cfg.gpu_budget.startup_headroom_gb
+                and getattr(translator, "process", None) is not None):
+            translator.close()
+            cfg.translate.plamo_gpu_layers = layers // 2
+            log.warning("Measured GPU free %.3f GB below target; reloading PLaMo at %d layers",
+                        budget.free, cfg.translate.plamo_gpu_layers)
+            continue
+        break
+    log.info("PLaMo ready at %d requested GPU layers (%d glossary terms) in %.1fs",
+             cfg.translate.plamo_gpu_layers, len(glossary.terms), time.perf_counter()-t0)
 
     translator.safe_playback = bool(cfg.safe_playback.enabled)
     resources.callback(translator.close)
@@ -367,15 +347,7 @@ def _main(resources: ExitStack) -> None:
             )
         )
 
-    try:
-        check_running()
-        dual = DualASR(cfg, budget, glossary, source.live)
-    except BaseException:
-        asr.close()
-        translator.close()
-        raise
-
-    resources.callback(dual.release)
+    chat_context = None
     if cfg.chat.enabled:
         from .live_chat import ChatContext
         chat = ChatContext(cfg.chat, args.source, live=bool(source.live), start_s=source.start_s,
@@ -385,7 +357,7 @@ def _main(resources: ExitStack) -> None:
         chat_generation = [ingest.generation]
         chat_anchored = [False]
 
-        def chat_evidence(utt, primary, secondary):
+        def chat_evidence(utt, transcript):
             if chat_generation[0] != utt.generation:
                 chat.reset(utt.generation, utt.start_s)
                 chat_generation[0] = utt.generation
@@ -397,9 +369,9 @@ def _main(resources: ExitStack) -> None:
                                       alignment="receipt_estimate")
                 chat_anchored[0] = True
                 record_event("chat_clock_anchor", alignment="pcm_receipt_estimate")
-            return chat.evidence(utt.start_s, utt.end_s, primary, secondary, generation=utt.generation)
+            return chat.evidence(utt.start_s, utt.end_s, transcript, "", generation=utt.generation)
 
-        dual.chat_context = chat_evidence
+        chat_context = chat_evidence
 
     # Optional, CPU-only spoken-language gate. Failure is nonfatal: retain
     # Japanese speech rather than suppressing cues on an unavailable model.
@@ -415,56 +387,33 @@ def _main(resources: ExitStack) -> None:
             )
 
     check_running()
+    playback_position = None
     if use_mpv:
         from .output.mpv import MpvOutput
         try:
-            try:
-                player = MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache)
-            except (RuntimeError, OSError) as exc:
-                if not cfg.mpv.rtx_vsr:
-                    raise
-                log.warning("VSR player startup failed (%s); retrying standard MPV once", exc)
-                player = MpvOutput(replace(cfg.mpv, rtx_vsr=False), ingest, stop, subtitle_cache=subtitle_cache)
-            player._vsr_user_requested = bool(cfg.mpv.rtx_vsr)
+            player = MpvOutput(cfg.mpv, ingest, stop, subtitle_cache=subtitle_cache)
             resources.enter_context(player)
             outputs.append(player)
-            dual.playback_position = player.playback_position
+            playback_position = player.playback_position
             if control:
                 control.player = player
         except BaseException:
-            dual.release()
             ingest.stop()
-            asr.close()
-            translator.close()
             raise
 
     def relieve_pressure():
-        # Only real free-memory pressure causes degradation. No fixed 7.5 GB
-        # cutoff, and never terminate the primary Haas/PLaMo/MPV pipeline.
-        level = budget.pressure_level
-        if level == "critical":
-            log.warning("Near physical GPU capacity (free=%s GB): releasing optional models", budget.free)
-            dual.release()
-        elif level == "low":
-            log.warning("Low physical GPU headroom (free=%s GB): releasing GPU selector", budget.free)
-            dual.release_selector()
+        # Serialized translation applies this request between utterances. MPV
+        # keeps its requested resolution and hardware decoding throughout.
+        request = getattr(translator, "request_gpu_relief", None)
+        if callable(request):
+            request()
+        record_event("gpu_headroom_relief_requested", gpu=budget.snapshot())
 
-    # MPV/VSR allocate GPU surfaces AFTER optional model startup. Recheck
-    # after the player is ready rather than waiting for the monitor's tick.
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
-
-    selector_status = "off"
-    if dual.selector:
-        placement = f"{dual.selector.gpu_layers} GPU layers requested" if dual.selector.gpu_layers else "CPU"
-        selector_status = f"LFM2.5-1.2B-JP Q4_K_M ({placement})"
-    # Whisper Turbo only transcribes Japanese; ECAPA filters other languages first.
-    # Do not report an Indonesian worker: that optional third-ASR feature was removed.
-    print(f"ASR: Haas + {'Whisper Large-v3 Turbo' if dual.worker else 'no secondary'} | "
-          f"Language: Japanese only (EN/ID audio filter: "
-          f"{'CPU ECAPA' if language_filter else 'off'}) | "
-          f"Selector: {selector_status} | "
+    print("ASR: Voxtral Mini 4B Q4_K (CUDA, offline utterances) | "
+          f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
           f"PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
     check_running()
     budget.start(relieve_pressure)
@@ -480,14 +429,14 @@ def _main(resources: ExitStack) -> None:
             captions=captions,
             vod_title=vod_context,
             session_cache=subtitle_cache,
-            dual=dual,
+            playback_position=playback_position,
+            chat_context=chat_context,
             language_filter=language_filter,
             gate=gate,
             diagnostics=diagnostics if cfg.diagnostics.enabled else None,
         )
     finally:
         budget.close()
-        dual.release()
 
 
 

@@ -2,15 +2,15 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Haas + PLaMo - First-time Setup
+title Voxtral + PLaMo - First-time Setup
 
 echo ============================================
-echo   Haas ASR + PLaMo 3 - Windows Setup
+echo   Voxtral ASR + PLaMo 3 - Windows Setup
 echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
-echo Vulkan speech.cpp, Haas and CUDA llama.cpp.
-echo Setup downloads PLaMo Q4_K_M.
+echo CUDA audio.cpp and CUDA llama.cpp.
+echo Setup downloads Voxtral Q4_K and PLaMo Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 
@@ -27,8 +27,7 @@ set "SETUP_RESULT=%ERRORLEVEL%"
 echo.
 if "%SETUP_RESULT%"=="0" (
     echo SETUP FINISHED. Double-click "Start GUI.vbs" to launch the app.
-    echo The first GUI launch installs PySide6 if necessary.
-    echo First translation downloads Whisper Large-v3 Turbo models.
+    echo GUI dependencies are installed by Setup.
 ) else (
     echo SETUP FAILED. Read the error above, then rerun Setup.bat.
 )

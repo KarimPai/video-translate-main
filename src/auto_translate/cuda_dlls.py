@@ -2,7 +2,7 @@
 
 The `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` wheels put their DLLs in
 `site-packages/nvidia/<lib>/bin`, which Windows does not search by default.
-Call `setup()` before importing CUDA-enabled libraries such as ONNX Runtime or CTranslate2.
+Call `setup()` before importing CUDA-enabled optional libraries that need these wheels.
 """
 
 import functools

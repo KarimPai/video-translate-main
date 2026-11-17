@@ -1,4 +1,4 @@
-"""CPU-only regression tests for English Haas/PLaMo live subtitle playback.
+"""CPU-only regression tests for English Voxtral/PLaMo live subtitle playback.
 
 MPV process is not launched. Validates HLS vs PCM clock mapping and whether
 translated cues survive ordinary live inference delay.

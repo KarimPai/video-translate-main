@@ -6,45 +6,18 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    branches: [feature/haas-whisper-turbo-dual-asr-20261114]
+    branches: [experiment/voxtral-mini-4b-single-asr]
     paths:
-      - "src/auto_translate/gui.py"
-      - "src/auto_translate/__main__.py"
-      - "src/auto_translate/config.py"
-      - "src/auto_translate/context_memory.py"
-      - "src/auto_translate/proper_names.py"
-      - "src/auto_translate/name_hints.py"
-      - "src/auto_translate/glossary.py"
-      - "src/auto_translate/translation_guard.py"
-      - "src/auto_translate/types.py"
-      - "src/auto_translate/watame.py"
-      - "glossary.toml"
-      - "src/auto_translate/translate/plamo.py"
-      - "src/auto_translate/asr/**"
-      - "src/auto_translate/live_chat.py"
-      - "src/auto_translate/runtime_diagnostics.py"
-      - "src/auto_translate/gpu_budget.py"
-      - "src/auto_translate/safe_playback.py"
-      - "src/auto_translate/pipeline.py"
-      - "src/auto_translate/vad.py"
-      - "src/auto_translate/separation.py"
-      - "src/auto_translate/ingest.py"
+      - "src/**"
       - "tests/**"
+      - "scripts/**"
       - "pyproject.toml"
       - "uv.lock"
-      - "src/auto_translate/gui_runner.py"
-      - "src/auto_translate/gui_control.py"
-      - "src/auto_translate/output/mpv.py"
-      - "src/auto_translate/output/mpv_gui_input.conf"
-      - "tests/test_gui_player_controls.py"
-      - "src/auto_translate/gui_bootstrap.py"
-      - "src/auto_translate/windows_subprocess.py"
-      - "src/auto_translate/windows_job.py"
-      - "src/auto_translate/gui_session.py"
-      - "tests/test_session_lifecycle.py"
-      - "tests/fixtures/lifecycle_dummy.py"
+      - "config.example.toml"
+      - "glossary.toml"
+      - "Setup.bat"
       - "Start GUI.vbs"
-      - "tests/test_gui_runner.py"
+      - "Start translate.bat"
       - ".github/workflows/windows-gui.yml"
 
 jobs:
@@ -85,11 +58,8 @@ jobs:
           w.show()
           app.processEvents()
           assert w.quality.currentData() == 720
-          assert w.vsr_checkbox.isEnabled() and not w.vsr_checkbox.isChecked()
           assert w.memory_checkbox.isChecked() and w.memory_lines.value() == 16
           assert w.memory_lines.maximum() == 20
-          assert w.smart_correction_checkbox.isChecked()
-          assert w.vod_retries.value() == 1 and w.live_retries.value() == 0
           assert not w.chat_checkbox.isChecked() and not w.safe_playback_checkbox.isChecked()
           assert w.diagnostics_checkbox.isChecked()
           assert not w.include_windows_events.isChecked()
@@ -97,18 +67,14 @@ jobs:
           assert not w.memory_lines.isEnabled()
           w.memory_checkbox.setChecked(True)
           assert w.memory_lines.isEnabled()
-          w._on_player_event({"event": "diagnostics", "gpu": {},
-                              "playback": {"vsr_requested": True, "vsr_active": None}})
+          w._on_player_event({"event": "diagnostics", "gpu": {}, "playback": {}})
           assert "unknown" in w.diagnostic_labels["gpu"].text().lower()
-          assert "unknown" in w.diagnostic_labels["vsr"].text().lower()
-          w.vsr_checkbox.setChecked(True)
           for quality in (360, 480, 1080, 720):
               w.quality.setCurrentIndex(w.quality.findData(quality))
-              assert w.vsr_checkbox.isEnabled() and w.vsr_checkbox.isChecked()
           w._session_ready()
           assert not w.setup_panel.isVisible()
           w._session_finished("Stopped.")
-          assert w.setup_panel.isVisible() and w.vsr_checkbox.isChecked()
+          assert w.setup_panel.isVisible()
           w.close()
           '@ | python -
       - name: Verify GUI seekbar and host fullscreen state
@@ -355,7 +321,15 @@ jobs:
           if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics src/auto_translate/gui.py
-      - name: Check incremental GUI patch
+      - name: Include fresh-install source backend and setup in the full artifact
+        shell: pwsh
+        run: |
+          $destination = "dist/VideoTranslate"
+          foreach ($item in @('src', 'scripts', 'web', 'pyproject.toml', 'uv.lock', 'config.example.toml', 'glossary.toml', 'Setup.bat', 'Start GUI.vbs', 'Start translate.bat', 'README.md', 'GUI_SETUP.md')) {
+            Copy-Item -LiteralPath $item -Destination $destination -Recurse -Force
+          }
+          Copy-Item -LiteralPath '.gitignore' -Destination $destination
+      - name: Check packaged GUI
         shell: pwsh
         run: |
           $exe = Get-Item "dist/VideoTranslate/VideoTranslate.exe"
@@ -364,10 +338,10 @@ jobs:
           if ($exe.Length -lt 10000) { throw "Packaged frontend EXE unexpectedly small" }
           Write-Host "Incremental GUI EXE size: $([math]::Round($exe.Length / 1MB, 2)) MiB"
           Write-Host "Complete GUI runtime size: $([math]::Round($full / 1MB, 2)) MiB"
-      - name: Upload small EXE-only update
+      - name: Upload frontend EXE
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: VideoTranslate-EXE-Only
+          name: VideoTranslate-Voxtral-EXE-Only
           path: dist/VideoTranslate/VideoTranslate.exe
           compression-level: 9
           retention-days: 30
@@ -375,7 +349,7 @@ jobs:
       - name: Upload full GUI (new installs)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: VideoTranslate-Windows-GUI
+          name: VideoTranslate-Voxtral-Windows-GUI
           path: dist/VideoTranslate/
           retention-days: 30
           if-no-files-found: error

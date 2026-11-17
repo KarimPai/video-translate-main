@@ -36,10 +36,21 @@ def _given_name(en: str) -> str:
     return re.split(r"[- ]", en)[-1] if " " in en else re.split(r"-", en)[0]
 
 
+_PRONOUNS = {"she": "女性", "he": "男性"}
+
+
 class Glossary:
-    def __init__(self, terms: dict[str, str], *, nicknames=None, talent_aliases=None) -> None:
+    def __init__(self, terms: dict[str, str], *, nicknames=None, talent_aliases=None,
+                 talents=None) -> None:
         self.nicknames = dict(nicknames or {})
         self.talent_aliases = dict(talent_aliases or {})
+        self.talents = {name: dict(profile) for name, profile in (talents or {}).items()}
+        self._english = terms | self.nicknames
+        # Every spelling whose English matches a profiled talent identifies that talent.
+        by_english = {self._english[name]: name for name in self.talents if name in self._english}
+        self._talent_spellings = sorted(
+            ((kana_key(ja), by_english[en]) for ja, en in terms.items() if en in by_english),
+            key=lambda pair: len(pair[0]), reverse=True)
         self._name_ids = {kana_key(alias): canonical for alias, canonical in self.talent_aliases.items()}
         self._canonical_names = frozenset(self.talent_aliases.values())
         self._name_ids.update((kana_key(name), name) for name in self._canonical_names)
@@ -59,7 +70,38 @@ class Glossary:
         for alias, canonical in aliases.items():
             if (alias not in terms and alias not in nicknames) or canonical not in terms:
                 raise ValueError(f"Invalid talent alias: {alias} -> {canonical}")
-        return cls(terms, nicknames=nicknames, talent_aliases=aliases)
+        talents = data.get("talents", {})
+        for name, profile in talents.items():
+            if (name not in terms or not isinstance(profile, dict)
+                    or set(profile) - {"self", "pronoun"}
+                    or not isinstance(profile.get("self", []), list)
+                    or any(not isinstance(word, str) or not word.strip() for word in profile.get("self", []))
+                    or profile.get("pronoun", "she") not in _PRONOUNS):
+                raise ValueError(f"Invalid talent profile: {name}")
+        return cls(terms, nicknames=nicknames, talent_aliases=aliases, talents=talents)
+
+    def talents_in(self, text: str) -> list[str]:
+        """Profiled talents named in Japanese or romanized text, by first mention."""
+        folded, lowered = kana_key(text), text.casefold()
+        found: dict[str, int] = {}
+        for spelling, name in self._talent_spellings:
+            index = folded.find(spelling)
+            if index >= 0:
+                found[name] = min(index, found.get(name, index))
+        for name in self.talents:
+            english = self._english[name]
+            match = re.search(r"(?<![a-z])" + re.escape(english.casefold()) + r"(?![a-z])", lowered)
+            if match:
+                found[name] = min(match.start(), found.get(name, match.start()))
+        return sorted(found, key=found.get)
+
+    def host_line(self, name: str) -> str:
+        """Profile the streamer so dropped subjects and self-references resolve."""
+        profile = self.talents[name]
+        line = f"配信者：{name}（{self._english[name]}、{_PRONOUNS[profile.get('pronoun', 'she')]}）"
+        if profile.get("self"):
+            line += "。自称「" + "」「".join(profile["self"]) + "」は配信者本人"
+        return line
 
     def _identity(self, term: str, en: str) -> str:
         key = kana_key(term)

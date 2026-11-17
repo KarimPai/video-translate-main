@@ -61,7 +61,7 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
 
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
-                          *, frozen: bool = False, context_lines: int = 3,
+                          *, frozen: bool = False, context_lines: int = 6,
                           asr_model: str | None = None, mt_model: str | None = None,
                           safe_playback: bool = False, diagnostics: bool = True,
                           executable: str | None = None):

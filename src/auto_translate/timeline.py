@@ -68,6 +68,9 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
         # Channel/uploader identifies the talent even when their name is
         # absent from a gaming VOD's title.
         "channel": str(data.get("channel") or data.get("uploader") or ""),
+        # Collab streams list their cast in the description and tags.
+        "description": str(data.get("description") or "")[:4000],
+        "tags": [str(tag) for tag in (data.get("tags") or [])[:50] if tag],
         "extractor": str(data.get("extractor_key") or data.get("extractor") or ""),
         "duration_s": float(duration) if duration is not None else None,
         "upload_timestamp": data.get("release_timestamp") or data.get("timestamp"),

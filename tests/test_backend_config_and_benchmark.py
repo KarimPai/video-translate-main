@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 import wave
 
 from auto_translate.config import AsrConfig, TranslateConfig, load_config
-from scripts.benchmark import edit_distance, load_cases, normalized, read_audio, summarize
+from scripts.benchmark import (
+    chrf, edit_distance, load_cases, normalized, read_audio, summarize, translation_overrides,
+)
 
 
 class BackendConfigTests(unittest.TestCase):
@@ -15,16 +18,20 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.asr.mmproj_path, AsrConfig().mmproj_path)
         self.assertEqual(cfg.translate.model_path, TranslateConfig().model_path)
         self.assertEqual(cfg.translate.gpu_layers, -1)
-        self.assertEqual(cfg.translate.context_lines, 3)
-        self.assertEqual(cfg.translate.max_context_chars, 300)
+        self.assertEqual(cfg.translate.context_lines, 6)
+        self.assertEqual(cfg.translate.max_context_chars, 600)
         self.assertEqual(cfg.translate.context_max_gap_s, 15.0)
+        self.assertFalse(cfg.translate.context_english)
+        self.assertTrue(cfg.translate.merge_fragments)
+        self.assertEqual(cfg.asr.recent_context_lines, 2)
         self.assertFalse(cfg.language_filter.enabled)
 
     def test_translation_context_defaults(self):
         cfg = TranslateConfig()
-        self.assertEqual(cfg.context_lines, 3)
-        self.assertEqual(cfg.max_context_chars, 300)
+        self.assertEqual(cfg.context_lines, 6)
+        self.assertEqual(cfg.max_context_chars, 600)
         self.assertEqual(cfg.context_max_gap_s, 15.0)
+        self.assertEqual((cfg.merge_max_gap_s, cfg.merge_max_s), (0.6, 16.0))
 
     def test_context_gap_accepts_positive_numeric_overrides(self):
         for gap in (1, 2.5, 30):
@@ -41,14 +48,15 @@ class BackendConfigTests(unittest.TestCase):
         for kwargs in ({"model_path": ""}, {"mmproj_path": " "}, {"cuda_device": -1},
                        {"threads": True}, {"context": []}, {"context_size": 100},
                        {"max_context_chars": 8001}, {"blocklist": [""]},
-                       {"response_timeout_s": float("nan")}):
+                       {"response_timeout_s": float("nan")}, {"recent_context_lines": 5}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 AsrConfig(**kwargs)
 
     def test_translation_boundary_validation(self):
         for kwargs in ({"model_path": ""}, {"gpu_layers": -2}, {"context_lines": 21},
                        {"context_lines": True}, {"context_size": 100}, {"temperature": float("nan")},
-                       {"max_tokens": 0}, {"timeout_s": 0}):
+                       {"max_tokens": 0}, {"timeout_s": 0}, {"context_english": 1},
+                       {"merge_fragments": "yes"}, {"merge_max_gap_s": -1}, {"merge_max_s": 60}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 TranslateConfig(**kwargs)
 
@@ -98,6 +106,38 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(summary["asr_rtf"], .1)
         self.assertEqual(summary["mt_name_recall"], .5)
         self.assertIn("Human review", summary["english_review"])
+        self.assertIsNone(summary["chrf"])
+
+    def test_chrf_rewards_closer_translations(self):
+        self.assertAlmostEqual(chrf([("It's sunny today.", "It's sunny today.")]), 100.0)
+        self.assertEqual(chrf([("Hello.", "zzz")]), 0.0)
+        self.assertIsNone(chrf([]))
+        close = chrf([("Pekora is here.", "Pekora's here.")])
+        far = chrf([("Pekora is here.", "The rabbit came.")])
+        self.assertGreater(close, far)
+        # Corpus scores pool n-gram counts instead of averaging per-cue scores.
+        pooled = chrf([("Pekora is here.", "Pekora's here."), ("Yes.", "No.")])
+        self.assertLess(pooled, close)
+
+    def test_context_overrides_for_ab_runs(self):
+        args = SimpleNamespace(context_lines=None, max_context_chars=None, context_english=False, no_context=False)
+        self.assertEqual(translation_overrides(args), {})
+        args = SimpleNamespace(context_lines=4, max_context_chars=800, context_english=True, no_context=False)
+        self.assertEqual(translation_overrides(args),
+                         {"context_lines": 4, "max_context_chars": 800, "context_english": True})
+        args.no_context = True
+        self.assertEqual(translation_overrides(args)["context_lines"], 0)
+
+    def test_manifest_accepts_sequential_groups_and_stream_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cases.json"
+            valid = [{"audio": "a.wav", "ja": "はい", "group": "collab", "channel": "Pekora Ch. 兎田ぺこら",
+                      "description": "ゲスト：宝鐘マリン"}]
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            self.assertEqual(load_cases(path), valid)
+            path.write_text(json.dumps([{"audio": "a.wav", "ja": "はい", "group": 1}]), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_cases(path)
 
 
 if __name__ == "__main__":

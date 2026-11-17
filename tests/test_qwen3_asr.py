@@ -1,4 +1,5 @@
 import base64
+from collections import deque
 import io
 import threading
 import unittest
@@ -23,6 +24,7 @@ def fake_asr(*responses, cfg=None, context=""):
     obj = object.__new__(Qwen3ASR)
     obj.cfg = cfg or AsrConfig()
     obj.context = context
+    obj._recent = deque(maxlen=obj.cfg.recent_context_lines)
     obj.last_raw_transcript = ""
     obj.last_rejection = obj.last_language = None
     obj._state_lock = threading.Lock()
@@ -105,6 +107,27 @@ class QwenProtocolTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(part["data"]), b"RIFF")
         self.assertEqual(part["format"], "wav")
         self.assertEqual(obj.server.chat.call_args.kwargs["timeout"], 15)
+
+    def test_recent_transcripts_extend_system_context_until_forgotten(self):
+        obj = fake_asr(context="ぺこら 配信")
+        del obj._request
+        obj.server.chat.return_value = response("language Japanese<asr_text>はい")
+        for text in ("一つ目です", "二つ目です", "三つ目です"):
+            obj.remember(text)
+        obj._request(b"RIFF", 1, timeout=15)
+        system = obj.server.chat.call_args.args[0]["messages"][0]["content"]
+        self.assertEqual(system, "ぺこら 配信\n直前の発話：\n二つ目です\n三つ目です")
+        for clear in (obj.forget, obj.cancel_pending):
+            obj.remember("四つ目です")
+            clear()
+            obj._request(b"RIFF", 1, timeout=15)
+            self.assertEqual(obj.server.chat.call_args.args[0]["messages"][0]["content"], "ぺこら 配信")
+        obj = fake_asr(cfg=AsrConfig(recent_context_lines=0))
+        del obj._request
+        obj.server.chat.return_value = response("language Japanese<asr_text>はい")
+        obj.remember("一つ目です")
+        obj._request(b"RIFF", 1, timeout=15)
+        self.assertEqual([m["role"] for m in obj.server.chat.call_args.args[0]["messages"]], ["user"])
 
     def test_constructor_uses_model_projector_and_owned_server(self):
         server = Mock()

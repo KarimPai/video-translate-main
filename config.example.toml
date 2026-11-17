@@ -7,6 +7,8 @@ cuda_device = 0
 threads = 8
 context = ""
 max_context_chars = 2000
+# Previous accepted transcripts added to the ASR prompt for continuity.
+recent_context_lines = 2
 context_size = 4096
 startup_timeout_s = 180
 response_timeout_s = 30
@@ -65,9 +67,16 @@ temperature = 0.2
 top_k = 20
 top_p = 0.6
 repeat_penalty = 1.05
-context_lines = 3
-max_context_chars = 300
+context_lines = 6
+# Includes the labelled stream title, channel, host, cast and current chapter.
+max_context_chars = 600
 context_max_gap_s = 15.0
+# Showing earlier English can improve consistency but can also repeat mistakes.
+context_english = false
+# VOD only: join a cue without sentence-final punctuation with the next close cue.
+merge_fragments = true
+merge_max_gap_s = 0.6
+merge_max_s = 16.0
 timeout_s = 30
 load_timeout_s = 300
 glossary = "glossary.toml"

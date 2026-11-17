@@ -117,6 +117,7 @@ class AsrConfig:
     server_path: str = LLAMA_SERVER_PATH
     context: str = ""
     max_context_chars: int = 2000
+    recent_context_lines: int = 2  # previous accepted transcripts added to the ASR system prompt
     context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8
@@ -134,6 +135,8 @@ class AsrConfig:
             raise ValueError("asr.context must be a string")
         if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 8000:
             raise ValueError("asr.max_context_chars must be an integer in 0..8000")
+        if type(self.recent_context_lines) is not int or not 0 <= self.recent_context_lines <= 4:
+            raise ValueError("asr.recent_context_lines must be an integer in 0..4")
         if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
             raise ValueError("asr.context_size must be an integer in 1024..32768")
         if type(self.cuda_device) is not int or self.cuda_device < 0:
@@ -211,9 +214,14 @@ class TranslateConfig:
     top_k: int = 20
     top_p: float = 0.6
     repeat_penalty: float = 1.05
-    context_lines: int = 3
-    max_context_chars: int = 300
+    context_lines: int = 6
+    max_context_chars: int = 600  # includes stream metadata; HY-MT is not upgraded for 8 GB VRAM
     context_max_gap_s: float = 15.0
+    context_english: bool = False  # also show prior English; can propagate earlier mistakes
+    # VOD only: join a cue without sentence-final punctuation with the next close cue.
+    merge_fragments: bool = True
+    merge_max_gap_s: float = 0.6
+    merge_max_s: float = 16.0
     timeout_s: float = 30.0
     load_timeout_s: float = 300.0
     glossary: str = "glossary.toml"
@@ -249,6 +257,12 @@ class TranslateConfig:
         if (type(self.context_max_gap_s) not in (int, float)
                 or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
             raise ValueError("translate.context_max_gap_s must be finite and positive")
+        for name in ("context_english", "merge_fragments"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"translate.{name} must be boolean")
+        if (type(self.merge_max_gap_s) not in (int, float) or not 0 <= self.merge_max_gap_s <= 3
+                or type(self.merge_max_s) not in (int, float) or not 1 <= self.merge_max_s <= 30):
+            raise ValueError("translate.merge_max_gap_s must be in 0..3 and merge_max_s in 1..30")
         for value in (self.timeout_s, self.load_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")

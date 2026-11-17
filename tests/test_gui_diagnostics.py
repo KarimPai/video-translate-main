@@ -59,7 +59,7 @@ class DiagnosticRenderingTests(unittest.TestCase):
             _, defaults = build_backend_command(root, "https://youtu.be/abcd", 720, 42)
             for flag in ("--no-safe-playback", "--diagnostics"):
                 self.assertIn(flag, defaults)
-            self.assertEqual(defaults[defaults.index("--context-lines") + 1], "3")
+            self.assertEqual(defaults[defaults.index("--context-lines") + 1], "6")
             self.assertNotIn("--asr-model", defaults)
             self.assertNotIn("--mt-model", defaults)
 

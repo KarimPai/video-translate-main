@@ -15,7 +15,7 @@ The VBS launcher uses `pythonw.exe`; native helpers suppress external console wi
 
 Pause/resume, VOD seeking, fullscreen, and 360p/480p/720p/1080p selection remain available. Qt owns the seekbar; MPV hardware decoding and scaling remain enabled. The Console tab retains transcript/log output.
 
-Settings exposes the ASR GGUF path, HY-MT GGUF path, and 0–20 context lines (default three). Changes apply at the next start. Seeking or switching videos clears recent dialogue context. The ASR projector and server executable are configured in `config.toml`, not inferred from arbitrary selected model paths.
+Settings exposes the ASR GGUF path, HY-MT GGUF path, and 0–20 context lines (default six). Changes apply at the next start. Seeking or switching videos clears recent dialogue context. The ASR projector and server executable are configured in `config.toml`, not inferred from arbitrary selected model paths.
 
 Safe Playback bounds queued audio and inference concurrency. Diagnostics displays observed GPU memory/activity, ASR/translation timings, playback facts, queue counts, and owned workers. Missing metrics remain unknown. Diagnostic export runs in the background; Windows event metadata is opt-in.
 
@@ -30,9 +30,12 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `asr.server_path`, `translate.server_path` | `.runtime/llama-b12318-cuda12/llama-server.exe` |
 | `translate.model_path` | `models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf` |
 | `translate.gpu_layers` | `-1` (measured adaptive offload) |
-| `translate.context_lines` | `3` Japanese dialogue lines |
-| `translate.max_context_chars` | `300` |
+| `translate.context_lines` | `6` Japanese dialogue lines |
+| `translate.max_context_chars` | `600` (includes stream title, channel, host, cast and chapter) |
 | `translate.context_max_gap_s` | `15.0` seconds of audio-timeline silence |
+| `translate.context_english` | `false` (opt in to show earlier English in context) |
+| `translate.merge_fragments` | `true` (VOD: join a mid-sentence cue with the next cue within `merge_max_gap_s` = `0.6`) |
+| `asr.recent_context_lines` | `2` previous transcripts in the ASR prompt |
 | `vad.adaptive_split_s` | `5.0` (VOD natural-pause split target) |
 | `asr.response_timeout_s` | `30` |
 | `asr.live_response_timeout_s` | `15` |

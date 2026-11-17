@@ -4,6 +4,7 @@
 import logging
 import math
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -106,6 +107,42 @@ def _raw_transcript(asr) -> str:
     return raw if isinstance(raw, str) else ""
 
 
+ASR_CONTEXT_GAP_S = 15.0
+_SENTENCE_END = re.compile(r"[。．.！!？?…‥」』）)】♪〜～ー]\s*$")
+
+
+def _join_fragments(items, max_gap_s: float, max_span_s: float):
+    """Hold a transcript that ends mid-sentence and join it with a closely following one.
+
+    Progress markers that could precede the continuation are parked behind the
+    held cue, so no marker ever claims time the held cue still covers.
+    """
+    held: Transcript | None = None
+    parked: list[AudioProgress] = []
+    for item in items:
+        if held is not None:
+            if (isinstance(item, AudioProgress) and not item.reset and item.generation == held.generation
+                    and item.sample / SAMPLE_RATE <= held.end_s + max_gap_s):
+                parked.append(item)
+                continue
+            if (type(item) is Transcript and item.generation == held.generation
+                    and item.start_s - held.end_s <= max_gap_s and item.end_s - held.start_s <= max_span_s):
+                item = Transcript(held.start_s, item.end_s, held.ja + item.ja, held.timings,
+                                  generation=held.generation, speech_start_s=held.speech_start_s)
+                increment_counter("merged_fragments")
+            else:
+                yield held
+                yield from parked
+                parked.clear()
+            held = None
+        if type(item) is Transcript and not _SENTENCE_END.search(item.ja):
+            held = item
+            continue
+        yield item
+        yield from parked
+        parked.clear()
+
+
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
@@ -126,6 +163,9 @@ def run_asr(
     current_generation = None
     last_text = ""
     repeated = 0
+    last_accepted_end_s: float | None = None
+    remember = getattr(asr, "remember", None)
+    forget = getattr(asr, "forget", None)
     # Relative live timestamps can be reused after reconnects. A VOD cache
     # must never supply cues for a different live generation.
     if live:
@@ -136,12 +176,18 @@ def run_asr(
                 or (get_generation is not None and generation != get_generation()))
 
     def reset_generation(generation):
-        nonlocal current_generation, last_text, repeated
-        last_text, repeated = "", 0
+        nonlocal current_generation, last_text, repeated, last_accepted_end_s
+        last_text, repeated, last_accepted_end_s = "", 0, None
         cancel = getattr(asr, "cancel_pending", None)
         if callable(cancel):
             cancel()
         current_generation = generation
+
+    def accepted(text, end_s):
+        nonlocal last_accepted_end_s
+        last_accepted_end_s = end_s
+        if callable(remember):
+            remember(text)
 
     while True:
         item = in_q.get()
@@ -171,6 +217,7 @@ def run_asr(
         if cached is not None:
             if cancelled(utt.generation):
                 continue
+            accepted(cached.ja, utt.end_s)
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
         if language_filter is not None:
@@ -181,6 +228,10 @@ def run_asr(
                 continue
         if cancelled(utt.generation):
             continue
+        if (last_accepted_end_s is not None and callable(forget)
+                and utt.start_s - last_accepted_end_s > ASR_CONTEXT_GAP_S):
+            forget()
+            last_accepted_end_s = None
         utt.timings.asr_start = time.monotonic()
         try:
             with (gate.operation("asr", current=get_generation, generation=utt.generation)
@@ -232,6 +283,7 @@ def run_asr(
             continue
         if cancelled(utt.generation):
             continue
+        accepted(text, utt.end_s)
         out_q.put(Transcript(utt.start_s, utt.end_s, text, utt.timings,
                              generation=utt.generation, speech_start_s=utt.speech_start_s))
     out_q.put(None)
@@ -248,17 +300,23 @@ def run_translate(
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
     gate=None,
+    merge: tuple[float, float] | None = None,
 ) -> None:
-    """Translate transcripts while retaining recent context and forwarding progress."""
+    """Translate transcripts while retaining recent context and forwarding progress.
+
+    ``merge`` is ``(max_gap_s, max_span_s)`` for joining mid-sentence VOD fragments.
+    """
     consecutive_failures = 0
     history: deque[tuple[str, str]] = deque(maxlen=max(1, context_lines))
     memory_generation: int | None = None
     last_speech_end_s: float | None = None
     context_max_gap_s = getattr(getattr(translator, "cfg", None), "context_max_gap_s", 15.0)
+    set_position = getattr(translator, "set_position", None)
+    items = iter(in_q.get, object())
+    if merge is not None:
+        items = _join_fragments(items, *merge)
 
-    while True:
-        item = in_q.get()
-
+    for item in items:
         if item is None:
             break
         if stop is not None and stop.is_set():
@@ -331,6 +389,8 @@ def run_translate(
                         increment_counter("expired")
                         continue
                     model_started = time.monotonic()
+                    if callable(set_position):
+                        set_position(tr.start_s)
                     en = translator.translate(tr.ja, list(history) if context_lines else [])
                     update_metrics(stages={"mt_s": time.monotonic() - model_started})
                 consecutive_failures = 0
@@ -380,7 +440,8 @@ def run_translate(
             if not en:
                 suppressed = True
 
-            if en and useful_context(tr.ja):
+            # Recognized Japanese stays useful context even when its English failed.
+            if useful_context(tr.ja):
                 history.append((tr.ja, en))
 
             if not en.strip() and not suppressed:
@@ -577,6 +638,9 @@ def run(
                 cfg.mpv.live_late_window_s,
                 stop,
                 gate,
+                # Live cues cannot wait for a continuation without falling behind playback.
+                ((cfg.translate.merge_max_gap_s, cfg.translate.merge_max_s)
+                 if cfg.translate.merge_fragments and not ingest.source.live else None),
             ),
             name="translate",
             daemon=True,

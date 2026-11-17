@@ -15,6 +15,7 @@ import threading
 import time
 import unicodedata
 import wave
+from collections import deque
 
 import httpx
 import numpy as np
@@ -79,6 +80,7 @@ class Qwen3ASR:
     def __init__(self, cfg: AsrConfig, context: str = "") -> None:
         self.cfg = cfg
         self.context = context.strip()[: cfg.max_context_chars]
+        self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
         self.last_raw_transcript = ""
         self.last_rejection: str | None = None
         self.last_language: str | None = None
@@ -117,11 +119,29 @@ class Qwen3ASR:
         with self._state_lock:
             self._generation += 1
             self.last_raw_transcript = ""
+            self._recent.clear()
+
+    def remember(self, text: str) -> None:
+        """Bias the next decode toward continuity with recently accepted speech."""
+        with self._state_lock:
+            self._recent.append(text[-120:])
+
+    def forget(self) -> None:
+        with self._state_lock:
+            self._recent.clear()
+
+    def _system_prompt(self) -> str:
+        with self._state_lock:
+            recent = list(self._recent)
+        if not recent:
+            return self.context
+        return "\n".join(part for part in (self.context, "直前の発話：", *recent) if part)
 
     def _request(self, wav: bytes, duration_s: float, *, timeout: float) -> dict:
         messages = []
-        if self.context:
-            messages.append({"role": "system", "content": self.context})
+        system = self._system_prompt()
+        if system:
+            messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": [{
             "type": "input_audio",
             "input_audio": {"data": base64.b64encode(wav).decode("ascii"), "format": "wav"},

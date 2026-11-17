@@ -28,7 +28,7 @@ class OutputBoundaryTests(unittest.TestCase):
         run_translate(translator, 3, incoming, outgoing, **kwargs)
         return [item for item in outgoing.queue if isinstance(item, Subtitle)]
 
-    def test_invalid_model_outputs_never_enter_next_cue_history(self):
+    def test_invalid_model_outputs_leave_only_japanese_in_next_cue_history(self):
         for invalid in ('そのままです', 'Botan said 待ってください.', ''):
             with self.subTest(invalid=invalid):
                 translator = SimpleNamespace()
@@ -36,7 +36,7 @@ class OutputBoundaryTests(unittest.TestCase):
                 cues = self.translate([Transcript(0, 2, 'そのままです'),
                                        Transcript(2, 4, '待ってください')], translator)
                 self.assertEqual([(cue.start_s, cue.en) for cue in cues], [(2, 'Please wait.')])
-                self.assertEqual(translator.translate.call_args_list[1].args[1], [])
+                self.assertEqual(translator.translate.call_args_list[1].args[1], [('そのままです', '')])
 
     def test_cached_passthrough_cannot_seed_history(self):
         translator = SimpleNamespace(translate=Mock(return_value='Hello!'))

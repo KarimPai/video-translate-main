@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from auto_translate.config import TranslateConfig
 from auto_translate.glossary import Glossary
+from auto_translate.stream_context import StreamContext
 from auto_translate.subtitle_clean import (
     clean_english_output, english_output_issue, sanitize_english_output,
     unmatched_double_quote_cleanup,
@@ -17,7 +18,8 @@ def fake_translator(*outputs, glossary=None):
     obj = object.__new__(HymtTranslator)
     obj.cfg = TranslateConfig()
     obj.glossary = glossary or Glossary.load(Path("glossary.toml"))
-    obj.title = ""
+    obj.stream = StreamContext()
+    obj._position = obj._anchor = obj._newest = None
     obj.gpu_layers = obj.layer_count = 32
     obj._lock = threading.Lock()
     obj._closed = False
@@ -61,14 +63,22 @@ class EnglishReliabilityTests(unittest.TestCase):
             self.assertIsNone(english_output_issue(text))
             self.assertEqual(sanitize_english_output(text), text)
 
-    def test_invalid_initial_response_is_retried_plainly_once(self):
+    def test_invalid_initial_response_is_retried_with_context_then_plainly(self):
+        history = [("前の文", "Earlier line.")]
         obj = fake_translator("今日は晴れです", "It's sunny today.")
-        self.assertEqual(obj.translate("今日は晴れです", [("前の文", "Earlier line.")]), "It's sunny today.")
+        self.assertEqual(obj.translate("今日は晴れです", history), "It's sunny today.")
         self.assertEqual(obj._chat.call_count, 2)
         retry_prompt = obj._chat.call_args_list[1].args[0]
-        self.assertTrue(retry_prompt.startswith("Translate the following segment into English"))
-        self.assertNotIn("前の文", retry_prompt)
+        self.assertIn("前の文", retry_prompt)
         self.assertEqual(obj._chat.call_args_list[1].kwargs["temperature"], 0.0)
+
+        obj = fake_translator("今日は晴れです", "今日は晴れです", "It's sunny today.")
+        self.assertEqual(obj.translate("今日は晴れです", history), "It's sunny today.")
+        self.assertEqual(obj._chat.call_count, 3)
+        plain = obj._chat.call_args_list[2]
+        self.assertTrue(plain.args[0].startswith("Translate the following segment into English"))
+        self.assertNotIn("前の文", plain.args[0])
+        self.assertEqual(plain.kwargs["temperature"], 0.0)
 
     def test_all_invalid_candidates_suppress_and_continue(self):
         obj = fake_translator("今日は晴れです", "It is 晴れです", "Hello!")

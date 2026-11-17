@@ -210,12 +210,7 @@ def _main(resources: ExitStack) -> None:
 
     # Video metadata biases ASR spellings and gives translation scene context.
     # It is context, not proof of who spoke the current utterance.
-    vod_context = " - ".join(
-        part for part in (
-            (source.timeline or {}).get("title", ""),
-            (source.timeline or {}).get("channel", ""),
-        ) if part
-    )
+    from .stream_context import describe_stream
 
     # Load models before starting ingest: ASR first (fixed size), then size
     # translation offload from measured free memory.
@@ -229,12 +224,16 @@ def _main(resources: ExitStack) -> None:
     resources.callback(budget.close)
     budget.operation = gate.operation
     glossary = Glossary.load(Path(cfg.translate.glossary))
+    stream_context = describe_stream(source.timeline, glossary)
+    if stream_context.host or stream_context.cast:
+        log.info("Stream context: host=%s cast=%s", stream_context.host or "-",
+                 "、".join(stream_context.cast) or "-")
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
                       if source.live else cfg.asr.response_timeout_s)
     timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
     t0 = time.perf_counter()
     check_running()
-    asr = create_asr(timed_cfg, glossary, vod_context)
+    asr = create_asr(timed_cfg, glossary, stream_context.recognition_text())
     resources.callback(asr.close)
     budget.refresh()
     record_event("asr_loaded", gpu=budget.snapshot())
@@ -243,7 +242,7 @@ def _main(resources: ExitStack) -> None:
 
     t0 = time.perf_counter()
     check_running()
-    translator = _load_translator(cfg, glossary, vod_context, budget, log)
+    translator = _load_translator(cfg, glossary, stream_context, budget, log)
     record_event("mt_loaded", gpu=budget.snapshot(), gpu_layers=translator.gpu_layers)
     log.info("HY-MT ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
              translator.gpu_layers, translator.layer_count, len(glossary.terms),
@@ -350,7 +349,7 @@ def _main(resources: ExitStack) -> None:
         budget.close()
 
 
-def _load_translator(cfg, glossary, vod_context, budget, log):
+def _load_translator(cfg, glossary, stream_context, budget, log):
     """Start HY-MT, then trim GPU layers until measured free memory meets the headroom target."""
     import math
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
@@ -370,7 +369,7 @@ def _load_translator(cfg, glossary, vod_context, budget, log):
             layers = max(0, min(layer_count, math.floor(available / per_layer_gb)))
     while True:
         try:
-            translator = create_translator(cfg.translate, glossary, vod_title=vod_context, gpu_layers=layers)
+            translator = create_translator(cfg.translate, glossary, stream=stream_context, gpu_layers=layers)
             break
         except LlamaServerError:
             if layers == 0 or not auto:

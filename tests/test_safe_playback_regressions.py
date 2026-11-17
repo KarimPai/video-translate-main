@@ -263,7 +263,7 @@ class SafePlaybackRegressions(unittest.TestCase):
                          gate=self.gate(stop=stop))
         self.assertEqual(list(outgoing.queue), [None])
 
-    def test_recoverable_translation_failures_do_not_poison_context_or_slots(self):
+    def test_recoverable_translation_failures_keep_only_japanese_context_and_free_slots(self):
         def translate(call):
             if call in (1, 2, 4):
                 raise RuntimeError("transient inference failure")
@@ -273,8 +273,8 @@ class SafePlaybackRegressions(unittest.TestCase):
         incoming, outgoing = self.queues(*(Transcript(i, i + 1, f"待って{i}") for i in range(5)))
         gate = self.gate()
         pipeline.run_translate(translator, 3, incoming, outgoing, gate=gate)
-        self.assertEqual(translator.calls[2][1], [])
-        self.assertEqual(translator.calls[4][1], [("待って2", "Wait here.")])
+        self.assertEqual(translator.calls[2][1], [("待って0", ""), ("待って1", "")])
+        self.assertEqual(translator.calls[4][1], [("待って1", ""), ("待って2", "Wait here."), ("待って3", "")])
         self.assertEqual(len([item for item in outgoing.queue if isinstance(item, Subtitle)]), 2)
         with gate.operation("post-recovery"):
             pass
@@ -298,7 +298,7 @@ class SafePlaybackRegressions(unittest.TestCase):
         pipeline.run_translate(translator, 3, incoming, outgoing,
                                get_generation=lambda: generation[0], gate=self.gate())
         self.assertEqual(len(translator.calls), 5)
-        self.assertEqual(translator.calls[-1], ("待って", []))
+        self.assertEqual(translator.calls[-1], ("待って", [("新しい会話", "")]))
         subtitles = [item for item in outgoing.queue if isinstance(item, Subtitle)]
         self.assertEqual([(item.generation, item.start_s) for item in subtitles], [(1, 21)])
 

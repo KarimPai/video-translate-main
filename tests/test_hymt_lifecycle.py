@@ -28,8 +28,7 @@ class HymtLifecycleTests(unittest.TestCase):
                 obj.server.chat.side_effect = [completion("It's a", "length"), retry]
                 self.assertEqual(obj.translate("今日は晴れです", []), expected)
                 self.assertEqual(obj.server.chat.call_count, 2)
-
-    def test_invalid_recovered_response_uses_the_same_validation_path(self):
+                self.assertTrue(obj.server.chat.call_args.args[0]["cache_prompt"])
         obj = fake_translator(httpx.ReadError("closed"), "今日は晴れです", "It's sunny today.")
         obj.server.alive.side_effect = [True, False]
         obj.reload = Mock()
@@ -98,7 +97,7 @@ class HymtLifecycleTests(unittest.TestCase):
                 "auto_translate.llama_server.require_gguf", return_value=obj.model), patch(
                 "auto_translate.llama_server.gguf_block_count", return_value=32), patch(
                 "auto_translate.__main__.os.path.getsize", return_value=4 * 1024**3):
-            _load_translator(Config(), Glossary({}), "", budget, Mock())
+            _load_translator(Config(), Glossary({}), None, budget, Mock())
         layers = create.call_args.kwargs["gpu_layers"]
         self.assertGreater(layers, 0)
         self.assertLess(layers, 24)
@@ -112,7 +111,7 @@ class HymtLifecycleTests(unittest.TestCase):
         with patch("auto_translate.translate.create_translator", return_value=obj), patch(
                 "auto_translate.__main__.os.path.getsize", return_value=4 * 1024**3):
             with self.assertRaises(LlamaServerError):
-                _load_translator(Config(), Glossary({}), "", budget, Mock())
+                _load_translator(Config(), Glossary({}), None, budget, Mock())
         obj.close.assert_called_once()
 
 

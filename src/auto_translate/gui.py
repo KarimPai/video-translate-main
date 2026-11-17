@@ -310,7 +310,7 @@ class VideoTranslateWindow(QMainWindow):
         settings.addRow("Translation model", self.mt_model)
         self.context_lines = QSpinBox()
         self.context_lines.setRange(0, 20)
-        self.context_lines.setValue(3)
+        self.context_lines.setValue(6)
         self.context_lines.setSuffix(" lines")
         self.context_lines.setToolTip(
             "Previous Japanese dialogue lines, without earlier English translations. "

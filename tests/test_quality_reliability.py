@@ -18,16 +18,17 @@ class AdaptiveVadTests(unittest.TestCase):
         cfg = VadConfig()
         live = vad_for_source(cfg, live=True)
         self.assertEqual(live.adaptive_split_s, 4.0)
-        self.assertEqual(cfg.adaptive_split_s, 6.5)
+        self.assertEqual(cfg.adaptive_split_s, 5.0)
         self.assertEqual(live.max_utterance_s, 7.0)
 
     def test_earlier_clear_pause_splits_without_losing_samples(self):
-        # 12s; clear 300ms pause at 9.2s, well before the VOD 14s cap.
-        frames = 1200
+        # 8s; a 300ms pause at 5.8s must split after the new 5s target,
+        # without waiting for the old 6.5s target or the unchanged 14s cap.
+        frames = 800
         pcm = np.full(frames * FRAME, .25, dtype=np.float32)
         probs = np.full(frames, .98, dtype=np.float32)
-        pcm[920 * FRAME:950 * FRAME] = 0
-        probs[920:950] = .01
+        pcm[580 * FRAME:610 * FRAME] = 0
+        probs[580:610] = .01
 
         class FakeVAD:
             def reset(self):
@@ -40,7 +41,7 @@ class AdaptiveVadTests(unittest.TestCase):
             utterances = segmenter.feed(AudioChunk(0, pcm, 0.0))
             utterances += segmenter.flush()
         self.assertGreaterEqual(len(utterances), 2)
-        self.assertLess(utterances[0].end_s, 10.0)
+        self.assertLess(utterances[0].end_s, 6.5)
         self.assertAlmostEqual(utterances[0].end_s, utterances[1].start_s, places=5)
         self.assertTrue(np.array_equal(np.concatenate([u.audio for u in utterances]), pcm))
 

@@ -5,6 +5,7 @@ import json
 import math
 import logging
 import socket
+import sys
 import threading
 
 GUI_SHUTDOWN_MS = 20000
@@ -14,6 +15,7 @@ WORKER_DRAIN_S = 3.0
 EVENT_PREFIX = "VIDEO_TRANSLATE_GUI_EVENT:"
 FULLSCREEN_MESSAGE = "auto-translate-gui-fullscreen"
 EXIT_FULLSCREEN_MESSAGE = "auto-translate-gui-exit-fullscreen"
+_STDOUT_LOCK = threading.Lock()
 
 
 def parse_command(line: str) -> tuple[str, float | None] | None:
@@ -60,8 +62,15 @@ def parse_event(line: str) -> dict | None:
     return obj
 
 
+def write_stdout(text: str) -> None:
+    """Write a complete newline-terminated block without interleaving threads."""
+    with _STDOUT_LOCK:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+
 def emit_event(event: str, **data: object) -> None:
-    print(format_event(event, **data), flush=True)
+    write_stdout(format_event(event, **data))
 
 
 def read_control_socket(port: int, token: str, queue_command, *, connected=None, disconnected=None) -> None:

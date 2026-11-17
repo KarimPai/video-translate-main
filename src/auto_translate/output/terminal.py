@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from ..gui_control import write_stdout
 from ..subtitle_clean import sanitize_english_output
 from ..types import Subtitle
 
@@ -30,7 +31,7 @@ class TerminalOutput:
             if sub.en:
                 lines.append(f"EN: {sub.en}")
             if lines:
-                print("\n".join(lines), flush=True)
+                write_stdout("\n".join(lines))
         else:
             print_subtitle(sub)
 
@@ -52,6 +53,7 @@ def print_subtitle(sub: Subtitle) -> None:
            f"asr {tm.asr_end - tm.asr_start:.2f}s · mt {tm.mt_end - tm.mt_start:.2f}s")
     stamp = f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}]"
     japanese = " ".join(sub.ja.split())
-    print(f"{stamp} {japanese}    ({lat})", flush=True)
+    lines = [f"{stamp} {japanese}    ({lat})"]
     if sub.en:
-        print(f"{' ' * len(stamp)} → {sub.en}", flush=True)
+        lines.append(f"{' ' * len(stamp)} → {sub.en}")
+    write_stdout("\n".join(lines))

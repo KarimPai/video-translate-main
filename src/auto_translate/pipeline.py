@@ -26,6 +26,7 @@ from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
 from .translate.base import Translator, TranslatorUnavailable
+from .translate.hymt import useful_context
 from .types import (
     SAMPLE_RATE,
     AudioChunk,
@@ -252,6 +253,8 @@ def run_translate(
     consecutive_failures = 0
     history: deque[tuple[str, str]] = deque(maxlen=max(1, context_lines))
     memory_generation: int | None = None
+    last_speech_end_s: float | None = None
+    context_max_gap_s = getattr(getattr(translator, "cfg", None), "context_max_gap_s", 15.0)
 
     while True:
         item = in_q.get()
@@ -274,6 +277,7 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                last_speech_end_s = None
                 consecutive_failures = 0
             memory_generation = item.generation
 
@@ -293,8 +297,12 @@ def run_translate(
         # against a new generation reaching this queue before its marker.
         if memory_generation is not None and tr.generation != memory_generation:
             history.clear()
+            last_speech_end_s = None
             consecutive_failures = 0
         memory_generation = tr.generation
+        if last_speech_end_s is not None and tr.start_s - last_speech_end_s > context_max_gap_s:
+            history.clear()
+        last_speech_end_s = tr.end_s
 
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not translate the same VOD cue again.
@@ -304,7 +312,7 @@ def run_translate(
                 increment_counter("dropped")
                 continue
             tr = replace(tr, en=cleaned)
-            if tr.ja:
+            if useful_context(tr.ja):
                 history.append((tr.ja, cleaned))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
@@ -372,7 +380,7 @@ def run_translate(
             if not en:
                 suppressed = True
 
-            if en:
+            if en and useful_context(tr.ja):
                 history.append((tr.ja, en))
 
             if not en.strip() and not suppressed:

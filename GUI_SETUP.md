@@ -30,7 +30,10 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `asr.server_path`, `translate.server_path` | `.runtime/llama-b12318-cuda12/llama-server.exe` |
 | `translate.model_path` | `models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf` |
 | `translate.gpu_layers` | `-1` (measured adaptive offload) |
-| `translate.context_lines` | `3` |
+| `translate.context_lines` | `3` Japanese dialogue lines |
+| `translate.max_context_chars` | `300` |
+| `translate.context_max_gap_s` | `15.0` seconds of audio-timeline silence |
+| `vad.adaptive_split_s` | `5.0` (VOD natural-pause split target) |
 | `asr.response_timeout_s` | `30` |
 | `asr.live_response_timeout_s` | `15` |
 | `vad.device` | `cpu` |

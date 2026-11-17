@@ -81,7 +81,7 @@ class VadConfig:
     live_max_split_extension_s: float = 1.0  # live hard cap: 8s
     # Natural-pause splitting begins before the long-form hard cap.
     adaptive_split: bool = True
-    adaptive_split_s: float = 6.5  # VOD: keep context unless a clear pause occurs
+    adaptive_split_s: float = 5.0  # VOD: keep context unless a clear pause occurs
     live_adaptive_split_s: float = 4.0  # live: leave room for ASR + translation
     adaptive_pause_ms: int = 180  # avoid cutting at very brief VAD dips
     split_pause_min_ms: int = 120
@@ -211,8 +211,9 @@ class TranslateConfig:
     top_k: int = 20
     top_p: float = 0.6
     repeat_penalty: float = 1.05
-    context_lines: int = 3  # previous JA/EN pairs sent as contextual-translation input
-    max_context_chars: int = 600
+    context_lines: int = 3
+    max_context_chars: int = 300
+    context_max_gap_s: float = 15.0
     timeout_s: float = 30.0
     load_timeout_s: float = 300.0
     glossary: str = "glossary.toml"
@@ -245,6 +246,9 @@ class TranslateConfig:
                 raise ValueError(f"translate.{name} must be in {low}..{high}")
         if type(self.max_identical_cues) is not int or self.max_identical_cues < 1:
             raise ValueError("translate.max_identical_cues must be a positive integer")
+        if (type(self.context_max_gap_s) not in (int, float)
+                or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
+            raise ValueError("translate.context_max_gap_s must be finite and positive")
         for value in (self.timeout_s, self.load_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")

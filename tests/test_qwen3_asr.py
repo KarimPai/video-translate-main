@@ -71,6 +71,27 @@ class QwenProtocolTests(unittest.TestCase):
         self.assertLessEqual(len(text), 50)
         self.assertEqual(asr_context(AsrConfig(max_context_chars=0), glossary), "")
 
+    def test_metadata_alias_hints_are_bounded_and_exclude_unrelated_names(self):
+        glossary = Glossary.load(Path("glossary.toml"))
+        text = asr_context(AsrConfig(), glossary, "すいちゃんの配信")
+        self.assertIn("星街すいせい", text)
+        self.assertIn("すいちゃん", text)
+        self.assertNotIn("兎田ぺこら", text)
+        self.assertNotIn("配信", text)
+        self.assertEqual(asr_context(AsrConfig(), glossary, "無関係な雑談"), "")
+        title = "星街すいせい さくらみこ 獅白ぼたん 兎田ぺこら 森カリオペ 鷹嶺ルイ"
+        names = glossary.recognition_names(title)
+        self.assertLessEqual(len(names), 8)
+        self.assertEqual(sum(name in glossary.talent_aliases.values() for name in names), 4)
+        self.assertLessEqual(len(asr_context(AsrConfig(max_context_chars=20), glossary, title)), 20)
+
+    def test_selected_name_hint_echo_is_still_rejected(self):
+        glossary = Glossary.load(Path("glossary.toml"))
+        context = asr_context(AsrConfig(), glossary, "すいちゃん ぺこら みこち")
+        obj = fake_asr(response("language Japanese<asr_text>" + context), context=context)
+        self.assertEqual(obj.transcribe(np.full(32000, .03, dtype=np.float32)), "")
+        self.assertEqual(obj.last_rejection, "context_echo")
+
     def test_audio_request_contains_no_prefill_and_greedy_sampling(self):
         obj = fake_asr(context="ぺこら 配信")
         del obj._request

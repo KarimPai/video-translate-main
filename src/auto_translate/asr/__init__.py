@@ -6,10 +6,10 @@ from .qwen3 import Qwen3ASR
 
 
 def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "") -> str:
-    """User context and canonical names selected by stream metadata."""
+    """User context and bounded canonical-name/alias hints selected by metadata."""
     text = cfg.context.strip()
-    names = glossary.proper_names("\n".join((title, text))) if glossary else []
-    # Raw titles and nickname lists can be echoed as speech by Qwen3-ASR.
+    names = glossary.recognition_names("\n".join((title, text))) if glossary else []
+    # Keep metadata-selected hints small to avoid echoing the talent dictionary.
     budget = cfg.max_context_chars - len(text) - 4
     kept = []
     for name in names:

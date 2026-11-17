@@ -15,7 +15,7 @@ import httpx
 from ..config import TranslateConfig
 from ..glossary import Glossary
 from ..llama_server import LlamaServer, LlamaServerError, gguf_block_count, require_gguf, resolve_executable
-from ..runtime_diagnostics import record_event, update_metrics
+from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup
 from ..windows_subprocess import check_running
 from .base import TranslatorUnavailable
@@ -40,18 +40,35 @@ def build_prompt(text: str, terms: list[tuple[str, str]], context: str) -> str:
     return _PLAIN.format(text=text)
 
 
+def useful_context(text: str) -> bool:
+    compact = re.sub(r"[\s、。！？!?…ー〜～]+", "", text)
+    return bool(compact) and compact not in {
+        "はい", "うん", "ううん", "え", "ええ", "あ", "ああ", "お", "おお", "そう", "そうそう",
+    }
+
+
 def build_context(title: str, history: list[tuple[str, str]], lines: int, max_chars: int) -> str:
-    """Most recent JA/EN pairs that fit in the budget, oldest first, after the title."""
+    """Budgeted Japanese-only dialogue avoids recycling translation errors."""
     title = title[:max_chars]
-    pairs: list[str] = []
+    sources: list[str] = []
     used = len(title)
-    for ja, en in reversed(history[-lines:] if lines else []):
-        pair = f"{ja}\n{en}" if en else ja
-        if used + len(pair) + 1 > max_chars:
-            break
-        pairs.insert(0, pair)
-        used += len(pair) + 1
-    return "\n".join(part for part in (title, *pairs) if part)
+    recent = [ja for ja, _ in history if useful_context(ja)]
+    for ja in reversed(recent[-lines:] if lines else []):
+        if used + len(ja) + bool(used) > max_chars:
+            continue
+        sources.insert(0, ja)
+        used += len(ja) + bool(used)
+    return "\n".join(part for part in (title, *sources) if part)
+
+
+def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
+    missing = []
+    for _, name in names:
+        tokens = re.split(r"[- ]+", name)
+        pattern = r"(?<!\w)" + r"[\s\-‐‑–—]+".join(re.escape(token) for token in tokens) + r"(?!\w)"
+        if not re.search(pattern, english, re.I):
+            missing.append(name)
+    return missing
 
 
 def clean_output(text: str) -> str:
@@ -144,11 +161,15 @@ class HymtTranslator:
         choice = payload["choices"][0]
         return "" if choice.get("finish_reason") == "length" else choice["message"]["content"]
 
+    def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        source_context = "\n".join((context, ja))
+        names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
+        terms = names + [term for term in self.glossary.find(ja, context=source_context) if term not in names]
+        return terms[:MAX_TERMS], names
+
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> str:
-        recent = history[-self.cfg.context_lines:] if self.cfg.context_lines else []
-        recent_ja = "\n".join(source for source, _ in recent)
-        terms = self.glossary.find(ja, context="\n".join((self.title, recent_ja, ja)))[:MAX_TERMS]
         context = build_context(self.title, history, self.cfg.context_lines, self.cfg.max_context_chars)
+        terms, _ = self._terms_for(ja, context)
         return build_prompt(ja, terms, context)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
@@ -162,7 +183,9 @@ class HymtTranslator:
                     self.reload(self.gpu_layers - RELIEF_LAYERS, "GPU headroom low")
                 if not self.server.alive():
                     self._recover("server exited")
-                prompt = self.prompt_for(ja, history)
+                context = build_context(self.title, history, self.cfg.context_lines, self.cfg.max_context_chars)
+                terms, names = self._terms_for(ja, context)
+                prompt = build_prompt(ja, terms, context)
                 try:
                     english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
@@ -173,10 +196,21 @@ class HymtTranslator:
                         raise
                     self._recover(str(exc))
                     english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
-                if not self._closed and english_output_issue(english):
-                    retry = clean_output(self._chat(_PLAIN.format(text=ja), timeout=self.cfg.timeout_s,
+                missing = missing_names(english, names)
+                if not self._closed and (english_output_issue(english) or missing):
+                    increment_counter("mt_retries")
+                    if missing:
+                        record_event("mt_name_retry", names=missing)
+                    retry = clean_output(self._chat(build_prompt(ja, terms, ""), timeout=self.cfg.timeout_s,
                                                     temperature=0.0))
-                    english = "" if english_output_issue(retry) else retry
+                    rejected_names = missing_names(retry, names)
+                    if english_output_issue(retry) or rejected_names:
+                        increment_counter("mt_rejected")
+                        if rejected_names:
+                            record_event("mt_name_rejected", names=rejected_names)
+                        english = ""
+                    else:
+                        english = retry
                 return "" if self._closed else english
             except (httpx.HTTPError, LlamaServerError, ValueError):
                 if self._closed:

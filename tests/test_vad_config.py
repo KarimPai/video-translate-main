@@ -21,6 +21,10 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.prob_smooth_frames, 5)
         self.assertEqual(cfg.max_utterance_s, 14.0)
         self.assertEqual(cfg.max_split_extension_s, 2.0)
+        self.assertTrue(cfg.adaptive_split)
+        self.assertEqual(cfg.adaptive_split_s, 5.0)
+        self.assertEqual(cfg.adaptive_pause_ms, 180)
+        self.assertEqual(cfg.live_adaptive_split_s, 4.0)
         self.assertEqual(cfg.live_max_utterance_s, 7.0)
         self.assertEqual(cfg.live_max_split_extension_s, 1.0)
         self.assertEqual(cfg.split_pause_min_ms, 120)
@@ -36,6 +40,8 @@ class VadConfigurationTests(unittest.TestCase):
         cfg = vad_for_source(VadConfig(), live=True)
         self.assertEqual((cfg.threshold, cfg.neg_threshold, cfg.min_speech_ms, cfg.onset_ms),
                          (.30, .20, 160, 30))
+        self.assertEqual(cfg.adaptive_split_s, 4.0)
+        self.assertEqual((cfg.max_utterance_s, cfg.max_split_extension_s), (7.0, 1.0))
 
     def test_partial_override_preserves_other_defaults(self):
         with tempfile.TemporaryDirectory() as directory:

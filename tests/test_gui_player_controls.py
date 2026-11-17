@@ -7,9 +7,11 @@ from unittest.mock import Mock, patch
 
 from auto_translate.gui_control import (
     EVENT_PREFIX, FULLSCREEN_MESSAGE, EXIT_FULLSCREEN_MESSAGE,
-    format_event, parse_command, parse_event,
+    emit_event, format_event, parse_command, parse_event,
 )
 from auto_translate.output.mpv import MpvError, MpvOutput
+from auto_translate.output.terminal import TerminalOutput, print_subtitle
+from auto_translate.types import Subtitle, Timings
 
 
 class FakeIpc:
@@ -42,6 +44,132 @@ def mock_player(live=False, duration=600.0):
     return player
 
 
+class GuiStdoutTests(unittest.TestCase):
+    def concurrent_output(self, first, second, *, pause_in="write"):
+        """Hold a partial write/flush until another producer attempts the lock."""
+        paused, release = threading.Event(), threading.Event()
+        errors = queue.Queue()
+        test = self
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.contended = threading.Event()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    self.contended.set()
+                    self.lock.acquire()
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        lock = ObservedLock()
+
+        class InterleavingStream:
+            def __init__(self):
+                self.writes = []
+                self.pieces = []
+                self.flushes = 0
+
+            def wait_for_release(self):
+                paused.set()
+                if not release.wait(timeout=5):
+                    raise AssertionError("stdout producer was not released")
+
+            def write(self, text):
+                test.assertTrue(lock.lock.locked(), "write must hold the shared lock")
+                self.writes.append(text)
+                middle = len(text) // 2
+                self.pieces.append(text[:middle])
+                if len(self.writes) == 1 and pause_in == "write":
+                    self.wait_for_release()
+                self.pieces.append(text[middle:])
+                return len(text)
+
+            def flush(self):
+                test.assertTrue(lock.lock.locked(), "flush must hold the shared lock")
+                self.flushes += 1
+                if self.flushes == 1 and pause_in == "flush":
+                    self.wait_for_release()
+
+        stream = InterleavingStream()
+
+        def run(callback):
+            try:
+                callback()
+            except BaseException as exc:
+                errors.put(exc)
+
+        threads = []
+        with patch("auto_translate.gui_control._STDOUT_LOCK", lock), patch(
+            "auto_translate.gui_control.sys.stdout", stream
+        ):
+            try:
+                thread = threading.Thread(target=run, args=(first,), daemon=True)
+                threads.append(thread)
+                thread.start()
+                self.assertTrue(paused.wait(timeout=5), "first producer did not reach stdout")
+                thread = threading.Thread(target=run, args=(second,), daemon=True)
+                threads.append(thread)
+                thread.start()
+                self.assertTrue(lock.contended.wait(timeout=5), "second producer did not share the lock")
+                self.assertTrue(thread.is_alive())
+                self.assertEqual(len(stream.writes), 1)
+            finally:
+                release.set()
+                for thread in threads:
+                    thread.join(timeout=5)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertTrue(errors.empty(), list(errors.queue))
+        self.assertEqual(stream.flushes, len(stream.writes))
+        self.assertTrue(all(text.endswith("\n") for text in stream.writes))
+        self.assertEqual("".join(stream.pieces), "".join(stream.writes))
+        return stream
+
+    def test_concurrent_diagnostics_and_status_are_complete_frames(self):
+        for pause_in in ("write", "flush"):
+            with self.subTest(pause_in=pause_in):
+                stream = self.concurrent_output(
+                    lambda: emit_event("diagnostics", message="静か\nready"),
+                    lambda: emit_event("status", position=12.2),
+                    pause_in=pause_in,
+                )
+                self.assertEqual(stream.writes, [
+                    format_event("diagnostics", message="静か\nready") + "\n",
+                    format_event("status", position=12.2) + "\n",
+                ])
+                self.assertEqual([parse_event(line) for line in "".join(stream.pieces).splitlines()], [
+                    {"event": "diagnostics", "message": "静か\nready"},
+                    {"event": "status", "position": 12.2},
+                ])
+
+    def test_transcript_blocks_never_interleave_with_event_frames(self):
+        cue = Subtitle(12.4, 14.8, "  はい\n  ありがとう  ", "“Thank you.",
+                       timings=Timings(audio_read=1, segmented=1.5, asr_start=1.75,
+                                       asr_end=2.75, mt_start=2.75, mt_end=3))
+        stamp = "[00:12.4–00:14.8]"
+        normal = (f"{stamp} はい ありがとう    (vad 0.50s · wait 0.25s · asr 1.00s · mt 0.25s)\n"
+                  f"{' ' * len(stamp)} → Thank you.\n")
+        simple = "JP: はい ありがとう\nEN: Thank you.\n"
+        event = format_event("status", position=12.4) + "\n"
+        for render, block in ((TerminalOutput().show, normal),
+                              (TerminalOutput(simple=True).show, simple),
+                              (print_subtitle, normal)):
+            for transcript_first in (True, False):
+                with self.subTest(render=render, transcript_first=transcript_first):
+                    transcript = lambda: render(cue)
+                    status = lambda: emit_event("status", position=12.4)
+                    first, second = (transcript, status) if transcript_first else (status, transcript)
+                    stream = self.concurrent_output(first, second)
+                    expected = [block, event] if transcript_first else [event, block]
+                    self.assertEqual(stream.writes, expected)
+                    lines = "".join(stream.pieces).splitlines()
+                    self.assertEqual(len(lines), 3)
+                    self.assertEqual([parse_event(line) for line in lines if line.startswith(EVENT_PREFIX)],
+                                     [{"event": "status", "position": 12.4}])
+
+
 class GuiPlayerProtocolTests(unittest.TestCase):
     def test_valid_commands(self):
         self.assertEqual(parse_command('{"action":"quit"}'), ("quit", None))
@@ -67,6 +195,8 @@ class GuiPlayerProtocolTests(unittest.TestCase):
         self.assertEqual(data, {"event": "status", "live": False, "position": 12.2, "duration": 210})
         self.assertIsNone(parse_event("JP: こんにちは"))
         self.assertIsNone(parse_event(EVENT_PREFIX + "not-json"))
+        self.assertIsNone(parse_event(format_event("diagnostics") + format_event("status")))
+        self.assertIsNone(parse_event(format_event("status") + ' {"extra":true}'))
 
     def test_seek_waits_for_clock_and_confirms_before_audio_restart(self):
         player = mock_player()

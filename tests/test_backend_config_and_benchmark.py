@@ -16,7 +16,26 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.translate.model_path, TranslateConfig().model_path)
         self.assertEqual(cfg.translate.gpu_layers, -1)
         self.assertEqual(cfg.translate.context_lines, 3)
+        self.assertEqual(cfg.translate.max_context_chars, 300)
+        self.assertEqual(cfg.translate.context_max_gap_s, 15.0)
         self.assertFalse(cfg.language_filter.enabled)
+
+    def test_translation_context_defaults(self):
+        cfg = TranslateConfig()
+        self.assertEqual(cfg.context_lines, 3)
+        self.assertEqual(cfg.max_context_chars, 300)
+        self.assertEqual(cfg.context_max_gap_s, 15.0)
+
+    def test_context_gap_accepts_positive_numeric_overrides(self):
+        for gap in (1, 2.5, 30):
+            with self.subTest(gap=gap):
+                self.assertEqual(TranslateConfig(context_max_gap_s=gap).context_max_gap_s, gap)
+
+    def test_context_gap_rejects_invalid_values(self):
+        for gap in (0, -1, -0.1, float('nan'), float('inf'), float('-inf'),
+                    True, False, '15'):
+            with self.subTest(gap=gap), self.assertRaisesRegex(ValueError, 'context_max_gap_s'):
+                TranslateConfig(context_max_gap_s=gap)
 
     def test_asr_boundary_validation(self):
         for kwargs in ({"model_path": ""}, {"mmproj_path": " "}, {"cuda_device": -1},

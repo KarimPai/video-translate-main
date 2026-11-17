@@ -313,7 +313,8 @@ class VideoTranslateWindow(QMainWindow):
         self.context_lines.setValue(3)
         self.context_lines.setSuffix(" lines")
         self.context_lines.setToolTip(
-            "Previous dialogue lines given to the translator. Context clears after seeking or changing videos."
+            "Previous Japanese dialogue lines, without earlier English translations. "
+            "Context clears on seeking, changing videos, or the configured audio-silence gap."
         )
         settings.addRow("Translation context", self.context_lines)
         self.safe_playback_checkbox = QCheckBox("Safe Playback")

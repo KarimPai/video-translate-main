@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Local Japanese-to-English subtitles for live streams and VOD using Voxtral and PLaMo"
+description = "Local Japanese-to-English subtitles for live streams and VOD using Qwen3-ASR and HY-MT1.5"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }

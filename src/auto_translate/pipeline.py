@@ -14,18 +14,12 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .asr.base import ASR
-from .asr.quality_guard import transcript_problem, supports_japanese_transcript
-from .asr_correction import correct_known_asr_terms
-from .watame import correct_asr_name, reconcile_caption
-from .captions import CaptionIndex, PendingCaptions
-from .context_memory import repair_near_repeated_word
-from .proper_names import resolve_names
-from .text_filter import is_usable_transcript
+from .asr.quality_guard import transcript_problem
 from .subtitle_clean import (
     clean_english_output, has_generation_loop, normalized_cue,
     looks_like_prompt_echo, sanitize_english_output,
 )
-from .config import AsrConfig, Config, vad_for_source
+from .config import Config, vad_for_source
 from .gui_control import emit_event
 from .runtime_diagnostics import update_metrics, increment_counter, record_event
 from .ingest import Ingest
@@ -99,10 +93,6 @@ def _expired_live_cue(cue, playback_position, late_window_s: float) -> bool:
             and max(0.0, late_window_s) < position - cue.end_s <= 120.0)
 
 
-def _is_japanese(candidate, evidence: dict) -> bool:
-    return isinstance(candidate, str) and supports_japanese_transcript(candidate, **evidence)
-
-
 def _rejection_reason(asr, text) -> str:
     reason = getattr(asr, "last_rejection", None)
     if isinstance(reason, str) and reason:
@@ -115,49 +105,42 @@ def _raw_transcript(asr) -> str:
     return raw if isinstance(raw, str) else ""
 
 
-def _rescue_eligible(utt: Utterance, cfg: AsrConfig | None) -> bool:
-    cfg = cfg or AsrConfig()
-    if not cfg.rescue_retry or utt.probe:
-        return False
-    if len(utt.audio) / SAMPLE_RATE < cfg.rescue_min_duration_s:
-        return False
-    return utt.vad_confidence is None or utt.vad_confidence >= cfg.rescue_min_vad_confidence
-
-
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
     out_q: "queue.Queue[Transcript | Subtitle | AudioProgress | SourceEOF | None]",
     get_generation: Callable[[], int] | None = None,
-    captions: CaptionIndex | PendingCaptions | None = None,
-    vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
-    asr_cfg: AsrConfig | None = None,
     live: bool = False,
     playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
     language_filter=None,
     gate=None,
-    chat_context=None,
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
     import re
     import numpy as np
 
-    name_history = deque(maxlen=4)
-    name_generation = None
-    last_transcript_end_s = None
+    current_generation = None
     last_text = ""
     repeated = 0
     # Relative live timestamps can be reused after reconnects. A VOD cache
-    # must never supply cues or name context for a different live generation.
+    # must never supply cues for a different live generation.
     if live:
         session_cache = None
 
     def cancelled(generation):
         return ((stop is not None and stop.is_set())
                 or (get_generation is not None and generation != get_generation()))
+
+    def reset_generation(generation):
+        nonlocal current_generation, last_text, repeated
+        last_text, repeated = "", 0
+        cancel = getattr(asr, "cancel_pending", None)
+        if callable(cancel):
+            cancel()
+        current_generation = generation
 
     while True:
         item = in_q.get()
@@ -169,23 +152,13 @@ def run_asr(
             out_q.put(item)
             continue
         if isinstance(item, AudioProgress):
-            if item.reset or item.generation != name_generation:
-                name_history.clear()
-                last_text, repeated = "", 0
-                cancel = getattr(asr, "cancel_pending", None)
-                if callable(cancel):
-                    cancel()
-            name_generation = item.generation
+            if item.reset or item.generation != current_generation:
+                reset_generation(item.generation)
             out_q.put(item)
             continue
         utt = item
-        if utt.generation != name_generation:
-            name_history.clear()
-            last_text, repeated = "", 0
-            cancel = getattr(asr, "cancel_pending", None)
-            if callable(cancel):
-                cancel()
-            name_generation = utt.generation
+        if utt.generation != current_generation:
+            reset_generation(utt.generation)
         if live and _expired_live_cue(utt, playback_position, live_late_window_s):
             increment_counter("expired")
             continue
@@ -197,16 +170,10 @@ def run_asr(
         if cached is not None:
             if cancelled(utt.generation):
                 continue
-            name_history.append(cached.ja[:160])
-            last_transcript_end_s = utt.end_s
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
-        language_decision = None
         if language_filter is not None:
             verdict = language_filter.classify(utt.audio)
-            language_decision = verdict
-            if verdict.language not in ("ja", "unknown"):
-                last_transcript_end_s = None
             if verdict.drop:
                 record_event("language_filtered", generation=utt.generation,
                              language=verdict.language, probability=verdict.probability)
@@ -215,7 +182,7 @@ def run_asr(
             continue
         utt.timings.asr_start = time.monotonic()
         try:
-            with (gate.operation("voxtral", current=get_generation, generation=utt.generation)
+            with (gate.operation("asr", current=get_generation, generation=utt.generation)
                   if gate is not None else nullcontext()):
                 if live and _expired_live_cue(utt, playback_position, live_late_window_s):
                     increment_counter("expired")
@@ -224,7 +191,7 @@ def run_asr(
         except CancelledError:
             continue
         utt.timings.asr_end = time.monotonic()
-        update_metrics(stages={"voxtral_s": utt.timings.asr_end - utt.timings.asr_start})
+        update_metrics(stages={"asr_s": utt.timings.asr_end - utt.timings.asr_start})
         record_event("asr_complete", generation=utt.generation,
                      source_start_s=utt.start_s, speech_start_s=utt.speech_start_s,
                      source_end_s=utt.end_s, pcm_start_sample=round(utt.start_s * SAMPLE_RATE),
@@ -233,45 +200,14 @@ def run_asr(
         if cancelled(utt.generation):
             continue
 
-        previous_ja = (name_history[-1] if name_history and last_transcript_end_s is not None
-                       and 0 <= utt.start_s - last_transcript_end_s <= 10.0 else "")
-
-        evidence = dict(language_decision=language_decision, video_context=vod_title,
-                        previous_ja=previous_ja, vad_confidence=utt.vad_confidence,
-                        duration_s=len(utt.audio) / SAMPLE_RATE, probe=utt.probe)
-
-        if not _is_japanese(text, evidence):
+        if not isinstance(text, str) or not text.strip():
             reason = _rejection_reason(asr, text)
-            raw = _raw_transcript(asr)
-            rescue = getattr(asr, "transcribe_rescue", None)
-            attempted = (callable(rescue) and _rescue_eligible(utt, asr_cfg)
-                         and not (live and _expired_live_cue(utt, playback_position, live_late_window_s)))
-            if attempted:
-                try:
-                    with (gate.operation("voxtral", current=get_generation, generation=utt.generation)
-                          if gate is not None else nullcontext()):
-                        rescued = rescue(utt.audio)
-                except CancelledError:
-                    continue
-                if cancelled(utt.generation):
-                    continue
-                if _is_japanese(rescued, evidence):
-                    increment_counter("asr_rescued")
-                    record_event("asr_rescued", generation=utt.generation, reason=reason,
-                                 source_start_s=utt.start_s, source_end_s=utt.end_s,
-                                 rejected_text=raw[:160])
-                    text = rescued
-            if not _is_japanese(text, evidence):
-                increment_counter("asr_rejected")
-                record_event("asr_rejected", generation=utt.generation, reason=reason,
-                             rescue_reason=_rejection_reason(asr, rescued) if attempted else None,
-                             raw_text=raw[:160], rescue_text=_raw_transcript(asr)[:160] if attempted else None,
-                             vad_confidence=utt.vad_confidence,
-                             source_start_s=utt.start_s, source_end_s=utt.end_s)
-                log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
-                          utt.start_s, utt.end_s, reason, raw[:160])
-                continue
-        if asr_cfg is not None and any(term in text for term in asr_cfg.blocklist):
+            increment_counter("asr_rejected")
+            record_event("asr_rejected", generation=utt.generation, reason=reason,
+                         raw_text=_raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
+                         source_start_s=utt.start_s, source_end_s=utt.end_s)
+            log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
+                      utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
             continue
         issue = transcript_problem(text, utt.end_s - utt.start_s)
         if issue:
@@ -293,39 +229,10 @@ def run_asr(
                 and len(utt.audio) and float(np.mean(np.square(utt.audio))) < .0001):
             increment_counter("dropped")
             continue
-        original = text
-        caption_match = captions.match(utt.start_s, utt.end_s) if captions is not None else None
-        caption_text = caption_match.text if caption_match and caption_match.reliable else ""
-        if caption_text:
-            text = reconcile_caption(text, caption_text)
-        # Captions only corroborate recognized words; an empty recognition is
-        # never replaced by dialogue that was not heard in this utterance.
-        text = correct_asr_name(text, vod_title=vod_title, caption=caption_text)
-        text = correct_known_asr_terms(text, video_context=vod_title, caption=caption_text)
-        if not is_usable_transcript(text) or cancelled(utt.generation):
-            continue
-        name_context = {"japanese": text, "voxtral": original}
-        raw_transcript = getattr(asr, "last_raw_transcript", None)
-        if isinstance(raw_transcript, str):
-            name_context["voxtral_raw"] = raw_transcript
-        try:
-            mentions = resolve_names(text, previous_ja=" ".join(name_history), video_title=vod_title)
-            name_context["mentions"] = [mention.as_dict() for mention in mentions]
-        except Exception as exc:
-            log.warning("Name resolver unavailable: %s", exc)
-            name_context["mentions"] = []
-        if chat_context is not None:
-            try:
-                name_context["chat_evidence"] = chat_context(utt, text)
-            except Exception as exc:
-                log.debug("Public chat context unavailable: %s", exc)
         if cancelled(utt.generation):
             continue
-        name_history.append(text[:160])
-        last_transcript_end_s = utt.end_s
         out_q.put(Transcript(utt.start_s, utt.end_s, text, utt.timings,
-                             generation=utt.generation, speech_start_s=utt.speech_start_s,
-                             name_context=name_context))
+                             generation=utt.generation, speech_start_s=utt.speech_start_s))
     out_q.put(None)
 
 
@@ -343,12 +250,7 @@ def run_translate(
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress."""
     consecutive_failures = 0
-    history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
-    if getattr(getattr(translator, "cfg", None), "context_profile", None) in ("overlay", "hybrid"):
-        # Profiles select three trusted exchanges from a bounded candidate
-        # window, including when extended memory is disabled.
-        history_limit = 20
-    history: deque[tuple[str, str]] = deque(maxlen=history_limit)
+    history: deque[tuple[str, str]] = deque(maxlen=max(1, context_lines))
     memory_generation: int | None = None
 
     while True:
@@ -383,7 +285,7 @@ def run_translate(
         if get_generation is not None and tr.generation != get_generation():
             continue
         if live and _expired_live_cue(tr, playback_position, live_late_window_s):
-            log.info("Skipping expired live PLaMo cue %.2f-%.2fs", tr.start_s, tr.end_s)
+            log.info("Skipping expired live cue %.2f-%.2fs", tr.start_s, tr.end_s)
             increment_counter("expired")
             continue
 
@@ -395,7 +297,7 @@ def run_translate(
         memory_generation = tr.generation
 
         # A cached Subtitle already includes its Japanese transcript and
-        # English translation; do not call PLaMo again for the same VOD cue.
+        # English translation; do not translate the same VOD cue again.
         if isinstance(tr, Subtitle):
             cleaned = sanitize_english_output(tr.en)
             if not cleaned:
@@ -410,39 +312,19 @@ def run_translate(
             continue
 
         tr.timings.mt_start = time.monotonic()
-        before_history = tr.ja
         en = ""
         suppressed = False
 
         if translator is not None:
-            # Correct a near-identical repeated Katakana word only when
-            # supported by adjacent Japanese; no second ASR/model pass.
-            if getattr(translator, "memory_lines", 0):
-                repaired_ja = repair_near_repeated_word(tr.ja, list(history))
-                if repaired_ja != tr.ja:
-                    log.debug("Recent speech repetition: %r -> %r", tr.ja, repaired_ja)
-                    tr = replace(tr, ja=repaired_ja)
             try:
-                with (gate.operation("plamo", current=get_generation, generation=tr.generation)
+                with (gate.operation("mt", current=get_generation, generation=tr.generation)
                       if gate is not None else nullcontext()):
                     if live and _expired_live_cue(tr, playback_position, live_late_window_s):
                         increment_counter("expired")
                         continue
                     model_started = time.monotonic()
-                    set_context = getattr(translator, "set_name_context", None)
-                    if callable(set_context) and tr.name_context.get("japanese") == tr.ja:
-                        try:
-                            set_context(tr.ja, tr.name_context.get("mentions", []))
-                        except Exception as exc:
-                            log.warning("Translation name context unavailable: %s", exc)
-                    en = translator.translate(tr.ja, list(history))
-                    update_metrics(stages={"plamo_s": time.monotonic() - model_started})
-                    name_diagnostic = getattr(translator, "last_name_diagnostics", {})
-                    if (not en and isinstance(name_diagnostic, dict)
-                            and name_diagnostic.get("unresolved_name_issue")):
-                        suppressed = True
-                        log.warning("Name translation abstained at %.2fs: %s", tr.start_s,
-                                    name_diagnostic["unresolved_name_issue"])
+                    en = translator.translate(tr.ja, list(history) if context_lines else [])
+                    update_metrics(stages={"mt_s": time.monotonic() - model_started})
                 consecutive_failures = 0
             except CancelledError:
                 continue
@@ -457,7 +339,7 @@ def run_translate(
                     continue
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
-                    raise TranslatorUnavailable(f"PLaMo failed on three consecutive cues: {e}") from e
+                    raise TranslatorUnavailable(f"Translation failed on three consecutive cues: {e}") from e
                 log.error("translation failed: %s", e)
                 suppressed = True
 
@@ -471,10 +353,9 @@ def run_translate(
 
             if en:
                 tcfg = getattr(translator, "cfg", None)
-                if (getattr(tcfg, "suppress_runaway_loops", True)
-                        and (has_generation_loop(en) or looks_like_prompt_echo(en))):
+                if has_generation_loop(en) or looks_like_prompt_echo(en):
                     log.warning(
-                        "Suppressed repeated/prompt-like PLaMo output: gen=%d source=%.2f-%.2fs",
+                        "Suppressed repeated/prompt-like translation output: gen=%d source=%.2f-%.2fs",
                         tr.generation, tr.start_s, tr.end_s,
                     )
                     en, suppressed = "", True
@@ -510,7 +391,7 @@ def run_translate(
                      source_start_s=tr.start_s, speech_start_s=tr.speech_start_s,
                      source_end_s=tr.end_s, asr_completed_at=tr.timings.asr_end,
                      mt_completed_at=tr.timings.mt_end,
-                     suppressed=suppressed, history_repaired=before_history != tr.ja)
+                     suppressed=suppressed)
         if suppressed:
             increment_counter("dropped")
             log.info(
@@ -598,11 +479,8 @@ def run(
     translator: Translator | None,
     outputs: list[Output],
     stop: threading.Event,
-    captions: CaptionIndex | PendingCaptions | None = None,
-    vod_title: str = "",
     session_cache: SessionSubtitleCache | None = None,
     playback_position: Callable[[], float | None] | None = None,
-    chat_context=None,
     language_filter=None,
     segmenter=None,
     gate=None,
@@ -667,17 +545,13 @@ def run(
                 utt_q,
                 text_q,
                 lambda: ingest.generation,
-                captions,
-                vod_title,
                 session_cache,
-                cfg.asr,
                 bool(ingest.source.live),
                 playback_position,
                 cfg.mpv.live_late_window_s,
                 stop,
                 language_filter,
                 gate,
-                chat_context,
             ),
             name="asr",
             daemon=True,
@@ -853,11 +727,11 @@ def run(
                 if backlog and now - last_activity > 90.0:
                     record_event("pipeline_stall", queues=backlog, elapsed_s=now-last_activity)
                     raise RuntimeError(
-                        "Voxtral/PLaMo pipeline stalled with queued work: " + str(backlog)
+                        "ASR/translation pipeline stalled with queued work: " + str(backlog)
                     )
                 if backlog and now - last_activity > 30.0 and now - last_warning > 30.0:
                     last_warning = now
-                    log.warning("Voxtral/PLaMo pipeline waiting with queued work: %s", backlog)
+                    log.warning("ASR/translation pipeline waiting with queued work: %s", backlog)
 
             for name, q in queues.items():
                 stats.max_q[name] = max(
@@ -906,12 +780,13 @@ def run(
         # Stop producers and MPV, then interrupt the owned ASR server so a
         # pending request cannot keep the application alive after closing.
         stop.set()
-        close_asr = getattr(asr, "close", None)
-        if callable(close_asr):
-            try:
-                close_asr()
-            except Exception:
-                log.exception("Voxtral interruption failed during shutdown")
+        for name, interrupt in (("ASR", getattr(asr, "close", None)),
+                                ("Translation", getattr(translator, "interrupt", None))):
+            if callable(interrupt):
+                try:
+                    interrupt()
+                except Exception:
+                    log.exception("%s interruption failed during shutdown", name)
         try:
             for out in outputs:
                 try:
@@ -928,8 +803,7 @@ def run(
                 # VAD -> ASR -> MT. Give in-flight VOD requests time to finish.
                 grace_s = max(15.0, min(120.0,
                     cfg.asr.response_timeout_s
-                    + cfg.translate.timeout_s
-                    + cfg.translate.retry_timeout_s))
+                    + cfg.translate.timeout_s * 2))
                 from .windows_subprocess import stopping
                 if stopping.is_set():
                     from .gui_control import WORKER_DRAIN_S
@@ -964,7 +838,7 @@ def run(
                 else:
                     log.info("all pipeline workers exited before model shutdown")
                 record_event("pipeline_cleanup", active_threads=active)
-                for label, worker in (("Voxtral", asr), ("PLaMo", translator)):
+                for label, worker in (("ASR", asr), ("Translation", translator)):
                     close = getattr(worker, "close", None)
                     if callable(close):
                         try:

@@ -102,41 +102,40 @@ class VadConfig:
             if not getattr(self, key) >= 0:
                 raise ValueError(f"vad.{key} must be nonnegative")
         if self.device != "cpu":
-            raise ValueError("FireRedVAD must use cpu to preserve GPU memory for Voxtral and playback")
+            raise ValueError("FireRedVAD must use cpu to preserve GPU memory for the models and playback")
+
+
+LLAMA_SERVER_PATH = ".runtime/llama-b12318-cuda12/llama-server.exe"
 
 
 @dataclass
 class AsrConfig:
-    """Persistent CUDA Voxtral service; complete VAD utterances use offline ASR.
+    """Qwen3-ASR settings with optional user context and metadata-selected canonical names."""
 
-    The model is loaded once by audio.cpp. Its decoder runs greedy ASR with a
-    fixed seed; word timing comes from the original VAD utterance boundaries.
-    """
-
-    voxtral_model_path: str = "models/voxtral/voxtral-mini-4b-realtime-2602-q4_k.gguf"
-    voxtral_server_path: str = ".runtime/audio-v0.9.5-cuda12/audiocpp_server.exe"
+    model_path: str = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
+    mmproj_path: str = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+    server_path: str = LLAMA_SERVER_PATH
+    context: str = ""
+    max_context_chars: int = 2000
+    context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8
     blocklist: list[str] = field(default_factory=list)
-    response_timeout_s: float = 45.0
-    live_response_timeout_s: float = 20.0
+    response_timeout_s: float = 30.0
+    live_response_timeout_s: float = 15.0
     startup_timeout_s: float = 180.0
-    # Retry a rejected utterance once with radio enhancement and decoder padding.
-    rescue_retry: bool = True
-    rescue_min_vad_confidence: float = 0.45
-    rescue_min_duration_s: float = 0.4
 
     def __post_init__(self):
-        for name in ("voxtral_model_path", "voxtral_server_path"):
+        for name in ("model_path", "mmproj_path", "server_path"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"asr.{name} must be a nonempty path")
-        if type(self.rescue_retry) is not bool:
-            raise ValueError("asr.rescue_retry must be boolean")
-        if type(self.rescue_min_vad_confidence) not in (int, float) or not 0.0 <= self.rescue_min_vad_confidence <= 1.0:
-            raise ValueError("asr.rescue_min_vad_confidence must be between 0 and 1")
-        if type(self.rescue_min_duration_s) not in (int, float) or not 0.0 <= self.rescue_min_duration_s <= 10.0:
-            raise ValueError("asr.rescue_min_duration_s must be 0..10 s")
+        if not isinstance(self.context, str):
+            raise ValueError("asr.context must be a string")
+        if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 8000:
+            raise ValueError("asr.max_context_chars must be an integer in 0..8000")
+        if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
+            raise ValueError("asr.context_size must be an integer in 1024..32768")
         if type(self.cuda_device) is not int or self.cuda_device < 0:
             raise ValueError("asr.cuda_device must be a nonnegative integer")
         if type(self.threads) is not int or not 1 <= self.threads <= 256:
@@ -151,12 +150,12 @@ class AsrConfig:
 
 @dataclass
 class LanguageFilterConfig:
-    """Drop only confidently non-Japanese speech before Japanese ASR.
+    """Optional pre-ASR language gate; Qwen3-ASR already tags each utterance.
 
     Ambiguous or very short utterances stay in the original Japanese path to
     avoid losing Japanese speech during VTuber code-switching.
     """
-    enabled: bool = True
+    enabled: bool = False
     min_duration_s: float = 2.5
     max_window_s: float = 5.0
     drop_probability: float = 0.80
@@ -198,41 +197,55 @@ class GpuBudgetConfig:
 
 @dataclass
 class TranslateConfig:
-    """PLaMo 3 Translate 2B settings (sole translation engine)."""
+    """Tencent HY-MT1.5-7B on an owned llama.cpp server (sole translation engine)."""
 
-    plamo_base_url: str = "http://127.0.0.1:8000/v1"
-    plamo_model: str = "plamo-3-translate"
-    plamo_hf_model: str = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-    plamo_context: int = 4096  # smaller KV/context footprint on RTX 3070
-    plamo_gpu_layers: int = 99
-    max_tokens: int = 192  # prevent truncation of longer, complete JP utterances
-    timeout_s: float = 30.0  # more time for full translation, not a delay target
+    model_path: str = "models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf"
+    server_path: str = LLAMA_SERVER_PATH
+    gpu_layers: int = -1  # -1: offload as many layers as GPU headroom allows
+    context_size: int = 2048
+    cuda_device: int = 0
+    threads: int = 8
+    max_tokens: int = 192
+    # Tencent's recommended sampling, at a lower temperature for subtitle stability.
+    temperature: float = 0.2
+    top_k: int = 20
+    top_p: float = 0.6
+    repeat_penalty: float = 1.05
+    context_lines: int = 3  # previous JA/EN pairs sent as contextual-translation input
+    max_context_chars: int = 600
+    timeout_s: float = 30.0
     load_timeout_s: float = 300.0
-    context_lines: int = 3  # OverlaySubs-style bounded dialogue exchange
-    # Prefer reliable recent bilingual pairs to speculative long-term scene memory.
-    memory_lines: int = 16
-    extended_memory: bool = True
-    context_profile: str = "compact"  # compact/legacy; overlay and hybrid are benchmark alternatives
-    sentence_context: bool = True  # translate clearly separated completed sentences sequentially
     glossary: str = "glossary.toml"
     remove_fillers: bool = True
     collapse_repetitions: bool = True
-    suppress_runaway_loops: bool = True
     max_identical_cues: int = 2
-    neutral_subjects: bool = True  # prefer unspecified/neutral speakers, no inferred gender
-    retry_suspicious: bool = True  # only one additional PLaMo request for clear mismatches
-    retry_timeout_s: float = 15.0  # upper bound for the optional second pass
-    fragment_context: bool = True  # Japanese-only previous cue for ambiguous fragments
 
     def __post_init__(self):
-        if type(self.extended_memory) is not bool:
-            raise ValueError("extended_memory must be boolean")
-        if self.context_profile not in ("compact", "legacy", "overlay", "hybrid"):
-            raise ValueError("translate.context_profile must be compact, legacy, overlay or hybrid")
-        for name in ("context_lines", "memory_lines"):
-            if type(getattr(self, name)) is not int or not 0 <= getattr(self, name) <= 20:
-                raise ValueError(f"translate.{name} must be an integer in 0..20")
-        for value in (self.timeout_s, self.load_timeout_s, self.retry_timeout_s):
+        for name in ("model_path", "server_path", "glossary"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"translate.{name} must be a nonempty path")
+        if type(self.gpu_layers) is not int or self.gpu_layers < -1:
+            raise ValueError("translate.gpu_layers must be -1 (auto) or a nonnegative integer")
+        if type(self.context_size) is not int or not 512 <= self.context_size <= 32768:
+            raise ValueError("translate.context_size must be an integer in 512..32768")
+        if type(self.context_lines) is not int or not 0 <= self.context_lines <= 20:
+            raise ValueError("translate.context_lines must be an integer in 0..20")
+        if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 4000:
+            raise ValueError("translate.max_context_chars must be an integer in 0..4000")
+        if type(self.max_tokens) is not int or not 16 <= self.max_tokens <= 1024:
+            raise ValueError("translate.max_tokens must be an integer in 16..1024")
+        if self.max_tokens >= self.context_size:
+            raise ValueError("translate.max_tokens must leave room for input in context_size")
+        if type(self.top_k) is not int or self.top_k < 0:
+            raise ValueError("translate.top_k must be a nonnegative integer")
+        for name, low, high in (("temperature", 0, 2), ("top_p", 0, 1), ("repeat_penalty", 1, 2)):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not low <= value <= high:
+                raise ValueError(f"translate.{name} must be in {low}..{high}")
+        if type(self.max_identical_cues) is not int or self.max_identical_cues < 1:
+            raise ValueError("translate.max_identical_cues must be a positive integer")
+        for value in (self.timeout_s, self.load_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")
 
@@ -276,27 +289,6 @@ class MpvConfig:
             raise ValueError("MPV minimum subtitle duration must be between 0 and 10 seconds")
         if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
             raise ValueError("Invalid MPV live cache size")
-
-
-@dataclass
-class ChatConfig:
-    enabled: bool = False
-    window_s: float = 30.0
-    max_messages: int = 100
-    poll_interval_s: float = 5.0
-    live_time_uncertainty_s: float = 5.0
-
-    def __post_init__(self):
-        if type(self.enabled) is not bool:
-            raise ValueError("chat.enabled must be boolean")
-        if type(self.max_messages) is not int or not 1 <= self.max_messages <= 500:
-            raise ValueError("chat.max_messages must be in 1..500")
-        if not math.isfinite(self.window_s) or not 1 <= self.window_s <= 120:
-            raise ValueError("chat.window_s must be in 1..120")
-        if not math.isfinite(self.poll_interval_s) or not 1 <= self.poll_interval_s <= 60:
-            raise ValueError("chat.poll_interval_s must be in 1..60")
-        if not math.isfinite(self.live_time_uncertainty_s) or not 0 <= self.live_time_uncertainty_s <= 120:
-            raise ValueError("chat.live_time_uncertainty_s must be in 0..120")
 
 
 @dataclass
@@ -354,7 +346,6 @@ def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
 
 @dataclass
 class Config:
-    chat: ChatConfig = field(default_factory=ChatConfig)
     safe_playback: SafePlaybackConfig = field(default_factory=SafePlaybackConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
@@ -395,7 +386,6 @@ def load_config(path: Path) -> Config:
         logging.getLogger(__name__).warning("Ignoring unknown config section %s", key)
 
     return Config(
-        chat=ChatConfig(**data.get("chat", {})),
         safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),
         diagnostics=DiagnosticsConfig(**data.get("diagnostics", {})),
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),

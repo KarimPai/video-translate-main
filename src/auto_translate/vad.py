@@ -1,4 +1,4 @@
-"""FireRed VAD segmenter: AudioChunk stream to timestamped Voxtral utterances.
+"""FireRed VAD segmenter: AudioChunk stream to timestamped ASR utterances.
 
 Loads the FireRed streaming model from Hugging Face on first use and keeps its
 recurrent model state across calls so it works on a live stream.
@@ -406,7 +406,7 @@ class Segmenter:
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 
     def _emit_probe(self, n: int) -> None:
-        """Send idle frames to Voxtral only when fallback_s is explicitly enabled."""
+        """Send idle frames to ASR only when fallback_s is explicitly enabled."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
         self._idle_start += len(frames) * FRAME

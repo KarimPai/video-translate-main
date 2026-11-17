@@ -7,18 +7,16 @@ import sys
 import tempfile
 import threading
 import unittest
-import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 
-from auto_translate.captions import CaptionIndex
 from auto_translate.config import load_config
 from auto_translate.ingest import parse_time, start_from_url
 from auto_translate.output.mpv import MpvIpc, MpvOutput, _WindowsPipe, _create_kill_job
 from auto_translate.output.web import BACKLOG, WebOutput
 from auto_translate.session_cache import SessionSubtitleCache
-from auto_translate.translate.plamo import _clean, _server_state
+from auto_translate.translate.hymt import clean_output as _clean
 from auto_translate.types import Subtitle
 from auto_translate.ytdlp import cache_key
 
@@ -46,14 +44,6 @@ class FailurePathTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     load_config(config)
 
-    def test_model_probe_distinguishes_loading_and_wrong_alias(self):
-        target = "auto_translate.translate.plamo._LOCAL.open"
-        with patch(target, side_effect=urllib.error.HTTPError("url", 503, "", {}, None)):
-            self.assertEqual(_server_state("http://localhost", "plamo"), "loading")
-        with patch(target, return_value=io.BytesIO(b'{"data":[{"id":"other"}]}')):
-            with self.assertRaisesRegex(RuntimeError, "required model"):
-                _server_state("http://localhost", "plamo")
-
     def test_viewer_is_loopback_unless_configured(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
@@ -77,47 +67,6 @@ class FailurePathTests(unittest.TestCase):
                 worker.close()
         self.assertIsNone(worker.input_q.get_nowait())
         self.assertTrue(worker.input_q.empty())
-
-    def test_probe_refusal_timeout_and_unknown_transport(self):
-        target = "auto_translate.translate.plamo._LOCAL.open"
-        for reason, expected in ((ConnectionRefusedError(), "absent"),
-                                 ("[WinError 10061] connection refused", "absent"),
-                                 (TimeoutError(), "unresponsive"), ("timed out", "unresponsive")):
-            with self.subTest(reason=reason), patch(target, side_effect=urllib.error.URLError(reason)):
-                self.assertEqual(_server_state("http://localhost", "plamo"), expected)
-        with patch(target, side_effect=TimeoutError()):
-            self.assertEqual(_server_state("http://localhost", "plamo"), "unresponsive")
-        with patch(target, side_effect=urllib.error.URLError("unknown transport failure")):
-            with self.assertRaisesRegex(RuntimeError, "unknown transport"):
-                _server_state("http://localhost", "plamo")
-
-    def test_plamo_timeout_on_free_port_reaches_launch(self):
-        import socket
-        from auto_translate.translate.plamo import PlamoTranslator, _loopback_port_available
-        translator = object.__new__(PlamoTranslator)
-        translator.cfg = Mock(load_timeout_s=10)
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen()
-            translator.base_url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1"
-            self.assertFalse(_loopback_port_available(translator.base_url))
-        with patch("auto_translate.translate.plamo._server_state", return_value="unresponsive"), patch(
-                "auto_translate.translate.plamo.shutil.which", return_value=None):
-            with self.assertRaisesRegex(RuntimeError, "not found in PATH"):
-                translator._start_server()
-
-    def test_plamo_occupied_port_timeout_does_not_launch(self):
-        from auto_translate.translate.plamo import ExistingServerUnavailable, PlamoTranslator
-        translator = object.__new__(PlamoTranslator)
-        translator.cfg = Mock(load_timeout_s=1)
-        translator.base_url = "http://127.0.0.1:8000/v1"
-        with patch("auto_translate.translate.plamo._server_state", return_value="unresponsive"), patch(
-                "auto_translate.translate.plamo._loopback_port_available", return_value=False), patch(
-                "auto_translate.translate.plamo.time.monotonic", side_effect=[0, 2, 2, 2]), patch(
-                "auto_translate.translate.plamo.subprocess.Popen") as launch:
-            with self.assertRaises(ExistingServerUnavailable):
-                translator._start_server()
-            launch.assert_not_called()
 
     def test_mpv_job_skips_mock_before_native_calls(self):
         with patch("auto_translate.output.mpv.sys.platform", "win32"):
@@ -187,14 +136,12 @@ class FailurePathTests(unittest.TestCase):
             second.request("GET", "/events")
             self.assertEqual(second.getresponse().status, 503)
 
-    def test_video_id_time_formats_and_vtt(self):
+    def test_video_id_and_time_formats(self):
         for video_id in ("../unsafe", "a/b", "CON", "a:b", "%(ext)s"):
             self.assertRegex(cache_key(video_id), r"^id\.[0-9a-f]{64}$")
         self.assertEqual(cache_key("normal_ID-1"), "normal_ID-1")
         self.assertEqual(parse_time("1:02:03"), 3723)
         self.assertEqual(start_from_url("https://example.org/watch#t=16m2s"), 962)
-        vtt = "WEBVTT\n\n00:01.000 --> 00:16.000\n<c>こんにちは</c>\n"
-        self.assertEqual(CaptionIndex.from_vtt(vtt).cues[0].text, "こんにちは")
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows Job Object integration")

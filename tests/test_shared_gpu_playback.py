@@ -16,7 +16,7 @@ class SharedGpuPlaybackTests(unittest.TestCase):
                 cfg = load_config(Path("config.example.toml"))
                 original = cfg.ingest.vod_max_audio_lead_s
                 cfg.safe_playback.enabled = False
-                original_asr = (cfg.asr.voxtral_model_path, cfg.asr.cuda_device)
+                original_asr = (cfg.asr.model_path, cfg.asr.cuda_device)
                 argv = ["auto-translate", "https://example.org/video", "--mpv"]
                 if enabled:
                     argv.append("--shared-gpu-playback")
@@ -30,5 +30,5 @@ class SharedGpuPlaybackTests(unittest.TestCase):
                     main()
                 self.assertEqual(cfg.ingest.vod_max_audio_lead_s,
                                  min(original, 30) if enabled else original)
-                self.assertEqual((cfg.asr.voxtral_model_path, cfg.asr.cuda_device), original_asr)
+                self.assertEqual((cfg.asr.model_path, cfg.asr.cuda_device), original_asr)
                 self.assertEqual(cfg.vad.device, "cpu")

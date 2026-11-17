@@ -27,8 +27,8 @@ def audio(seconds=4.0):
 
 
 class DropOnlyLanguageTests(unittest.TestCase):
-    def test_default_enabled_and_cpu_only_config(self):
-        self.assertTrue(Config().language_filter.enabled)
+    def test_optional_cpu_filter_is_disabled_by_default(self):
+        self.assertFalse(Config().language_filter.enabled)
         self.assertEqual(Config().language_filter.min_duration_s, 2.5)
 
     def test_confident_english_is_dropped(self):

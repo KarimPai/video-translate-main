@@ -1,6 +1,6 @@
 """Conservative cleanup for concise English-only subtitles.
 
-Preserve Voxtral/PLaMo meaning while removing only evident disfluencies,
+Preserve ASR/translation meaning while removing only evident disfluencies,
 annotation-only laughs, and repeated interjections. Never rewrite substantive
 words, negate speech, hallucinate shorter paraphrases, or remove profanity.
 """
@@ -147,7 +147,7 @@ def unmatched_double_quote_cleanup(text: str) -> str:
                    if char not in '"“”„‟' or index in paired).strip()
 
 
-# PLaMo must return English; Latin-script names, honorifics, and cultural
+# The translator must return English; Latin-script names, honorifics, and cultural
 # terms remain valid. Japanese script is not a romanized name or honorific.
 _JAPANESE_OUTPUT = re.compile(
     r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"

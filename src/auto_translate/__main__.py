@@ -42,17 +42,17 @@ def _main(resources: ExitStack) -> None:
     parser.add_argument("--mpv", action="store_true",
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--shared-gpu-playback", action="store_true",
-                        help="limit VOD inference read-ahead during Voxtral playback")
-    for name, help_text in (("extended-memory", "bounded extended translation memory"),
-                            ("youtube-chat-context", "optional public YouTube chat context"),
-                            ("safe-playback", "coordinate inference and bound audio read-ahead")):
-        option = parser.add_mutually_exclusive_group()
-        option.add_argument(f"--{name}", dest=name.replace("-", "_"), action="store_true", default=None,
-                            help=help_text)
-        option.add_argument(f"--no-{name}", dest=name.replace("-", "_"), action="store_false")
-    parser.add_argument("--memory-lines", type=int, choices=range(21), metavar="0..20")
-    parser.add_argument("--voxtral-model", type=Path, help="Voxtral Q4_K GGUF checkpoint")
-    parser.add_argument("--audio-cpp-path", type=Path, help="audio.cpp CUDA audiocpp_server executable")
+                        help="limit VOD inference read-ahead during shared-GPU playback")
+    option = parser.add_mutually_exclusive_group()
+    option.add_argument("--safe-playback", dest="safe_playback", action="store_true", default=None,
+                        help="coordinate inference and bound audio read-ahead")
+    option.add_argument("--no-safe-playback", dest="safe_playback", action="store_false")
+    parser.add_argument("--context-lines", type=int, choices=range(21), metavar="0..20",
+                        help="previous dialogue lines given to the translator")
+    parser.add_argument("--asr-model", type=Path, help="Qwen3-ASR GGUF model")
+    parser.add_argument("--asr-mmproj", type=Path, help="Qwen3-ASR audio projector (mmproj) GGUF")
+    parser.add_argument("--mt-model", type=Path, help="HY-MT1.5 GGUF model")
+    parser.add_argument("--llama-server", type=Path, help="llama.cpp llama-server executable (CUDA)")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
     parser.add_argument("--video-quality", type=int, choices=(360, 480, 720, 1080),
@@ -122,7 +122,6 @@ def _main(resources: ExitStack) -> None:
     cuda_dlls.setup()
 
     from .asr import create_asr
-    from .captions import PendingCaptions, download_vod_captions
     from .config import load_config, mpv_youtube_format
     from .glossary import Glossary
     from .ingest import Ingest, resolve_source
@@ -131,23 +130,21 @@ def _main(resources: ExitStack) -> None:
     from .output.web import WebOutput
     from .pipeline import run
     from .session_cache import SessionSubtitleCache
-    from .translate import create_translator
 
     cfg = load_config(args.config)
-    if args.voxtral_model is not None:
-        cfg.asr.voxtral_model_path = str(args.voxtral_model)
-    if args.audio_cpp_path is not None:
-        cfg.asr.voxtral_server_path = str(args.audio_cpp_path)
     for option, section, field_name in (
-        ("extended_memory", cfg.translate, "extended_memory"),
-        ("memory_lines", cfg.translate, "memory_lines"),
-        ("youtube_chat_context", cfg.chat, "enabled"),
+        ("asr_model", cfg.asr, "model_path"),
+        ("asr_mmproj", cfg.asr, "mmproj_path"),
+        ("mt_model", cfg.translate, "model_path"),
+        ("llama_server", cfg.asr, "server_path"),
+        ("llama_server", cfg.translate, "server_path"),
+        ("context_lines", cfg.translate, "context_lines"),
         ("safe_playback", cfg.safe_playback, "enabled"),
         ("diagnostics", cfg.diagnostics, "enabled"),
     ):
         value = getattr(args, option)
         if value is not None:
-            setattr(section, field_name, value)
+            setattr(section, field_name, str(value) if isinstance(value, Path) else value)
     from .runtime_diagnostics import configure_diagnostics, record_event
     diagnostics = configure_diagnostics(cfg.diagnostics)
     resources.callback(diagnostics.close)
@@ -156,13 +153,13 @@ def _main(resources: ExitStack) -> None:
         record_event("subprocess_cleanup", processes=owned_process_status())
     resources.callback(record_cleanup)
     record_event("application_start", safe_playback=cfg.safe_playback.enabled,
-                 extended_memory=cfg.translate.extended_memory, chat=cfg.chat.enabled)
+                 context_lines=cfg.translate.context_lines)
     from .safe_playback import SafeInferenceGate
     gate = SafeInferenceGate(cfg.safe_playback, stop)
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
         import shutil
         from .output.mpv import find_mpv
-        for tool in ("ffmpeg", "yt-dlp", "llama-server", "deno"):
+        for tool in ("ffmpeg", "yt-dlp", "deno"):
             if not shutil.which(tool):
                 parser.error(f"{tool} missing from PATH. Run Setup.bat")
         if args.mpv or cfg.mpv.enabled:
@@ -211,34 +208,8 @@ def _main(resources: ExitStack) -> None:
             "live HLS" if source.live else "VOD HTTPS/DASH first",
         )
 
-    # Fetch VOD captions in parallel with model loading. Captions are optional:
-    # any download/parse failure leaves Voxtral recognition available.
-    captions = None
-    video_id = (
-        source.timeline.get("video_id")
-        if not source.live and source.timeline
-        else None
-    )
-    if video_id:
-        captions = PendingCaptions()
-
-        def load_captions() -> None:
-            try:
-                captions.index = download_vod_captions(
-                    str(video_id), source.location, cfg.ingest
-                )
-            except Exception:
-                log.exception("caption preparation failed; continuing with Voxtral")
-
-        caption_thread = threading.Thread(
-            target=load_captions,
-            name="youtube-captions",
-            daemon=True,
-        )
-        caption_thread.start()
-
-    # Video metadata is useful for proper names and scene terms on live AND
-    # VOD. It is context, not proof of who spoke the current utterance.
+    # Video metadata biases ASR spellings and gives translation scene context.
+    # It is context, not proof of who spoke the current utterance.
     vod_context = " - ".join(
         part for part in (
             (source.timeline or {}).get("title", ""),
@@ -246,7 +217,8 @@ def _main(resources: ExitStack) -> None:
         ) if part
     )
 
-    # Load models before starting ingest.
+    # Load models before starting ingest: ASR first (fixed size), then size
+    # translation offload from measured free memory.
     from .gpu_budget import GpuBudget
     from dataclasses import replace
     from .config import vad_for_source
@@ -256,58 +228,26 @@ def _main(resources: ExitStack) -> None:
     budget = GpuBudget(cfg.gpu_budget)
     resources.callback(budget.close)
     budget.operation = gate.operation
+    glossary = Glossary.load(Path(cfg.translate.glossary))
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
                       if source.live else cfg.asr.response_timeout_s)
     timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
-    log.info("Voxtral CUDA offline ASR timeout=%.1fs; model startup timeout=%.1fs",
-             decode_timeout, timed_cfg.startup_timeout_s)
     t0 = time.perf_counter()
     check_running()
-    asr = create_asr(timed_cfg)
+    asr = create_asr(timed_cfg, glossary, vod_context)
     resources.callback(asr.close)
     budget.refresh()
-    record_event("voxtral_loaded", gpu=budget.snapshot())
-    log.info("Voxtral Q4_K ready in %.1fs; measured GPU free=%s GB",
-             time.perf_counter()-t0, budget.free)
+    record_event("asr_loaded", gpu=budget.snapshot())
+    log.info("Qwen3-ASR ready in %.1fs (timeout %.1fs); measured GPU free=%s GB",
+             time.perf_counter()-t0, decode_timeout, budget.free)
 
     t0 = time.perf_counter()
     check_running()
-    glossary = Glossary.load(Path(cfg.translate.glossary))
-    # Load translation after Voxtral. Select offload using observed device
-    # memory after each actual model load/warmup, never GGUF file size.
-    if budget.total is None or budget.total < 10.0:
-        cfg.translate.plamo_gpu_layers = min(cfg.translate.plamo_gpu_layers, 12)
-    if budget.free is not None and budget.free < cfg.gpu_budget.startup_headroom_gb:
-        cfg.translate.plamo_gpu_layers = 0
-    from .translate.plamo import ExistingServerUnavailable
-    while True:
-        layers = cfg.translate.plamo_gpu_layers
-        try:
-            translator = create_translator(cfg.translate, glossary, vod_title=vod_context)
-        except ExistingServerUnavailable:
-            raise
-        except (RuntimeError, OSError):
-            if layers == 0:
-                raise
-            cfg.translate.plamo_gpu_layers = layers // 2
-            log.warning("PLaMo startup failed; retrying with %s GPU layers",
-                        cfg.translate.plamo_gpu_layers, exc_info=True)
-            continue
-        budget.refresh()
-        record_event("plamo_loaded", gpu=budget.snapshot(), requested_gpu_layers=layers)
-        if (layers > 0 and budget.free is not None
-                and budget.free < cfg.gpu_budget.startup_headroom_gb
-                and getattr(translator, "process", None) is not None):
-            translator.close()
-            cfg.translate.plamo_gpu_layers = layers // 2
-            log.warning("Measured GPU free %.3f GB below target; reloading PLaMo at %d layers",
-                        budget.free, cfg.translate.plamo_gpu_layers)
-            continue
-        break
-    log.info("PLaMo ready at %d requested GPU layers (%d glossary terms) in %.1fs",
-             cfg.translate.plamo_gpu_layers, len(glossary.terms), time.perf_counter()-t0)
-
-    translator.safe_playback = bool(cfg.safe_playback.enabled)
+    translator = _load_translator(cfg, glossary, vod_context, budget, log)
+    record_event("mt_loaded", gpu=budget.snapshot(), gpu_layers=translator.gpu_layers)
+    log.info("HY-MT ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
+             translator.gpu_layers, translator.layer_count, len(glossary.terms),
+             time.perf_counter()-t0, budget.free)
     resources.callback(translator.close)
     use_mpv = args.mpv or cfg.mpv.enabled
     if use_mpv and not source.live and source.paced:
@@ -346,32 +286,6 @@ def _main(resources: ExitStack) -> None:
                 cfg.output.web_port,
             )
         )
-
-    chat_context = None
-    if cfg.chat.enabled:
-        from .live_chat import ChatContext
-        chat = ChatContext(cfg.chat, args.source, live=bool(source.live), start_s=source.start_s,
-                           glossary=glossary)
-        resources.callback(chat.close)
-        chat.start()
-        chat_generation = [ingest.generation]
-        chat_anchored = [False]
-
-        def chat_evidence(utt, transcript):
-            if chat_generation[0] != utt.generation:
-                chat.reset(utt.generation, utt.start_s)
-                chat_generation[0] = utt.generation
-            if source.live and not chat_anchored[0] and ingest.first_pts is not None:
-                # PCM receipt is an estimate, not an upstream broadcast timestamp.
-                # Network/encoder delay remains unknown; chat stays weak evidence.
-                chat.set_clock_anchor(ingest.first_pts, time.time() - time.monotonic() + ingest.first_pts_at,
-                                      uncertainty_s=cfg.chat.live_time_uncertainty_s,
-                                      alignment="receipt_estimate")
-                chat_anchored[0] = True
-                record_event("chat_clock_anchor", alignment="pcm_receipt_estimate")
-            return chat.evidence(utt.start_s, utt.end_s, transcript, "", generation=utt.generation)
-
-        chat_context = chat_evidence
 
     # Optional, CPU-only spoken-language gate. Failure is nonfatal: retain
     # Japanese speech rather than suppressing cues on an unavailable model.
@@ -412,9 +326,9 @@ def _main(resources: ExitStack) -> None:
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
-    print("ASR: Voxtral Mini 4B Q4_K (CUDA, offline utterances) | "
+    print("ASR: Qwen3-ASR-1.7B (llama.cpp CUDA) | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
-          f"PLaMo: {cfg.translate.plamo_gpu_layers} GPU layers requested", flush=True)
+          f"MT: HY-MT1.5-7B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
     check_running()
     budget.start(relieve_pressure)
     try:
@@ -426,17 +340,59 @@ def _main(resources: ExitStack) -> None:
             outputs,
             stop,
             segmenter=segmenter,
-            captions=captions,
-            vod_title=vod_context,
             session_cache=subtitle_cache,
             playback_position=playback_position,
-            chat_context=chat_context,
             language_filter=language_filter,
             gate=gate,
             diagnostics=diagnostics if cfg.diagnostics.enabled else None,
         )
     finally:
         budget.close()
+
+
+def _load_translator(cfg, glossary, vod_context, budget, log):
+    """Start HY-MT, then trim GPU layers until measured free memory meets the headroom target."""
+    import math
+    from .llama_server import LlamaServerError, gguf_block_count, require_gguf
+    from .translate import create_translator
+
+    headroom = cfg.gpu_budget.startup_headroom_gb
+    auto = cfg.translate.gpu_layers < 0
+    layers = None if auto else cfg.translate.gpu_layers
+    if auto and budget.free is not None:
+        layers = 0
+        if budget.free > headroom:
+            model = require_gguf(cfg.translate.model_path, "HY-MT model")
+            layer_count = gguf_block_count(model) or 32
+            per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
+            # Full-offload probing can evict idle ASR pages under Windows WDDM.
+            available = budget.free - headroom - .75
+            layers = max(0, min(layer_count, math.floor(available / per_layer_gb)))
+    while True:
+        try:
+            translator = create_translator(cfg.translate, glossary, vod_title=vod_context, gpu_layers=layers)
+            break
+        except LlamaServerError:
+            if layers == 0 or not auto:
+                raise
+            layers = 16 if layers is None else layers // 2
+            log.warning("HY-MT startup failed; retrying with %d GPU layers", layers, exc_info=True)
+    try:
+        if not auto:
+            budget.refresh()
+            return translator
+        per_layer_gb = os.path.getsize(translator.model) / (translator.layer_count + 2) / 1e9
+        for _ in range(3):
+            budget.refresh()
+            if budget.free is None or budget.free >= headroom or translator.gpu_layers == 0:
+                break
+            trim = math.ceil((headroom - budget.free) / per_layer_gb) + 1
+            translator.reload(translator.gpu_layers - trim,
+                              f"GPU free {budget.free:.2f} GB below {headroom:.2f} GB headroom")
+        return translator
+    except BaseException:
+        translator.close()
+        raise
 
 
 

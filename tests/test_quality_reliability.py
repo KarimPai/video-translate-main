@@ -6,11 +6,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from auto_translate.config import MpvConfig, TranslateConfig, VadConfig, vad_for_source
-from auto_translate.glossary import Glossary
+from auto_translate.config import MpvConfig, VadConfig, vad_for_source
 from auto_translate.output.mpv import MpvOutput
 from auto_translate.pipeline import Stats
-from auto_translate.translate.plamo import PlamoTranslator, _needs_fragment_context
 from auto_translate.types import AudioChunk, Subtitle, Timings
 from auto_translate.vad import FRAME, Segmenter
 
@@ -49,29 +47,7 @@ class AdaptiveVadTests(unittest.TestCase):
 
 
 
-class PLaMoQualityTests(unittest.TestCase):
-    def test_only_short_dependant_fragments_trigger_context(self):
-        self.assertTrue(_needs_fragment_context("それは"))
-        self.assertTrue(_needs_fragment_context("行きたいけど"))
-        self.assertFalse(_needs_fragment_context("ありがとうございます"))
-        self.assertFalse(_needs_fragment_context("明日は車でゲームをしながらゆっくり帰ろうと思います"))
-
-    def test_context_uses_previous_japanese_only_when_needed(self):
-        translator = object.__new__(PlamoTranslator)
-        translator.cfg = TranslateConfig()
-        translator.glossary = Glossary({})
-        translator.vod_title = "Example"
-        translator.url = "http://127.0.0.1:8000/v1/chat/completions"
-        translator.memory_lines = 0
-        from unittest.mock import MagicMock
-        translator.client = MagicMock()
-        translator.client.post.return_value.json.return_value = {"choices": [{"message": {"content": "That one."}}]}
-        translator._chat("それは", [("赤い車がある", "There's a red car")], 2.0)
-        body = translator.client.post.call_args.kwargs["json"]
-        self.assertIn("Immediately preceding Japanese", body["chat_template_kwargs"]["context"])
-        self.assertIn("赤い車がある", body["chat_template_kwargs"]["context"])
-        self.assertTrue(body["messages"][-1]["content"] == "それは")
-
+class PlaybackQualityTests(unittest.TestCase):
     def test_live_stale_window(self):
         player = object.__new__(MpvOutput)
         player.cfg = MpvConfig(live_late_window_s=7.0)

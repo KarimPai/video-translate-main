@@ -1,77 +1,65 @@
-# Video Translate — Voxtral experiment
+# Video Translate — Qwen3-ASR + HY-MT
 
-Local Japanese-to-English subtitles for YouTube livestreams and VODs on Windows 11.
+Local Japanese-to-English subtitles for YouTube livestreams and VODs on Windows.
 
-`YouTube → MPV audio → CPU FireRedVAD → Voxtral Mini 4B Q4_K → PLaMo 3 Translate 2B → English subtitles`
+`YouTube → FFmpeg 16 kHz audio → CPU FireRedVAD → Qwen3-ASR-1.7B → HY-MT1.5-7B → MPV subtitles`
 
-This experimental branch uses one Japanese speech recognizer: **Voxtral Mini 4B Realtime 2602 Q4_K**, through the Windows CUDA build of [audio.cpp](https://github.com/0xShug0/audio.cpp). Each complete VAD utterance is transcribed offline. The model stays loaded in an application-owned local server between utterances. Inference uses local loopback requests; audio is never sent to an external inference API.
+The `experiment/qwen3-asr-hymt` branch uses two application-owned llama.cpp servers on loopback. Audio and inference stay local; YouTube access and installation downloads require internet access. This branch replaces Voxtral/audio.cpp and PLaMo, including their name-repair, caption, chat, and extended-memory heuristics.
 
-## Fresh Windows installation
+## Install and run
 
-In CMD, clone directly into the independent experimental folder:
+Use this checkout on Windows x64 with a current NVIDIA driver and WinGet. Run **Setup.bat**, then **Start GUI.vbs**. Enter a YouTube URL, choose 360p/480p/720p/1080p, and start. **Start translate.bat** is the terminal alternative.
 
-```cmd
-git clone --single-branch --branch experiment/voxtral-mini-4b-single-asr https://github.com/KarimPai/video-translate-main.git C:\Games\video-translate-voxtral
-```
-
-Open that folder and run `Setup.bat`. Setup requires internet access, Windows x64, a current NVIDIA driver, and WinGet. It installs or verifies uv, Python 3.12, yt-dlp, Deno, FFmpeg, MPV, GUI dependencies, and CPU FireRedVAD/PyTorch. No CUDA toolkit installation is required: the pinned native CUDA builds ship their runtime DLLs.
-
-Setup installs these components within this checkout:
+Setup installs uv, Python 3.12, yt-dlp, Deno, FFmpeg, MPV, CPU FireRedVAD, Qt, and optional NVML diagnostics. The pinned llama.cpp CUDA archives include runtime DLLs; a separate CUDA toolkit is not needed.
 
 | Component | Location |
 | --- | --- |
-| audio.cpp v0.9.5, CUDA 12.4 | `.runtime/audio-v0.9.5-cuda12/` |
-| Voxtral Q4_K, approximately 3.10 GB download | `models/voxtral/voxtral-mini-4b-realtime-2602-q4_k.gguf` |
-| llama.cpp b12318, CUDA 12.4 | `.runtime/llama-b12318-cuda12/` |
-| PLaMo 3 Translate 2B Q4_K_M | Hugging Face shared model cache |
-| Python and GUI dependencies | `.venv/` |
+| llama.cpp b12318 CUDA 12.4 | `.runtime/llama-b12318-cuda12/` |
+| Qwen3-ASR-1.7B Q8_0, 2.17 GB | `models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf` |
+| Qwen3-ASR audio projector Q8_0, 356 MB | `models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` |
+| HY-MT1.5-7B Q4_K_M, 4.62 GB | `models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf` |
+| Python environment | `.venv/` |
 
-The installer verifies the authoritative GitHub SHA256 values for runtime archives and the pinned Hugging Face LFS SHA256 for Voxtral. A valid existing checkpoint is reused; interrupted Hugging Face downloads can resume. Model weights, runtime binaries, and local configuration are excluded from Git. FireRedVAD's small model and the optional CPU language-identification model are cached on first use.
+Setup verifies pinned GitHub runtime digests and Hugging Face model revisions/SHA256. Valid local weights are reused. Models, runtime binaries, and local configuration are not committed. Existing weights can be verified separately with `uv run --no-sync python -m auto_translate.models`.
 
-Double-click **Start GUI.vbs** to launch the console-free GUI. Enter a YouTube URL, choose 360p/480p/720p/1080p, and start translation. **Start translate.bat** provides a terminal alternative. If a configuration is needed, copy `config.example.toml` to `config.toml`; paths are relative to this checkout. The experimental configuration schema is independent: start from the new example when moving from another branch.
-
-## Playback, timing, and names
-
-MPV retains hardware decoding, ordinary video scaling, fullscreen, VOD seeking, and the requested video quality. The native MPV OSC remains disabled when Qt owns playback controls, preserving the seekbar fix.
-
-Live subtitles use the shared HLS media presentation timestamps: FFmpeg records the first decoded PCM sample's PTS, and MPV reports playback on that same timeline. Subtitles wait for their speech onset even when translation finishes early. Startup placeholders, buffering and configured playback delay do not redefine the source clock. Timestamp discontinuities invalidate the alignment and restart the shared playback generation. Diagnostics record anchors, discontinuities, enqueue/display positions and processing checkpoints.
-
-FireRedVAD retains the existing segmentation baseline and meaningful short Japanese reactions. Audio.cpp currently provides no Voxtral word timestamps, so subtitle timing comes from the original VAD utterance. Seek, stop, restart, and video-switch generation checks prevent an expired result from becoming a new subtitle. A seek invalidates the active response; the persistent server can finish that bounded request before the next request begins. Stop and timeout terminate the application's owned server, and a later session loads it again.
-
-Voxtral's upstream model detects language automatically; the backend has no verified Japanese-language forcing option. The existing CPU spoken-language filter and Japanese text checks protect Japanese-only translation. Low-confidence short reactions are retained. Non-LLM repetition, noise, and hallucination checks reject unusable transcripts without inventing dialogue.
-
-Faint, band-limited game radio (for example HoloGTA police and EMS calls) is protected in two ways. The language filter only drops band-limited audio when it is confidently English or Indonesian, because radio Japanese is often misread as an arbitrary language. A Voxtral result that is empty, non-Japanese or implausible is retried once with radio enhancement (90 Hz high-pass, 1–4 kHz presence lift, AGC up to 24 dB) and decoder silence padding when the VAD confidence is at least `asr.rescue_min_vad_confidence`. Every final rejection is recorded in diagnostics as `asr_rejected` with its reason and raw text; successful retries are recorded as `asr_rescued`. Set `asr.rescue_retry = false` to disable the retry.
-
-The Hololive glossary and context policies preserve the spoken forms: ラプ → **Lap**, ラプ様 → **Lap-sama**, ラプちゃん → **Lap-chan**, ラプラス → **Laplus**, みこ → **Miko**, みこち → **Mikochi**, わため → **Watame**, ししろん → **Shishiron**. Names do not expand into full stage names. Botan/button, Matsuri/festival, Miko/shrine maiden, and grass/laughter require supporting dialogue context. Translation memory and neutral-pronoun safeguards remain enabled. Japanese passthrough and mixed Japanese fragments are rejected before English history, caching and display. Balanced quotation marks and apostrophes are preserved; unmatched double quotes are removed.
-
-## RTX 3070 memory and diagnostics
-
-The default targets an 8 GiB RTX 3070: Voxtral uses CUDA Q4_K; FireRedVAD and language identification stay on CPU. PLaMo adapts partial GPU offloading to measured free device memory and can fall back to CPU. The initial headroom target is approximately 0.7–1 GiB where feasible. Model-file size is not a runtime VRAM estimate. Allocation failures produce actionable diagnostics; the recognizer does not silently switch checkpoints or change video resolution.
-
-The optional **Safe Playback** mode bounds audio queues and concurrent inference. The **Diagnostics** dashboard reports available GPU memory, stage timings, queue/cue counters, playback observations, and owned processes. Install NVML telemetry with `uv sync --locked --extra gui --extra diagnostics` (included in Setup). WDDM can make some counters unavailable; device memory includes other applications. Monitor the actual peak and remaining memory during a representative long session before changing offload settings.
-
-The translation memory, relevance-selected terminology, optional YouTube chat context, and diagnostic export remain available. Chat is weak terminology evidence, never model instructions or a replacement for audio. Public live/replay chat can be missing or delayed. Diagnostic exports contain bounded log tails and optional filtered Windows event metadata; review subtitle and video metadata before sharing them.
-
-## Windows executable
-
-The [Windows GUI frontend build](https://github.com/KarimPai/video-translate-main/actions/workflows/windows-gui.yml) workflow builds **VideoTranslate.exe** with PyInstaller, runs the offline regression suite and Windows/Qt lifecycle checks, launches the packaged EXE to verify Qt startup, and uploads `VideoTranslate-Voxtral-Windows-GUI`. Extract the complete artifact, run its `Setup.bat`, then open `VideoTranslate.exe`. Keep the packaged `_internal` directory beside the EXE. The artifact contains the source backend and setup files; it deliberately does not contain model weights or a Python runtime environment. An EXE-only artifact is for updating an already matching complete artifact. Synchronization and translation fixes also require the updated backend source, supplied in the full artifact or by updating this existing branch.
-
-## Tests and physical validation
-
-For the lightweight offline suite:
+Copy `config.example.toml` to `config.toml` for local overrides. This branch has a new schema; the old Voxtral/PLaMo settings no longer apply. CLI example:
 
 ```cmd
-uv sync --locked --only-group ci
-uv run --no-sync ruff check --select E9,F63,F7,F82 src tests scripts
-uv run --no-sync python -m compileall -q src tests scripts
-set PYTHONPATH=src
-uv run --no-sync python -m unittest discover -s tests -v
+uv run --no-sync auto-translate "YOUTUBE_URL" --mpv --no-web --context-lines 3
 ```
 
-Add `--extra gui` to the regular project installation for Qt smoke tests. Offline mocked protocol tests establish request handling, failure behavior, generation resets, filters, and cleanup; they do not establish transcription accuracy or GPU compatibility. `scripts/benchmark_quality.py` compares reviewed, time-aligned Japanese references with actual output and flags English lines for human review.
+Model overrides are `--asr-model`, `--asr-mmproj`, `--mt-model`, and `--llama-server`. The GUI exposes ASR/translation model paths and 0–20 previous dialogue lines; the projector/server paths remain in configuration.
 
-`python scripts/benchmark_names.py` checks the authored name/noun and nickname fixtures. `python scripts/benchmark_plamo_context.py tests/fixtures/plamo_context_cases.csv` previews identical cases under the current compact, OverlaySubs-style (`overlay`), and hybrid profiles. Add `--run-model` to evaluate an already-running local PLaMo server, then review the actual outputs for fidelity and naturalness. These authored text cases do not measure acoustic ASR accuracy. The compact profile remains the default until reviewed model results support a change. Token-truncated completions receive at most one context-bounded larger completion; failed candidates are suppressed.
+## Accuracy and context
 
-On the target Windows 11 / RTX 3070 system, verify Japanese audio with known reference text, nickname accuracy, short reactions, 3–15-second utterances, live subtitle delay, forward/backward seeking, video switching, each quality setting, GPU memory peaks, and closing during inference. Approximately 20 seconds of live delay is a target, not a measured guarantee. Exercise missing runtime/model files and allocation failures, then confirm that unrelated processes survive and owned processes exit. This repository's CI cannot establish those physical hardware results.
+Qwen3-ASR receives optional `asr.context` and bounded canonical glossary spellings for names supported by stream metadata. Raw titles and nickname lists are not sent as recognition hints because they can be echoed as speech; the title still guides translation. It does not feed the entire talent dictionary into every clip. Its language tag gates Japanese output; kana-bearing Japanese mislabelled Chinese is retained. Empty, implausible, repeated, context-echoed, and token-truncated results are rejected instead of inventing speech. Quiet speech receives at most 12 dB gain. The optional CPU language filter defaults off because the ASR model already identifies language.
 
-For setup failures, inspect the console message. For runtime failures, inspect `logs/run.log`, `logs/voxtral-server.log`, `logs/plamo-server.log`, `logs/mpv.log`, and `logs/gui-startup.log`. Missing CUDA DLLs require the complete matching runtime archive; driver errors require an updated NVIDIA driver. See [GUI_SETUP.md](GUI_SETUP.md) for the GUI and packaging details.
+HY-MT uses its official plain, terminology-intervention, and contextual translation templates without a system prompt. Relevant glossary terms and the most recent three Japanese/English pairs guide a single translation pass. Context is bounded and resets after seeking or switching videos. Ambiguous bare Botan/Miko/Matsuri hints require that talent in context; shrine and ship uses remain ordinary words. No deterministic name substitution or pronoun rewrite is applied to model output. Invalid English gets one plain-prompt retry; failed output is suppressed at history, cache, and display boundaries. Text benchmarks still require human review for meaning and naturalness.
+
+## Timing and GPU memory
+
+VAD utterance timestamps determine subtitle timing. VOD seeks invalidate pending generations and use a session-local subtitle cache. Livestream MPV/FFmpeg share a local HLS media timeline. MPV keeps hardware decoding, the requested quality, pause/fullscreen, and VOD seeking; Qt owns the seekbar and MPV's competing OSC is disabled.
+
+ASR loads first. HY-MT estimates initial offload from free VRAM with a CUDA-workspace reserve, warms both dialogue-sized and short prompts, then trims layers against measured device free memory. It avoids probing full offload on an already crowded GPU, which can page out idle ASR weights under Windows. The default headroom target is 1.0 GB on the intended RTX 3070 8 GiB. Further pressure requests reduce translation offload between cues; CPU fallback is available. Model download size is not a runtime VRAM estimate, and other GPU applications affect headroom.
+
+Optional **Safe Playback** bounds audio read-ahead and inference concurrency without changing video resolution or decoding. **Diagnostics** displays measured GPU, ASR/translation timings, queue/cue counts, and owned process status; unsupported counters remain unknown. Diagnostic exports can contain transcript and video metadata, so review them before sharing.
+
+## Tests and benchmark
+
+```cmd
+set PYTHONPATH=src
+uv run --no-sync python -m unittest discover -s tests -v
+uv run --no-sync python -m compileall -q src tests scripts
+```
+
+The offline suite covers request construction, language/output guards, context/glossary behaviour, failure recovery, generation resets, playback, Qt settings, and cleanup. It does not establish acoustic accuracy or long-session GPU reliability.
+
+Run `uv run --no-sync python scripts/benchmark.py cases.json --output results.json` with reviewed, segmented PCM WAV clips. The manifest is a JSON list; each entry has `audio` (relative to the manifest), `ja` (reference), optional `en` (human reference), optional `title`, and optional `names` (Japanese-to-English mapping). Audio must be mono 16-bit PCM at 16 kHz, with each clip at most 60 seconds. Results contain ASR character error rate, expected-name recall, per-stage latency/real-time factor, and both English texts for human review. This is an opt-in transcript export, unlike the in-memory playback cache.
+
+Validate representative real Hololive clips, short reactions, radio audio, VOD seeks, live clocks, video switching, and closing during inference on the target hardware. Synthetic probes and mocked tests are not proof of real-world accuracy or a guaranteed live delay.
+
+## GUI build and troubleshooting
+
+A preexisting packaged EXE is not rebuilt by source edits. Launch **Start GUI.vbs** to use this checkout, or rebuild the frontend as described in [GUI_SETUP.md](GUI_SETUP.md). Keep the matching backend and `_internal` directory with a packaged executable. No CI publication or remote push is required for local use.
+
+Inspect `logs/run.log`, `logs/asr-server.log`, `logs/mt-server.log`, `logs/mpv.log`, and `logs/gui-startup.log`. Missing native DLLs require the complete matching runtime; driver errors require a current NVIDIA driver. Reduce unrelated GPU workloads or explicitly lower `translate.gpu_layers` if headroom is insufficient.

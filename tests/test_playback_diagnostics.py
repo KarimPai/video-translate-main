@@ -128,13 +128,13 @@ class OwnedProcessObservationTests(unittest.TestCase):
         ended = Mock(pid=1202, returncode=7)
         ended.poll.return_value = 7
         unrelated = Mock(pid=9901)
-        registry = deque([("audiocpp_server.exe", active), ("ffmpeg.exe", ended)], maxlen=64)
+        registry = deque([("llama-server.exe", active), ("ffmpeg.exe", ended)], maxlen=64)
         with patch("auto_translate.windows_subprocess._owned", registry), patch(
                 "auto_translate.windows_subprocess.subprocess.Popen", side_effect=AssertionError("no child spawn")), patch(
                 "auto_translate.windows_subprocess.subprocess.check_output", side_effect=AssertionError("no process enumeration")):
             observed = owned_process_status()
         self.assertEqual(observed, [
-            {"name": "audiocpp_server.exe", "pid": 1201, "running": True, "exit_code": None},
+            {"name": "llama-server.exe", "pid": 1201, "running": True, "exit_code": None},
             {"name": "ffmpeg.exe", "pid": 1202, "running": False, "exit_code": 7},
         ])
         active.poll.assert_called_once_with()

@@ -1,5 +1,4 @@
 # Windows 11 x64, NVIDIA CUDA; run through ../Setup.bat.
-# Installer sources: WinGet, 0xShug0/audio.cpp, ggml-org/llama.cpp.
 param([Parameter(Mandatory = $true)][string]$ProjectDir)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -73,7 +72,7 @@ try {
     }
     $adapterNames = @((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name))
     if (@($adapterNames | Where-Object { $_ -match 'NVIDIA' }).Count -eq 0) {
-        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Voxtral.'
+        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Qwen3-ASR + HY-MT.'
     }
     Write-Host 'Detected video adapters:' ($adapterNames -join '; ')
 
@@ -106,66 +105,28 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'uv sync --locked --extra gui --extra diagnostics failed. Review Python/CUDA package compatibility.' }
     } finally { Pop-Location }
 
-    Step 'Installing pinned audio.cpp Windows CUDA 12.4 runtime'
-    $audioRoot = Join-Path $ProjectDir '.runtime\audio-v0.9.5-cuda12'
-    New-Item -ItemType Directory -Path $audioRoot -Force | Out-Null
-    $audioServer = Get-ChildItem -LiteralPath $audioRoot -Recurse -Filter 'audiocpp_server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $audioServer) {
-        $headers = @{ 'User-Agent' = 'VideoTranslate-Voxtral-Setup'; 'Accept' = 'application/vnd.github+json' }
-        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/0xShug0/audio.cpp/releases/tags/v0.9.5' -Headers $headers
-        $build = $release.assets | Where-Object name -eq 'audio-v0.9.5-bin-windows-x64-cuda12.4.zip'
-        $runtime = $release.assets | Where-Object name -eq 'audio-v0.9.5-cudart-windows-x64-cuda12.4.zip'
-        if (-not $build -or -not $runtime) { throw 'Pinned audio.cpp CUDA 12.4 Windows release assets are missing.' }
-        $downloadDir = Join-Path $ProjectDir ('.cache\audio-download-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
-        try {
-            $buildZip = Join-Path $downloadDir 'audio.zip'
-            $runtimeZip = Join-Path $downloadDir 'cudart.zip'
-            Fetch-Asset $build $buildZip 81f38a0a62935bdf4b2605541a21d50223b2e12b661887031705dd8a369f844b
-            Fetch-Asset $runtime $runtimeZip fa55dfaff1d4b5c6e8fac460d64f380b9df76cd46435f187c39b05700f623a7e
-            Expand-Archive -LiteralPath $buildZip -DestinationPath $audioRoot -Force
-            Expand-Archive -LiteralPath $runtimeZip -DestinationPath $audioRoot -Force
-        } finally { Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue }
-        $audioServer = Get-ChildItem -LiteralPath $audioRoot -Recurse -Filter 'audiocpp_server.exe' -File | Select-Object -First 1
-        if (-not $audioServer) { throw 'audiocpp_server.exe missing from the official audio.cpp archive.' }
-    } else { Write-Host 'audio.cpp CUDA runtime already installed.' }
-    $audioBin = $audioServer.Directory.FullName
-    foreach ($dll in @('ggml-cuda.dll', 'cudart64_12.dll', 'cublas64_12.dll', 'cublasLt64_12.dll', 'cufft64_11.dll')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $audioBin $dll))) {
-            $found = Get-ChildItem -LiteralPath $audioRoot -Recurse -Filter $dll -File | Select-Object -First 1
-            if (-not $found) { throw "Missing audio.cpp CUDA runtime component: $dll. Remove only .runtime\audio-v0.9.5-cuda12 and rerun Setup.bat." }
-            Copy-Item -LiteralPath $found.FullName -Destination $audioBin -Force
-        }
-    }
-    # v0.9.5 archives place binaries at the archive root; this matches the
-    # independent branch configuration. The marker also exposes DLLs to launchers.
-    [IO.File]::WriteAllText((Join-Path $cache 'voxtral-bin-path.txt'), $audioBin)
-    $env:Path = "$audioBin;$env:Path"
-    & $audioServer.FullName --help
-    if ($LASTEXITCODE -ne 0) { throw 'audio.cpp cannot start. Install Microsoft Visual C++ x64 Redistributable and update the NVIDIA driver; verify the bundled CUDA DLLs.' }
     Refresh-Path
     if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) {
         throw 'nvidia-smi.exe is unavailable. Install a current NVIDIA driver, restart Windows, then rerun Setup.bat.'
     }
     & nvidia-smi.exe --query-gpu=name,driver_version,memory.total,memory.free --format=csv
-    if ($LASTEXITCODE -ne 0) { throw 'NVIDIA driver query failed. Repair/update the NVIDIA driver before using Voxtral CUDA.' }
+    if ($LASTEXITCODE -ne 0) { throw 'NVIDIA driver query failed. Repair/update the NVIDIA driver before using CUDA llama.cpp.' }
 
-    Step 'Installing CUDA 12.4 llama.cpp binaries and matching runtime'
+    Step 'Installing pinned CUDA 12.4 llama.cpp runtime for Qwen3-ASR + HY-MT'
     $installRoot = Join-Path $ProjectDir '.runtime'
-    # b12318 recognizes tokenizer.ggml.model=plamo3 in the translator GGUF.
     $llamaRoot = Join-Path $installRoot 'llama-b12318-cuda12'
     $pathFile = Join-Path $cache 'llama-bin-path.txt'
     New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
-        $headers = @{ 'User-Agent' = 'VideoTranslate-Voxtral-Setup'; 'Accept' = 'application/vnd.github+json' }
+        $headers = @{ 'User-Agent' = 'VideoTranslate-Qwen3-ASR-HY-MT-Setup'; 'Accept' = 'application/vnd.github+json' }
         $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b12318' -Headers $headers
         $build = $release.assets | Where-Object name -eq 'llama-b12318-bin-win-cuda-12.4-x64.zip'
         $runtime = $release.assets | Where-Object name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'
         if (-not $build -or -not $runtime) {
             throw 'No matching CUDA 12.4 llama.cpp Windows release found. See https://github.com/ggml-org/llama.cpp/releases'
         }
-        $downloadDir = Join-Path $ProjectDir ('.cache\voxtral-plamo-' + [guid]::NewGuid().ToString('N'))
+        $downloadDir = Join-Path $ProjectDir ('.cache\qwen3-asr-hy-mt-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
         try {
             $buildZip = Join-Path $downloadDir 'llama.zip'
@@ -189,15 +150,13 @@ try {
     try {
         & uv run --no-sync python -c 'import numpy, fireredvad, torch, onnxruntime, PySide6, auto_translate; assert torch.version.cuda is None'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
-        & uv run --no-sync python -m auto_translate.voxtral_model
-        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Voxtral Q4_K. Rerun Setup to resume.' }
-        & uv run --no-sync python -m auto_translate.plamo_model
-        if ($LASTEXITCODE -ne 0) { throw 'Could not prefetch PLaMo GGUF. Rerun Setup to resume.' }
-        Write-Host 'Python dependencies, Voxtral Q4_K integrity and PLaMo model checks OK'
+        & uv run --no-sync python -m auto_translate.models
+        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Qwen3-ASR + HY-MT models. Rerun Setup to resume.' }
+        Write-Host 'Python dependencies, Qwen3-ASR Q8_0 and HY-MT Q4_K_M model integrity checks OK'
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host 'Voxtral Q4_K ready under models\voxtral; PLaMo Q4_K_M ready in the model cache.'
+    Write-Host 'Qwen3-ASR Q8_0 and audio projector ready under models\qwen3-asr; HY-MT Q4_K_M ready under models\hy-mt.'
     Write-Host 'A CUDA-capable NVIDIA driver is required. FireRedVAD runs on CPU.'
     exit 0
 } catch {

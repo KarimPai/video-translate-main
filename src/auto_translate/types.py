@@ -65,8 +65,6 @@ class Transcript:
     generation: int = 0
     speech_start_s: float | None = None
 
-    name_context: dict = field(default_factory=dict)
-
 
 @dataclass
 class Subtitle:

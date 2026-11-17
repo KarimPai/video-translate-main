@@ -5,53 +5,47 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-import httpx
-
-from auto_translate.config import IngestConfig, TranslateConfig
-from auto_translate.glossary import Glossary
+from auto_translate.config import IngestConfig
 from auto_translate.ingest import Ingest, Source
+from auto_translate.llama_server import LlamaServerError
 from auto_translate.output.mpv import MpvError, MpvOutput
 from auto_translate.pipeline import run_translate
 from auto_translate.translate.base import TranslatorUnavailable
-from auto_translate.translate.plamo import PlamoTranslator
 from auto_translate.types import AudioProgress, SAMPLE_RATE, SourceEOF, Transcript
+from test_english_reliability import fake_translator
 
 
 class SessionRecoveryTests(unittest.TestCase):
-    def translator(self, process):
-        with patch.object(PlamoTranslator, "_start_server"), patch.object(PlamoTranslator, "_warmup"):
-            translator = PlamoTranslator(TranslateConfig(), Glossary({}))
-        translator.process = process
-        self.addCleanup(translator.close)
-        return translator
-
     def test_owned_server_restarts_once_and_replays_same_cue(self):
-        translator = self.translator(Mock())
-        translator.process.poll.return_value = 1
-        def restart():
-            translator.process = Mock()
-            translator.process.poll.return_value = 1
-        translator._start_server = Mock(side_effect=restart)
-        translator._translate_cue = Mock(side_effect=[httpx.ReadError("closed"), "Hello", httpx.ConnectError("dead")])
+        translator = fake_translator(LlamaServerError("closed"), "Hello")
+        self.addCleanup(translator.close)
+        translator.server.alive.side_effect = [True, False, False]
+        translator.reload = Mock(side_effect=[None, LlamaServerError("dead")])
         self.assertEqual(translator.translate("こんにちは", []), "Hello")
-        first, retry = translator._translate_cue.call_args_list
+        first, retry = translator._chat.call_args_list
         self.assertEqual(first, retry)
-        with self.assertRaises(TranslatorUnavailable):
+        translator.reload.assert_called_once_with(translator.gpu_layers - 8, "closed")
+        with self.assertRaisesRegex(TranslatorUnavailable, "could not restart"):
             translator.translate("次", [])
-        translator._start_server.assert_called_once()
+        self.assertEqual(translator.reload.call_count, 2)
+        self.assertEqual(translator._chat.call_count, 2)
 
-    def test_external_server_outage_surfaces_despite_audio_progress(self):
-        translator = self.translator(None)
-        translator._start_server = Mock()
-        translator._translate_cue = Mock(side_effect=httpx.ConnectError("down"))
+    def test_server_outage_surfaces_despite_audio_progress(self):
+        translator = fake_translator()
+        self.addCleanup(translator.close)
+        translator._chat = Mock(side_effect=LlamaServerError("down"))
+        translator.reload = Mock()
         inputs = queue.Queue()
         for i in range(3):
             inputs.put(Transcript(i, i + 1, "テスト"))
             inputs.put(AudioProgress(i * SAMPLE_RATE))
         inputs.put(None)
+        outputs = queue.Queue()
         with self.assertRaisesRegex(TranslatorUnavailable, "three consecutive"):
-            run_translate(translator, 0, inputs, queue.Queue())
-        translator._start_server.assert_not_called()
+            run_translate(translator, 0, inputs, outputs)
+        self.assertEqual(translator._chat.call_count, 3)
+        self.assertEqual(list(outputs.queue), [AudioProgress(0), AudioProgress(SAMPLE_RATE)])
+        translator.reload.assert_not_called()
 
     def test_vod_midstream_error_refreshes_and_keeps_pcm_contiguous(self):
         ingest = Ingest(Source("https://example.test/video", False, start_s=3), IngestConfig())

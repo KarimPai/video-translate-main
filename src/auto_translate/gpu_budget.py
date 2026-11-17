@@ -166,7 +166,7 @@ class GpuBudget:
                          None if self.free is None else round(self.free, 3), level)
                 if level in ("low", "critical"):
                     if level != self._last_pressure:
-                        log.warning("GPU free-memory pressure=%s; keeping Voxtral/PLaMo playback alive",
+                        log.warning("GPU free-memory pressure=%s; keeping ASR/translation playback alive",
                                     level)
                         record_event("gpu_memory_pressure", **self.snapshot())
                     try:

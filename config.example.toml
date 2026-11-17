@@ -1,34 +1,26 @@
-# Copy to config.toml. Relative paths are resolved from the project directory.
-# YouTube/MPV audio -> CPU FireRedVAD -> CUDA Voxtral -> PLaMo -> subtitles.
+# Relative paths are resolved from the project directory.
 [asr]
-voxtral_model_path = "models/voxtral/voxtral-mini-4b-realtime-2602-q4_k.gguf"
-voxtral_server_path = ".runtime/audio-v0.9.5-cuda12/audiocpp_server.exe"
+model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
+mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 cuda_device = 0
 threads = 8
+context = ""
+max_context_chars = 2000
+context_size = 4096
 startup_timeout_s = 180
-response_timeout_s = 45
-live_response_timeout_s = 20
-# Optional exact phrases to suppress in recognized text.
+response_timeout_s = 30
+live_response_timeout_s = 15
 blocklist = []
-# The service keeps the checkpoint resident and transcribes complete utterances.
-# Greedy decoding and a fixed seed are configured by the backend.
-# A rejected utterance (empty, non-Japanese or implausible) is retried once with
-# radio enhancement (high-pass, presence lift, AGC) and decoder silence padding.
-# This recovers faint, band-limited game-radio chatter such as HoloGTA calls.
-rescue_retry = true
-rescue_min_vad_confidence = 0.45
-rescue_min_duration_s = 0.4
 
 [gpu_budget]
-# Decimal GB of actual device free memory, sampled through NVML/nvidia-smi.
-# Aim for about 0.7-1 GiB free; reduce PLaMo GPU offload before sacrificing ASR.
+# Load ASR first, then trim translation GPU layers against measured free memory.
 startup_headroom_gb = 1.0
 low_free_gb = 0.75
 emergency_free_gb = 0.25
 sample_interval_s = 2.0
 
 [vad]
-# FireRedVAD stays on CPU; initial segmentation preserves short reactions.
 device = "cpu"
 threshold = 0.30
 neg_threshold = 0.20
@@ -52,9 +44,8 @@ split_context_ms = 160
 fallback_s = 0.0
 
 [language_filter]
-# CPU-only VoxLingua107 ECAPA INT8 (~27MB); uncertain and short speech survives.
-# Drop only confidently non-Japanese speech before Japanese ASR.
-enabled = true
+# Qwen3-ASR already identifies language; this optional CPU gate is normally off.
+enabled = false
 min_duration_s = 2.5
 max_window_s = 5.0
 drop_probability = 0.80
@@ -62,34 +53,33 @@ max_japanese_probability = 0.12
 min_top_margin = 0.45
 
 [translate]
-# PLaMo uses adaptive partial GPU offload and CPU fallback.
-plamo_hf_model = "pfnet/plamo-3-translate-2b-GGUF:Q4_K_M"
-plamo_context = 4096
-plamo_gpu_layers = 99
-context_profile = "compact"
+model_path = "models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+# -1 selects adaptive GPU offload; 0 keeps the translation model on CPU.
+gpu_layers = -1
+context_size = 2048
+cuda_device = 0
+threads = 8
+max_tokens = 192
+temperature = 0.2
+top_k = 20
+top_p = 0.6
+repeat_penalty = 1.05
 context_lines = 3
-extended_memory = true
-memory_lines = 16
-sentence_context = true
+max_context_chars = 600
+timeout_s = 30
+load_timeout_s = 300
 glossary = "glossary.toml"
-neutral_subjects = true
+remove_fillers = true
+collapse_repetitions = true
+max_identical_cues = 2
 
 [mpv]
 hwdec = "auto-safe"
 live_forward_cache_mib = 1024
 live_back_cache_mib = 1024
 
-[chat]
-# Public YouTube chat is weak evidence for terms already present in speech.
-# Chat is never converted into subtitles and missing chat never blocks ASR.
-enabled = false
-window_s = 30.0
-max_messages = 100
-poll_interval_s = 5.0
-live_time_uncertainty_s = 5.0
-
 [safe_playback]
-# Serialize heavy inference and bound queues while MPV retains its resolution.
 enabled = false
 max_inference_concurrency = 1
 queue_size = 4

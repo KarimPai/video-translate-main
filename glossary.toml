@@ -346,8 +346,8 @@
 # https://hololive.hololivepro.com/en/talents/moona-hoshinova/
 # https://hololive.hololivepro.com/en/talents/kaela-kovalskia/
 # https://hololive.hololivepro.com/en/talents/mococo-abyssgard/
-# Ambiguous Matsuri/Miko/Botan entries below are always occurrence-gated by the
-# proper-name resolver; listing a spelling never proves that it is a name.
+# Ambiguous bare Matsuri/Miko/Botan entries below are hinted to the translator
+# only when that talent is already named in the title or recent dialogue.
 [nicknames]
 "ボタン" = "Botan"
 "ぼたん" = "Botan"

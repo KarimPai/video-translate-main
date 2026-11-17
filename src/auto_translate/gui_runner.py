@@ -1,7 +1,7 @@
 """Qt-independent Windows GUI launch helpers (also unit-testable on Linux).
 
 A packaged GUI is a frontend for the established project environment. Models,
-MPV, audio.cpp and llama-server remain externally installed/shared.
+MPV and llama-server remain externally installed/shared.
 """
 import os
 import math
@@ -61,25 +61,21 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
 
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
-                          *, frozen: bool = False,
-                          extended_memory: bool = True, memory_lines: int = 16,
-                          voxtral_model: str | None = None, audio_cpp_path: str | None = None,
-                          youtube_chat_context: bool = False,
+                          *, frozen: bool = False, context_lines: int = 3,
+                          asr_model: str | None = None, mt_model: str | None = None,
                           safe_playback: bool = False, diagnostics: bool = True,
                           executable: str | None = None):
     if not valid_youtube_url(url):
         raise ValueError("Enter a valid YouTube video or livestream URL.")
     if quality not in QUALITY_OPTIONS:
         raise ValueError("Unsupported video quality.")
-    for name, value in (("Translation memory", extended_memory),
-                        ("YouTube Chat context", youtube_chat_context),
-                        ("Safe Playback", safe_playback),
+    for name, value in (("Safe Playback", safe_playback),
                         ("Diagnostics", diagnostics)):
         if type(value) is not bool:
             raise ValueError(f"{name} selection must be a boolean.")
-    if type(memory_lines) is not int or not 0 <= memory_lines <= 20:
-        raise ValueError("Translation memory length must be between 0 and 20.")
-    for name, value in (("Voxtral checkpoint", voxtral_model), ("audio.cpp backend", audio_cpp_path)):
+    if type(context_lines) is not int or not 0 <= context_lines <= 20:
+        raise ValueError("Translation context must be between 0 and 20 lines.")
+    for name, value in (("ASR model", asr_model), ("Translation model", mt_model)):
         if value is not None and (not isinstance(value, str) or not value.strip() or "\x00" in value):
             raise ValueError(f"{name} path must be nonempty text.")
     if not isinstance(hwnd, int) or hwnd <= 0:
@@ -96,13 +92,11 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             "--no-web", "--hwdec", "auto-safe",
             "--video-quality", str(quality), "--mpv-wid", str(hwnd),
             "--gui-control", "--simple-terminal"]
-    args.extend(["--memory-lines", str(memory_lines)])
-    for flag, value in (("--voxtral-model", voxtral_model), ("--audio-cpp-path", audio_cpp_path)):
+    args.extend(["--context-lines", str(context_lines)])
+    for flag, value in (("--asr-model", asr_model), ("--mt-model", mt_model)):
         if value is not None:
             args.extend([flag, value.strip()])
-    for enabled, flag in ((extended_memory, "extended-memory"),
-                          (youtube_chat_context, "youtube-chat-context"),
-                          (safe_playback, "safe-playback"),
+    for enabled, flag in ((safe_playback, "safe-playback"),
                           (diagnostics, "diagnostics")):
         args.append(f"--{flag}" if enabled else f"--no-{flag}")
     return str(python), args
@@ -138,7 +132,7 @@ def diagnostic_rows(event: dict) -> dict[str, str]:
                     f"temperature {number(gpu.get('temperature_c'), ' °C')}; "
                     f"power {number(gpu.get('power_w'), ' W')}")
     stage_text = "; ".join(f"{label} {number(stages.get(key), ' s', 2)}" for label, key in (
-        ("Voxtral", "voxtral_s"), ("PLaMo", "plamo_s")))
+        ("ASR", "asr_s"), ("Translation", "mt_s")))
     pending = counters.get("pending_subtitles", queues.get("subtitles", queues.get("subtitle")))
     subtitle_text = (f"Pending {number(pending, precision=0)}; "
                      f"latency {number(counters.get('latency_s'), ' s', 2)}; "
@@ -191,8 +185,7 @@ def subprocess_environment(root: Path, original: dict[str, str] | None = None) -
     env["VIDEO_TRANSLATE_GUI"] = "1"
     if os.name == "nt":
         extra = []
-        for marker_name, executable in (("llama-bin-path.txt", "llama-server.exe"),
-                                        ("voxtral-bin-path.txt", "audiocpp_server.exe")):
+        for marker_name, executable in (("llama-bin-path.txt", "llama-server.exe"),):
             marker = root / ".cache" / marker_name
             if marker.is_file():
                 directory = Path(marker.read_text(encoding="utf-8-sig").strip())

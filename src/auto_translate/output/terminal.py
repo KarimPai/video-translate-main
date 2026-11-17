@@ -26,7 +26,7 @@ class TerminalOutput:
             # console I/O is synchronous; avoid two flushes per utterance.
             lines = []
             if sub.ja:
-                lines.append(f"JP: {sub.ja}")
+                lines.append(f"JP: {' '.join(sub.ja.split())}")
             if sub.en:
                 lines.append(f"EN: {sub.en}")
             if lines:
@@ -51,6 +51,7 @@ def print_subtitle(sub: Subtitle) -> None:
     lat = (f"vad {tm.segmented - tm.audio_read:.2f}s · wait {tm.asr_start - tm.segmented:.2f}s · "
            f"asr {tm.asr_end - tm.asr_start:.2f}s · mt {tm.mt_end - tm.mt_start:.2f}s")
     stamp = f"[{fmt_ts(sub.start_s)}–{fmt_ts(sub.end_s)}]"
-    print(f"{stamp} {sub.ja}    ({lat})", flush=True)
+    japanese = " ".join(sub.ja.split())
+    print(f"{stamp} {japanese}    ({lat})", flush=True)
     if sub.en:
         print(f"{' ' * len(stamp)} → {sub.en}", flush=True)

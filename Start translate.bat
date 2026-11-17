@@ -8,7 +8,7 @@ if exist "%LLAMA_PATH_FILE%" (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
     )
 )
-title Voxtral + PLaMo
+title Qwen3-ASR + HY-MT
 cd /d "%~dp0"
 if errorlevel 1 (
     echo ERROR: Cannot enter the project directory.
@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 echo.
 echo ========================================
-echo   Voxtral Japanese ASR + PLaMo
+echo   Qwen3-ASR Japanese ASR + HY-MT
 echo ========================================
 echo.
 set "VIDEO_URL="
@@ -60,7 +60,7 @@ if defined PYTHONPATH (
 )
 uv run --no-sync python -c "import numpy, fireredvad, onnxruntime, auto_translate" >nul 2>nul
 if errorlevel 1 (
-    echo Installing Voxtral + PLaMo pipeline Python dependencies...
+    echo Installing Qwen3-ASR + HY-MT pipeline Python dependencies...
     uv sync --locked
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.
@@ -69,8 +69,8 @@ if errorlevel 1 (
     )
 )
 echo.
-echo Starting persistent Voxtral CUDA ASR and PLaMo 3 Translate...
-echo Original 16 kHz audio, CPU FireRedVAD, offline Voxtral utterances, English subtitles.
+echo Starting persistent Qwen3-ASR-1.7B and HY-MT1.5-7B on CUDA llama.cpp...
+echo Original 16 kHz audio, CPU FireRedVAD, offline Qwen3-ASR utterances, English subtitles.
 echo Runtime and VRAM diagnostics: logs\run.log
 echo.
 

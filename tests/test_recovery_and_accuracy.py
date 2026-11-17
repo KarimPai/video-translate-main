@@ -8,14 +8,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from auto_translate.captions import CaptionMatch
 from auto_translate.glossary import Glossary
 from auto_translate.ingest import _prune_abandoned_sessions
 from auto_translate.output.mpv import MpvOutput
 from auto_translate.pipeline import run_asr
 from auto_translate.session_cache import SessionSubtitleCache
 from auto_translate.text_filter import trim_repetition_tail
-from auto_translate.translation_guard import suspicious_translation
 from auto_translate.types import Utterance
 
 
@@ -32,26 +30,18 @@ class AccuracyTests(unittest.TestCase):
         self.assertEqual(glossary.find("素敵な草原の化石"), [])
         self.assertEqual(glossary.find("敵がいる"), [("敵", "enemy")])
 
-    def test_new_negation_signals_are_log_only(self):
-        for text in ("今日は行かなかった。", "何も食べずに帰る", "今日は行きません"):
-            with self.assertLogs("auto_translate.translation_guard", "INFO"):
-                self.assertIsNone(suspicious_translation(text, "I went home."))
-        with self.assertNoLogs("auto_translate.translation_guard"):
-            self.assertIsNone(suspicious_translation("必ず行きます", "I will go."))
-
-    def test_empty_audio_transcript_never_invents_caption_dialogue(self):
-        for manual in (True, False):
-            with self.subTest(manual=manual):
+    def test_empty_asr_output_never_produces_dialogue(self):
+        for text in ("", "   "):
+            with self.subTest(text=text):
                 audio = queue.Queue()
                 output = queue.Queue()
                 audio.put(Utterance(0, 2, np.ones(32000), vad_confidence=.9))
                 audio.put(None)
-                asr, captions = Mock(), Mock()
-                asr.transcribe.return_value = ""
-                captions.match.return_value = CaptionMatch("まだいるよ", 2., 1., True, manual)
-                run_asr(asr, audio, output, captions=captions)
-                result = output.get_nowait()
-                self.assertEqual(result.ja if result else None, None)
+                asr = Mock()
+                asr.transcribe.return_value = text
+                run_asr(asr, audio, output)
+                asr.transcribe.assert_called_once()
+                self.assertEqual(list(output.queue), [None])
 
 
 class RecoveryTests(unittest.TestCase):

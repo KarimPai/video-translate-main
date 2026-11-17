@@ -106,14 +106,14 @@ class DiagnosticsTests(unittest.TestCase):
     def test_nested_metrics_merge_and_snapshot_is_detached(self):
         with tempfile.TemporaryDirectory() as directory:
             recorder = self.create(directory)
-            recorder.update(stages={"voxtral_s": 1.5}, counters={"expired": 1})
-            recorder.update(stages={"plamo_s": 0.9})
+            recorder.update(stages={"asr_s": 1.5}, counters={"expired": 1})
+            recorder.update(stages={"mt_s": 0.9})
             recorder.increment("expired", 2)
             snapshot = recorder.snapshot()
-            self.assertEqual(snapshot["stages"], {"voxtral_s": 1.5, "plamo_s": 0.9})
+            self.assertEqual(snapshot["stages"], {"asr_s": 1.5, "mt_s": 0.9})
             self.assertEqual(snapshot["counters"]["expired"], 3)
             snapshot["stages"].clear()
-            self.assertIn("voxtral_s", recorder.snapshot()["stages"])
+            self.assertIn("asr_s", recorder.snapshot()["stages"])
             recorder.close()
 
     def test_log_records_are_structured_and_rotation_is_bounded(self):
@@ -199,8 +199,8 @@ class DiagnosticsTests(unittest.TestCase):
             invalid.write_text("not a directory")
             recorder = diagnostics.RuntimeDiagnostics(SimpleNamespace(enabled=True), invalid)
             self.assertFalse(recorder.enabled)
-            recorder.update(stages={"voxtral_s": 1})
-            self.assertEqual(recorder.snapshot()["stages"]["voxtral_s"], 1)
+            recorder.update(stages={"asr_s": 1})
+            self.assertEqual(recorder.snapshot()["stages"]["asr_s"], 1)
             recorder.close()
 
     def test_rotating_gui_stream_handles_large_chunks(self):

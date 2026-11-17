@@ -39,14 +39,13 @@ class ExpiredLiveWorkTests(unittest.TestCase):
         self.assertEqual(len(output_q.queue), 2)
 
     def test_vod_transport_failure_never_immediately_retries(self):
-        cfg = Config().asr
-        primary = Mock(last_failed=True)
+        primary = Mock(last_rejection="error")
         primary.transcribe.return_value = ""
         input_q, output_q = queue.Queue(), queue.Queue()
         input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32),
                               vad_confidence=0.95))
         input_q.put(None)
-        run_asr(primary, input_q, output_q, live=False, asr_cfg=cfg)
+        run_asr(primary, input_q, output_q, live=False)
         primary.transcribe.assert_called_once()
 
     def test_vod_keeps_older_cues(self):

@@ -32,8 +32,6 @@ class ObservedSemaphore:
 
 
 class RecordingTranslator:
-    memory_lines = 16
-
     def __init__(self, callback=None):
         self.cfg = TranslateConfig()
         self.calls = []
@@ -113,8 +111,8 @@ class SafePlaybackRegressions(unittest.TestCase):
 
     def test_disabled_gate_preserves_normal_parallelism(self):
         gate = self.gate(enabled=False)
-        with gate.operation("voxtral"):
-            with gate.operation("plamo", deadline=float("inf")):
+        with gate.operation("asr"):
+            with gate.operation("mt", deadline=float("inf")):
                 pass
 
     def test_cancelled_admission_never_calls_model_and_does_not_leak_slot(self):
@@ -125,12 +123,12 @@ class SafePlaybackRegressions(unittest.TestCase):
 
         def waiting():
             try:
-                with gate.operation("voxtral", cancel_event=cancel):
+                with gate.operation("asr", cancel_event=cancel):
                     called.append(True)
             except CancelledError:
                 cancelled.append(True)
 
-        with gate.operation("voxtral"):
+        with gate.operation("asr"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(waiting)
             self.assertTrue(gate._slots.attempted.wait(1))
@@ -148,12 +146,12 @@ class SafePlaybackRegressions(unittest.TestCase):
 
         def waiting():
             try:
-                with gate.operation("plamo"):
+                with gate.operation("mt"):
                     self.fail("model entered after shutdown")
             except CancelledError:
                 cancelled.append(True)
 
-        with gate.operation("voxtral"):
+        with gate.operation("asr"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(waiting)
             self.assertTrue(gate._slots.attempted.wait(1))
@@ -168,13 +166,13 @@ class SafePlaybackRegressions(unittest.TestCase):
 
         def waiting():
             try:
-                with gate.operation("plamo", deadline=11.0):
+                with gate.operation("mt", deadline=11.0):
                     self.fail("expired selector entered model")
             except CancelledError:
                 cancelled.append(True)
 
         with patch("auto_translate.safe_playback.time.monotonic", side_effect=lambda: clock[0]):
-            with gate.operation("voxtral"):
+            with gate.operation("asr"):
                 gate._slots.attempted.clear()
                 worker, errors = self.spawn(waiting)
                 self.assertTrue(gate._slots.attempted.wait(1))
@@ -187,9 +185,9 @@ class SafePlaybackRegressions(unittest.TestCase):
     def test_model_exception_releases_admission_slot(self):
         gate = self.gate()
         with self.assertRaisesRegex(RuntimeError, "failed"):
-            with gate.operation("plamo"):
+            with gate.operation("mt"):
                 raise RuntimeError("model failed")
-        with gate.operation("voxtral"):
+        with gate.operation("asr"):
             pass
 
     def test_seek_while_waiting_for_translation_discards_old_cue_and_memory(self):
@@ -200,7 +198,7 @@ class SafePlaybackRegressions(unittest.TestCase):
             Transcript(0, 1, "古い会話", generation=0),
             Transcript(20, 21, "待って", generation=1),
         )
-        with gate.operation("voxtral"):
+        with gate.operation("asr"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(lambda: pipeline.run_translate(
                 translator, 3, incoming, outgoing,
@@ -367,7 +365,7 @@ class SafePlaybackRegressions(unittest.TestCase):
         position = [2.0]
         translator = RecordingTranslator()
         incoming, outgoing = self.queues(Transcript(2, 3, "待って"))
-        with gate.operation("voxtral"):
+        with gate.operation("asr"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(lambda: pipeline.run_translate(
                 translator, 3, incoming, outgoing, live=True,
@@ -385,7 +383,7 @@ class SafePlaybackRegressions(unittest.TestCase):
         primary = Mock()
         primary.transcribe.return_value = "待って"
         incoming, outgoing = self.queues(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
-        with gate.operation("plamo"):
+        with gate.operation("mt"):
             gate._slots.attempted.clear()
             worker, errors = self.spawn(lambda: pipeline.run_asr(
                 primary, incoming, outgoing, live=True, playback_position=lambda: position[0],

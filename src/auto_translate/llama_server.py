@@ -1,0 +1,200 @@
+"""Owned local llama.cpp server processes shared by the ASR and translation models."""
+from __future__ import annotations
+
+import logging
+import shutil
+import socket
+import struct
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+import httpx
+
+from .runtime_diagnostics import rotate_log
+from .windows_subprocess import check_running, hidden_console_flags, owned_popen, stopping
+
+log = logging.getLogger(__name__)
+
+
+class LlamaServerError(RuntimeError):
+    """The owned llama-server could not start or stopped unexpectedly."""
+
+
+def resolve_executable(path: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_file():
+        return candidate.resolve()
+    found = shutil.which(path) or shutil.which("llama-server")
+    if found:
+        return Path(found)
+    raise LlamaServerError(f"llama-server not found: {path}. Run Setup.bat to install llama.cpp (CUDA).")
+
+
+def require_gguf(path: str, label: str) -> Path:
+    model = Path(path).expanduser().resolve()
+    if not model.is_file():
+        raise LlamaServerError(f"{label} not found: {model}. Run Setup.bat to download it.")
+    with model.open("rb") as stream:
+        if stream.read(4) != b"GGUF":
+            raise LlamaServerError(f"{label} is not a GGUF file: {model}. Run Setup.bat to repair it.")
+    return model
+
+
+_GGUF_SCALARS = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+
+
+def gguf_block_count(path: Path) -> int | None:
+    """Transformer layer count from GGUF metadata, or None if unreadable."""
+    try:
+        with path.open("rb") as f:
+            magic, _version, _tensors, kv_count = struct.unpack("<4sIQQ", f.read(24))
+            if magic != b"GGUF":
+                return None
+
+            def string() -> str:
+                (length,) = struct.unpack("<Q", f.read(8))
+                return f.read(length).decode("utf-8", errors="replace")
+
+            def skip(kind: int) -> None:
+                if kind == 8:
+                    (length,) = struct.unpack("<Q", f.read(8))
+                    f.seek(length, 1)
+                elif kind == 9:
+                    inner, count = struct.unpack("<IQ", f.read(12))
+                    if inner in _GGUF_SCALARS:
+                        f.seek(struct.calcsize(_GGUF_SCALARS[inner]) * count, 1)
+                    else:
+                        for _ in range(count):
+                            skip(inner)
+                else:
+                    f.seek(struct.calcsize(_GGUF_SCALARS[kind]), 1)
+
+            for _ in range(kv_count):
+                key = string()
+                (kind,) = struct.unpack("<I", f.read(4))
+                if key.endswith(".block_count") and kind in _GGUF_SCALARS:
+                    (value,) = struct.unpack(_GGUF_SCALARS[kind], f.read(struct.calcsize(_GGUF_SCALARS[kind])))
+                    return int(value)
+                skip(kind)
+    except (OSError, struct.error, KeyError):
+        return None
+    return None
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        return reservation.getsockname()[1]
+
+
+class LlamaServer:
+    """One llama-server child on a private loopback port."""
+
+    def __init__(self, name: str, executable: Path, args: list[str], *, startup_timeout_s: float) -> None:
+        self.name = name
+        self.executable = executable
+        self.args = list(args)
+        self.startup_timeout_s = startup_timeout_s
+        self.process: subprocess.Popen | None = None
+        self.port = 0
+        self._log_stream = None
+        self._lock = threading.Lock()
+        self._closed = False
+        self._shutdown = threading.Event()
+        self._cancel_thread = None
+        self.client = httpx.Client(trust_env=False)
+        self.log_path = Path("logs") / f"{name}-server.log"
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def _watch_cancellation(self) -> None:
+        while not self._shutdown.wait(0.1):
+            if stopping.is_set():
+                self.close()
+                return
+
+    def start(self) -> None:
+        check_running()
+        with self._lock:
+            if self._closed:
+                raise LlamaServerError(f"{self.name} server is closed")
+            self._stop_process()
+            self.port = _free_port()
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            rotate_log(self.log_path)
+            self._log_stream = self.log_path.open("ab")
+            command = [str(self.executable), *self.args, "--host", "127.0.0.1", "--port", str(self.port)]
+            log.info("Starting %s llama-server: %s", self.name, " ".join(command[1:]))
+            self.process = owned_popen(command, cwd=str(self.executable.parent), stdin=subprocess.DEVNULL,
+                                       stdout=self._log_stream, stderr=subprocess.STDOUT,
+                                       creationflags=hidden_console_flags())
+            process = self.process
+            if self._cancel_thread is None:
+                self._cancel_thread = threading.Thread(target=self._watch_cancellation,
+                                                       name=f"{self.name}-cancel", daemon=True)
+                self._cancel_thread.start()
+        deadline = time.monotonic() + self.startup_timeout_s
+        while time.monotonic() < deadline:
+            check_running()
+            if process.poll() is not None:
+                raise LlamaServerError(f"{self.name} llama-server exited during startup "
+                                       f"(code {process.returncode}). {self.log_tail()}")
+            try:
+                if self.client.get(self.base_url + "/health", timeout=0.5).status_code == 200:
+                    return
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.1)
+        self.close()
+        raise LlamaServerError(f"{self.name} llama-server did not load within {self.startup_timeout_s:g}s. "
+                               + self.log_tail())
+
+    def alive(self) -> bool:
+        process = self.process
+        return process is not None and process.poll() is None
+
+    def chat(self, body: dict, timeout: float) -> dict:
+        response = self.client.post(self.base_url + "/v1/chat/completions", json=body, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        choices = payload.get("choices") if isinstance(payload, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise LlamaServerError(f"{self.name} returned invalid choices")
+        message = choices[0].get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise LlamaServerError(f"{self.name} returned invalid message content")
+        return payload
+
+    def log_tail(self, size: int = 4096) -> str:
+        try:
+            with self.log_path.open("rb") as stream:
+                stream.seek(max(0, self.log_path.stat().st_size - size))
+                return stream.read().decode("utf-8", errors="replace")
+        except OSError:
+            return f"See {self.log_path}."
+
+    def _stop_process(self) -> None:
+        process, self.process = self.process, None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+        if self._log_stream is not None:
+            self._log_stream.close()
+            self._log_stream = None
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._shutdown.set()
+            self._stop_process()
+        self.client.close()

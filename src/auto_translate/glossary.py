@@ -1,12 +1,10 @@
-"""JA → EN fixed terms from glossary.toml."""
+"""JA → EN fixed terms from glossary.toml, used as HY-MT terminology hints and ASR context."""
 
-import tomllib
-import re
 import logging
+import re
+import tomllib
 from functools import lru_cache
 from pathlib import Path
-
-from .proper_names import name_glossary, resolve_names
 
 
 # Japanese has no whitespace between most words. Favor missed hints over
@@ -16,6 +14,9 @@ _PARTICLE = re.compile(r"(?:が|は|を|に|も|の|と|で)(?=$|[^ぁ-ん]|い�
 _FOLLOW = re.compile(r"来[たてるな]|いた|いる|すご[いく]|かわいい|おはよう|どこ|って|だよ|です|だね|だ[。！？!?]?$")
 _SHIP = re.compile(r"海賊船|船員|乗組員|乗客|出航|航海|操舵|操縦|甲板|港|この船|船の|フェリー")
 _SHRINE = re.compile(r"神社|神主|神職|巫女|お祓い")
+# Bare nicknames that are also everyday words (button/peony, shrine maiden,
+# festival). They are hinted only when the talent is already in context.
+AMBIGUOUS = frozenset({"ボタン", "ぼたん", "みこ", "ミコ", "まつり", "マツリ", "祭り"})
 
 
 def nickname_boundary(text: str, start: int, end: int, *, joined=False, marine=False) -> bool:
@@ -24,6 +25,10 @@ def nickname_boundary(text: str, start: int, end: int, *, joined=False, marine=F
             or before[-1] in "がはをと" or marine)
     return left and (joined or not after or not after[0].isalnum()
                      or bool(_PARTICLE.match(after) or _FOLLOW.match(after)))
+
+
+def _given_name(en: str) -> str:
+    return re.split(r"[- ]", en)[-1] if " " in en else re.split(r"-", en)[0]
 
 
 class Glossary:
@@ -39,51 +44,55 @@ class Glossary:
             return cls({})
         with path.open("rb") as f:
             data = tomllib.load(f)
-            return cls(data.get("terms", {}),
-                       nicknames=data.get("nicknames"))
+            return cls(data.get("terms", {}), nicknames=data.get("nicknames"))
 
-    def find(self, ja: str, *, previous_ja: str = "", miko_context: bool = False,
-             name_mentions=None) -> list[tuple[str, str]]:
-        """Entries that appear in `ja` (non-overlapping, longest match wins)."""
-        # `miko_context` remains accepted for settings/API compatibility. A
-        # boolean derived from a title is no longer proof of a spoken person.
-        mentions = (resolve_names(ja, previous_ja=previous_ja)
-                    if name_mentions is None else name_mentions)
-        matches = list(self._matches(ja, previous_ja if "船長" in ja else "", False))
-        configured = {source for source, _ in self.terms}
-        matches.extend(pair for pair in name_glossary(mentions)
-                       if pair[0] in configured and pair not in matches)
-        return sorted(matches, key=lambda pair: len(pair[0]), reverse=True)
+    def proper_names(self, context: str | None = None) -> list[str]:
+        talents = self._talents(context) if context is not None else None
+        names, seen = [], set()
+        for term, en in self.terms:
+            if term in AMBIGUOUS or not en[:1].isupper():
+                continue
+            talent = _given_name(en)
+            if talents is not None and (term in self.nicknames or talent not in talents or talent in seen):
+                continue
+            names.append(term)
+            seen.add(talent)
+        return names
 
-    @lru_cache(maxsize=128)
-    def _matches(self, ja: str, previous_ja: str, miko_context: bool) -> tuple[tuple[str, str], ...]:
+    def find(self, ja: str, *, context: str = "") -> list[tuple[str, str]]:
+        """Entries that appear in `ja` (non-overlapping, longest match wins).
+
+        `context` (stream title and recent Japanese) unlocks ambiguous bare
+        nicknames and resolves 船長 to the Hololive captain.
+        """
+        return list(self._matches(ja, context))
+
+    def _talents(self, context: str) -> frozenset[str]:
+        return frozenset(_given_name(en) for _, en in self._matches(context, "") if en[:1].isupper())
+
+    @lru_cache(maxsize=256)
+    def _matches(self, ja: str, context: str) -> tuple[tuple[str, str], ...]:
         source = ja
+        talents = self._talents(context) if context else frozenset()
         hits = []
         for term, en in self.terms:
             if term not in ja:
                 continue
-            if re.fullmatch(r"(?:Natsuiro )?Matsuri(?:-(?:chan|san|sama))?|(?:Sakura )?Miko(?:chi)?(?:-(?:chan|san|sama))?|(?:Shishiro )?Botan(?:-(?:chan|san|sama))?|Shishiron", en):
-                # Central resolution owns these ambiguous families, including
-                # kanji spellings and mixed person/common-noun occurrences.
-                continue
             if term in self.nicknames:
                 if term == "船長" and _SHIP.search(source):
                     en = "captain"
-                elif term == "船長" and not (
-                    "マリン船長" in source or "宝鐘マリン" in source
-                    or ("宝鐘マリン" in previous_ja and not _SHIP.search(previous_ja))
-                ):
+                elif term == "船長" and not ("マリン" in source or "Marine" in talents):
                     continue
-                if en == "Miko" and (not miko_context or _SHRINE.search(source)):
+                if term in AMBIGUOUS and (_given_name(en) not in talents
+                                          or (en == "Miko" and _SHRINE.search(source))):
                     continue
                 matches = []
                 for m in re.finditer(re.escape(term), ja):
                     repeated = source.strip("。！？!? ") == term * 2
                     marine_title = term == "船長" and source[:m.start()].endswith("マリン")
                     following = source[m.end():]
-                    joined_names = (following.startswith("と") and any(
-                        following.startswith(other, 1) for other in self.nicknames
-                    ))
+                    joined_names = following.startswith("と") and any(
+                        following.startswith(other, 1) for other in self.nicknames)
                     if term == "みこ" and following.startswith("と") and not joined_names:
                         continue  # みこと is also a complete name/word.
                     if repeated or nickname_boundary(source, m.start(), m.end(),

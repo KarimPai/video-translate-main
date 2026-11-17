@@ -134,7 +134,7 @@ class VideoTranslateWindow(QMainWindow):
         self._fullscreen_cursor_pos = None
         self._fullscreen_activity_at = 0.0
         self._export_thread = None
-        self.setWindowTitle("Video Translate - Voxtral")
+        self.setWindowTitle("Video Translate")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
         self._control_server = None
@@ -300,34 +300,22 @@ class VideoTranslateWindow(QMainWindow):
         layout = QVBoxLayout(content)
         self.feature_settings = QGroupBox("Accuracy and playback settings (apply when starting)")
         settings = QFormLayout(self.feature_settings)
-        self.voxtral_model = QLineEdit()
-        self.voxtral_model.setPlaceholderText("Path to the Voxtral Q4_K GGUF checkpoint")
-        self.voxtral_model.setToolTip("Local model checkpoint used for complete Japanese utterances.")
-        settings.addRow("Voxtral checkpoint", self.voxtral_model)
-        self.audio_cpp_path = QLineEdit()
-        self.audio_cpp_path.setPlaceholderText("Path to audiocpp_server.exe")
-        self.audio_cpp_path.setToolTip("Windows CUDA audio.cpp server installed by Setup.bat.")
-        settings.addRow("Voxtral backend", self.audio_cpp_path)
-        self.memory_checkbox = QCheckBox("Translation memory")
-        self.memory_checkbox.setChecked(True)
-        self.memory_lines = QSpinBox()
-        self.memory_lines.setRange(0, 20)
-        self.memory_lines.setValue(16)
-        self.memory_lines.setSuffix(" utterances")
-        memory_row = QHBoxLayout()
-        memory_row.addWidget(self.memory_checkbox)
-        memory_row.addWidget(self.memory_lines)
-        memory_row.addStretch(1)
-        settings.addRow(memory_row)
-        self.memory_checkbox.setToolTip(
-            "Use bounded recent dialogue and recurring terms. Memory clears after seeking or changing videos."
+        self.asr_model = QLineEdit()
+        self.asr_model.setPlaceholderText("Path to the Qwen3-ASR GGUF model")
+        self.asr_model.setToolTip("Speech recognition model; its mmproj comes from config.toml.")
+        settings.addRow("ASR model", self.asr_model)
+        self.mt_model = QLineEdit()
+        self.mt_model.setPlaceholderText("Path to the HY-MT1.5 GGUF model")
+        self.mt_model.setToolTip("Japanese to English translation model served by llama-server.")
+        settings.addRow("Translation model", self.mt_model)
+        self.context_lines = QSpinBox()
+        self.context_lines.setRange(0, 20)
+        self.context_lines.setValue(3)
+        self.context_lines.setSuffix(" lines")
+        self.context_lines.setToolTip(
+            "Previous dialogue lines given to the translator. Context clears after seeking or changing videos."
         )
-        self.memory_checkbox.toggled.connect(self.memory_lines.setEnabled)
-        self.chat_checkbox = QCheckBox("Use YouTube Chat for Context")
-        self.chat_checkbox.setToolTip(
-            "Optional weak terminology hints from public chat. Chat cannot generate subtitles or override speech."
-        )
-        settings.addRow(self.chat_checkbox)
+        settings.addRow("Translation context", self.context_lines)
         self.safe_playback_checkbox = QCheckBox("Safe Playback")
         self.safe_playback_checkbox.setToolTip(
             "Coordinate inference and bound queued audio while preserving hardware video decoding."
@@ -382,14 +370,11 @@ class VideoTranslateWindow(QMainWindow):
     def _load_feature_settings(self):
         try:
             cfg = load_config(self.root / "config.toml")
-            self.voxtral_model.setText(cfg.asr.voxtral_model_path)
-            self.audio_cpp_path.setText(cfg.asr.voxtral_server_path)
-            self.memory_checkbox.setChecked(getattr(cfg.translate, "extended_memory", True))
-            self.memory_lines.setValue(cfg.translate.memory_lines)
-            self.chat_checkbox.setChecked(getattr(getattr(cfg, "chat", None), "enabled", False))
-            self.safe_playback_checkbox.setChecked(getattr(getattr(cfg, "safe_playback", None), "enabled", False))
-            self.diagnostics_checkbox.setChecked(getattr(getattr(cfg, "diagnostics", None), "enabled", True))
-            self.memory_lines.setEnabled(self.memory_checkbox.isChecked())
+            self.asr_model.setText(cfg.asr.model_path)
+            self.mt_model.setText(cfg.translate.model_path)
+            self.context_lines.setValue(cfg.translate.context_lines)
+            self.safe_playback_checkbox.setChecked(cfg.safe_playback.enabled)
+            self.diagnostics_checkbox.setChecked(cfg.diagnostics.enabled)
         except (OSError, ValueError):
             log.exception("Could not load GUI feature settings; using defaults")
 
@@ -574,11 +559,9 @@ class VideoTranslateWindow(QMainWindow):
             command, args = build_backend_command(
                 self.root, url, int(self.quality.currentData()), hwnd,
                 frozen=getattr(sys, "frozen", False),
-                voxtral_model=self.voxtral_model.text().strip() or None,
-                audio_cpp_path=self.audio_cpp_path.text().strip() or None,
-                extended_memory=self.memory_checkbox.isChecked(),
-                memory_lines=self.memory_lines.value(),
-                youtube_chat_context=self.chat_checkbox.isChecked(),
+                asr_model=self.asr_model.text().strip() or None,
+                mt_model=self.mt_model.text().strip() or None,
+                context_lines=self.context_lines.value(),
                 safe_playback=self.safe_playback_checkbox.isChecked(),
                 diagnostics=self.diagnostics_checkbox.isChecked(),
             )

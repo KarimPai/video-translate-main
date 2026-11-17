@@ -2,15 +2,16 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Voxtral + PLaMo - First-time Setup
+title Qwen3-ASR + HY-MT - First-time Setup
 
 echo ============================================
-echo   Voxtral ASR + PLaMo 3 - Windows Setup
+echo   Qwen3-ASR + HY-MT - Windows Setup
 echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
-echo CUDA audio.cpp and CUDA llama.cpp.
-echo Setup downloads Voxtral Q4_K and PLaMo Q4_K_M.
+echo CUDA llama.cpp.
+echo Setup downloads/verifies Qwen3-ASR-1.7B Q8_0,
+echo its Q8_0 audio projector, and HY-MT1.5-7B Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 

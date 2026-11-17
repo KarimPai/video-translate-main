@@ -102,7 +102,7 @@ class QtDiagnosticSettingsTests(unittest.TestCase):
 
     def test_feature_defaults_and_context_controls(self):
         window = self.window
-        self.assertEqual(window.context_lines.value(), 3)
+        self.assertEqual(window.context_lines.value(), 6)
         self.assertEqual(window.context_lines.minimum(), 0)
         self.assertEqual(window.context_lines.maximum(), 20)
         self.assertTrue(window.context_lines.isEnabled())

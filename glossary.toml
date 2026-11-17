@@ -386,6 +386,14 @@
 "祭りさん" = "Matsuri-san"
 "まつり様" = "Matsuri-sama"
 "すいちゃん" = "Sui-chan"
+# Speech recognition writes すいせい as 水星 (the planet Mercury).
+"すいせい" = "Suisei"
+"すいせいさん" = "Suisei-san"
+"すいせい先輩" = "Suisei-senpai"
+"水星" = "Suisei"
+"水星さん" = "Suisei-san"
+"水星ちゃん" = "Suisei-chan"
+"水星先輩" = "Suisei-senpai"
 "ぺこちゃん" = "Peko-chan"
 "ぺこーら" = "Pekoora"
 "フブちゃん" = "Fubu-chan"
@@ -416,6 +424,10 @@
 
 [talent_aliases]
 "すいちゃん" = "星街すいせい"
+"すいせい" = "星街すいせい"
+"すいせい先輩" = "星街すいせい"
+"水星" = "星街すいせい"
+"水星先輩" = "星街すいせい"
 "みこち" = "さくらみこ"
 "みこ" = "さくらみこ"
 "ぺこちゃん" = "兎田ぺこら"

@@ -14,8 +14,10 @@ _SHRINE = re.compile(r"神社|神主|神職|巫女|お祓い")
 _BUTTON = re.compile(r"ぼたん(?:を|は|が|に)?(?:押|おす|くりっく|連打)|"
                      r"(?:電源|再生|停止|決定|戻る|すたーと|りせっと|[ABXYLR])ぼたん")
 _FESTIVAL = re.compile(r"(?:まつり|祭り)(?:に|へ)(?:行|い[くこ])")
+_PLANET = re.compile(r"水星の魔女|惑星|太陽系|金星|火星|木星|土星|天王星|海王星|宇宙|ロケット")
 AMBIGUOUS = frozenset({"ぼたん", "みこ", "まつり", "祭り"})
 _HONORIFIC = re.compile(r"(?:ちゃん|さん|様|さま)$")
+_SUFFIXED = re.compile(r"(?:ちゃん|さん|様|さま|先輩|せんぱい|くん|君)$")
 
 
 def kana_key(text: str) -> str:
@@ -165,7 +167,8 @@ class Glossary:
                                          or (en == "Miko" and _SHRINE.search(source))):
                     continue
                 if ((key == "ぼたん" and _BUTTON.search(kana_key(source)))
-                        or (key in {"まつり", "祭り"} and _FESTIVAL.search(kana_key(source)))):
+                        or (key in {"まつり", "祭り"} and _FESTIVAL.search(kana_key(source)))
+                        or (key.startswith("水星") and _PLANET.search(source))):
                     continue
                 matches = []
                 for m in re.finditer(re.escape(needle), text):
@@ -177,7 +180,8 @@ class Glossary:
                     if key == "みこ" and following.startswith("と") and not joined_names:
                         continue
                     distinctive = len(key) >= 3 and key not in AMBIGUOUS
-                    if repeated or nickname_boundary(source, m.start(), m.end(), joined=joined_names,
+                    if repeated or nickname_boundary(source, m.start(), m.end(),
+                                                      joined=joined_names or bool(_SUFFIXED.search(key)),
                                                       marine=marine_title, distinctive=distinctive):
                         matches.append(m)
                 if matches:

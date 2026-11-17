@@ -171,6 +171,18 @@ class GlossaryHintTests(unittest.TestCase):
                 self.assertEqual(GLOSSARY.proper_names(spoken), [canonical])
                 self.assertIn(canonical, GLOSSARY.recognition_names(spoken))
 
+    def test_misheard_suisei_is_a_name_unless_planets_are_discussed(self):
+        for source, pair in (("犯人は水星先輩らしいって。", ("水星先輩", "Suisei-senpai")),
+                             ("あの殺された水星さん。", ("水星さん", "Suisei-san")),
+                             ("水星が来た。", ("水星", "Suisei")),
+                             ("すいせい先輩が来た。", ("すいせい先輩", "Suisei-senpai"))):
+            with self.subTest(source=source):
+                self.assertIn(pair, GLOSSARY.name_terms(source))
+                self.assertEqual(GLOSSARY.proper_names(source), ["星街すいせい"])
+        for source in ("水星の魔女見た？", "水星と金星は惑星だよ"):
+            with self.subTest(source=source):
+                self.assertEqual(GLOSSARY.name_terms(source), [])
+
     def test_joined_names_and_false_compounds(self):
         terms = GLOSSARY.name_terms("ルイちゃんカリオペがスイちゃんが撃ったって言った。")
         for pair in (("ルイちゃん", "Lui-chan"), ("カリオペ", "Calliope"), ("スイちゃん", "Sui-chan")):

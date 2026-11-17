@@ -215,7 +215,7 @@ class AsrComparisonTests(unittest.TestCase):
         self.assertIsNone(output_q.get_nowait())
         caption.match.assert_called_once_with(2, 3)
 
-    def test_selected_whisper_turbo_watame_name_uses_confirmed_video_context(self):
+    def test_selected_whisper_turbo_surname_is_not_rewritten_from_video_title(self):
         primary = Mock()
         primary.transcribe.return_value = "渡辺、行こう"
         dual = Mock()
@@ -226,7 +226,8 @@ class AsrComparisonTests(unittest.TestCase):
         input_q.put(None)
         run_asr(primary, input_q, output_q,
                 vod_title="角巻わため 配信", dual=dual)
-        self.assertEqual(output_q.get_nowait().ja, "わため、行こう")
+        # A channel/title does not establish which name was actually spoken.
+        self.assertEqual(output_q.get_nowait().ja, "渡辺、行こう")
         self.assertIsNone(output_q.get_nowait())
 
     def test_explicit_watanabe_caption_prevents_unfounded_name_change(self):

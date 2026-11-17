@@ -25,7 +25,8 @@ from ..context_memory import (
 )
 from ..glossary import Glossary
 from ..runtime_diagnostics import record_event, rotate_log
-from ..name_hints import canonicalize_english_names, matsuri_matches, preserve_spoken_names
+from ..name_hints import canonicalize_english_names, preserve_spoken_names
+from ..proper_names import name_glossary, resolve_names
 from ..subject_guard import (
     neutralize_unsupported_subjects,
     unsupported_person_reference,
@@ -33,10 +34,15 @@ from ..subject_guard import (
     neutralize_unwarranted_first_person,
     neutralize_unwarranted_possessives,
 )
-from ..translation_guard import suspicious_translation
+from ..translation_guard import suspicious_translation, _mention_value
 from ..watame import correct_translation
 
 log = logging.getLogger(__name__)
+
+
+def _empty_name_diagnostics() -> dict:
+    return {"matched_glossary": [], "raw_english": "", "corrected_english": "",
+            "retry": False, "abstained": False, "error": None, "mentions": []}
 
 
 # PLaMo 3 GGUF ignores system messages; reference guidance belongs in
@@ -117,16 +123,23 @@ def _needs_fragment_context(ja: str) -> bool:
 _KUSA = re.compile(r"(?<![一-鿿])草(?![一-鿿])|(?:くさ|クサ)(?=$|[。、！？!?\s]|[をがはにもの])")
 
 
-def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previous_ja: str = "") -> list[tuple[str, str]]:
+def _current_glossary_matches(ja: str, vod_title: str, glossary: Glossary, previous_ja: str = "", *, mentions=None) -> list[tuple[str, str]]:
     """Longest-first, non-overlapping current-source matches (never future guesses)."""
     scene = (
         [(source, target) for source, target in _HOLOGTA_TERMS.items() if source in ja]
         if _HOLOGTA_TITLE.search(vod_title) else []
     )
-    miko_context = bool(re.search(r"ホロ|holo|さくらみこ|Sakura Miko", vod_title, re.I)
-                        or re.search(r"みこち|さくらみこ", previous_ja + " " + ja))
-    terms = glossary.find(ja, previous_ja=previous_ja, miko_context=miko_context)
-    candidates = sorted(scene + matsuri_matches(ja, vod_title, previous_ja) + terms, key=lambda item: len(item[0]), reverse=True)
+    mentions = (resolve_names(ja, previous_ja=previous_ja, video_title=vod_title)
+                if mentions is None else mentions)
+    terms = glossary.find(ja, previous_ja=previous_ja)
+    # The occurrence resolver owns ambiguous surfaces. Static nickname entries
+    # and a video title must never bypass an abstention or a literal decision.
+    blocked = [(int(_mention_value(m, "start")), int(_mention_value(m, "end")))
+               for m in mentions]
+    terms = [(source, target) for source, target in terms if any(
+        not any(start < match.end() and match.start() < end for start, end in blocked)
+        for match in re.finditer(re.escape(source), ja))]
+    candidates = sorted(scene + name_glossary(mentions) + terms, key=lambda item: len(item[0]), reverse=True)
     remaining = ja
     selected: list[tuple[str, str]] = []
     for source, target in candidates:
@@ -182,8 +195,16 @@ def _trusted_history_pair(source: str, translation: str, vod_title: str, glossar
     if any(re.search(jp, source) and re.search(en, translation, re.I)
            for jp, en in inversions):
         return False
-    terms = _current_glossary_matches(source, vod_title, glossary)
-    return suspicious_translation(source, translation, names=terms) is None
+    try:
+        mentions = resolve_names(source, video_title=vod_title)
+    except Exception:
+        return False
+    if any(_mention_value(m, "classification") == "UNKNOWN" for m in mentions):
+        # A guessed English name or literal reading is unsuitable as a
+        # confirmed example when the original Japanese remains ambiguous.
+        return False
+    terms = _current_glossary_matches(source, vod_title, glossary, mentions=mentions)
+    return suspicious_translation(source, translation, names=terms, mentions=mentions) is None
 
 
 class ExistingServerUnavailable(RuntimeError):
@@ -222,6 +243,9 @@ class PlamoTranslator:
         self._close_lock = threading.Lock()
         self._closed = False
         self._restart_used = False
+        self._name_context = None
+        self._active_name_mentions = None
+        self.last_name_diagnostics = {}
         self.client = httpx.Client(trust_env=False)
         try:
             self._start_server()
@@ -386,7 +410,46 @@ class PlamoTranslator:
             self.client.close()
             atexit.unregister(self.close)
 
+    def set_name_context(self, japanese: str, mentions) -> None:
+        """Attach bounded source-specific resolver evidence to the next cue.
+
+        The translation worker is serialized. Exact source matching and the
+        translate() finally block prevent stale evidence after cancellation,
+        seeking, transport failure or a sentence-context fallback.
+        """
+        records = [dict(m) if isinstance(m, dict) else m.as_dict() for m in list(mentions)[:16]]
+        self._name_context = (japanese, records)
+
+    def _mentions_for(self, ja: str, previous: str = ""):
+        context = getattr(self, "_name_context", None)
+        if context is not None:
+            source, mentions = context
+            offset = source.find(ja)
+            # Repeated sentence text cannot be matched to a unique span.
+            if offset >= 0 and (source == ja or source.count(ja) == 1):
+                result = []
+                for mention in mentions:
+                    start, end = mention.get("start"), mention.get("end")
+                    if (type(start) is int and type(end) is int
+                            and offset <= start < end <= offset + len(ja)
+                            and source[start:end] == mention.get("source")):
+                        result.append(dict(mention, start=start-offset, end=end-offset))
+                return result
+        return resolve_names(ja, previous_ja=previous, video_title=self.vod_title)
+
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        self.last_name_diagnostics = _empty_name_diagnostics()
+        try:
+            return self._translate_with_recovery(ja, history)
+        except Exception as exc:
+            self.last_name_diagnostics["error"] = type(exc).__name__
+            raise
+        finally:
+            self._name_context = None
+            self._active_name_mentions = None
+            self._name_retry_context = False
+
+    def _translate_with_recovery(self, ja: str, history: list[tuple[str, str]]) -> str:
         try:
             return self._translate_cue(ja, history)
         except httpx.TransportError as exc:
@@ -461,9 +524,16 @@ class PlamoTranslator:
             return self._translate_one(ja, history)
         recent = list(history)
         english = []
+        segment_records = []
         try:
             for segment in segments:
                 translated = self._translate_one(segment, recent)
+                segment_records.append(dict(getattr(self, "last_name_diagnostics", {}), source=segment))
+                if not translated.strip() and getattr(self, "last_name_diagnostics", {}).get("unresolved_name_issue"):
+                    # Do not spend another whole-cue pass after the bounded
+                    # name retry has already failed, or emit a partial cue.
+                    self._combine_name_diagnostics(ja, segment_records, "")
+                    return ""
                 if not translated.strip() or suspicious_translation(segment, translated):
                     raise ValueError("unreliable sentence translation")
                 english.append(translated.strip())
@@ -472,20 +542,66 @@ class PlamoTranslator:
             raise
         except Exception as exc:
             log.warning("Sentence context fallback to whole utterance: %s", exc)
-            return self._translate_one(ja, history)
-        return " ".join(english)
+            result = self._translate_one(ja, history)
+            self.last_name_diagnostics["segments"] = segment_records
+            self.last_name_diagnostics["sentence_fallback"] = True
+            return result
+        result = " ".join(english)
+        self._combine_name_diagnostics(ja, segment_records, result)
+        return result
+
+    def _combine_name_diagnostics(self, ja: str, records: list[dict], english: str) -> None:
+        combined = _empty_name_diagnostics()
+        combined["segments"] = records[:3]
+        combined["raw_english"] = " ".join(record.get("raw_english", "") for record in records).strip()
+        combined["corrected_english"] = english
+        offset = 0
+        for record in records:
+            combined["retry"] |= bool(record.get("retry"))
+            combined["abstained"] |= bool(record.get("abstained"))
+            if record.get("error") and not combined["error"]:
+                combined["error"] = record["error"]
+            for key in ("retry_reason", "retry_error", "unresolved_name_issue", "literal_noun_review"):
+                if record.get(key):
+                    combined[key] = record[key]
+            for pair in record.get("matched_glossary", []):
+                if pair not in combined["matched_glossary"]:
+                    combined["matched_glossary"].append(pair)
+            source = record.get("source", "")
+            begin = ja.find(source, offset) if source else -1
+            if begin >= 0:
+                for mention in record.get("mentions", []):
+                    combined["mentions"].append(dict(mention, start=mention["start"] + begin,
+                                                      end=mention["end"] + begin))
+                offset = begin + len(source)
+        self.last_name_diagnostics = combined
 
     def _translate_one(self, ja: str, history: list[tuple[str, str]]) -> str:
+        self.last_name_diagnostics = _empty_name_diagnostics()
         previous = history[-1][0] if history else ""
-        names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous)
+        try:
+            mentions = self._mentions_for(ja, previous)
+            names = _current_glossary_matches(ja, self.vod_title, self.glossary, previous, mentions=mentions)
+        except Exception as exc:
+            # Advisory name resolution must never lose later subtitles.
+            log.warning("Proper-name resolution unavailable; translating unchanged Japanese: %s", exc)
+            mentions, names = [], []
+            self.last_name_diagnostics["error"] = "resolver:" + type(exc).__name__
+            self.last_name_diagnostics["abstained"] = True
+        self._active_name_mentions = (ja, mentions)
+        diagnostics = getattr(self, "last_name_diagnostics", {})
+        diagnostics.update(matched_glossary=[{"source": s, "target": t} for s, t in names],
+                           mentions=[dict(m) if isinstance(m, dict) else m.as_dict() for m in mentions])
+        diagnostics["abstained"] = diagnostics.get("abstained", False) or any(
+            _mention_value(m, "classification") == "UNKNOWN" for m in mentions)
 
         def normalize_names(english: str) -> str:
             if any(target in ("Haachama", "Laplus") for _, target in names):
                 english = canonicalize_english_names(ja, english, self.vod_title)
-            return preserve_spoken_names(ja, english, names)
+            return preserve_spoken_names(ja, english, names, mentions=mentions)
 
         if (getattr(self.cfg, "extended_memory", True) and getattr(self, "memory_lines", 0)
-                and not _KUSA.search(ja) and "マツリ" not in ja):
+                and not _KUSA.search(ja) and not mentions):
             reused = reuse_recent_short_term(ja, history)
             consistent = recurring_term_hints(ja, history, self.glossary)
             reviewed = any(target == (reused or "").rstrip("!?。！？") for _, target in names)
@@ -493,7 +609,9 @@ class PlamoTranslator:
                     and _trusted_history_pair(ja, reused, self.vod_title, self.glossary)):
                 log.debug("Reusing recent short term: JP=%r EN=%r", ja, reused)
                 # Cached subtitles must obey current short-name policy too.
-                return normalize_names(reused)
+                result = normalize_names(reused)
+                diagnostics.update(raw_english=reused, corrected_english=result, reused=True)
+                return result
 
         def normalized(raw: str) -> str:
             translated = _clean(raw)
@@ -519,14 +637,19 @@ class PlamoTranslator:
             log.warning("Retrying transient PLaMo request failure: %s", exc)
             raw = self._chat(ja, history, timeout=min(self.cfg.timeout_s, self.cfg.retry_timeout_s), names=names)
         english = normalized(raw)
+        diagnostics["raw_english"] = _clean(raw)
         pronoun_reason = (
             unsupported_person_reference(ja, english)
             if self.cfg.neutral_subjects else None
         )
-        reason = pronoun_reason or suspicious_translation(ja, english, names=names)
+        reason = pronoun_reason or suspicious_translation(ja, english, names=names, mentions=mentions)
         if reason:
             self._count_validation("flag:" + reason)
         if reason and self.cfg.retry_suspicious:
+            diagnostics["retry"] = True
+            diagnostics["retry_reason"] = reason
+            self._name_retry_context = reason in ("proper_name_mismatch", "proper_name_expansion", "literal_noun_mismatch",
+                                                  "unsupported_proper_name", "possible_literal_noun_loss")
             log.info("PLaMo suspicious translation (%s): JP=%r EN=%r; retry without prior chat",
                      reason, ja[:150], english[:160])
             try:
@@ -543,14 +666,16 @@ class PlamoTranslator:
                                  and not getattr(self, "_safe_timeout_stopped", False)))):
                     raise
                 self._count_validation("retry_unavailable")
+                diagnostics["retry_error"] = type(exc).__name__
                 log.warning("PLaMo validation retry unavailable (%s); using first result", exc)
             else:
                 retry_reason = (
                     unsupported_person_reference(ja, candidate)
                     if self.cfg.neutral_subjects else None
-                ) or suspicious_translation(ja, candidate, names=names)
+                ) or suspicious_translation(ja, candidate, names=names, mentions=mentions)
                 if retry_reason is None:
                     english = candidate
+                    diagnostics["retry_accepted"] = True
                     self._count_validation("retry_accepted")
                     log.info("PLaMo validation retry accepted (trigger=%s)", reason)
                 else:
@@ -559,6 +684,9 @@ class PlamoTranslator:
                         "PLaMo retry still suspicious (%s); keeping first result with safe fallbacks",
                         retry_reason,
                     )
+                    diagnostics["retry_accepted"] = False
+            finally:
+                self._name_retry_context = False
         if self.cfg.neutral_subjects:
             # Prefer owner-free noun phrases BEFORE gender fallback converts
             # "his/her customer" into an invented "their customer".
@@ -567,6 +695,18 @@ class PlamoTranslator:
             # that explicitly states a person/gender retains that information.
             english = neutralize_unwarranted_gender(ja, english)
             english = neutralize_unwarranted_first_person(ja, english)
+        unresolved = suspicious_translation(ja, english, names=names, mentions=mentions)
+        if unresolved in ("proper_name_mismatch", "proper_name_expansion", "literal_noun_mismatch", "unsupported_proper_name"):
+            diagnostics["abstained"] = True
+            diagnostics["unresolved_name_issue"] = unresolved
+            # A detected name error that survived the single retry is not a
+            # usable English subtitle. Returning an empty cue uses the normal
+            # pipeline suppression path while later cues continue normally.
+            log.warning("Suppressing unresolved PLaMo name error (%s)", unresolved)
+            english = ""
+        elif unresolved == "possible_literal_noun_loss":
+            diagnostics["literal_noun_review"] = unresolved
+        diagnostics["corrected_english"] = english
         return english
 
     def _chat(
@@ -579,6 +719,15 @@ class PlamoTranslator:
         neutral_retry: bool = False,
     ) -> str:
         messages: list[dict[str, str]] = []
+        active = getattr(self, "_active_name_mentions", None)
+        try:
+            mentions = (active[1] if active is not None and active[0] == ja else
+                        self._mentions_for(ja, history[-1][0] if history else ""))
+            hits = names if names is not None else _current_glossary_matches(
+                ja, self.vod_title, self.glossary, mentions=mentions)
+        except Exception as exc:
+            log.warning("Skipping unavailable name hints: %s", exc)
+            mentions, hits = [], []
         memory_lines = (min(20, max(0, getattr(self, "memory_lines", 0)))
                         if getattr(self.cfg, "extended_memory", True) else 0)
         history_limit = max(min(20, max(0, self.cfg.context_lines)), memory_lines)
@@ -599,8 +748,7 @@ class PlamoTranslator:
             # The compact profile borrows OverlaySubs' paired PFML examples,
             # but only after basic quality and unsupported-pronoun checks.
             # Legacy mode preserves the old Japanese-only neutral prompt.
-            trusted = (not compact or _trusted_history_pair(
-                source, translation, self.vod_title, self.glossary))
+            trusted = _trusted_history_pair(source, translation, self.vod_title, self.glossary)
             if trusted and (compact or not self.cfg.neutral_subjects):
                 messages.append({"role": "user", "content": source})
                 messages.append({
@@ -609,15 +757,32 @@ class PlamoTranslator:
                 })
             elif source.strip():
                 rejected_sources.append(source.strip()[:100])
-        messages.append({"role": "user", "content": ja})
+        current_input = ja
+        if getattr(self, "_name_retry_context", False):
+            # Translate-only romanization protects confirmed acoustic spans
+            # during the one bounded retry. Never modify the final transcript
+            # or literal/undecided spans, and never infer a longer stage name.
+            for mention in sorted(mentions, key=lambda m: _mention_value(m, "start", -1), reverse=True):
+                start, end = _mention_value(mention, "start"), _mention_value(mention, "end")
+                if (type(start) is int and type(end) is int and 0 <= start < end <= len(ja)
+                        and _mention_value(mention, "classification") == "PERSON"
+                        and ja[start:end] == _mention_value(mention, "source")
+                        and _mention_value(mention, "target")):
+                    current_input = current_input[:start] + _mention_value(mention, "target") + current_input[end:]
+        messages.append({"role": "user", "content": current_input})
 
-        memory = build_recent_context(
-            [(source, translation if _trusted_history_pair(
-                source, translation, self.vod_title, self.glossary) else "")
-             for source, translation in history], self.glossary,
-            context_lines=self.cfg.context_lines,
-            memory_lines=memory_lines, current_ja=ja, max_chars=memory_chars,
-        )
+        try:
+            memory = build_recent_context(
+                [(source, translation if _trusted_history_pair(
+                    source, translation, self.vod_title, self.glossary) else "")
+                 for source, translation in history], self.glossary,
+                context_lines=self.cfg.context_lines,
+                memory_lines=memory_lines, current_ja=ja, max_chars=memory_chars,
+                current_terms=hits,
+            )
+        except Exception as exc:
+            log.warning("Skipping unavailable translation memory hints: %s", exc)
+            memory = ""
         source_hint = ""
         if self.cfg.neutral_subjects and dialogue_history:
             # Don't echo source text that's already present in trusted pairs.
@@ -651,7 +816,39 @@ class PlamoTranslator:
                 "Use grass or weeds for vegetation, mowing, gathering or feeding animals. "
                 "For amusement retain the spoken slang kusa. Do not render kusa as lol."
             )
-        hits = names if names is not None else _current_glossary_matches(ja, self.vod_title, self.glossary)
+        if mentions:
+            # PLaMo's glossary is lexical: identical source strings cannot
+            # carry two meanings. Give those decisions only as occurrence
+            # reference data and retain the original Japanese user message.
+            occurrences = [dict(start=_mention_value(m, "start"), end=_mention_value(m, "end"),
+                                source=_mention_value(m, "source"),
+                                meaning=_mention_value(m, "classification"),
+                                english=_mention_value(m, "target")
+                                if _mention_value(m, "classification") == "PERSON" else None)
+                           for m in mentions[:16]]
+            options["context"] += (
+                "\nCurrent Japanese name occurrences (zero-based character spans; reference data): "
+                + json.dumps(occurrences, ensure_ascii=False, separators=(",", ":"))
+                + ". Preserve PERSON names at exactly their spoken length and honorific. "
+                "Translate COMMON_NOUN occurrences literally (festival or shrine maiden as appropriate). "
+                "UNKNOWN is undecided; never resolve it from a title or a previous English guess. "
+                "Decisions apply only to their individual spans, never to every matching word."
+            )
+            if getattr(self, "_name_retry_context", False):
+                options["context"] += (
+                    " The prior result failed occurrence-based name/literal validation. "
+                    "Recheck each current occurrence separately while preserving all other meaning, "
+                    "negation, grammar and attribution. Confirmed PERSON spans in the current input "
+                    "have been romanized at their spoken length; preserve those names exactly. "
+                    "Do not introduce a person name unless supported as PERSON or by the supplied current glossary. "
+                    "The occurrence offsets refer to this original Japanese reference data: "
+                    + json.dumps(ja, ensure_ascii=False) + ". Output only the corrected translation."
+                )
+        elif getattr(self, "_name_retry_context", False):
+            options["context"] += (
+                " The previous result introduced an unsupported person name. Translate only the current "
+                "Japanese; do not insert people or dialogue from the title or past subtitles."
+            )
         if any(self.glossary.nicknames.get(source) == target for source, target in hits):
             options["context"] += (" Keep each spoken nickname at its supplied length, "
                                    "including spoken honorifics. Do not expand it to a stage name.")

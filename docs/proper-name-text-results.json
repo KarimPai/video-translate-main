@@ -1,0 +1,1621 @@
+{
+  "evidence": "synthetic text only; no model inference or acoustic accuracy measured",
+  "baseline_commit": "fd3aae8c9b174f5cbaceed2666cd5f873d301c80",
+  "fixture_version": 1,
+  "metric_notes": {
+    "name_recall": "exact expected PERSON span and spoken English form",
+    "false_positive_rate": "unexpected PERSON spans / expected nonperson slots plus no-name cases",
+    "literal_noun_preservation": "literal source occurrence not classified PERSON; no English semantic claim",
+    "deterministic_repair_exact_match": "safe span repair against authored English expectations; no PLaMo inference",
+    "english_semantic_accuracy": "requires real inference and human review"
+  },
+  "scores": {
+    "baseline": {
+      "person_occurrences": 20,
+      "names_preserved": 17,
+      "negative_slots": 16,
+      "false_positive_names": 5,
+      "literal_noun_occurrences": 7,
+      "literal_nouns_preserved": 7,
+      "exact_decisions": 18,
+      "decisions": 33,
+      "deterministic_repair_cases": 24,
+      "deterministic_repairs_correct": 23,
+      "abstained_occurrences": 11,
+      "name_recall": 0.85,
+      "false_positive_rate": 0.3125,
+      "literal_noun_preservation": 1.0,
+      "deterministic_repair_exact_match": 0.958333
+    },
+    "new": {
+      "person_occurrences": 20,
+      "names_preserved": 20,
+      "negative_slots": 16,
+      "false_positive_names": 0,
+      "literal_noun_occurrences": 7,
+      "literal_nouns_preserved": 7,
+      "exact_decisions": 33,
+      "decisions": 33,
+      "deterministic_repair_cases": 24,
+      "deterministic_repairs_correct": 24,
+      "abstained_occurrences": 6,
+      "name_recall": 1.0,
+      "false_positive_rate": 0.0,
+      "literal_noun_preservation": 1.0,
+      "deterministic_repair_exact_match": 1.0
+    }
+  },
+  "cases": {
+    "baseline": [
+      {
+        "id": "matsuri-explicit-honorific-no-title",
+        "ja": "まつりちゃんはどこ？",
+        "expected": [
+          {
+            "source": "まつりちゃん",
+            "classification": "PERSON",
+            "target": "Matsuri-chan"
+          }
+        ],
+        "raw_english": "Where is the festival?",
+        "expected_english": "Where is Matsuri-chan?",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 6,
+            "source": "まつりちゃん",
+            "target": "Matsuri-chan",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Where is Matsuri-chan?"
+      },
+      {
+        "id": "matsuri-full-name",
+        "ja": "夏色まつりがいる",
+        "expected": [
+          {
+            "source": "夏色まつり",
+            "classification": "PERSON",
+            "target": "Natsuiro Matsuri"
+          }
+        ],
+        "raw_english": "Natsuiro Matsuri is here.",
+        "expected_english": "Natsuiro Matsuri is here.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "夏色まつり",
+            "target": "Natsuiro Matsuri",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Natsuiro Matsuri is here."
+      },
+      {
+        "id": "matsuri-local-confirmed-dialogue",
+        "ja": "まつりが来た",
+        "previous_ja": "夏色まつりと話した",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          }
+        ],
+        "raw_english": "The festival arrived.",
+        "expected_english": "Matsuri arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Matsuri arrived."
+      },
+      {
+        "id": "matsuri-katakana-participant",
+        "ja": "マツリと遊んだ",
+        "confirmed_participants": [
+          "Matsuri"
+        ],
+        "expected": [
+          {
+            "source": "マツリ",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "マツリ",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ]
+      },
+      {
+        "id": "matsuri-kanji-participant",
+        "ja": "祭りが来た",
+        "confirmed_participants": [
+          "Matsuri"
+        ],
+        "expected": [
+          {
+            "source": "祭り",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          }
+        ],
+        "raw_english": "The festival arrived.",
+        "expected_english": "Matsuri arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "祭り",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Matsuri arrived."
+      },
+      {
+        "id": "festival-polite-prefix",
+        "ja": "お祭りに行く",
+        "video_title": "ホロライブ 夏色まつり",
+        "expected": [
+          {
+            "source": "祭り",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Going to the festival.",
+        "expected_english": "Going to the festival.",
+        "mentions": [],
+        "output_english": "Going to the festival."
+      },
+      {
+        "id": "festival-summer-compound",
+        "ja": "夏祭りが始まった",
+        "expected": [
+          {
+            "source": "祭り",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "The summer festival has begun.",
+        "expected_english": "The summer festival has begun.",
+        "mentions": [],
+        "output_english": "The summer festival has begun."
+      },
+      {
+        "id": "matsuri-and-school-festival",
+        "ja": "まつりが文化祭に来た",
+        "previous_ja": "夏色まつりと話した",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          },
+          {
+            "source": "祭",
+            "occurrence": 0,
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Matsuri came to the school festival.",
+        "expected_english": "Matsuri came to the school festival.",
+        "mentions": [],
+        "output_english": "Matsuri came to the school festival."
+      },
+      {
+        "id": "matsuri-and-festival-same-spelling",
+        "ja": "祭りちゃんはお祭りに行った",
+        "expected": [
+          {
+            "source": "祭りちゃん",
+            "classification": "PERSON",
+            "target": "Matsuri-chan"
+          },
+          {
+            "source": "祭り",
+            "occurrence": 1,
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Matsuri-chan went to the festival.",
+        "expected_english": "Matsuri-chan went to the festival.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "祭りちゃん",
+            "target": "Matsuri-chan",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Matsuri-chan went to the festival."
+      },
+      {
+        "id": "matsuri-title-alone-is-weak",
+        "ja": "まつりが来た",
+        "video_title": "ホロライブ 夏色まつり",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ]
+      },
+      {
+        "id": "matsuri-missing-title",
+        "ja": "まつりが来た",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ]
+      },
+      {
+        "id": "festival-history-does-not-confirm-person",
+        "ja": "まつりが来た",
+        "previous_ja": "夏祭りの話をしていた",
+        "video_title": "ホロライブ",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ]
+      },
+      {
+        "id": "weak-peer-without-person-context",
+        "ja": "まつりが来た",
+        "haas": "まつりが来た",
+        "whisper": "祭りが来た",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON"
+          }
+        ]
+      },
+      {
+        "id": "contradictory-peer-does-not-invent-name",
+        "ja": "待っていて",
+        "haas": "待っていて",
+        "whisper": "夏色まつり",
+        "video_title": "ホロライブ 夏色まつり",
+        "expected": [],
+        "raw_english": "Wait here.",
+        "expected_english": "Wait here.",
+        "mentions": [],
+        "output_english": "Wait here."
+      },
+      {
+        "id": "miko-explicit-nickname",
+        "ja": "みこちと遊んだ",
+        "expected": [
+          {
+            "source": "みこち",
+            "classification": "PERSON",
+            "target": "Mikochi"
+          }
+        ],
+        "raw_english": "Played with Sakura Miko.",
+        "expected_english": "Played with Mikochi.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "みこち",
+            "target": "Mikochi",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Played with Mikochi."
+      },
+      {
+        "id": "miko-honorific",
+        "ja": "みこちゃんはどこ？",
+        "expected": [
+          {
+            "source": "みこちゃん",
+            "classification": "PERSON",
+            "target": "Miko-chan"
+          }
+        ],
+        "raw_english": "Where is the shrine maiden?",
+        "expected_english": "Where is Miko-chan?",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "みこちゃん",
+            "target": "Miko-chan",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Where is Miko-chan?"
+      },
+      {
+        "id": "miko-local-dialogue",
+        "ja": "みこが来た",
+        "previous_ja": "さくらみこだよ",
+        "expected": [
+          {
+            "source": "みこ",
+            "classification": "PERSON",
+            "target": "Miko"
+          }
+        ],
+        "raw_english": "The shrine maiden arrived.",
+        "expected_english": "Miko arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "みこ",
+            "target": "Miko",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Miko arrived."
+      },
+      {
+        "id": "miko-katakana-participant",
+        "ja": "ミコと遊んだ",
+        "confirmed_participants": [
+          "Miko"
+        ],
+        "expected": [
+          {
+            "source": "ミコ",
+            "classification": "PERSON",
+            "target": "Miko"
+          }
+        ],
+        "mentions": []
+      },
+      {
+        "id": "miko-kanji-participant",
+        "ja": "巫女が来た",
+        "confirmed_participants": [
+          "Miko"
+        ],
+        "expected": [
+          {
+            "source": "巫女",
+            "classification": "PERSON",
+            "target": "Miko"
+          }
+        ],
+        "raw_english": "The shrine maiden arrived.",
+        "expected_english": "Miko arrived.",
+        "mentions": [],
+        "output_english": "The shrine maiden arrived."
+      },
+      {
+        "id": "shrine-maiden-at-shrine",
+        "ja": "巫女さんが神社にいる",
+        "expected": [
+          {
+            "source": "巫女さん",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "A shrine maiden is at the shrine.",
+        "expected_english": "A shrine maiden is at the shrine.",
+        "mentions": [],
+        "output_english": "A shrine maiden is at the shrine."
+      },
+      {
+        "id": "shrine-literal-overrides-title",
+        "ja": "巫女さんが神社にいる",
+        "video_title": "ホロライブ さくらみこ",
+        "expected": [
+          {
+            "source": "巫女さん",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "A shrine maiden is at the shrine.",
+        "expected_english": "A shrine maiden is at the shrine.",
+        "mentions": [],
+        "output_english": "A shrine maiden is at the shrine."
+      },
+      {
+        "id": "miko-and-shrine-maiden",
+        "ja": "みこちは神社の巫女さんと話した",
+        "expected": [
+          {
+            "source": "みこち",
+            "classification": "PERSON",
+            "target": "Mikochi"
+          },
+          {
+            "source": "巫女さん",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Mikochi spoke to a shrine maiden at the shrine.",
+        "expected_english": "Mikochi spoke to a shrine maiden at the shrine.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "みこち",
+            "target": "Mikochi",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Mikochi spoke to a shrine maiden at the shrine."
+      },
+      {
+        "id": "miko-title-alone-is-weak",
+        "ja": "みこが来た",
+        "video_title": "ホロライブ さくらみこ",
+        "expected": [
+          {
+            "source": "みこ",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "みこ",
+            "target": "Miko",
+            "classification": "PERSON"
+          }
+        ]
+      },
+      {
+        "id": "miko-missing-title",
+        "ja": "みこが来た",
+        "expected": [
+          {
+            "source": "みこ",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": []
+      },
+      {
+        "id": "lap-short-form",
+        "ja": "ラプが来た",
+        "expected": [
+          {
+            "source": "ラプ",
+            "classification": "PERSON",
+            "target": "Lap"
+          }
+        ],
+        "raw_english": "Laplus arrived.",
+        "expected_english": "Lap arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "ラプ",
+            "target": "Lap",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Lap arrived."
+      },
+      {
+        "id": "lap-sama",
+        "ja": "ラプ様が来た",
+        "expected": [
+          {
+            "source": "ラプ様",
+            "classification": "PERSON",
+            "target": "Lap-sama"
+          }
+        ],
+        "raw_english": "Laplus arrived.",
+        "expected_english": "Lap-sama arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "ラプ様",
+            "target": "Lap-sama",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Lap-sama arrived."
+      },
+      {
+        "id": "lap-chan",
+        "ja": "ラプちゃんはどこ？",
+        "expected": [
+          {
+            "source": "ラプちゃん",
+            "classification": "PERSON",
+            "target": "Lap-chan"
+          }
+        ],
+        "raw_english": "Where is Laplus?",
+        "expected_english": "Where is Lap-chan?",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "ラプちゃん",
+            "target": "Lap-chan",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Where is Lap-chan?"
+      },
+      {
+        "id": "laplus-preserves-longer-spoken-form",
+        "ja": "ラプラスが来た",
+        "expected": [
+          {
+            "source": "ラプラス",
+            "classification": "PERSON",
+            "target": "Laplus"
+          }
+        ],
+        "raw_english": "Laplus arrived.",
+        "expected_english": "Laplus arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 4,
+            "source": "ラプラス",
+            "target": "Laplus",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Laplus arrived."
+      },
+      {
+        "id": "watame-short-form",
+        "ja": "わためが来た",
+        "expected": [
+          {
+            "source": "わため",
+            "classification": "PERSON",
+            "target": "Watame"
+          }
+        ],
+        "raw_english": "Tsunomaki Watame arrived.",
+        "expected_english": "Watame arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "わため",
+            "target": "Watame",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Watame arrived."
+      },
+      {
+        "id": "two-distinct-names",
+        "ja": "まつりちゃんとみこちが来た",
+        "expected": [
+          {
+            "source": "まつりちゃん",
+            "classification": "PERSON",
+            "target": "Matsuri-chan"
+          },
+          {
+            "source": "みこち",
+            "classification": "PERSON",
+            "target": "Mikochi"
+          }
+        ],
+        "raw_english": "Matsuri-chan and Mikochi arrived.",
+        "expected_english": "Matsuri-chan and Mikochi arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 6,
+            "source": "まつりちゃん",
+            "target": "Matsuri-chan",
+            "classification": "PERSON"
+          },
+          {
+            "start": 7,
+            "end": 10,
+            "source": "みこち",
+            "target": "Mikochi",
+            "classification": "PERSON"
+          }
+        ],
+        "output_english": "Matsuri-chan and Mikochi arrived."
+      },
+      {
+        "id": "no-name-with-misleading-metadata",
+        "ja": "今日は楽しかった",
+        "video_title": "ホロライブ 夏色まつり さくらみこ",
+        "expected": [],
+        "raw_english": "Today was fun.",
+        "expected_english": "Today was fun.",
+        "mentions": [],
+        "output_english": "Today was fun."
+      },
+      {
+        "id": "ordinary-rap-not-lap",
+        "ja": "ラップを歌った",
+        "video_title": "ホロライブ",
+        "expected": [],
+        "raw_english": "Sang some rap.",
+        "expected_english": "Sang some rap.",
+        "mentions": [],
+        "output_english": "Sang some rap."
+      }
+    ],
+    "new": [
+      {
+        "id": "matsuri-explicit-honorific-no-title",
+        "ja": "まつりちゃんはどこ？",
+        "expected": [
+          {
+            "source": "まつりちゃん",
+            "classification": "PERSON",
+            "target": "Matsuri-chan"
+          }
+        ],
+        "raw_english": "Where is the festival?",
+        "expected_english": "Where is Matsuri-chan?",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 6,
+            "source": "まつりちゃん",
+            "target": "Matsuri-chan",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_honorific"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Where is Matsuri-chan?"
+      },
+      {
+        "id": "matsuri-full-name",
+        "ja": "夏色まつりがいる",
+        "expected": [
+          {
+            "source": "夏色まつり",
+            "classification": "PERSON",
+            "target": "Natsuiro Matsuri"
+          }
+        ],
+        "raw_english": "Natsuiro Matsuri is here.",
+        "expected_english": "Natsuiro Matsuri is here.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "夏色まつり",
+            "target": "Natsuiro Matsuri",
+            "classification": "PERSON",
+            "evidence": [
+              "explicit_full_name"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Natsuiro Matsuri is here."
+      },
+      {
+        "id": "matsuri-local-confirmed-dialogue",
+        "ja": "まつりが来た",
+        "previous_ja": "夏色まつりと話した",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          }
+        ],
+        "raw_english": "The festival arrived.",
+        "expected_english": "Matsuri arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON",
+            "evidence": [
+              "recent_confirmed_name",
+              "person_syntax"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Matsuri arrived."
+      },
+      {
+        "id": "matsuri-katakana-participant",
+        "ja": "マツリと遊んだ",
+        "confirmed_participants": [
+          "Matsuri"
+        ],
+        "expected": [
+          {
+            "source": "マツリ",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "マツリ",
+            "target": "Matsuri",
+            "classification": "PERSON",
+            "evidence": [
+              "verified_participant",
+              "person_syntax"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "matsuri-kanji-participant",
+        "ja": "祭りが来た",
+        "confirmed_participants": [
+          "Matsuri"
+        ],
+        "expected": [
+          {
+            "source": "祭り",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          }
+        ],
+        "raw_english": "The festival arrived.",
+        "expected_english": "Matsuri arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "祭り",
+            "target": "Matsuri",
+            "classification": "PERSON",
+            "evidence": [
+              "verified_participant",
+              "person_syntax"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Matsuri arrived."
+      },
+      {
+        "id": "festival-polite-prefix",
+        "ja": "お祭りに行く",
+        "video_title": "ホロライブ 夏色まつり",
+        "expected": [
+          {
+            "source": "祭り",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Going to the festival.",
+        "expected_english": "Going to the festival.",
+        "mentions": [
+          {
+            "start": 1,
+            "end": 3,
+            "source": "祭り",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_compound"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Going to the festival."
+      },
+      {
+        "id": "festival-summer-compound",
+        "ja": "夏祭りが始まった",
+        "expected": [
+          {
+            "source": "祭り",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "The summer festival has begun.",
+        "expected_english": "The summer festival has begun.",
+        "mentions": [
+          {
+            "start": 1,
+            "end": 3,
+            "source": "祭り",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_compound"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "The summer festival has begun."
+      },
+      {
+        "id": "matsuri-and-school-festival",
+        "ja": "まつりが文化祭に来た",
+        "previous_ja": "夏色まつりと話した",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "PERSON",
+            "target": "Matsuri"
+          },
+          {
+            "source": "祭",
+            "occurrence": 0,
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Matsuri came to the school festival.",
+        "expected_english": "Matsuri came to the school festival.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": "Matsuri",
+            "classification": "PERSON",
+            "evidence": [
+              "recent_confirmed_name",
+              "person_syntax"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          },
+          {
+            "start": 6,
+            "end": 7,
+            "source": "祭",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_compound"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Matsuri came to the school festival."
+      },
+      {
+        "id": "matsuri-and-festival-same-spelling",
+        "ja": "祭りちゃんはお祭りに行った",
+        "expected": [
+          {
+            "source": "祭りちゃん",
+            "classification": "PERSON",
+            "target": "Matsuri-chan"
+          },
+          {
+            "source": "祭り",
+            "occurrence": 1,
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Matsuri-chan went to the festival.",
+        "expected_english": "Matsuri-chan went to the festival.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "祭りちゃん",
+            "target": "Matsuri-chan",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_honorific"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          },
+          {
+            "start": 7,
+            "end": 9,
+            "source": "祭り",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_compound"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Matsuri-chan went to the festival."
+      },
+      {
+        "id": "matsuri-title-alone-is-weak",
+        "ja": "まつりが来た",
+        "video_title": "ホロライブ 夏色まつり",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": null,
+            "classification": "UNKNOWN",
+            "evidence": [
+              "person_syntax",
+              "insufficient_evidence"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "matsuri-missing-title",
+        "ja": "まつりが来た",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": null,
+            "classification": "UNKNOWN",
+            "evidence": [
+              "person_syntax",
+              "insufficient_evidence"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "festival-history-does-not-confirm-person",
+        "ja": "まつりが来た",
+        "previous_ja": "夏祭りの話をしていた",
+        "video_title": "ホロライブ",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": null,
+            "classification": "UNKNOWN",
+            "evidence": [
+              "person_syntax",
+              "insufficient_evidence"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "weak-peer-without-person-context",
+        "ja": "まつりが来た",
+        "haas": "まつりが来た",
+        "whisper": "祭りが来た",
+        "expected": [
+          {
+            "source": "まつり",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "まつり",
+            "target": null,
+            "classification": "UNKNOWN",
+            "evidence": [
+              "person_syntax",
+              "insufficient_evidence",
+              "asr_spellings_retained"
+            ],
+            "family": "Matsuri",
+            "alternatives": [
+              "まつり",
+              "祭り"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "contradictory-peer-does-not-invent-name",
+        "ja": "待っていて",
+        "haas": "待っていて",
+        "whisper": "夏色まつり",
+        "video_title": "ホロライブ 夏色まつり",
+        "expected": [],
+        "raw_english": "Wait here.",
+        "expected_english": "Wait here.",
+        "mentions": [],
+        "output_english": "Wait here."
+      },
+      {
+        "id": "miko-explicit-nickname",
+        "ja": "みこちと遊んだ",
+        "expected": [
+          {
+            "source": "みこち",
+            "classification": "PERSON",
+            "target": "Mikochi"
+          }
+        ],
+        "raw_english": "Played with Sakura Miko.",
+        "expected_english": "Played with Mikochi.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "みこち",
+            "target": "Mikochi",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Played with Mikochi."
+      },
+      {
+        "id": "miko-honorific",
+        "ja": "みこちゃんはどこ？",
+        "expected": [
+          {
+            "source": "みこちゃん",
+            "classification": "PERSON",
+            "target": "Miko-chan"
+          }
+        ],
+        "raw_english": "Where is the shrine maiden?",
+        "expected_english": "Where is Miko-chan?",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "みこちゃん",
+            "target": "Miko-chan",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_honorific"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Where is Miko-chan?"
+      },
+      {
+        "id": "miko-local-dialogue",
+        "ja": "みこが来た",
+        "previous_ja": "さくらみこだよ",
+        "expected": [
+          {
+            "source": "みこ",
+            "classification": "PERSON",
+            "target": "Miko"
+          }
+        ],
+        "raw_english": "The shrine maiden arrived.",
+        "expected_english": "Miko arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "みこ",
+            "target": "Miko",
+            "classification": "PERSON",
+            "evidence": [
+              "recent_confirmed_name",
+              "person_syntax"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Miko arrived."
+      },
+      {
+        "id": "miko-katakana-participant",
+        "ja": "ミコと遊んだ",
+        "confirmed_participants": [
+          "Miko"
+        ],
+        "expected": [
+          {
+            "source": "ミコ",
+            "classification": "PERSON",
+            "target": "Miko"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "ミコ",
+            "target": "Miko",
+            "classification": "PERSON",
+            "evidence": [
+              "verified_participant",
+              "person_syntax"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "miko-kanji-participant",
+        "ja": "巫女が来た",
+        "confirmed_participants": [
+          "Miko"
+        ],
+        "expected": [
+          {
+            "source": "巫女",
+            "classification": "PERSON",
+            "target": "Miko"
+          }
+        ],
+        "raw_english": "The shrine maiden arrived.",
+        "expected_english": "Miko arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "巫女",
+            "target": "Miko",
+            "classification": "PERSON",
+            "evidence": [
+              "verified_participant",
+              "person_syntax"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Miko arrived."
+      },
+      {
+        "id": "shrine-maiden-at-shrine",
+        "ja": "巫女さんが神社にいる",
+        "expected": [
+          {
+            "source": "巫女さん",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "A shrine maiden is at the shrine.",
+        "expected_english": "A shrine maiden is at the shrine.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 4,
+            "source": "巫女さん",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_shrine_context"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "A shrine maiden is at the shrine."
+      },
+      {
+        "id": "shrine-literal-overrides-title",
+        "ja": "巫女さんが神社にいる",
+        "video_title": "ホロライブ さくらみこ",
+        "expected": [
+          {
+            "source": "巫女さん",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "A shrine maiden is at the shrine.",
+        "expected_english": "A shrine maiden is at the shrine.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 4,
+            "source": "巫女さん",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_shrine_context"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "A shrine maiden is at the shrine."
+      },
+      {
+        "id": "miko-and-shrine-maiden",
+        "ja": "みこちは神社の巫女さんと話した",
+        "expected": [
+          {
+            "source": "みこち",
+            "classification": "PERSON",
+            "target": "Mikochi"
+          },
+          {
+            "source": "巫女さん",
+            "classification": "COMMON_NOUN"
+          }
+        ],
+        "raw_english": "Mikochi spoke to a shrine maiden at the shrine.",
+        "expected_english": "Mikochi spoke to a shrine maiden at the shrine.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "みこち",
+            "target": "Mikochi",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          },
+          {
+            "start": 7,
+            "end": 11,
+            "source": "巫女さん",
+            "target": null,
+            "classification": "COMMON_NOUN",
+            "evidence": [
+              "literal_shrine_context"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Mikochi spoke to a shrine maiden at the shrine."
+      },
+      {
+        "id": "miko-title-alone-is-weak",
+        "ja": "みこが来た",
+        "video_title": "ホロライブ さくらみこ",
+        "expected": [
+          {
+            "source": "みこ",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "みこ",
+            "target": null,
+            "classification": "UNKNOWN",
+            "evidence": [
+              "person_syntax",
+              "insufficient_evidence"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "miko-missing-title",
+        "ja": "みこが来た",
+        "expected": [
+          {
+            "source": "みこ",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "みこ",
+            "target": null,
+            "classification": "UNKNOWN",
+            "evidence": [
+              "person_syntax",
+              "insufficient_evidence"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ]
+      },
+      {
+        "id": "lap-short-form",
+        "ja": "ラプが来た",
+        "expected": [
+          {
+            "source": "ラプ",
+            "classification": "PERSON",
+            "target": "Lap"
+          }
+        ],
+        "raw_english": "Laplus arrived.",
+        "expected_english": "Lap arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 2,
+            "source": "ラプ",
+            "target": "Lap",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Lap",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Lap arrived."
+      },
+      {
+        "id": "lap-sama",
+        "ja": "ラプ様が来た",
+        "expected": [
+          {
+            "source": "ラプ様",
+            "classification": "PERSON",
+            "target": "Lap-sama"
+          }
+        ],
+        "raw_english": "Laplus arrived.",
+        "expected_english": "Lap-sama arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "ラプ様",
+            "target": "Lap-sama",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Lap",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Lap-sama arrived."
+      },
+      {
+        "id": "lap-chan",
+        "ja": "ラプちゃんはどこ？",
+        "expected": [
+          {
+            "source": "ラプちゃん",
+            "classification": "PERSON",
+            "target": "Lap-chan"
+          }
+        ],
+        "raw_english": "Where is Laplus?",
+        "expected_english": "Where is Lap-chan?",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "source": "ラプちゃん",
+            "target": "Lap-chan",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Lap",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Where is Lap-chan?"
+      },
+      {
+        "id": "laplus-preserves-longer-spoken-form",
+        "ja": "ラプラスが来た",
+        "expected": [
+          {
+            "source": "ラプラス",
+            "classification": "PERSON",
+            "target": "Laplus"
+          }
+        ],
+        "raw_english": "Laplus arrived.",
+        "expected_english": "Laplus arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 4,
+            "source": "ラプラス",
+            "target": "Laplus",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Lap",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Laplus arrived."
+      },
+      {
+        "id": "watame-short-form",
+        "ja": "わためが来た",
+        "expected": [
+          {
+            "source": "わため",
+            "classification": "PERSON",
+            "target": "Watame"
+          }
+        ],
+        "raw_english": "Tsunomaki Watame arrived.",
+        "expected_english": "Watame arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 3,
+            "source": "わため",
+            "target": "Watame",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Watame",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Watame arrived."
+      },
+      {
+        "id": "two-distinct-names",
+        "ja": "まつりちゃんとみこちが来た",
+        "expected": [
+          {
+            "source": "まつりちゃん",
+            "classification": "PERSON",
+            "target": "Matsuri-chan"
+          },
+          {
+            "source": "みこち",
+            "classification": "PERSON",
+            "target": "Mikochi"
+          }
+        ],
+        "raw_english": "Matsuri-chan and Mikochi arrived.",
+        "expected_english": "Matsuri-chan and Mikochi arrived.",
+        "mentions": [
+          {
+            "start": 0,
+            "end": 6,
+            "source": "まつりちゃん",
+            "target": "Matsuri-chan",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_honorific"
+            ],
+            "family": "Matsuri",
+            "alternatives": []
+          },
+          {
+            "start": 7,
+            "end": 10,
+            "source": "みこち",
+            "target": "Mikochi",
+            "classification": "PERSON",
+            "evidence": [
+              "spoken_nickname"
+            ],
+            "family": "Miko",
+            "alternatives": []
+          }
+        ],
+        "output_english": "Matsuri-chan and Mikochi arrived."
+      },
+      {
+        "id": "no-name-with-misleading-metadata",
+        "ja": "今日は楽しかった",
+        "video_title": "ホロライブ 夏色まつり さくらみこ",
+        "expected": [],
+        "raw_english": "Today was fun.",
+        "expected_english": "Today was fun.",
+        "mentions": [],
+        "output_english": "Today was fun."
+      },
+      {
+        "id": "ordinary-rap-not-lap",
+        "ja": "ラップを歌った",
+        "video_title": "ホロライブ",
+        "expected": [],
+        "raw_english": "Sang some rap.",
+        "expected_english": "Sang some rap.",
+        "mentions": [],
+        "output_english": "Sang some rap."
+      }
+    ]
+  }
+}

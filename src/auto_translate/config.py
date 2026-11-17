@@ -110,6 +110,9 @@ class AsrConfig:
     haas_model: str = "haas-ja-v1.0"
     haas_device: str = "Vulkan0"
     haas_decode_on_cpu: bool = False
+    # Opt in only after benchmarking reviewed audio on the installed model.
+    haas_keywords_enabled: bool = False
+    haas_keywords_alpha: float = 1.0
     blocklist: list[str] = field(default_factory=list)
     response_timeout_s: float = 24.0  # per-utterance VOD recognition watchdog
     live_response_timeout_s: float = 12.0  # prevent stalled Vulkan decode from delaying live cues
@@ -120,6 +123,12 @@ class AsrConfig:
     retry_max_duration_s: float = 10.0
 
     def __post_init__(self):
+        if type(self.haas_keywords_enabled) is not bool:
+            raise ValueError("haas_keywords_enabled must be boolean")
+        if (type(self.haas_keywords_alpha) not in (int, float)
+                or not math.isfinite(self.haas_keywords_alpha)
+                or not 0 < self.haas_keywords_alpha <= 2):
+            raise ValueError("haas_keywords_alpha must be finite in (0,2]")
         if not isinstance(self.blocklist, list) or any(not isinstance(x, str) or not x.strip() for x in self.blocklist):
             raise ValueError("asr.blocklist requires nonempty strings")
         if not 0 <= self.retry_min_confidence <= 1 or not 0 < self.retry_min_duration_s <= self.retry_max_duration_s:
@@ -167,6 +176,20 @@ class DualAsrConfig:
     secondary_device: str = "cuda"
     secondary_compute_type: str = "int8_float16"
     secondary_beam_size: int = 6
+    secondary_patience: float = 1.0
+    secondary_length_penalty: float = 1.0
+    secondary_temperature: float = 0.0
+    secondary_best_of: int = 5
+    secondary_repetition_penalty: float = 1.0
+    secondary_no_repeat_ngram_size: int = 0
+    secondary_word_timestamps: bool = False
+    secondary_log_prob_threshold: float = -1.0
+    secondary_no_speech_threshold: float = 0.6
+    secondary_compression_ratio_threshold: float = 2.4
+    secondary_suppress_tokens: list[int] = field(default_factory=lambda: [-1])
+    secondary_max_new_tokens: int | None = None
+    # Only an audio-grounded per-utterance hint may be supplied by the caller.
+    secondary_prompt_mode: str = "none"  # none, hotwords, initial_prompt
     japanese_outro_mode: str = "log"  # log or suppress weak uncorroborated candidates
     whisper_name_hints: bool = False  # deprecated/ignored: no unconditional Whisper name prompts
     secondary_live_mode: str = "selective"
@@ -195,6 +218,35 @@ class DualAsrConfig:
             raise ValueError("CPU Whisper Turbo requires int8 or float32 compute_type")
         if type(self.secondary_beam_size) is not int or not 1 <= self.secondary_beam_size <= 10:
             raise ValueError("secondary_beam_size must be in 1..10")
+        for name in ("secondary_patience", "secondary_repetition_penalty",
+                     "secondary_compression_ratio_threshold"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 10:
+                raise ValueError(name + " must be finite in (0,10]")
+        for name, low, high in (("secondary_temperature", 0, 1),
+                                ("secondary_length_penalty", 0, 10),
+                                ("secondary_log_prob_threshold", -20, 0),
+                                ("secondary_no_speech_threshold", 0, 1)):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(name + " is out of range")
+        for name, low, high in (("secondary_best_of", 1, 10),
+                                ("secondary_no_repeat_ngram_size", 0, 20)):
+            if type(getattr(self, name)) is not int or not low <= getattr(self, name) <= high:
+                raise ValueError(name + " is out of range")
+        if type(self.secondary_word_timestamps) is not bool:
+            raise ValueError("secondary_word_timestamps must be boolean")
+        if (not isinstance(self.secondary_suppress_tokens, list)
+                or len(self.secondary_suppress_tokens) > 512
+                or any(type(token) is not int or not -1 <= token < 60000
+                       for token in self.secondary_suppress_tokens)):
+            raise ValueError("secondary_suppress_tokens must contain Whisper token IDs")
+        if (self.secondary_max_new_tokens is not None
+                and (type(self.secondary_max_new_tokens) is not int
+                     or not 1 <= self.secondary_max_new_tokens <= 448)):
+            raise ValueError("secondary_max_new_tokens must be in 1..448 or omitted")
+        if self.secondary_prompt_mode not in ("none", "hotwords", "initial_prompt"):
+            raise ValueError("secondary_prompt_mode must be none, hotwords or initial_prompt")
         for mode in (self.secondary_live_mode, self.secondary_vod_mode):
             if mode not in ("off", "selective", "all"):
                 raise ValueError("secondary mode must be off, selective or all")

@@ -118,7 +118,10 @@ class ExtendedContextMemoryTests(unittest.TestCase):
                                  ("わため", "Watame"), ("まつり", "Matsuri")]:
             with self.subTest(source=source):
                 obj = self.translator()
-                body = self.body(obj, source, [("ラプラス", "Laplus")])
+                prior = ({"みこ": ("さくらみこ", "Sakura Miko"),
+                          "まつり": ("夏色まつり", "Natsuiro Matsuri")}
+                         .get(source, ("ラプラス", "Laplus")))
+                body = self.body(obj, source, [prior])
                 self.assertIn({"source": source, "target": expected},
                               body["chat_template_kwargs"].get("glossary", []))
 

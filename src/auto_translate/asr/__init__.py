@@ -19,8 +19,9 @@ class PrimaryASR:
         self.lock = threading.Lock()
         self.failures = 0
         self.last_failed = False
+        self.last_keyword_diagnostics = {}
 
-    def transcribe(self, audio, probe=False):
+    def transcribe(self, audio, probe=False, *, keywords=None):
         with self.lock:
             if self.closed:
                 raise RuntimeError("primary ASR closed")
@@ -28,7 +29,8 @@ class PrimaryASR:
                 self.worker = HaasASR(self.cfg)
             worker = self.worker
         try:
-            result = worker.transcribe(audio, probe)
+            result = (worker.transcribe(audio, probe, keywords=keywords)
+                      if keywords else worker.transcribe(audio, probe))
         except (TimeoutError, OSError, RuntimeError) as exc:
             with self.lock:
                 if self.worker is worker:
@@ -37,6 +39,7 @@ class PrimaryASR:
             self.failures += 1
             self.last_stop = None
             self.last_failed = True
+            self.last_keyword_diagnostics = dict(active=False, fallback=type(exc).__name__)
             if self.closed or self.failures >= 3:
                 raise
             # A transient Vulkan timeout should not immediately force slow
@@ -51,6 +54,7 @@ class PrimaryASR:
         self.failures = 0
         self.last_failed = False
         self.last_stop = worker.last_stop
+        self.last_keyword_diagnostics = getattr(worker, "last_keyword_diagnostics", {})
         return result
 
     def close(self):

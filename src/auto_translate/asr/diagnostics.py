@@ -6,6 +6,7 @@ background writer batches filesystem writes and rotates at 20 MiB.
 import atexit
 import json
 import logging
+import math
 import queue
 import threading
 from pathlib import Path
@@ -17,6 +18,36 @@ _START_LOCK = threading.Lock()
 _STOPPING = False
 _WRITER = None
 _DROPPED = 0
+
+
+def _bounded_record(record):
+    """Bound memory per queued cue and never serialize raw audio or history."""
+    remaining = [12000, 512]
+    excluded = {"audio", "pcm", "audio_buffer", "history", "recent_ja", "messages"}
+
+    def visit(value, depth=0):
+        remaining[1] -= 1
+        if remaining[1] < 0 or depth > 7:
+            return "[omitted]"
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, (float, int)):
+            return value if not isinstance(value, float) or math.isfinite(value) else None
+        if isinstance(value, str):
+            size = min(len(value), 1600, max(0, remaining[0]))
+            remaining[0] -= size
+            return value[:size] + ("…" if size < len(value) else "")
+        if isinstance(value, dict):
+            return {str(key)[:64]: visit(item, depth + 1)
+                    for key, item in list(value.items())[:64]
+                    if str(key).lower() not in excluded}
+        if isinstance(value, (tuple, list)):
+            return [visit(item, depth + 1) for item in value[:32]]
+        # In particular, don't call str() on NumPy arrays, request objects,
+        # exceptions containing request data, or arbitrary model objects.
+        return "[unsupported value]"
+
+    return visit(record)
 
 
 def _write_batch(batch):
@@ -66,7 +97,7 @@ def append_comparison(record: dict, path: Path = Path("logs/asr-comparison.jsonl
     """Enqueue JSONL without blocking ASR on disk or Windows AV scans."""
     global _DROPPED, _WRITER
     try:
-        line = json.dumps(record, ensure_ascii=False, default=str,
+        line = json.dumps(_bounded_record(record), ensure_ascii=False,
                           separators=(",", ":")) + "\n"
         with _START_LOCK:
             if _STOPPING:

@@ -6,7 +6,23 @@ enabled = true
 secondary_model = "h2oai/faster-whisper-large-v3-turbo"
 secondary_device = "cuda"
 secondary_compute_type = "int8_float16"
+# Keep beam 6 until reviewed audio supports beam 8 or optional beam 10.
 secondary_beam_size = 6
+secondary_patience = 1.0
+secondary_length_penalty = 1.0
+secondary_temperature = 0.0 # beam decoding; best_of applies only above zero
+secondary_best_of = 5
+secondary_repetition_penalty = 1.0
+secondary_no_repeat_ngram_size = 0
+secondary_word_timestamps = false
+secondary_log_prob_threshold = -1.0
+secondary_no_speech_threshold = 0.6
+secondary_compression_ratio_threshold = 2.4
+secondary_suppress_tokens = [-1]
+# secondary_max_new_tokens = 192 # omit to retain the runtime default
+# Per-utterance hints require spoken evidence; never seed names from the title.
+secondary_prompt_mode = "none" # none, hotwords, initial_prompt
+# Unsupported optional controls are omitted using the installed runtime signature.
 # Legacy compatibility setting; name prompts are disabled even if set true.
 whisper_name_hints = false
 secondary_live_mode = "selective" # off, selective, all
@@ -58,8 +74,18 @@ memory_lines = 16 # bounded rolling history, 0..20; 10..20 recommended
 # Only split long multi-sentence Japanese at reliable written punctuation.
 sentence_context = true
 
-# Whisper does not receive static character-name prompts. The glossary only
-# normalizes names that actually appear in the Japanese transcript.
+# Whisper never receives static character-name prompts. The glossary only
+# normalizes names supported by the Japanese utterance and occurrence resolver.
+
+[asr]
+startup_timeout_s = 120
+response_timeout_s = 24
+live_response_timeout_s = 12
+# Experimental opt-in: first benchmark alpha 1.0/1.5/2.0 on reviewed audio.
+haas_keywords_enabled = false
+haas_keywords_alpha = 1.0
+# Only bounded recent spoken-name hints are used. Guarding is always enabled.
+# Requires actual worker model.options vocabulary support; old GGUFs fall back.
 
 [chat]
 # Public YouTube chat is weak evidence for terms already present in ASR.

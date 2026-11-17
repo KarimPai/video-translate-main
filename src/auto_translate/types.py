@@ -50,6 +50,8 @@ class Utterance:
     vad_confidence: float | None = None  # mean VAD speech confidence
     speaker_handoff: bool = False  # future-compatible boundary metadata
     speaker_split: bool = False
+    # Optional per-cue evidence; never shared through mutable worker globals.
+    name_disambiguation: dict = field(default_factory=dict)
 
 @dataclass
 class Transcript:
@@ -61,6 +63,7 @@ class Transcript:
     speech_start_s: float | None = None
 
     diagnostic_session: str | None = None
+    name_context: dict = field(default_factory=dict)
 
 
 @dataclass

@@ -18,24 +18,10 @@ _HONORIFIC = {"ちゃん": "-chan", "さん": "-san", "様": "-sama", "さま": 
 
 
 def matsuri_matches(ja, title, previous):
-    matches = []
-    for mention in _MATSURI.finditer(ja):
-        full, spelling, suffix = mention.groups()
-        before, after = ja[:mention.start()], ja[mention.end():]
-        if not full and before.endswith(("お", "御", "夏", "秋", "春", "冬", "ひな", "雛", "血", "雪")):
-            continue
-        if not (full or suffix) and _MATSURI_EVENT.search(ja):
-            continue
-        if not (full or suffix or _MATSURI_PERSON.match(after)):
-            isolated = ja.strip(" 。、！？!?「」") == spelling or after.startswith(("どこ", "はどこ"))
-            name_context = _HOLO.search(title) or re.search(r"夏色まつり|Natsuiro Matsuri", title, re.I)
-            prior_name = re.search(r"夏色まつり|(?:まつり|マツリ|祭り)(?:ちゃん|さん|様)", previous)
-            if not (isolated and (prior_name or (name_context and spelling != "祭り"))
-                    and not _MATSURI_EVENT.search(previous)):
-                continue
-        target = ("Natsuiro Matsuri" if full else "Matsuri") + _HONORIFIC.get(suffix, "")
-        matches.append((mention[0], target))
-    return matches
+    # Retain the public helper while centralizing the actual evidence rules.
+    from .proper_names import name_glossary, resolve_names
+    mentions = resolve_names(ja, video_title=title, previous_ja=previous)
+    return name_glossary([mention for mention in mentions if mention.family == "Matsuri"])
 
 
 def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None:
@@ -52,7 +38,7 @@ def whisper_name_prompt(video_title: str, *, enabled: bool = True) -> str | None
 _FAMILIES = {
     "Lap": ("Lap Laplus Lap-sama Lap-chan Lap-san", r"(?:La\s*\+|La plus|Laplus|Laplace)(?:[ ·-]+Darkness+)?|Lap"),
     "Matsuri": ("Matsuri Matsuri-chan Matsuri-san Matsuri-sama", r"(?:Natsuiro )?Matsuri"),
-    "Miko": ("Miko Mikochi Miko-chan", r"(?:Sakura )?Miko(?:chi)?"),
+    "Miko": ("Miko Mikochi Miko-chan Miko-san Miko-sama", r"(?:Sakura )?Miko(?:chi)?"),
     "Watame": ("Watame Watamee", r"(?:Tsunomaki )?Watamee?"),
     "Marine": ("Senchou", r"(?:Houshou )?Marine|Senchou"),
     "Suisei": ("Sui-chan", r"(?:Hoshimachi )?Suisei|Sui"),
@@ -71,13 +57,16 @@ _FAMILIES = {
     "Aqua": ("Akutan", r"(?:Minato )?Aqua|Akutan"),
     "Fuwawa": ("Fuwawa", r"Fuwawa(?: Abyssgard)?"),
     "Iofi": ("Iofi", r"(?:Airani )?Iofifteen|Iofi"),
+    "Moona": ("Moona", r"Moona(?: Hoshinova)?"),
+    "Kaela": ("Kaela", r"Kaela(?: Kovalskia)?"),
+    "Mococo": ("Mococo", r"Mococo(?: Abyssgard)?"),
 }
 
 
 SPOKEN_NAME_FORMS = {form for forms, _ in _FAMILIES.values() for form in forms.split()}
 
 
-def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -> str:
+def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]], *, mentions=None) -> str:
     """Change one unambiguous output span per evidenced name family."""
     targets = {target for _, target in names}
     for family, (forms, aliases) in _FAMILIES.items():
@@ -92,7 +81,14 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -
             # Avoid replacing a real event elsewhere in a mixed name/event cue.
             rest = ja.replace(source, "", 1)
             if not (_MATSURI.search(rest) or _MATSURI_EVENT.search(rest) or "祭" in rest):
-                aliases += r"|(?:the |a )?festivals?"
+                # Replacing a plural noun can require rewriting agreement
+                # or possession. Leave those sentences to the selective
+                # model retry rather than producing "Matsuri aren't ...".
+                plural_grammar = re.search(
+                    r"\b(?:are|aren't|were|weren't|have|haven't|do|don't)\b|\bfestivals['’]",
+                    english.replace("’", "'"), re.I,
+                )
+                aliases += r"|(?:the |a )?festival" + ("" if plural_grammar else "s?")
         if family == "Lap":
             # A common English word needs an identifiable name slot. Avoid
             # touching any rap vocabulary in mixed music/name dialogue.
@@ -102,8 +98,17 @@ def preserve_spoken_names(ja: str, english: str, names: list[tuple[str, str]]) -
                     aliases += r"|rap(?=(?:[ -](?:sama|san|chan))?[.!?, '’]*$)"
                 if ja.strip(" 。！？!?") == source and re.fullmatch(r"rapping[.!?]?", english, re.I):
                     aliases += r"|rapping"
-        if family == "Miko" and not re.search(r"神社|巫女", ja):
-            aliases += r"|(?:the )?shrine maiden"
+        if family == "Miko":
+            # A confirmed person may itself be written 巫女 by ASR. Examine
+            # other occurrences rather than rejecting every kanji source or
+            # every sentence that also mentions a shrine as a location.
+            rest = ja.replace(source, "", 1)
+            rows = [(item.as_dict() if hasattr(item, "as_dict") else item)
+                    for item in (mentions or [])]
+            ambiguous_other = any(row.get("family") == "Miko"
+                                  and row.get("classification") != "PERSON" for row in rows)
+            if not ambiguous_other and not re.search(r"巫女|みこ|ミコ", rest):
+                aliases += r"|(?:the |a )?shrine maiden"
         if family == "Marine" and "マリン" not in ja:
             aliases += r"|(?:the )?captain"
         pattern = re.compile(r"(?<![\w-])(?:" + aliases + r")(?:[ -](?:chan|san|sama|nee))?(?![\w-])", re.I)

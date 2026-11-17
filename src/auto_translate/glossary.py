@@ -6,6 +6,8 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
+from .proper_names import name_glossary, resolve_names
+
 
 # Japanese has no whitespace between most words. Favor missed hints over
 # potentially matching stems inside compounds. Only common post-name syntax
@@ -52,9 +54,18 @@ class Glossary:
                        scene_pairs=rules.get("scene_pairs", ()),
                        name_guards=rules.get("name_guards", ()))
 
-    def find(self, ja: str, *, previous_ja: str = "", miko_context: bool = False) -> list[tuple[str, str]]:
+    def find(self, ja: str, *, previous_ja: str = "", miko_context: bool = False,
+             name_mentions=None) -> list[tuple[str, str]]:
         """Entries that appear in `ja` (non-overlapping, longest match wins)."""
-        return list(self._matches(ja, previous_ja if "船長" in ja else "", miko_context))
+        # `miko_context` remains accepted for settings/API compatibility. A
+        # boolean derived from a title is no longer proof of a spoken person.
+        mentions = (resolve_names(ja, previous_ja=previous_ja)
+                    if name_mentions is None else name_mentions)
+        matches = list(self._matches(ja, previous_ja if "船長" in ja else "", False))
+        configured = {source for source, _ in self.terms}
+        matches.extend(pair for pair in name_glossary(mentions)
+                       if pair[0] in configured and pair not in matches)
+        return sorted(matches, key=lambda pair: len(pair[0]), reverse=True)
 
     @lru_cache(maxsize=128)
     def _matches(self, ja: str, previous_ja: str, miko_context: bool) -> tuple[tuple[str, str], ...]:
@@ -62,6 +73,10 @@ class Glossary:
         hits = []
         for term, en in self.terms:
             if term not in ja:
+                continue
+            if re.fullmatch(r"(?:Natsuiro )?Matsuri(?:-(?:chan|san|sama))?|(?:Sakura )?Miko(?:chi)?(?:-(?:chan|san|sama))?", en):
+                # Central resolution owns these ambiguous families, including
+                # kanji spellings and mixed person/common-noun occurrences.
                 continue
             if term in self.nicknames:
                 if term == "船長" and _SHIP.search(source):

@@ -67,7 +67,11 @@ class HololiveNameHintsTests(unittest.TestCase):
         ):
             with self.subTest(ja=ja):
                 translator._chat = Mock(return_value=raw)
-                self.assertEqual(translator.translate(ja, []), expected)
+                # Ambiguous bare nouns need confirmed Japanese dialogue;
+                # a Hololive title alone does not establish person identity.
+                prior = ("夏色まつりだよ" if ja in ("まつり来た", "まつりが来た", "まつり")
+                         else "みこちだよ" if ja == "みこが来た" else "")
+                self.assertEqual(translator.translate(ja, [(prior, "")] if prior else []), expected)
                 translator._chat.assert_called_once()
 
     def test_context_and_word_boundaries(self):

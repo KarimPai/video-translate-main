@@ -11,8 +11,9 @@ import numpy as np
 from ..windows_subprocess import stopping
 from ..runtime_diagnostics import update_metrics, record_event
 from ..asr_correction import lap_spelling_from_peer
+from ..proper_names import resolve_names
 from ..text_filter import is_usable_transcript
-from .whisper_turbo import WhisperTurboASR
+from .whisper_turbo import WhisperTurboASR, whisper_decode_options
 from .diagnostics import append_comparison
 from .reconciler import Reconciler
 from .selection import (clause_differences, compare, scene_repair, normalize,
@@ -34,6 +35,7 @@ class DualASR:
         self.worker = self.selector = None
         self.generation = None
         self.history = deque(maxlen=4)
+        self.last_name_mentions = []
         self.lock = threading.Lock()
         self.pending = None
         self.playback_position = lambda: None
@@ -69,6 +71,7 @@ class DualASR:
             device=self.cfg.dual_asr.secondary_device,
             compute_type=self.cfg.dual_asr.secondary_compute_type,
             beam_size=self.cfg.dual_asr.secondary_beam_size,
+            decode_options=whisper_decode_options(self.cfg.dual_asr),
         )
         if self.cfg.dual_asr.secondary_device == "cuda" and not self.budget.admits(0.3):
             worker.close()
@@ -270,10 +273,17 @@ class DualASR:
                                          generation=utt.generation, deadline=deadline)
         return nullcontext()
 
-    def _transcribe_guarded(self, worker, audio, timeout, cancel_event):
+    def _transcribe_guarded(self, worker, audio, timeout, cancel_event, *, name_hints=()):
         """Keep the GPU admission lease until a timed-out child is stopped."""
         try:
-            return worker.transcribe(audio, timeout=timeout, cancel_event=cancel_event)
+            mode = getattr(self.cfg.dual_asr, "secondary_prompt_mode", "none")
+            options = {}
+            # Hints are derived from explicit names already heard by Haas, never
+            # a title or a list of all members. An absent hint keeps baseline ASR.
+            if name_hints and mode in ("hotwords", "initial_prompt"):
+                value = ", ".join(name_hints)[:256]
+                options["hotwords" if mode == "hotwords" else "initial_prompt"] = value
+            return worker.transcribe(audio, timeout=timeout, cancel_event=cancel_event, **options)
         except CancelledError:
             if getattr(getattr(self.cfg, "safe_playback", None), "enabled", False):
                 self._retire_worker(worker, "cancelled_inflight_safe_playback")
@@ -373,6 +383,114 @@ class DualASR:
                 self.history.clear()
                 self.generation = generation
             self.history.append(text[:160])
+
+    def reset_name_context(self, generation):
+        """Forget dialogue identity at a discontinuity, including same-generation resets."""
+        with self.lock:
+            self.history.clear()
+            self.generation = generation
+            self.last_name_mentions = []
+
+    def name_keywords(self, generation):
+        """Only explicit recently spoken names can seed a later utterance.
+
+        No title, model-only PERSON result, or context-resolved bare homophone
+        can add vocabulary. A seek clears this evidence with the ASR history.
+        """
+        with self.lock:
+            history = list(self.history)[-2:] if self.generation == generation else []
+        hints = []
+        readings = {"夏色まつり": "なついろまつり", "夏色マツリ": "なついろまつり",
+                    "夏色祭り": "なついろまつり", "桜みこ": "さくらみこ",
+                    "桜ミコ": "さくらみこ", "さくら巫女": "さくらみこ",
+                    "祭り": "まつり", "巫女": "みこ"}
+        for text in history:
+            for mention in resolve_names(text):
+                if mention.classification != "PERSON":
+                    continue
+                source = mention.source
+                reading = source
+                for written, kana in readings.items():
+                    if source.startswith(written):
+                        reading = kana + source[len(written):]
+                        break
+                for written, kana in (("様", "さま"), ("先輩", "せんぱい"), ("君", "くん")):
+                    if reading.endswith(written):
+                        reading = reading[:-len(written)] + kana
+                        break
+                # Names with an unreviewed kanji reading are omitted.
+                if re.search(r"[一-鿿]", reading):
+                    continue
+                if reading not in hints:
+                    hints.append(reading)
+        return hints[-4:]
+
+    def _resolve_name_occurrences(self, utt, japanese, primary, secondary, title, context,
+                                  selector, backlog, current, cancel_event, deadline,
+                                  selector_elapsed=0.0):
+        """Optional occurrence decisions share the existing LFM time budget."""
+        previous = " ".join(context[-3:])
+        mentions = resolve_names(japanese, haas=primary, whisper=secondary,
+                                 previous_ja=previous, video_title=title)
+        unknown = [mention.as_dict() for mention in mentions if mention.classification == "UNKNOWN"]
+        classifications = {}
+        diagnostic = {"called": False, "abstained": bool(unknown), "elapsed_s": 0.0,
+                      "fallback_reason": None}
+        allowance = (self.cfg.reconciler.live_timeout_s if self.live
+                     else self.cfg.reconciler.vod_timeout_s) - (selector_elapsed or 0.0)
+        # Reuse only a still-owned instance. A prior selection timeout may have
+        # retired the local selector reference. No new process is created here.
+        method = getattr(type(selector), "classify_names", None) if selector is not None else None
+        if unknown and callable(method):
+            if (self.selector is not selector or allowance < .25 or backlog()
+                    or not getattr(self.cfg.dual_asr, "smart_correction", True)):
+                diagnostic["fallback_reason"] = "name_budget_or_backlog"
+            else:
+                request_deadline = min(deadline, time.monotonic() + allowance)
+                try:
+                    with self._operation("lfm", utt, current, cancel_event, request_deadline):
+                        remaining = request_deadline - time.monotonic()
+                        if remaining < .25:
+                            raise TimeoutError("name budget exhausted awaiting GPU admission")
+                        classifications = selector.classify_names(
+                            japanese, unknown, {"haas": primary, "whisper": secondary,
+                                                "recent_ja": context[-3:], "title_channel": title,
+                                                "weak_chat_terms": self._chat_terms(utt, primary, secondary)},
+                            remaining, cancel_event=cancel_event)
+                        model_diagnostic = getattr(selector, "last_name_diagnostics", {})
+                        if isinstance(model_diagnostic, dict):
+                            diagnostic.update(model_diagnostic)
+                        if diagnostic.get("failure") in ("TimeoutError", "URLError", "OSError", "RuntimeError"):
+                            self._retire_selector(selector, diagnostic["failure"])
+                    if not isinstance(classifications, dict):
+                        classifications = {}
+                    mentions = resolve_names(japanese, haas=primary, whisper=secondary,
+                                             previous_ja=previous, video_title=title,
+                                             classifications=classifications)
+                except CancelledError as exc:
+                    # The HTTP cancellation watcher closes this owned server.
+                    # Retire its published reference so the next cue can recover.
+                    self._retire_selector(selector, exc)
+                    raise
+                except Exception as exc:
+                    diagnostic["fallback_reason"] = type(exc).__name__
+                    log.warning("Optional proper-name resolution abstained: %s", type(exc).__name__)
+                    if isinstance(exc, (TimeoutError, OSError)):
+                        self._retire_selector(selector, exc)
+        elif unknown:
+            diagnostic["fallback_reason"] = "name_classifier_unavailable"
+        if ((cancel_event is not None and cancel_event.is_set())
+                or (current is not None and current() != utt.generation)):
+            raise CancelledError("name decisions obsolete")
+        diagnostic.update(japanese=japanese, haas=primary, whisper=secondary,
+                          lfm_selection=getattr(selector, "last_choice", None),
+                          whisper_prompt_mode=getattr(self.worker, "last_prompt_mode", "none"),
+                          classifications=classifications,
+                          mentions=[mention.as_dict() for mention in mentions],
+                          abstained=any(mention.classification == "UNKNOWN" for mention in mentions))
+        utt.name_disambiguation = diagnostic
+        self.last_name_mentions = mentions
+        return diagnostic
 
     def log_fallback(self, utt, primary, elapsed, reason):
         append_comparison(dict(stage="asr_fallback", session_id=self.session_id,
@@ -477,7 +595,15 @@ class DualASR:
                     raise CancelledError("Whisper deadline exhausted awaiting GPU admission")
                 started = time.perf_counter()
                 try:
-                    secondary = self._transcribe_guarded(worker, utt.audio, remaining, cancel_event)
+                    explicit_hints = []
+                    if getattr(self.cfg.dual_asr, "secondary_prompt_mode", "none") != "none":
+                        try:
+                            explicit_hints = [mention.source for mention in resolve_names(primary)
+                                              if mention.classification == "PERSON"][:4]
+                        except Exception:
+                            log.warning("Whisper name hints unavailable; using baseline decode")
+                    secondary = self._transcribe_guarded(worker, utt.audio, remaining, cancel_event,
+                                                         name_hints=explicit_hints)
                 finally:
                     secondary_elapsed_s = time.perf_counter() - started
                     update_metrics(stages={"whisper_s": secondary_elapsed_s})
@@ -501,13 +627,24 @@ class DualASR:
         selector_elapsed = None
         fallback_reason = None
         retry_attempts = []
+        name_diagnostic = {}
         confidence = getattr(worker, "last_confidence", {})
         confidence = confidence if isinstance(confidence, dict) else {}
         differences = disagreement_details(primary, secondary)
 
         def record(selected_text, selected_by, score=None, flags=None, selector_called=False):
+            # Keep original hypotheses even on early quality/fallback paths.
+            # The final pipeline resolver may still investigate a usable Haas
+            # cue after the secondary was rejected, without losing its spelling.
+            provenance = dict(name_diagnostic)
+            provenance.update(japanese=selected_text, haas=primary, whisper=secondary,
+                              lfm_selection=lfm_choice,
+                              whisper_prompt_mode=getattr(worker, "last_prompt_mode", "none"))
+            utt.name_disambiguation = provenance
             append_comparison({
                 "stage": "reconciliation",
+                "name_disambiguation": provenance,
+                "whisper_prompt_mode": getattr(worker, "last_prompt_mode", "none"),
                 "lfm_selected": lfm_text,
                 "lfm_choice": lfm_choice,
                 "corrected_ja": selected_text if edits else None,
@@ -616,7 +753,7 @@ class DualASR:
                         try:
                             selected = selector.choose(primary, secondary, evidence, timeout,
                                                        cancel_event=cancel_event)
-                        except (TimeoutError, OSError, CancelledError) as exc:
+                        except (TimeoutError, OSError, RuntimeError, CancelledError) as exc:
                             self._retire_selector(selector, exc)
                             raise
                         finally:
@@ -634,7 +771,7 @@ class DualASR:
                 except Exception as exc:
                     fallback_reason = type(exc).__name__
                     log.warning("Selector fallback at %.2fs: %s", utt.start_s, exc)
-                    if selector_started and isinstance(exc, (TimeoutError, OSError)):
+                    if selector_started and isinstance(exc, (TimeoutError, OSError, RuntimeError)):
                         self._retire_selector(selector, exc)
         if ((current and current() != utt.generation)
                 or (cancel_event is not None and cancel_event.is_set())
@@ -672,5 +809,17 @@ class DualASR:
             log.warning("Suppressing unreliable dual ASR %.2fs: %s", utt.start_s, issue or "unresolved_disagreement")
             record("", "abstain_" + (issue or "disagreement"), score, flags, selector_called)
             return ""
+        try:
+            name_diagnostic = self._resolve_name_occurrences(
+                utt, result, primary, secondary, title, context, selector, backlog,
+                current, cancel_event, end, selector_elapsed)
+        except CancelledError:
+            return ""
+        except Exception as exc:
+            # Optional resolver faults cannot lose this or later subtitles.
+            name_diagnostic = {"called": False, "abstained": True,
+                               "failure": type(exc).__name__}
+            utt.name_disambiguation = name_diagnostic
+            log.warning("Proper-name resolver fallback: %s", type(exc).__name__)
         record(result, selected_by, score, flags, selector_called)
         return result

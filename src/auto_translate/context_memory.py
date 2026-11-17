@@ -284,6 +284,7 @@ def build_recent_context(
     memory_lines: int = 24,
     current_ja: str = "",
     max_chars: int = 640,
+    current_terms: list[tuple[str, str]] | None = None,
 ) -> str:
     """Relevant bounded reference data beyond the normal PLaMo chat history.
 
@@ -299,12 +300,15 @@ def build_recent_context(
     lines: list[str] = []
     found: list[str] = []
     seen: set[str] = set()
-    current_terms = {source for source, _ in glossary.find(current_ja)} if current_ja else None
+    # A caller with per-occurrence name evidence can narrow the current
+    # vocabulary. Static history must not restore an excluded ambiguous name.
+    allowed_terms = (set(current_terms) if current_terms is not None else
+                     set(glossary.find(current_ja)) if current_ja else None)
     # The static glossary is reliable even if past PLaMO output was not.
     for ja, _ in reversed(recent):
         for source, target in glossary.find(ja):
             if (source in seen or len(source) > 40 or len(target) > 60
-                    or (current_terms is not None and source not in current_terms)):
+                    or (allowed_terms is not None and (source, target) not in allowed_terms)):
                 continue
             seen.add(source)
             found.append(f"{source} = {target}")

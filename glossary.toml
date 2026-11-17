@@ -339,6 +339,13 @@
 # Lap-sama clip: https://www.youtube.com/watch?v=qrEl4NjGjQk
 # ID: https://hololive.hololivepro.com/talents/airani-iofifteen/
 # EN: https://hololive.hololivepro.com/talents/fuwawa-abyssgard/
+# Mikochi nickname Q&A: https://hololive.hololivepro.com/talents/sakuramiko/
+# Spoken short Moona/Kaela self-intros and short Mococo profile text:
+# https://hololive.hololivepro.com/en/talents/moona-hoshinova/
+# https://hololive.hololivepro.com/en/talents/kaela-kovalskia/
+# https://hololive.hololivepro.com/en/talents/mococo-abyssgard/
+# Ambiguous Matsuri/Miko entries below are always occurrence-gated by the
+# proper-name resolver; listing a spelling never proves that it is a name.
 [nicknames]
 "ラプ" = "Lap"
 "らぷ" = "Lap"
@@ -351,8 +358,23 @@
 "ラプラス" = "Laplus"
 "らぷらす" = "Laplus"
 "みこ" = "Miko"
+"ミコ" = "Miko"
 "みこちゃん" = "Miko-chan"
+"ミコちゃん" = "Miko-chan"
+"みこさん" = "Miko-san"
+"ミコさん" = "Miko-san"
 "みこち" = "Mikochi"
+"ミコチ" = "Mikochi"
+"まつり" = "Matsuri"
+"マツリ" = "Matsuri"
+"祭り" = "Matsuri"
+"まつりちゃん" = "Matsuri-chan"
+"マツリちゃん" = "Matsuri-chan"
+"祭りちゃん" = "Matsuri-chan"
+"まつりさん" = "Matsuri-san"
+"マツリさん" = "Matsuri-san"
+"祭りさん" = "Matsuri-san"
+"まつり様" = "Matsuri-sama"
 "すいちゃん" = "Sui-chan"
 "ぺこちゃん" = "Peko-chan"
 "ぺこーら" = "Pekoora"
@@ -373,6 +395,9 @@
 "船長" = "Senchou"
 "フワワ" = "Fuwawa"
 "イオフィ" = "Iofi"
+"ムーナ" = "Moona"
+"カエラ" = "Kaela"
+"モココ" = "Mococo"
 
 # ASR-only homophone evidence. These never introduce speech not heard by
 # one of the recognizers. Scene repairs additionally require a GTA title,

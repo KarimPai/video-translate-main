@@ -20,6 +20,7 @@ from .asr_correction import correct_known_asr_terms
 from .watame import correct_asr_name, reconcile_caption
 from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
+from .proper_names import resolve_names
 from .text_filter import is_usable_transcript
 from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
 from .config import AsrConfig, Config, vad_for_source
@@ -112,6 +113,8 @@ def run_asr(
     gate=None,
 ) -> None:
     """Transcribe Japanese speech; drop only confident English/Indonesian audio."""
+    name_history = deque(maxlen=4)
+    name_generation = None
     while True:
         item = in_q.get()
 
@@ -124,6 +127,12 @@ def run_asr(
             if get_generation is not None and item.generation != get_generation():
                 continue
 
+            if item.reset or item.generation != name_generation:
+                name_history.clear()
+                reset_names = getattr(dual, "reset_name_context", None)
+                if callable(reset_names):
+                    reset_names(item.generation)
+            name_generation = item.generation
             out_q.put(item)
             continue
 
@@ -131,6 +140,9 @@ def run_asr(
 
         if get_generation is not None and utt.generation != get_generation():
             continue
+        if utt.generation != name_generation:
+            name_history.clear()
+            name_generation = utt.generation
         if (live and dual is not None and _expired_live_cue(
                 utt, getattr(dual, "playback_position", None), live_late_window_s)):
             log.info("Skipping expired live ASR cue %.2f-%.2fs", utt.start_s, utt.end_s)
@@ -150,6 +162,9 @@ def run_asr(
                 "reusing translated VOD cue %.2f-%.2fs after seek",
                 cached.start_s, cached.end_s,
             )
+            name_history.append(cached.ja[:160])
+            if dual is not None:
+                dual.remember(utt.generation, cached.ja)
             out_q.put(replace(
                 cached,
                 generation=utt.generation,
@@ -202,10 +217,22 @@ def run_asr(
                     increment_counter("expired")
                     continue
                 model_started = time.monotonic()
-                text = asr.transcribe(utt.audio, utt.probe)
+                keywords = []
+                hint_provider = getattr(dual, "name_keywords", None)
+                if (asr_cfg is not None and getattr(asr_cfg, "haas_keywords_enabled", False)
+                        and not utt.probe and callable(hint_provider)):
+                    try:
+                        keywords = hint_provider(utt.generation)
+                    except Exception:
+                        log.warning("Name keyword context unavailable; using ordinary Haas decode")
+                text = (asr.transcribe(utt.audio, utt.probe, keywords=keywords)
+                        if keywords else asr.transcribe(utt.audio, utt.probe))
         except CancelledError:
             continue
         primary_elapsed_s = time.monotonic() - model_started
+        keyword_diagnostic = getattr(asr, "last_keyword_diagnostics", {})
+        primary_keyword_diagnostic = (dict(keyword_diagnostic)
+                                      if isinstance(keyword_diagnostic, dict) else {})
         update_metrics(stages={"haas_s": primary_elapsed_s})
         if stop is not None and stop.is_set():
             continue
@@ -315,6 +342,27 @@ def run_asr(
         if stop is not None and stop.is_set():
             continue
 
+        # Resolve against the final Japanese after caption/term repairs. Model
+        # classifications only apply to the exact source whose spans were read.
+        name_context = dict(getattr(utt, "name_disambiguation", {}) or {})
+        classifications = (name_context.get("classifications")
+                           if name_context.get("japanese") == text else None)
+        try:
+            mentions = resolve_names(
+                text, haas=original_haas, whisper=name_context.get("whisper", ""),
+                previous_ja=" ".join(name_history), video_title=vod_title,
+                classifications=classifications,
+            )
+            name_context["mentions"] = [mention.as_dict() for mention in mentions]
+            name_context["resolver_error"] = None
+        except Exception as exc:
+            # An optional resolver failure cannot stop later subtitles.
+            log.warning("Name resolver unavailable at %.2fs: %s", utt.start_s, exc)
+            name_context["mentions"] = []
+            name_context["resolver_error"] = type(exc).__name__
+        name_context.update(japanese=text, haas=original_haas,
+                            haas_keywords=primary_keyword_diagnostic)
+        name_history.append(text[:160])
         if dual is not None:
             dual.remember(utt.generation, text)
             if session:
@@ -322,6 +370,7 @@ def run_asr(
                                        selected_ja=choice, after_asr_retry=before_caption,
                                        after_caption=before_name, after_name=corrected,
                                        after_term_repair=text, speech_start_s=utt.speech_start_s,
+                                       name_resolution=name_context,
                                        asr_elapsed_s=utt.timings.asr_end-utt.timings.asr_start))
         out_q.put(
             Transcript(
@@ -332,6 +381,7 @@ def run_asr(
                 generation=utt.generation,
                 speech_start_s=utt.speech_start_s,
                 diagnostic_session=session,
+                name_context=name_context,
             )
         )
 
@@ -425,8 +475,20 @@ def run_translate(
                         increment_counter("expired")
                         continue
                     model_started = time.monotonic()
+                    set_context = getattr(translator, "set_name_context", None)
+                    if callable(set_context) and tr.name_context.get("japanese") == tr.ja:
+                        try:
+                            set_context(tr.ja, tr.name_context.get("mentions", []))
+                        except Exception as exc:
+                            log.warning("Translation name context unavailable: %s", exc)
                     en = translator.translate(tr.ja, list(history))
                     update_metrics(stages={"plamo_s": time.monotonic() - model_started})
+                    name_diagnostic = getattr(translator, "last_name_diagnostics", {})
+                    if (not en and isinstance(name_diagnostic, dict)
+                            and name_diagnostic.get("unresolved_name_issue")):
+                        suppressed = True
+                        log.warning("Name translation abstained at %.2fs: %s", tr.start_s,
+                                    name_diagnostic["unresolved_name_issue"])
                 consecutive_failures = 0
             except CancelledError:
                 continue
@@ -491,6 +553,7 @@ def run_translate(
                                    end_s=round(tr.end_s, 3), final_ja=tr.ja if translator else None,
                                    history_repair_from=before_history if before_history != tr.ja else None,
                                    final_en=en, suppressed=suppressed,
+                                   name_translation=getattr(translator, "last_name_diagnostics", {}),
                                    mt_elapsed_s=tr.timings.mt_end-tr.timings.mt_start))
         if suppressed:
             increment_counter("dropped")

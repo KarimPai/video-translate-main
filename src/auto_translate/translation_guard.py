@@ -73,11 +73,87 @@ def _number_values(text: str, japanese: bool) -> Counter:
 _GUARDED_NAMES = frozenset({"hololive", "watame", "pekora", "miko", "korone", "subaru", "haachama", "laplus"})
 
 
+def _mention_value(mention, field, default=None):
+    return mention.get(field, default) if isinstance(mention, dict) else getattr(mention, field, default)
+
+
+def resolved_name_issue(japanese: str, english: str, mentions, *, names=None) -> str | None:
+    """Check independently resolved occurrences, including kanji spellings.
+
+    This checks evidence and exact name counts, not English semantic accuracy.
+    In particular, Miko cannot satisfy Mikochi or Miko-chan, and a name found
+    elsewhere in a mixed cue cannot excuse a missing second mention.
+    """
+    if mentions is None and names is None:
+        return None
+    expected = Counter()
+    literal_families = set()
+    for mention in mentions or ():
+        source = _mention_value(mention, "source", "")
+        start, end = _mention_value(mention, "start", -1), _mention_value(mention, "end", -1)
+        if type(start) is not int or type(end) is not int or japanese[start:end] != source:
+            continue
+        classification = _mention_value(mention, "classification")
+        family = _mention_value(mention, "family", "")
+        if classification == "PERSON":
+            target = _mention_value(mention, "target")
+            if target:
+                expected[target] += 1
+        elif classification == "COMMON_NOUN":
+            literal_families.add(family)
+    if expected:
+        # One English span can satisfy one occurrence only. Matching longest
+        # first prevents Natsuiro Matsuri from also satisfying a spoken Matsuri.
+        pattern = r"(?<![\w-])(?:" + "|".join(
+            re.escape(target) for target in sorted(expected, key=len, reverse=True)) + r")(?![\w-])"
+        actual = Counter(match.group().casefold() for match in re.finditer(pattern, english, re.I))
+        if any(actual[target.casefold()] < count for target, count in expected.items()):
+            return "proper_name_mismatch"
+    supported = set(expected)
+    supported.update(target for source, target in (names or ()) if source in japanese)
+    for full, family in (("Natsuiro Matsuri", "Matsuri"), ("Sakura Miko", "Miko"),
+                         ("Tsunomaki Watame", "Watame"), ("Fuwawa Abyssgard", "Fuwawa")):
+        if (any(target == family or target.startswith(family + "-") for target in supported)
+                and full not in supported and re.search(r"\b" + re.escape(full) + r"\b", english, re.I)):
+            return "proper_name_expansion"
+    for family, pattern in (("Matsuri", r"\b(?:Natsuiro\s+)?Matsuri\b"),
+                            ("Miko", r"\b(?:Sakura\s+)?Miko(?:chi)?\b")):
+        if family in literal_families:
+            allowed = sum(count for target, count in expected.items()
+                          if re.search(pattern, target, re.I))
+            if len(re.findall(pattern, english, re.I)) > allowed:
+                return "literal_noun_mismatch"
+    # Mask complete supported English spans first. A distinct short token
+    # inside a supplied full name (Fuwawa in Fuwawa Abyssgard) is not a new
+    # unsupported mention. Earlier expansion/count checks remain independent.
+    remaining = english
+    if supported:
+        allowed_pattern = r"(?<![\w-])(?:" + "|".join(
+            re.escape(target) for target in sorted(supported, key=len, reverse=True)) + r")(?![\w-])"
+        remaining = re.sub(allowed_pattern, lambda m: "\0" * len(m.group()), remaining, flags=re.I)
+    distinctive = (r"(?:Natsuiro\s+)?Matsuri|(?:Sakura\s+)?Miko(?:chi)?|"
+                   r"(?:Tsunomaki\s+)?Watamee?|Laplus|Haachama|Fuwawa|Iofi")
+    if re.search(r"(?<![\w-])(?:" + distinctive
+                 + r")(?:-(?:chan|san|sama|senpai|kun))?(?![\w-])", remaining, re.I):
+        return "unsupported_proper_name"
+    literal_patterns = {
+        "Matsuri": r"\b(?:festivals?|festivit(?:y|ies)|fairs?|carnivals?|celebrations?|events?|f[eê]tes?)\b",
+        "Miko": r"\b(?:shrine\s+(?:maidens?|attendants?)|priestess(?:es)?)\b",
+    }
+    if any(not re.search(literal_patterns[family], english, re.I)
+           for family in literal_families if family in literal_patterns):
+        # English can omit/rephrase a noun legitimately. This is a review
+        # signal for a bounded retry, never proof warranting a global repair.
+        return "possible_literal_noun_loss"
+    return None
+
+
 def suspicious_translation(
     japanese: str,
     english: str,
     *,
     names: list[tuple[str, str]] | None = None,
+    mentions=None,
 ) -> str | None:
     """Return a reason for at most one context-reduced retry, or None."""
     en = english.strip()
@@ -87,6 +163,9 @@ def suspicious_translation(
         return "prompt_echo_or_loop"
 
     jp = unicodedata.normalize("NFKC", japanese).strip()
+    name_issue = resolved_name_issue(japanese, en, mentions, names=names)
+    if name_issue:
+        return name_issue
     if len(jp) <= 24:
         if (_SHORT_POSITIVE_JA.fullmatch(jp) and _NEGATIVE_EN.search(en)
                 and not re.search(r"\bnot\s+bad\b", en, re.I)):
@@ -106,7 +185,7 @@ def suspicious_translation(
         return "numeric_mismatch"
 
     for source, target in (names or []):
-        if (target in SPOKEN_NAME_FORMS or target.casefold() in _GUARDED_NAMES) and source in jp:
+        if (target in SPOKEN_NAME_FORMS or target.casefold() in _GUARDED_NAMES) and source in japanese:
             if not re.search(r"(?<![a-z])" + re.escape(target) + r"(?![a-z])", en, re.I):
                 return "proper_name_mismatch"
     return None

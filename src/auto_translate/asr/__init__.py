@@ -19,6 +19,14 @@ def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "
         budget -= len(name) + 1
     if kept:
         text = (text + "\n" if text else "") + "人名：" + "、".join(kept)
+    words = []
+    for word in glossary.vocabulary if glossary else ():
+        if budget - len(word) - 5 < 0:
+            break
+        words.append(word)
+        budget -= len(word) + 1
+    if words:
+        text = (text + "\n" if text else "") + "用語：" + "、".join(words)
     return text[: cfg.max_context_chars]
 
 

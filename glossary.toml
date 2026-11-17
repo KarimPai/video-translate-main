@@ -545,3 +545,28 @@
 "ベスティア・ゼータ" = {}
 "カエラ・コヴァルスキア" = {}
 "こぼ・かなえる" = {}
+
+# Stream topics, enabled when the title or tags contain a "match" word.
+# "asr" words bias speech recognition toward the topic's vocabulary;
+# "terms" are added to the translation glossary for that stream only.
+[topics.gta]
+match = ["GTA", "グラセフ", "ストグラ"]
+asr = ["店舗強盗", "銀行強盗", "宝石店強盗", "コンビニ強盗", "指名手配", "現着", "応援", "無線", "救急隊", "犯人", "パトカー"]
+
+[topics.gta.terms]
+"店舗強盗" = "store robbery"
+"銀行強盗" = "bank robbery"
+"宝石店強盗" = "jewelry store robbery"
+"コンビニ強盗" = "convenience store robbery"
+"指名手配" = "wanted"
+"現着" = "on scene"
+"現場到着" = "arrived on scene"
+"救急隊" = "EMS"
+"無線" = "radio"
+"犯人" = "suspect"
+# Speech recognition mishearings of 店舗強盗 and 指名手配.
+"店舗号" = "store robbery"
+"店舗コート" = "store robbery"
+"店舗ゴート" = "store robbery"
+"店舗オート" = "store robbery"
+"締め手配" = "wanted"

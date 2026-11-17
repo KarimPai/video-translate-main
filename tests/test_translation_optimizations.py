@@ -1,5 +1,6 @@
 """Offline tests for HY-MT prompt construction and context-gated glossary hints."""
 from pathlib import Path
+import tempfile
 import unittest
 
 from auto_translate.config import TranslateConfig
@@ -182,6 +183,20 @@ class GlossaryHintTests(unittest.TestCase):
         for source in ("水星の魔女見た？", "水星と金星は惑星だよ"):
             with self.subTest(source=source):
                 self.assertEqual(GLOSSARY.name_terms(source), [])
+
+    def test_gta_topic_terms_apply_only_to_gta_streams(self):
+        gta = GLOSSARY.for_stream("【#holoGTA】勤務だ！DAY3")
+        for source, pair in (("店舗強盗行ける人いますか。", ("店舗強盗", "store robbery")),
+                             ("店舗ゴートめちゃめちゃいけ。", ("店舗ゴート", "store robbery")),
+                             ("締め手配しちゃった。", ("締め手配", "wanted"))):
+            with self.subTest(source=source):
+                self.assertIn(pair, gta.find(source))
+                self.assertNotIn(pair, GLOSSARY.find(source))
+        self.assertIn(("水星先輩", "Suisei-senpai"), gta.name_terms("犯人は水星先輩らしいって。"))
+        with self.assertRaises(ValueError), tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "g.toml"
+            path.write_text('[topics.x]\nasr = ["a"]\n', encoding="utf-8")
+            Glossary.load(path)
 
     def test_joined_names_and_false_compounds(self):
         terms = GLOSSARY.name_terms("ルイちゃんカリオペがスイちゃんが撃ったって言った。")

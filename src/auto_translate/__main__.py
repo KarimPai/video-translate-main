@@ -232,6 +232,11 @@ def _main(resources: ExitStack) -> None:
         if cast:
             log.info("Holodex: %d tagged collab name(s)", len(cast["mentions"]))
             metadata = dict(metadata, holodex_channel=cast["channel"], holodex_mentions=cast["mentions"])
+    meta = metadata or {}
+    glossary = glossary.for_stream("\n".join((str(meta.get("title") or ""),
+                                              " ".join(map(str, meta.get("tags") or [])))))
+    if glossary.active_topics:
+        log.info("Glossary topics: %s", ", ".join(glossary.active_topics))
     stream_context = describe_stream(metadata, glossary)
     if stream_context.host or stream_context.cast:
         log.info("Stream context: host=%s cast=%s", stream_context.host or "-",

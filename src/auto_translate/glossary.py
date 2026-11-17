@@ -43,10 +43,14 @@ _PRONOUNS = {"she": "女性", "he": "男性"}
 
 class Glossary:
     def __init__(self, terms: dict[str, str], *, nicknames=None, talent_aliases=None,
-                 talents=None) -> None:
+                 talents=None, topics=None, vocabulary=(), active_topics=()) -> None:
         self.nicknames = dict(nicknames or {})
         self.talent_aliases = dict(talent_aliases or {})
         self.talents = {name: dict(profile) for name, profile in (talents or {}).items()}
+        self.topics = dict(topics or {})
+        self.vocabulary = tuple(vocabulary)
+        self.active_topics = tuple(active_topics)
+        self._base_terms = dict(terms)
         self._english = terms | self.nicknames
         # Every spelling whose English matches a profiled talent identifies that talent.
         by_english = {self._english[name]: name for name in self.talents if name in self._english}
@@ -80,7 +84,30 @@ class Glossary:
                     or any(not isinstance(word, str) or not word.strip() for word in profile.get("self", []))
                     or profile.get("pronoun", "she") not in _PRONOUNS):
                 raise ValueError(f"Invalid talent profile: {name}")
-        return cls(terms, nicknames=nicknames, talent_aliases=aliases, talents=talents)
+        topics = data.get("topics", {})
+        for name, topic in topics.items():
+            words = [*topic.get("match", []), *topic.get("asr", [])] if isinstance(topic, dict) else [None]
+            if (not isinstance(topic, dict) or set(topic) - {"match", "asr", "terms"}
+                    or not topic.get("match") or not isinstance(topic.get("terms", {}), dict)
+                    or any(not isinstance(word, str) or not word.strip() for word in words)
+                    or any(not isinstance(v, str) for v in topic.get("terms", {}).values())):
+                raise ValueError(f"Invalid glossary topic: {name}")
+        return cls(terms, nicknames=nicknames, talent_aliases=aliases, talents=talents, topics=topics)
+
+    def for_stream(self, metadata_text: str) -> "Glossary":
+        """Enable topic vocabulary (e.g. GTA role-play) named in the stream title or tags."""
+        folded = metadata_text.casefold()
+        active = [name for name, topic in self.topics.items()
+                  if any(word.casefold() in folded for word in topic["match"])]
+        if not active:
+            return self
+        terms, vocabulary = dict(self._base_terms), []
+        for name in active:
+            terms |= self.topics[name].get("terms", {})
+            vocabulary += [word for word in self.topics[name].get("asr", []) if word not in vocabulary]
+        return Glossary(terms, nicknames=self.nicknames, talent_aliases=self.talent_aliases,
+                        talents=self.talents, topics=self.topics, vocabulary=vocabulary,
+                        active_topics=active)
 
     def talents_in(self, text: str) -> list[str]:
         """Profiled talents named in Japanese or romanized text, by first mention."""

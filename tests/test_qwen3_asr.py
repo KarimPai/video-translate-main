@@ -87,6 +87,16 @@ class QwenProtocolTests(unittest.TestCase):
         self.assertEqual(sum(name in glossary.talent_aliases.values() for name in names), 4)
         self.assertLessEqual(len(asr_context(AsrConfig(max_context_chars=20), glossary, title)), 20)
 
+    def test_topic_vocabulary_biases_asr_only_for_matching_streams(self):
+        glossary = Glossary.load(Path("glossary.toml"))
+        title = "【#holoGTA】DAY3【獅白ぼたん/ホロライブ】"
+        gta = glossary.for_stream(title)
+        self.assertEqual(gta.active_topics, ("gta",))
+        self.assertIn("用語：店舗強盗、銀行強盗", asr_context(AsrConfig(), gta, title))
+        self.assertIs(glossary.for_stream("【マイクラ】雑談"), glossary)
+        self.assertNotIn("用語", asr_context(AsrConfig(), glossary, title))
+        self.assertLessEqual(len(asr_context(AsrConfig(max_context_chars=30), gta, title)), 30)
+
     def test_selected_name_hint_echo_is_still_rejected(self):
         glossary = Glossary.load(Path("glossary.toml"))
         context = asr_context(AsrConfig(), glossary, "すいちゃん ぺこら みこち")

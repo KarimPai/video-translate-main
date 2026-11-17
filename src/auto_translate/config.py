@@ -121,12 +121,22 @@ class AsrConfig:
     response_timeout_s: float = 45.0
     live_response_timeout_s: float = 20.0
     startup_timeout_s: float = 180.0
+    # Retry a rejected utterance once with radio enhancement and decoder padding.
+    rescue_retry: bool = True
+    rescue_min_vad_confidence: float = 0.45
+    rescue_min_duration_s: float = 0.4
 
     def __post_init__(self):
         for name in ("voxtral_model_path", "voxtral_server_path"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"asr.{name} must be a nonempty path")
+        if type(self.rescue_retry) is not bool:
+            raise ValueError("asr.rescue_retry must be boolean")
+        if type(self.rescue_min_vad_confidence) not in (int, float) or not 0.0 <= self.rescue_min_vad_confidence <= 1.0:
+            raise ValueError("asr.rescue_min_vad_confidence must be between 0 and 1")
+        if type(self.rescue_min_duration_s) not in (int, float) or not 0.0 <= self.rescue_min_duration_s <= 10.0:
+            raise ValueError("asr.rescue_min_duration_s must be 0..10 s")
         if type(self.cuda_device) is not int or self.cuda_device < 0:
             raise ValueError("asr.cuda_device must be a nonnegative integer")
         if type(self.threads) is not int or not 1 <= self.threads <= 256:

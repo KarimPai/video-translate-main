@@ -49,6 +49,7 @@ class VoxtralConfigurationTests(unittest.TestCase):
         self.assertEqual({f.name for f in fields(cfg.asr)}, {
             "voxtral_model_path", "voxtral_server_path", "cuda_device", "threads",
             "blocklist", "response_timeout_s", "live_response_timeout_s", "startup_timeout_s",
+            "rescue_retry", "rescue_min_vad_confidence", "rescue_min_duration_s",
         })
 
 

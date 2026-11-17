@@ -7,5 +7,6 @@
 - Simplified configuration, dependency installation, GUI controls, and diagnostic labels around the new backend.
 - Added pinned Windows CUDA runtime and checkpoint integrity verification to the independent fresh-clone installer.
 - Updated Windows executable packaging and the offline regression workflow for the experimental branch.
+- Recovered HoloGTA-style radio chatter: band-limited audio is no longer dropped as an arbitrary foreign language, rejected Voxtral results get one radio-enhanced, silence-padded retry, and every rejection is recorded as an `asr_rejected` diagnostic event.
 
 Automated protocol and lifecycle tests do not establish real Japanese transcription accuracy, RTX 3070 VRAM headroom, playback stability, or Windows executable availability. Those results must be reported with actual test/build evidence.

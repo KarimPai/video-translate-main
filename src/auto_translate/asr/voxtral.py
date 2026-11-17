@@ -70,6 +70,43 @@ def _audio16(audio: np.ndarray, *, normalize: bool = True) -> np.ndarray:
     return np.ascontiguousarray(value * 32767, dtype="<i2")
 
 
+def radio_enhance(audio: np.ndarray) -> np.ndarray:
+    """Recover faint, band-limited radio speech for a second Voxtral pass."""
+    value = np.clip(np.asarray(audio, dtype=np.float32), -1, 1)
+    if value.size < 320:
+        return value
+    value = value - float(value.mean())
+    spectrum = np.fft.rfft(value)
+    freqs = np.fft.rfftfreq(value.size, 1 / 16000)
+    # 90 Hz high-pass removes rumble; a gentle 3 dB 1-4 kHz lift aids consonants.
+    shape = np.clip((freqs - 60.0) / 60.0, 0.0, 1.0)
+    shape = shape * (1.0 + 0.41 * np.exp(-0.5 * ((freqs - 2500.0) / 900.0) ** 2))
+    value = np.fft.irfft(spectrum * shape, n=value.size).astype(np.float32)
+
+    # Frame-wise AGC to about -20 dBFS, up to 24 dB, never lifting noise above speech.
+    frame = 320
+    count = -(-value.size // frame)
+    padded = np.pad(value, (0, count * frame - value.size))
+    rms = np.sqrt(np.mean(padded.reshape(count, frame) ** 2, axis=1) + 1e-12)
+    floor = max(1e-4, 0.1 * float(np.percentile(rms, 90)))
+    gains = np.clip(0.1 / np.maximum(rms, floor), 1.0, 16.0)
+    gains = np.convolve(np.pad(gains, 2, mode="edge"), np.ones(5) / 5, mode="valid")
+    centers = np.arange(count) * frame + frame / 2
+    value = value * np.interp(np.arange(value.size), centers, gains).astype(np.float32)
+    peak = float(np.max(np.abs(value)))
+    if peak > 0.95:
+        value = value * (0.95 / peak)
+    return value.astype(np.float32)
+
+
+def _pad_for_decoder(audio: np.ndarray, lead_s: float = 1.0, tail_s: float = 0.6) -> np.ndarray:
+    # Voxtral Realtime emits text after a delay; leading and trailing silence
+    # improves first-word recognition and flushes the final words.
+    return np.concatenate([np.zeros(round(lead_s * 16000), np.float32),
+                           np.asarray(audio, dtype=np.float32),
+                           np.zeros(round(tail_s * 16000), np.float32)])
+
+
 def _server_config(cfg: AsrConfig, model: Path, port: int) -> dict:
     return {
         "host": "127.0.0.1", "port": port,
@@ -94,6 +131,7 @@ class VoxtralASR:
         self.last_failed = False
         self.last_stop = None
         self.last_raw_transcript = ""
+        self.last_rejection = None
         self._state_lock = threading.Lock()
         self._inference_lock = threading.Lock()
         self._generation = 0
@@ -211,10 +249,18 @@ class VoxtralASR:
             self.last_raw_transcript = ""
 
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
+        return self._transcribe(_audio16(audio, normalize=not probe), len(audio) / 16000)
+
+    def transcribe_rescue(self, audio: np.ndarray) -> str:
+        """Retry rejected speech with radio enhancement and decoder padding."""
+        pcm = _audio16(_pad_for_decoder(radio_enhance(audio)), normalize=False)
+        return self._transcribe(pcm, len(audio) / 16000)
+
+    def _transcribe(self, pcm: np.ndarray, duration_s: float) -> str:
         with self._state_lock:
             generation = self._generation
             self.last_raw_transcript = ""
-        pcm = _audio16(audio, normalize=not probe)
+            self.last_rejection = None
         if not pcm.size:
             return ""
         started = time.monotonic()
@@ -274,13 +320,16 @@ class VoxtralASR:
                 self.last_raw_transcript = text
             self.last_failed = False
             text = trim_repetition_tail(unicodedata.normalize("NFC", text).strip())
-            problem = transcript_problem(text, pcm.size / 16000)
-            if problem or not potential_japanese_transcript(text) or any(word in text for word in self.cfg.blocklist):
-                log.debug("Discarding Voxtral output (%s): %s", problem or "language/blocklist", text)
+            problem = (transcript_problem(text, duration_s)
+                       or (None if potential_japanese_transcript(text) else "not_japanese")
+                       or ("blocklist" if any(word in text for word in self.cfg.blocklist) else None))
+            if problem:
+                self.last_rejection = problem
+                log.debug("Discarding Voxtral output (%s): %s", problem, text)
                 return ""
             elapsed = time.monotonic() - started
             update_metrics(stages={"voxtral_s": round(elapsed, 3),
-                                   "voxtral_rtf": round(elapsed / (pcm.size / 16000), 3)},
+                                   "voxtral_rtf": round(elapsed / max(duration_s, 1e-3), 3)},
                            workers={"voxtral": "ready (CUDA Q4_K, offline)"})
             return text
 

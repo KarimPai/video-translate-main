@@ -99,6 +99,31 @@ def _expired_live_cue(cue, playback_position, late_window_s: float) -> bool:
             and max(0.0, late_window_s) < position - cue.end_s <= 120.0)
 
 
+def _is_japanese(candidate, evidence: dict) -> bool:
+    return isinstance(candidate, str) and supports_japanese_transcript(candidate, **evidence)
+
+
+def _rejection_reason(asr, text) -> str:
+    reason = getattr(asr, "last_rejection", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    return "empty" if not isinstance(text, str) or not text.strip() else "unsupported_language"
+
+
+def _raw_transcript(asr) -> str:
+    raw = getattr(asr, "last_raw_transcript", "")
+    return raw if isinstance(raw, str) else ""
+
+
+def _rescue_eligible(utt: Utterance, cfg: AsrConfig | None) -> bool:
+    cfg = cfg or AsrConfig()
+    if not cfg.rescue_retry or utt.probe:
+        return False
+    if len(utt.audio) / SAMPLE_RATE < cfg.rescue_min_duration_s:
+        return False
+    return utt.vad_confidence is None or utt.vad_confidence >= cfg.rescue_min_vad_confidence
+
+
 def run_asr(
     asr: ASR,
     in_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
@@ -210,11 +235,42 @@ def run_asr(
 
         previous_ja = (name_history[-1] if name_history and last_transcript_end_s is not None
                        and 0 <= utt.start_s - last_transcript_end_s <= 10.0 else "")
-        if not isinstance(text, str) or not supports_japanese_transcript(
-                text, language_decision=language_decision, video_context=vod_title,
-                previous_ja=previous_ja, vad_confidence=utt.vad_confidence,
-                duration_s=len(utt.audio) / SAMPLE_RATE, probe=utt.probe):
-            continue
+
+        evidence = dict(language_decision=language_decision, video_context=vod_title,
+                        previous_ja=previous_ja, vad_confidence=utt.vad_confidence,
+                        duration_s=len(utt.audio) / SAMPLE_RATE, probe=utt.probe)
+
+        if not _is_japanese(text, evidence):
+            reason = _rejection_reason(asr, text)
+            raw = _raw_transcript(asr)
+            rescue = getattr(asr, "transcribe_rescue", None)
+            attempted = (callable(rescue) and _rescue_eligible(utt, asr_cfg)
+                         and not (live and _expired_live_cue(utt, playback_position, live_late_window_s)))
+            if attempted:
+                try:
+                    with (gate.operation("voxtral", current=get_generation, generation=utt.generation)
+                          if gate is not None else nullcontext()):
+                        rescued = rescue(utt.audio)
+                except CancelledError:
+                    continue
+                if cancelled(utt.generation):
+                    continue
+                if _is_japanese(rescued, evidence):
+                    increment_counter("asr_rescued")
+                    record_event("asr_rescued", generation=utt.generation, reason=reason,
+                                 source_start_s=utt.start_s, source_end_s=utt.end_s,
+                                 rejected_text=raw[:160])
+                    text = rescued
+            if not _is_japanese(text, evidence):
+                increment_counter("asr_rejected")
+                record_event("asr_rejected", generation=utt.generation, reason=reason,
+                             rescue_reason=_rejection_reason(asr, rescued) if attempted else None,
+                             raw_text=raw[:160], rescue_text=_raw_transcript(asr)[:160] if attempted else None,
+                             vad_confidence=utt.vad_confidence,
+                             source_start_s=utt.start_s, source_end_s=utt.end_s)
+                log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
+                          utt.start_s, utt.end_s, reason, raw[:160])
+                continue
         if asr_cfg is not None and any(term in text for term in asr_cfg.blocklist):
             continue
         issue = transcript_problem(text, utt.end_s - utt.start_s)

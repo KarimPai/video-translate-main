@@ -19,7 +19,20 @@ log = logging.getLogger(__name__)
 _MODEL_REPO = "krut42/voice-lid-ecapa-voxlingua107"
 _MODEL_FILE = "lid-ecapa-voxlingua107.int8.onnx"
 _LABEL_FILE = "lid-labels.txt"
+_HOLOLIVE_FOREIGN = frozenset(("en", "id"))
 
+
+def radio_band_limited(audio: np.ndarray) -> bool:
+    """Detect telephone/game-radio speech with almost no energy above 4 kHz."""
+    clip = np.asarray(audio, dtype=np.float32)
+    if clip.size < SAMPLE_RATE // 4:
+        return False
+    power = np.abs(np.fft.rfft((clip - clip.mean()) * np.hanning(clip.size))) ** 2
+    freqs = np.fft.rfftfreq(clip.size, 1 / SAMPLE_RATE)
+    speech = float(power[(freqs >= 300) & (freqs < 7500)].sum())
+    if speech <= 1e-6 * clip.size:
+        return False
+    return float(power[(freqs >= 4000) & (freqs < 7500)].sum()) / speech < 0.02
 
 
 @dataclass(frozen=True)
@@ -119,8 +132,13 @@ class LanguageFilter:
         # Require ALL windows to be strongly non-Japanese, and only when
         # classifying non-Japanese speech. This avoids
         # suppressing Japanese speech inside code-switched utterances.
+        # Band-limited radio Japanese is often misread as an arbitrary
+        # language, so radio audio may only be dropped as English/Indonesian.
+        radio = radio_band_limited(audio)
         strong = [
-            (lang != "ja" and lang != "unknown" and confidence >= self.cfg.drop_probability
+            (lang != "ja" and lang != "unknown"
+             and (lang in _HOLOLIVE_FOREIGN or not radio)
+             and confidence >= self.cfg.drop_probability
              and japanese <= self.cfg.max_japanese_probability
              and margin >= self.cfg.min_top_margin)
             for lang, confidence, japanese, margin in predicted

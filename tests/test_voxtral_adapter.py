@@ -139,6 +139,20 @@ class VoxtralAdapterTests(unittest.TestCase):
         actual = [worker.transcribe(np.ones(16000, np.float32)) for _ in texts]
         self.assertEqual(actual, ["ラプちゃん。", "草", "うん", "", "", ""])
 
+    def test_rejection_reason_and_padded_radio_rescue_request(self):
+        worker = self.start([{"text": "Copy that, over."}, {"text": "禁止語"}, {"text": "了解、向かいます"}])
+        worker.cfg.blocklist = ["禁止語"]
+        radio = (.002 * np.sin(2 * np.pi * 900 * np.arange(32000) / 16000)).astype(np.float32)
+        self.assertEqual(worker.transcribe(radio), "")
+        self.assertEqual(worker.last_rejection, "not_japanese")
+        self.assertEqual(worker.transcribe(radio), "")
+        self.assertEqual(worker.last_rejection, "blocklist")
+        self.assertEqual(worker.transcribe_rescue(radio), "了解、向かいます")
+        self.assertIsNone(worker.last_rejection)
+        requests = json.loads(self.requests_path.read_text(encoding="utf-8"))
+        self.assertEqual(requests[2]["wav"]["frames"], 32000 + 16000 + 9600)
+        self.assertEqual(set(requests[2]["body"]), {"model", "audio"})
+
     def test_raw_transcript_is_preserved_before_normalization_and_loop_trim(self):
         raw = "  ホ\u3099タンちゃんが来た。あいうえお" + "あいうえお" * 8 + "\n"
         worker = self.start([{"text": raw}, {"text": "Botan-chan!"}])

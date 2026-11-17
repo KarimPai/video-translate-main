@@ -12,6 +12,12 @@ live_response_timeout_s = 20
 blocklist = []
 # The service keeps the checkpoint resident and transcribes complete utterances.
 # Greedy decoding and a fixed seed are configured by the backend.
+# A rejected utterance (empty, non-Japanese or implausible) is retried once with
+# radio enhancement (high-pass, presence lift, AGC) and decoder silence padding.
+# This recovers faint, band-limited game-radio chatter such as HoloGTA calls.
+rescue_retry = true
+rescue_min_vad_confidence = 0.45
+rescue_min_duration_s = 0.4
 
 [gpu_budget]
 # Decimal GB of actual device free memory, sampled through NVML/nvidia-smi.

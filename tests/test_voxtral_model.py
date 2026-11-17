@@ -31,7 +31,7 @@ class VoxtralCheckpointTests(unittest.TestCase):
                 "sys.modules", {"huggingface_hub": SimpleNamespace(hf_hub_download=fetch)}):
             path = Path(folder) / voxtral_model.FILENAME
             path.write_bytes(content)
-            self.assertEqual(voxtral_model.download(folder), path)
+            self.assertEqual(voxtral_model.download(folder).resolve(), path.resolve())
             fetch.assert_not_called()
 
     def test_corrupt_file_forces_pinned_replacement(self):
@@ -49,7 +49,7 @@ class VoxtralCheckpointTests(unittest.TestCase):
                 return str(path)
 
             with patch.dict("sys.modules", {"huggingface_hub": SimpleNamespace(hf_hub_download=replace)}):
-                self.assertEqual(voxtral_model.download(folder), path)
+                self.assertEqual(voxtral_model.download(folder).resolve(), path.resolve())
 
     def test_download_with_wrong_digest_fails_explicitly(self):
         with TemporaryDirectory() as folder:

@@ -40,12 +40,12 @@ Setup records discovered MPV and runtime paths in `.cache/`. All required projec
 
 ## Build and troubleshooting
 
-The `windows-gui.yml` GitHub Actions workflow runs Windows/Qt regression checks, builds the frontend with Python 3.12 and PyInstaller, includes the source backend/setup, and uploads the complete distribution. Pushes on this branch or `workflow_dispatch` can trigger it. Download artifacts from a successful run; a checked-in workflow is not evidence of a successful EXE build.
+The `windows-gui.yml` GitHub Actions workflow runs Windows/Qt regression checks, builds the frontend with Python 3.12 and PyInstaller, launches the packaged EXE in an offscreen Qt smoke test, includes the source backend/setup, and uploads the complete distribution. Pushes on this branch or `workflow_dispatch` can trigger it. Download artifacts from a successful run; a checked-in workflow is not evidence of a successful EXE build.
 
 For a local frontend build after installing PySide6 and PyInstaller:
 
 ```cmd
-python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics src/auto_translate/gui.py
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics --hidden-import auto_translate.gui src/auto_translate/gui_bootstrap.py
 ```
 
 Place the complete frontend distribution inside the installed checkout, or include the same source/setup files as the workflow. Launch from the independent project directory.

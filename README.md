@@ -50,7 +50,7 @@ The translation memory, relevance-selected terminology, optional YouTube chat co
 
 ## Windows executable
 
-The [Windows GUI frontend build](https://github.com/KarimPai/video-translate-main/actions/workflows/windows-gui.yml) workflow builds **VideoTranslate.exe** with PyInstaller, runs the offline regression suite and Windows/Qt lifecycle checks, and uploads `VideoTranslate-Voxtral-Windows-GUI`. Extract the complete artifact, run its `Setup.bat`, then open `VideoTranslate.exe`. Keep the packaged `_internal` directory beside the EXE. The artifact contains the source backend and setup files; it deliberately does not contain model weights or a Python runtime environment. An EXE-only artifact is for updating an already matching complete artifact.
+The [Windows GUI frontend build](https://github.com/KarimPai/video-translate-main/actions/workflows/windows-gui.yml) workflow builds **VideoTranslate.exe** with PyInstaller, runs the offline regression suite and Windows/Qt lifecycle checks, launches the packaged EXE to verify Qt startup, and uploads `VideoTranslate-Voxtral-Windows-GUI`. Extract the complete artifact, run its `Setup.bat`, then open `VideoTranslate.exe`. Keep the packaged `_internal` directory beside the EXE. The artifact contains the source backend and setup files; it deliberately does not contain model weights or a Python runtime environment. An EXE-only artifact is for updating an already matching complete artifact.
 
 ## Tests and physical validation
 

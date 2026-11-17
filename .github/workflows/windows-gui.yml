@@ -320,7 +320,7 @@ jobs:
           $log = Get-Content "logs/gui-startup.log" -Raw
           if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
-        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics src/auto_translate/gui.py
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics --hidden-import auto_translate.gui src/auto_translate/gui_bootstrap.py
       - name: Include fresh-install source backend and setup in the full artifact
         shell: pwsh
         run: |
@@ -338,6 +338,29 @@ jobs:
           if ($exe.Length -lt 10000) { throw "Packaged frontend EXE unexpectedly small" }
           Write-Host "Incremental GUI EXE size: $([math]::Round($exe.Length / 1MB, 2)) MiB"
           Write-Host "Complete GUI runtime size: $([math]::Round($full / 1MB, 2)) MiB"
+      - name: Launch the packaged executable and verify Qt startup
+        shell: pwsh
+        run: |
+          $artifact = (Resolve-Path "dist/VideoTranslate").Path
+          $exe = Join-Path $artifact 'VideoTranslate.exe'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:VIDEO_TRANSLATE_PROJECT_DIR = $artifact
+          # Verify the bundled GUI can import without the source PYTHONPATH.
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -WorkingDirectory $artifact -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw 'Packaged VideoTranslate.exe did not finish its Qt smoke test within 30 seconds'
+          }
+          $process.Refresh()
+          if ($process.ExitCode -ne 0) { throw "Packaged VideoTranslate.exe failed with exit code $($process.ExitCode)" }
+          $logPath = Join-Path $artifact 'logs/gui-startup.log'
+          if (-not (Test-Path -LiteralPath $logPath)) { throw 'Packaged GUI did not create its startup log' }
+          $log = Get-Content -LiteralPath $logPath -Raw -Encoding utf8
+          if (-not $log.Contains($exe)) { throw 'Startup log does not identify the packaged executable' }
+          if (-not $log.Contains('GUI offscreen smoke test completed')) { throw 'Packaged GUI did not reach the Qt ready marker' }
+          if ($log.Contains('STARTUP FAILURE')) { throw "Packaged GUI reported a startup failure: $log" }
+          Write-Host 'Packaged VideoTranslate.exe launched Qt and exited successfully.'
       - name: Upload frontend EXE
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -26,8 +26,8 @@ import json, sys, time, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-config = json.loads(Path(sys.argv[1]).read_text())
-plan = json.loads(Path(sys.argv[2]).read_text())
+config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+plan = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 if plan.get("startup_error"):
     print(plan["startup_error"], flush=True)
     sys.exit(1)
@@ -36,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
     def respond(self, status, value):
-        payload = json.dumps(value, ensure_ascii=False).encode()
+        payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -57,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
                             channels=audio.getnchannels(), frames=audio.getnframes())
         index = len(requests)
         requests.append(dict(path=self.path, body=body, wav=metadata))
-        Path(plan["requests"]).write_text(json.dumps(requests))
+        Path(plan["requests"]).write_text(json.dumps(requests), encoding="utf-8")
         item = plan.get("responses", [dict(text="こんにちは")])[min(index, len(plan.get("responses", [0]))-1)]
         time.sleep(item.get("delay", 0))
         self.respond(item.get("status", 200), item.get("body", dict(text=item.get("text", "こんにちは"))))
@@ -76,7 +76,7 @@ class VoxtralAdapterTests(unittest.TestCase):
         self.model = self.root / "voxtral-mini-4b-realtime-2602-q4_k.gguf"
         self.model.write_bytes(b"GGUFfake model fixture")
         self.script = self.root / "server.py"
-        self.script.write_text(_FAKE_SERVER)
+        self.script.write_text(_FAKE_SERVER, encoding="utf-8")
         self.requests_path = self.root / "requests.json"
         self.launches = []
         self.addCleanup(stopping.clear)
@@ -86,13 +86,13 @@ class VoxtralAdapterTests(unittest.TestCase):
         if responses is not None:
             plan["responses"] = responses
         plan_path = self.root / "plan.json"
-        plan_path.write_text(json.dumps(plan))
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
         cfg = AsrConfig(voxtral_server_path=str(self.executable),
                         voxtral_model_path=str(self.model),
                         startup_timeout_s=3, response_timeout_s=response_timeout)
 
         def launch(command, **kwargs):
-            self.config = json.loads(Path(command[2]).read_text())
+            self.config = json.loads(Path(command[2]).read_text(encoding="utf-8"))
             process = subprocess.Popen(
                 [sys.executable, "-u", str(self.script), command[2], str(plan_path)], **kwargs)
             self.launches.append(process)
@@ -126,7 +126,7 @@ class VoxtralAdapterTests(unittest.TestCase):
                          ("voxtral_realtime", "asr", "offline"))
         self.assertFalse(entry["default_request_options"]["do_sample"])
         self.assertEqual(entry["default_request_options"]["seed"], 1234)
-        requests = json.loads(self.requests_path.read_text())
+        requests = json.loads(self.requests_path.read_text(encoding="utf-8"))
         self.assertEqual(requests[0]["path"], "/v1/audio/transcriptions")
         self.assertEqual(set(requests[0]["body"]), {"model", "audio"})
         self.assertEqual(requests[0]["wav"], {"rate": 16000, "width": 2, "channels": 1, "frames": 48000})
@@ -154,7 +154,7 @@ class VoxtralAdapterTests(unittest.TestCase):
         self.model.unlink()
         with self.assertRaisesRegex(VoxtralError, "checkpoint not found"):
             VoxtralASR(cfg)
-        self.model.write_text("download interrupted")
+        self.model.write_text("download interrupted", encoding="utf-8")
         with self.assertRaisesRegex(VoxtralError, "Invalid Voxtral GGUF"):
             VoxtralASR(cfg)
         cfg.voxtral_server_path = str(self.root / "missing.exe")

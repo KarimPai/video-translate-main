@@ -2,7 +2,7 @@
 
 Local Japanese-to-English subtitles for YouTube livestreams and VODs on Windows.
 
-`YouTube → FFmpeg 16 kHz audio → CPU FireRedVAD → Qwen3-ASR-1.7B → HY-MT1.5-7B → MPV subtitles`
+`YouTube → FFmpeg 16 kHz audio → CPU FireRedVAD → Qwen3-ASR-1.7B → Hy-MT2-7B → MPV subtitles`
 
 The `experiment/qwen3-asr-hymt` branch uses two application-owned llama.cpp servers on loopback. Audio and inference stay local; YouTube access and installation downloads require internet access. This branch replaces Voxtral/audio.cpp and PLaMo, including their name-repair, caption, chat, and extended-memory heuristics.
 
@@ -17,7 +17,7 @@ Setup installs uv, Python 3.12, yt-dlp, Deno, FFmpeg, MPV, CPU FireRedVAD, Qt, a
 | llama.cpp b12318 CUDA 12.4 | `.runtime/llama-b12318-cuda12/` |
 | Qwen3-ASR-1.7B Q8_0, 2.17 GB | `models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf` |
 | Qwen3-ASR audio projector Q8_0, 356 MB | `models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` |
-| HY-MT1.5-7B Q4_K_M, 4.62 GB | `models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf` |
+| Hy-MT2-7B Q4_K_M, 4.62 GB | `models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf` |
 | Python environment | `.venv/` |
 
 Setup verifies pinned GitHub runtime digests and Hugging Face model revisions/SHA256. Valid local weights are reused. Models, runtime binaries, and local configuration are not committed. Existing weights can be verified separately with `uv run --no-sync python -m auto_translate.models`.

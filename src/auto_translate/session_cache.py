@@ -70,8 +70,12 @@ class SessionSubtitleCache:
             cleaned = sanitize_english_output(matched.en)
             return replace(matched, en=cleaned) if cleaned else None
 
-    def active_at(self, now: float, minimum_s: float = 0.0) -> list[Subtitle]:
-        """Return already translated cues that should be visible at this time."""
+    def active_at(self, now: float, minimum_s: float = 0.0, display_until=None) -> list[Subtitle]:
+        """Return already translated cues that should be visible at this time.
+
+        minimum_s is also the lookback; display_until(sub, onset) may extend
+        a cue's end up to onset + minimum_s.
+        """
         with self._lock:
             minimum_s = min(10.0, max(0.0, minimum_s))
             items = []
@@ -82,7 +86,9 @@ class SessionSubtitleCache:
                         continue
                     seen.add(id(sub))
                     onset = sub.speech_start_s if sub.speech_start_s is not None else sub.start_s
-                    if onset <= now < max(sub.end_s, onset + minimum_s):
+                    until = (display_until(sub, onset) if display_until is not None
+                             else max(sub.end_s, onset + minimum_s))
+                    if onset <= now < until:
                         cleaned = sanitize_english_output(sub.en)
                         if cleaned:
                             items.append(replace(sub, en=cleaned))

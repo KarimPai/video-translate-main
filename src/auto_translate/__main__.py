@@ -51,7 +51,7 @@ def _main(resources: ExitStack) -> None:
                         help="previous dialogue lines given to the translator")
     parser.add_argument("--asr-model", type=Path, help="Qwen3-ASR GGUF model")
     parser.add_argument("--asr-mmproj", type=Path, help="Qwen3-ASR audio projector (mmproj) GGUF")
-    parser.add_argument("--mt-model", type=Path, help="HY-MT1.5 GGUF model")
+    parser.add_argument("--mt-model", type=Path, help="Hy-MT2 GGUF model")
     parser.add_argument("--llama-server", type=Path, help="llama.cpp llama-server executable (CUDA)")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
@@ -224,7 +224,15 @@ def _main(resources: ExitStack) -> None:
     resources.callback(budget.close)
     budget.operation = gate.operation
     glossary = Glossary.load(Path(cfg.translate.glossary))
-    stream_context = describe_stream(source.timeline, glossary)
+    metadata = source.timeline
+    holodex_key = cfg.holodex.api_key or os.getenv("HOLODEX_API_KEY", "")
+    if holodex_key and metadata and metadata.get("video_id"):
+        from .holodex import fetch_cast
+        cast = fetch_cast(metadata["video_id"], holodex_key, cfg.holodex.timeout_s)
+        if cast:
+            log.info("Holodex: %d tagged collab name(s)", len(cast["mentions"]))
+            metadata = dict(metadata, holodex_channel=cast["channel"], holodex_mentions=cast["mentions"])
+    stream_context = describe_stream(metadata, glossary)
     if stream_context.host or stream_context.cast:
         log.info("Stream context: host=%s cast=%s", stream_context.host or "-",
                  "、".join(stream_context.cast) or "-")
@@ -327,7 +335,7 @@ def _main(resources: ExitStack) -> None:
         relieve_pressure()
     print("ASR: Qwen3-ASR-1.7B (llama.cpp CUDA) | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
-          f"MT: HY-MT1.5-7B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
+          f"MT: Hy-MT2-7B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
     check_running()
     budget.start(relieve_pressure)
     try:

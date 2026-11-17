@@ -11,7 +11,7 @@ echo.
 echo This installs Windows tools, Python packages,
 echo CUDA llama.cpp.
 echo Setup downloads/verifies Qwen3-ASR-1.7B Q8_0,
-echo its Q8_0 audio projector, and HY-MT1.5-7B Q4_K_M.
+echo its Q8_0 audio projector, and Hy-MT2-7B Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 

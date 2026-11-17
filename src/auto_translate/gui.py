@@ -305,7 +305,7 @@ class VideoTranslateWindow(QMainWindow):
         self.asr_model.setToolTip("Speech recognition model; its mmproj comes from config.toml.")
         settings.addRow("ASR model", self.asr_model)
         self.mt_model = QLineEdit()
-        self.mt_model.setPlaceholderText("Path to the HY-MT1.5 GGUF model")
+        self.mt_model.setPlaceholderText("Path to the Hy-MT2 GGUF model")
         self.mt_model.setToolTip("Japanese to English translation model served by llama-server.")
         settings.addRow("Translation model", self.mt_model)
         self.context_lines = QSpinBox()

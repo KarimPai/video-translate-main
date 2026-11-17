@@ -38,6 +38,7 @@ from ..types import Subtitle
 from ..session_cache import SessionSubtitleCache
 from ..timeline import record_session_anchor
 from ..subtitle_clean import sanitize_english_output
+from ..subtitle_layout import chunk_at, display_until, split_cue, wrap_lines
 
 log = logging.getLogger(__name__)
 
@@ -666,8 +667,7 @@ class MpvOutput:
                 increment_counter("expired")
                 return
 
-        minimum = getattr(self.cfg, "min_subtitle_duration_s", 1.2)
-        line = _Line(sub, show_from, max(until, show_from + minimum))
+        line = _Line(sub, show_from, self._display_until(sub, show_from, until))
         with self._lock:
             if sub.generation != getattr(self.ingest, "generation", sub.generation):
                 increment_counter("dropped")
@@ -1569,6 +1569,11 @@ class MpvOutput:
 
         return found
 
+    def _display_until(self, sub: Subtitle, onset: float, end: float) -> float:
+        cfg = self.cfg
+        return display_until(sub.en, onset, end, cfg.min_subtitle_duration_s,
+                             cfg.reading_cps, cfg.max_subtitle_duration_s)
+
     def _render(self, now: float) -> None:
         live = self.ingest.source.live
         generation = getattr(self.ingest, "generation", None)
@@ -1588,27 +1593,36 @@ class MpvOutput:
         # in-memory display list. Ask it for cues at the current timestamp.
         cache = getattr(self, "_subtitle_cache", None)
         if cache is not None and not live:
+            cfg = self.cfg
             active = [
-                _Line(
-                    sub,
-                    sub.speech_start_s
-                    if sub.speech_start_s is not None else sub.start_s,
-                    sub.end_s,
-                )
-                for sub in cache.active_at(now, getattr(self.cfg, "min_subtitle_duration_s", 1.2))
+                _Line(sub, onset, self._display_until(sub, onset, sub.end_s))
+                for sub in cache.active_at(
+                    now, max(cfg.min_subtitle_duration_s, cfg.max_subtitle_duration_s),
+                    display_until=lambda sub, onset: self._display_until(sub, onset, sub.end_s))
+                for onset in (sub.speech_start_s if sub.speech_start_s is not None else sub.start_s,)
                 if sub.end_s > getattr(self, "_last_seek_position", -1.0)
             ]
 
         active.sort(key=lambda ln: ln.show_from)
 
+        # Long cues are split into chunks that follow the speech; one chunk is shown.
+        max_chars = self.cfg.max_line_chars
+        shown_lines = []
+        for ln in active:
+            chunks = split_cue(ln.sub.en, max_chars, self.cfg.max_cue_lines)
+            if len(chunks) > 1:
+                speech_end = ln.sub.end_s if ln.sub.end_s > ln.show_from + 0.5 else ln.show_until
+                ln = _Line(replace(ln.sub, en=chunk_at(chunks, ln.show_from, speech_end, now)),
+                           ln.show_from, ln.show_until)
+            shown_lines.append(ln)
+        active = shown_lines
+
         selected: list[_Line] = []
         used_rows = 0
 
         for ln in reversed(active):
-            # The limit counts subtitle entries, not individual language rows.
-            # Each entry may contain Japanese above its English translation.
-            # Each visible utterance occupies one English-only row.
-            row_count = int(bool(ln.sub.en))
+            # The limit counts wrapped English screen rows; the newest cue always shows.
+            row_count = len(wrap_lines(ln.sub.en, max_chars))
 
             if (
                 selected
@@ -1685,7 +1699,7 @@ def _ass_many(
         if english:
             rows.append(
                 rf"{{\fs{cfg.en_size}\1c&HFFFFFF&}}"
-                + esc(english)
+                + r"\N".join(esc(line) for line in wrap_lines(english, cfg.max_line_chars))
             )
 
         if not rows:

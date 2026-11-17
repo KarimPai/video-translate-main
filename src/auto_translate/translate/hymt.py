@@ -1,8 +1,9 @@
-"""Tencent HY-MT1.5-7B served by an owned llama.cpp server.
+"""Tencent Hy-MT2-7B served by an owned llama.cpp server.
 
-Prompts follow the official HY-MT templates: glossary hits use the
-terminology-intervention form, recent dialogue uses the contextual form, and
-both are combined when present. HY-MT is used without a system prompt.
+Prompts follow the official Hy-MT2 templates: glossary hits use the
+terminology form, recent dialogue uses the background-information form, an
+optional style uses the style form, and they are combined when present.
+Hy-MT2 is used without a system prompt.
 
 Context comes first and grows between cues so llama.cpp can reuse the cached
 prompt prefix; per-cue terms and the source line come last.
@@ -29,23 +30,24 @@ log = logging.getLogger(__name__)
 
 MAX_TERMS = 12
 RELIEF_LAYERS = 4
-_PLAIN = "Translate the following segment into English, without additional explanation.\n\n{text}"
-_TERMS = "参考下面的翻译：\n{terms}\n\n"
-_TERMS_ONLY = "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n{text}"
-_CONTEXT = "参考上面的信息，把下面的文本翻译成英语，注意不需要翻译上文，也不要额外解释：\n{text}"
+_PLAIN = "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}"
+_TERMS = "参考下面的翻译：\n{terms}\n"
+_BACKGROUND = "【背景信息】\n{context}\n\n"
+_CONTEXT = "请结合背景信息将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释。\n\n【待翻译文本】\n{text}"
+_STYLE_PLAIN = "请将以下文本翻译为 英语。\n注意翻译的风格要严格符合【{style}】\n\n{text}"
+_STYLE_CONTEXT = "请结合背景信息将以下文本翻译为 英语。\n注意翻译的风格要严格符合【{style}】\n\n【待翻译文本】\n{text}"
 _DIALOGUE = "直前の会話："
 _ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION)\s*[:：]\s*", re.I)
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
 
 
-def build_prompt(text: str, terms: list[tuple[str, str]], context: str) -> str:
+def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "") -> str:
     block = _TERMS.format(terms="\n".join(f"{ja} 翻译成 {en}" for ja, en in terms)) if terms else ""
     if context:
-        return context + ("\n\n" + block if block else "\n") + _CONTEXT.format(text=text)
-    if block:
-        return block + _TERMS_ONLY.format(text=text)
-    return _PLAIN.format(text=text)
+        tail = _STYLE_CONTEXT.format(style=style, text=text) if style else _CONTEXT.format(text=text)
+        return _BACKGROUND.format(context=context) + block + tail
+    return block + (_STYLE_PLAIN.format(style=style, text=text) if style else _PLAIN.format(text=text))
 
 
 def useful_context(text: str) -> bool:
@@ -154,18 +156,19 @@ class HymtTranslator:
             chars = min(self.cfg.max_context_chars, self.cfg.context_size // 2)
             context = ("これは以前の会話です。" * (chars // 11 + 1))[:chars]
             prompt = build_prompt("こんにちは。今日はみんなでゲームをします。よろしくお願いします。",
-                                  self.glossary.terms[:MAX_TERMS], context)
+                                  self.glossary.terms[:MAX_TERMS], context, self.cfg.style)
             self._chat(prompt, timeout=self.cfg.load_timeout_s)
             check_running()
             # Short batches use a different CUDA workspace than dialogue prefill.
-            self._chat(build_prompt("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], ""),
+            self._chat(build_prompt("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], "",
+                                    self.cfg.style),
                        timeout=self.cfg.load_timeout_s)
             check_running()
         except (httpx.HTTPError, ValueError) as exc:
             check_running()
             raise LlamaServerError(f"HY-MT startup request failed: {exc}. {self.server.log_tail()}") from exc
         self._relief.clear()
-        update_metrics(workers={"mt": f"ready (HY-MT1.5-7B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
+        update_metrics(workers={"mt": f"ready (Hy-MT2-7B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
         log.info("HY-MT ready with %d/%d GPU layers", self.gpu_layers, self.layer_count)
 
     def reload(self, gpu_layers: int, reason: str) -> None:
@@ -232,7 +235,7 @@ class HymtTranslator:
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> str:
         context = self._context(history)
         terms, _ = self._terms_for(ja, context)
-        return build_prompt(ja, terms, context)
+        return build_prompt(ja, terms, context, self.cfg.style)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         with self._lock:
@@ -247,7 +250,7 @@ class HymtTranslator:
                     self._recover("server exited")
                 context = self._context(history)
                 terms, names = self._terms_for(ja, context)
-                prompt = build_prompt(ja, terms, context)
+                prompt = build_prompt(ja, terms, context, self.cfg.style)
                 try:
                     english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
@@ -267,7 +270,7 @@ class HymtTranslator:
                                                                    temperature=0.0))]
                     # Context itself can provoke untranslated or echoed output.
                     if context and not self._closed and english_output_issue(candidates[-1]):
-                        candidates.append(clean_output(self._chat(build_prompt(ja, terms, ""),
+                        candidates.append(clean_output(self._chat(build_prompt(ja, terms, "", self.cfg.style),
                                                                   timeout=self.cfg.timeout_s, temperature=0.0)))
                     english = self._best(candidates, names)
                 return "" if self._closed else english

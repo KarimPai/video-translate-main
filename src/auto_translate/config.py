@@ -200,9 +200,9 @@ class GpuBudgetConfig:
 
 @dataclass
 class TranslateConfig:
-    """Tencent HY-MT1.5-7B on an owned llama.cpp server (sole translation engine)."""
+    """Tencent Hy-MT2-7B on an owned llama.cpp server (sole translation engine)."""
 
-    model_path: str = "models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf"
+    model_path: str = "models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf"
     server_path: str = LLAMA_SERVER_PATH
     gpu_layers: int = -1  # -1: offload as many layers as GPU headroom allows
     context_size: int = 2048
@@ -218,10 +218,14 @@ class TranslateConfig:
     max_context_chars: int = 600  # includes stream metadata; HY-MT is not upgraded for 8 GB VRAM
     context_max_gap_s: float = 15.0
     context_english: bool = False  # also show prior English; can propagate earlier mistakes
-    # VOD only: join a cue without sentence-final punctuation with the next close cue.
+    # Hy-MT2 style instruction (Chinese works best); empty uses the default template.
+    style: str = "简洁直白"
+    # Join a cue without sentence-final punctuation with the next close cue.
+    # Live holds a fragment only until playback nears its onset.
     merge_fragments: bool = True
     merge_max_gap_s: float = 0.6
     merge_max_s: float = 16.0
+    live_merge_margin_s: float = 1.5
     timeout_s: float = 30.0
     load_timeout_s: float = 300.0
     glossary: str = "glossary.toml"
@@ -263,6 +267,10 @@ class TranslateConfig:
         if (type(self.merge_max_gap_s) not in (int, float) or not 0 <= self.merge_max_gap_s <= 3
                 or type(self.merge_max_s) not in (int, float) or not 1 <= self.merge_max_s <= 30):
             raise ValueError("translate.merge_max_gap_s must be in 0..3 and merge_max_s in 1..30")
+        if type(self.live_merge_margin_s) not in (int, float) or not 0 <= self.live_merge_margin_s <= 10:
+            raise ValueError("translate.live_merge_margin_s must be in 0..10")
+        if not isinstance(self.style, str) or len(self.style) > 40 or any(c in self.style for c in "【】\n"):
+            raise ValueError("translate.style must be a short single-line string without 【】")
         for value in (self.timeout_s, self.load_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")
@@ -297,7 +305,12 @@ class MpvConfig:
     en_size: int = 28
     ja_size: int = 0
     min_subtitle_duration_s: float = 1.2
-    max_subtitle_rows: int = 3
+    max_subtitle_rows: int = 4  # wrapped screen rows across stacked cues
+    # Readability: extend short cues to a reading speed, wrap and split long ones.
+    reading_cps: float = 17.0  # 0 disables reading-speed extension
+    max_subtitle_duration_s: float = 7.0
+    max_line_chars: int = 42  # 0 disables wrapping and splitting
+    max_cue_lines: int = 2
 
     def __post_init__(self):
         for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):
@@ -305,6 +318,14 @@ class MpvConfig:
                 raise ValueError("MPV timing values must be finite and nonnegative")
         if not 0 <= self.min_subtitle_duration_s <= 10:
             raise ValueError("MPV minimum subtitle duration must be between 0 and 10 seconds")
+        if not 0 <= self.max_subtitle_duration_s <= 10:
+            raise ValueError("mpv.max_subtitle_duration_s must be between 0 and 10 seconds")
+        if type(self.reading_cps) not in (int, float) or not 0 <= self.reading_cps <= 60:
+            raise ValueError("mpv.reading_cps must be in 0..60")
+        if type(self.max_line_chars) is not int or not (self.max_line_chars == 0 or 16 <= self.max_line_chars <= 120):
+            raise ValueError("mpv.max_line_chars must be 0 or in 16..120")
+        if type(self.max_cue_lines) is not int or not 1 <= self.max_cue_lines <= 4:
+            raise ValueError("mpv.max_cue_lines must be in 1..4")
         if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
             raise ValueError("Invalid MPV live cache size")
 
@@ -346,6 +367,20 @@ class DiagnosticsConfig:
             raise ValueError("diagnostics.backups must be in 1..10")
 
 
+@dataclass
+class HolodexConfig:
+    """Optional cast lookup; the key may also come from HOLODEX_API_KEY."""
+
+    api_key: str = ""
+    timeout_s: float = 5.0
+
+    def __post_init__(self):
+        if not isinstance(self.api_key, str):
+            raise ValueError("holodex.api_key must be a string")
+        if type(self.timeout_s) not in (int, float) or not 0.5 <= self.timeout_s <= 30:
+            raise ValueError("holodex.timeout_s must be in 0.5..30")
+
+
 def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
     """Use long, context-rich VOD chunks; bound live chunks for subtitle sync.
 
@@ -376,6 +411,7 @@ class Config:
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
+    holodex: HolodexConfig = field(default_factory=HolodexConfig)
     stats_interval_s: float = 30.0
 
     def __post_init__(self):
@@ -416,5 +452,6 @@ def load_config(path: Path) -> Config:
         translate=TranslateConfig(**data.get("translate", {})),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**data.get("mpv", {})),
+        holodex=HolodexConfig(**data.get("holodex", {})),
         stats_interval_s=data.get("stats_interval_s", 30.0),
     )

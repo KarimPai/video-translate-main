@@ -16,21 +16,36 @@ GLOSSARY = Glossary.load(Path("glossary.toml"))
 class PromptTemplateTests(unittest.TestCase):
     def test_plain_template_without_terms_or_context(self):
         self.assertEqual(build_prompt("こんにちは", [], ""),
-                         "Translate the following segment into English, without additional explanation."
-                         "\n\nこんにちは")
+                         "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\nこんにちは")
 
     def test_terminology_template(self):
         prompt = build_prompt("ぺこらだよ", [("ぺこら", "Pekora")], "")
-        self.assertEqual(prompt, "参考下面的翻译：\nぺこら 翻译成 Pekora\n\n"
-                                 "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\nぺこらだよ")
+        self.assertEqual(prompt, "参考下面的翻译：\nぺこら 翻译成 Pekora\n"
+                                 "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\nぺこらだよ")
 
-    def test_contextual_template_combined_with_terms(self):
+    def test_background_template_combined_with_terms(self):
         prompt = build_prompt("草", [("草", "lol")], "前の文\nEarlier line.")
         # Context leads so the growing dialogue stays a cacheable prefix.
-        self.assertTrue(prompt.startswith("前の文\nEarlier line.\n\n参考下面的翻译：\n草 翻译成 lol\n\n"))
-        self.assertTrue(prompt.endswith("参考上面的信息，把下面的文本翻译成英语，注意不需要翻译上文，也不要额外解释：\n草"))
+        self.assertTrue(prompt.startswith("【背景信息】\n前の文\nEarlier line.\n\n参考下面的翻译：\n草 翻译成 lol\n请结合"))
+        self.assertTrue(prompt.endswith("不要额外解释。\n\n【待翻译文本】\n草"))
         self.assertEqual(build_prompt("草", [], "前の文"),
-                         "前の文\n参考上面的信息，把下面的文本翻译成英语，注意不需要翻译上文，也不要额外解释：\n草")
+                         "【背景信息】\n前の文\n\n请结合背景信息将以下文本翻译为英语，"
+                         "注意只需要输出翻译后的结果，不要额外解释。\n\n【待翻译文本】\n草")
+
+    def test_style_template_with_and_without_context(self):
+        self.assertEqual(build_prompt("草", [("草", "lol")], "", "简洁直白"),
+                         "参考下面的翻译：\n草 翻译成 lol\n"
+                         "请将以下文本翻译为 英语。\n注意翻译的风格要严格符合【简洁直白】\n\n草")
+        self.assertEqual(build_prompt("草", [], "前の文", "简洁直白"),
+                         "【背景信息】\n前の文\n\n请结合背景信息将以下文本翻译为 英语。\n"
+                         "注意翻译的风格要严格符合【简洁直白】\n\n【待翻译文本】\n草")
+
+    def test_style_config_validation(self):
+        self.assertEqual(TranslateConfig().style, "简洁直白")
+        self.assertEqual(TranslateConfig(style="").style, "")
+        for bad in ("【x】", "a\nb", 3, "x" * 41):
+            with self.subTest(style=bad), self.assertRaises(ValueError):
+                TranslateConfig(style=bad)
 
     def test_context_keeps_recent_japanese_only_within_budget(self):
         history = [(f"文{i}", f"Line {i}.") for i in range(6)]
@@ -96,7 +111,7 @@ class GlossaryHintTests(unittest.TestCase):
         obj.cfg = TranslateConfig(context_lines=2)
         prompt = obj.prompt_for("船長が来た", [("おはよう", "Good morning."), ("元気？", "How are you?")])
         self.assertIn("船長 翻译成 Senchou", prompt)
-        self.assertTrue(prompt.startswith("配信タイトル：【宝鐘マリン】雑談\n直前の会話：\nおはよう\n元気？\n\n"))
+        self.assertTrue(prompt.startswith("【背景信息】\n配信タイトル：【宝鐘マリン】雑談\n直前の会話：\nおはよう\n元気？\n\n"))
         self.assertNotIn("Good morning.", prompt)
         self.assertNotIn("How are you?", prompt)
         self.assertTrue(prompt.endswith("船長が来た"))
@@ -120,7 +135,7 @@ class GlossaryHintTests(unittest.TestCase):
         obj.stream = stream
         obj.set_position(900)
         prompt = obj.prompt_for("船長が来た", [])
-        self.assertTrue(prompt.startswith("配信タイトル：【コラボ】雑談\n"))
+        self.assertTrue(prompt.startswith("【背景信息】\n配信タイトル：【コラボ】雑談\n"))
         self.assertIn("現在のチャプター：マイクラ", prompt)
         self.assertIn("船長 翻译成 Senchou", prompt)
 

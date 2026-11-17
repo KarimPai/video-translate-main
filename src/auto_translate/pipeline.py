@@ -109,17 +109,37 @@ def _raw_transcript(asr) -> str:
 
 ASR_CONTEXT_GAP_S = 15.0
 _SENTENCE_END = re.compile(r"[。．.！!？?…‥」』）)】♪〜～ー]\s*$")
+MERGE_TICK_S = 0.25
+_TICK = object()
 
 
-def _join_fragments(items, max_gap_s: float, max_span_s: float):
+def _ticking(in_q: queue.Queue, interval_s: float):
+    """Queue items, with a tick whenever none arrives within the interval."""
+    while True:
+        try:
+            yield in_q.get(timeout=interval_s)
+        except queue.Empty:
+            yield _TICK
+
+
+def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None):
     """Hold a transcript that ends mid-sentence and join it with a closely following one.
 
     Progress markers that could precede the continuation are parked behind the
-    held cue, so no marker ever claims time the held cue still covers.
+    held cue, so no marker ever claims time the held cue still covers. With
+    ``due``, a tick releases the held cue once ``due(held)`` says it cannot wait.
     """
     held: Transcript | None = None
     parked: list[AudioProgress] = []
     for item in items:
+        if item is _TICK:
+            if held is not None and due is not None and due(held):
+                increment_counter("released_fragments")
+                yield held
+                yield from parked
+                parked.clear()
+                held = None
+            continue
         if held is not None:
             if (isinstance(item, AudioProgress) and not item.reset and item.generation == held.generation
                     and item.sample / SAMPLE_RATE <= held.end_s + max_gap_s):
@@ -135,7 +155,8 @@ def _join_fragments(items, max_gap_s: float, max_span_s: float):
                 yield from parked
                 parked.clear()
             held = None
-        if type(item) is Transcript and not _SENTENCE_END.search(item.ja):
+        if (type(item) is Transcript and not _SENTENCE_END.search(item.ja)
+                and not (due is not None and due(item))):
             held = item
             continue
         yield item
@@ -301,10 +322,12 @@ def run_translate(
     stop: threading.Event | None = None,
     gate=None,
     merge: tuple[float, float] | None = None,
+    live_merge_margin_s: float = 1.5,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress.
 
-    ``merge`` is ``(max_gap_s, max_span_s)`` for joining mid-sentence VOD fragments.
+    ``merge`` is ``(max_gap_s, max_span_s)`` for joining mid-sentence fragments.
+    Live releases a held fragment once playback is within the margin of its onset.
     """
     consecutive_failures = 0
     history: deque[tuple[str, str]] = deque(maxlen=max(1, context_lines))
@@ -313,7 +336,13 @@ def run_translate(
     context_max_gap_s = getattr(getattr(translator, "cfg", None), "context_max_gap_s", 15.0)
     set_position = getattr(translator, "set_position", None)
     items = iter(in_q.get, object())
-    if merge is not None:
+    if merge is not None and live and playback_position is not None:
+        def due(held: Transcript) -> bool:
+            position = playback_position()
+            onset = held.speech_start_s if held.speech_start_s is not None else held.start_s
+            return position is None or position >= onset - live_merge_margin_s
+        items = _join_fragments(_ticking(in_q, MERGE_TICK_S), *merge, due=due)
+    elif merge is not None:
         items = _join_fragments(items, *merge)
 
     for item in items:
@@ -638,9 +667,11 @@ def run(
                 cfg.mpv.live_late_window_s,
                 stop,
                 gate,
-                # Live cues cannot wait for a continuation without falling behind playback.
+                # Live holds a fragment only while playback is still short of its onset.
                 ((cfg.translate.merge_max_gap_s, cfg.translate.merge_max_s)
-                 if cfg.translate.merge_fragments and not ingest.source.live else None),
+                 if cfg.translate.merge_fragments
+                 and (not ingest.source.live or playback_position is not None) else None),
+                cfg.translate.live_merge_margin_s,
             ),
             name="translate",
             daemon=True,

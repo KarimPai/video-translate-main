@@ -1,4 +1,4 @@
-"""Tencent HY-MT1.5-7B is the only Japanese-to-English translation engine."""
+"""Tencent Hy-MT2-7B is the only Japanese-to-English translation engine."""
 
 from ..config import TranslateConfig
 from ..glossary import Glossary

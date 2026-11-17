@@ -1,6 +1,6 @@
 # Windows GUI setup and executable
 
-This checkout starts Qwen3-ASR-1.7B and HY-MT1.5-7B using separate owned llama.cpp servers. The intended system is Windows x64 with an NVIDIA RTX 3070 8 GiB and a current driver.
+This checkout starts Qwen3-ASR-1.7B and Hy-MT2-7B using separate owned llama.cpp servers. The intended system is Windows x64 with an NVIDIA RTX 3070 8 GiB and a current driver.
 
 ## Install and launch
 
@@ -28,13 +28,17 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `asr.model_path` | `models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf` |
 | `asr.mmproj_path` | `models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` |
 | `asr.server_path`, `translate.server_path` | `.runtime/llama-b12318-cuda12/llama-server.exe` |
-| `translate.model_path` | `models/hy-mt/HY-MT1.5-7B-Q4_K_M.gguf` |
+| `translate.model_path` | `models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf` |
 | `translate.gpu_layers` | `-1` (measured adaptive offload) |
 | `translate.context_lines` | `6` Japanese dialogue lines |
 | `translate.max_context_chars` | `600` (includes stream title, channel, host, cast and chapter) |
 | `translate.context_max_gap_s` | `15.0` seconds of audio-timeline silence |
 | `translate.context_english` | `false` (opt in to show earlier English in context) |
-| `translate.merge_fragments` | `true` (VOD: join a mid-sentence cue with the next cue within `merge_max_gap_s` = `0.6`) |
+| `translate.style` | `简洁直白` (Hy-MT2 style prompt: plain and concise; `""` disables) |
+| `translate.merge_fragments` | `true` (join a mid-sentence cue with the next cue within `merge_max_gap_s` = `0.6`; live holds it until playback is `live_merge_margin_s` = `1.5` from its onset) |
+| `mpv.reading_cps`, `mpv.max_subtitle_duration_s` | `17` characters/second, capped at `7.0` seconds |
+| `mpv.max_line_chars`, `mpv.max_cue_lines`, `mpv.max_subtitle_rows` | `42`, `2` (longer cues split into timed chunks), `4` wrapped rows |
+| `holodex.api_key` | `""` (optional; or `HOLODEX_API_KEY`, adds the tagged collab cast) |
 | `asr.recent_context_lines` | `2` previous transcripts in the ASR prompt |
 | `vad.adaptive_split_s` | `5.0` (VOD natural-pause split target) |
 | `asr.response_timeout_s` | `30` |

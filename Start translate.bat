@@ -69,7 +69,7 @@ if errorlevel 1 (
     )
 )
 echo.
-echo Starting persistent Qwen3-ASR-1.7B and HY-MT1.5-7B on CUDA llama.cpp...
+echo Starting persistent Qwen3-ASR-1.7B and Hy-MT2-7B on CUDA llama.cpp...
 echo Original 16 kHz audio, CPU FireRedVAD, offline Qwen3-ASR utterances, English subtitles.
 echo Runtime and VRAM diagnostics: logs\run.log
 echo.

@@ -1,5 +1,6 @@
 """Offline tests for VOD fragment joining and rolling ASR context."""
 import queue
+import threading
 import unittest
 from unittest.mock import Mock
 
@@ -53,6 +54,50 @@ class FragmentJoinTests(unittest.TestCase):
                     incoming.put(item)
                 pipeline.run_translate(translator, 3, incoming, outgoing, merge=merge)
                 self.assertEqual([call.args[0] for call in translator.translate.call_args_list], expected)
+
+
+class LiveCommitPolicyTests(unittest.TestCase):
+    def test_tick_releases_held_fragment_only_when_playback_nears_onset(self):
+        held = Transcript(10, 12, "それで", generation=1, speech_start_s=10.5)
+        progress = AudioProgress(int(12.3 * SR), generation=1)
+        position = [0.0]
+        due = lambda cue: position[0] >= cue.speech_start_s - 1.5  # noqa: E731
+        stream = _join_fragments(iter([held, progress, pipeline._TICK]), .6, 16., due=due)
+        self.assertEqual(list(stream), [])  # not due yet; still held at the end
+        position[0] = 9.0
+        result = list(_join_fragments(iter([held, progress, pipeline._TICK, None]), .6, 16., due=due))
+        self.assertEqual(result, [held, progress, None])
+
+    def test_already_due_fragment_is_never_held(self):
+        cue = Transcript(10, 12, "それで")
+        self.assertEqual(list(_join_fragments(iter([cue]), .6, 16., due=lambda _: True)), [cue])
+
+    def test_continuation_before_deadline_merges(self):
+        items = [Transcript(0, 1, "今日は"), pipeline._TICK, Transcript(1.2, 2, "晴れです。")]
+        result = list(_join_fragments(iter(items), .6, 16., due=lambda _: False))
+        self.assertEqual([cue.ja for cue in result], ["今日は晴れです。"])
+
+    def test_live_translation_thread_merges_and_releases_on_timeout(self):
+        translator = Mock(spec=["translate"])
+        translator.translate.return_value = "Today."
+        incoming, outgoing = queue.Queue(), queue.Queue()
+        incoming.put(Transcript(0, 1, "今日は", speech_start_s=0))
+        incoming.put(Transcript(1.2, 2, "晴れです。"))
+        incoming.put(Transcript(30, 31, "それで", speech_start_s=30))
+        position = [-5.0]
+        worker = threading.Thread(target=pipeline.run_translate, args=(
+            translator, 3, incoming, outgoing), kwargs=dict(
+            live=True, playback_position=lambda: position[0], live_late_window_s=1000,
+            merge=(.6, 16.), live_merge_margin_s=1.5), daemon=True)
+        worker.start()
+        first = outgoing.get(timeout=5)
+        self.assertEqual(first.ja, "今日は晴れです。")
+        with self.assertRaises(queue.Empty):
+            outgoing.get(timeout=pipeline.MERGE_TICK_S * 3)  # held: playback far from 30s
+        position[0] = 29.0
+        self.assertEqual(outgoing.get(timeout=5).ja, "それで")
+        incoming.put(None)
+        worker.join(5)
 
 
 class AsrContinuityTests(unittest.TestCase):

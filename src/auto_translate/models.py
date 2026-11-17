@@ -35,12 +35,12 @@ MODELS = (
         sha256="46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
     ),
     ModelFile(
-        repo_id="tencent/HY-MT1.5-7B-GGUF",
-        revision="126325496bc8e3575f1d8615b8ca951d8483f206",
-        filename="HY-MT1.5-7B-Q4_K_M.gguf",
+        repo_id="tencent/Hy-MT2-7B-GGUF",
+        revision="ab8472660ac61fac25f1af43fac2599d52a8a775",
+        filename="Hy-MT2-7B-Q4_K_M.gguf",
         directory="models/hy-mt",
-        size=4624649312,
-        sha256="fc87637e4dd29547811a28170770c2ac17725fb7690b7c4aafa4f463c3e77568",
+        size=4624648896,
+        sha256="9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b",
     ),
 )
 

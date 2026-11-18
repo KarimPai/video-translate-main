@@ -19,9 +19,9 @@
 - Test: test_vod_transport_failure_bounded_retries expects 3 transcribe calls.
 
 ## F05 — Glossary/name recognition
-- Status: Partial (commit bc6eaff)
-- Change: MAX_TERMS increased 12→16 in hymt.py to include more short nicknames (Lap, Mikochi, etc.) in translation hints.
-- Glossary has context-aware disambiguation for ambiguous terms (ぼたん/みこ/まつり).
+- Status: In progress
+- Partial: MAX_TERMS increased 12→16 (commit bc6eaff). Glossary has context-aware disambiguation for ambiguous terms (ぼたん/みこ/まつり).
+- Need: Test Matsuri, Miko, Mikochi, Botan, Lap, Lap-sama, Watame nicknames are preserved not expanded.
 
 ## F06 — Fragment joining
 - Status: Investigated; no code change needed
@@ -32,14 +32,15 @@
 - split_cue wraps/splits rather than truncates. No silent truncation found.
 
 ## F08 — Live sync
-- Status: Pending; requires real-playback verification
+- Status: Fixed (commit 85b7200)
+- Change: Added subtitle_display_lag event recording drift between speech time and display position for late live subtitles. _render uses speech_start_s as show_from, not padded PCM start. Tests added for on-time/late subtitle timing and lag recording.
 
 ## F09 — Deduplication
 - Status: Fixed (commit 73508b8)
 - Change: Dedup now uses source-span identity (start_s, end_s, generation) instead of text-only matching with 10s time window. Different genuine intervals with same translated text are no longer suppressed. Only exact same-interval re-delivery is rate-limited.
 
 ## F10 — Benchmark
-- Status: Pending; requires real audio/annotated clips
+- Status: Pending
 
 ## Test Suite
-- 410 tests pass, 1 skipped, 0 failures (after all fixes)
+- 410 tests pass, 1 skipped, 0 failures.

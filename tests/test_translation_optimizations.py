@@ -228,6 +228,39 @@ class GlossaryHintTests(unittest.TestCase):
         source += "クールタイム スキル回し マッチング エイムアシスト 範囲攻撃 リロード 弾薬 スイちゃんが来た"
         self.assertIn("スイちゃん 翻译成 Sui-chan", obj.prompt_for(source, []))
 
+    def test_short_nicknames_are_preserved_not_expanded(self):
+        # Spoken nicknames map to proper names, not ordinary vocabulary.
+        self.assertIn(("ラプ", "Lap"), GLOSSARY.name_terms("ラプが来た。", context="ラプラス・ダークネス"))
+        self.assertIn(("ラプ様", "Lap-sama"), GLOSSARY.name_terms("ラプ様が来た。", context="ラプラス・ダークネス"))
+        self.assertIn(("みこ", "Miko"), GLOSSARY.name_terms("みこが来た。", context="さくらみこ"))
+        self.assertIn(("みこち", "Mikochi"), GLOSSARY.name_terms("みこちが来た。", context="さくらみこ"))
+        self.assertIn(("まつり", "Matsuri"), GLOSSARY.name_terms("まつりが来た。", context="夏色まつり"))
+        self.assertIn(("ぼたん", "Botan"), GLOSSARY.name_terms("ぼたんが来た。", context="獅白ぼたん"))
+        self.assertIn(("わため", "Watame"), GLOSSARY.name_terms("わためが来た。", context="角巻わため"))
+
+    def test_nicknames_are_not_literal_ordinary_words(self):
+        # Without talent context, ambiguous terms resolve to ordinary meaning.
+        self.assertEqual(GLOSSARY.name_terms("ボタンを押して。"), [])
+        self.assertEqual(GLOSSARY.name_terms("祭りに行こう。"), [])
+        self.assertEqual(GLOSSARY.name_terms("みこという言葉。"), [])
+        # With talent context, they are proper names.
+        self.assertIn(("ボタン", "Botan"), GLOSSARY.name_terms("ボタンが来た。", context="獅白ぼたん"))
+        self.assertIn(("まつり", "Matsuri"), GLOSSARY.name_terms("まつりが来た。", context="夏色まつり"))
+
+    def test_terms_prompt_includes_short_nicknames(self):
+        obj = fake_translator()
+        # Short nickname should appear in the prompt when it matches the source.
+        prompt = obj.prompt_for("ラプが来た。", [])
+        self.assertIn("ラプ 翻译成 Lap", prompt)
+
+    def test_terms_prioritizes_exact_matches_under_term_cap(self):
+        obj = fake_translator()
+        # Many terms match; short nickname exact match must not be crowded out.
+        source = "ラプ"
+        prompt = obj.prompt_for(source, [])
+        self.assertIn("ラプ 翻译成 Lap", prompt)
+
+
 
 class NameConsistencyTests(unittest.TestCase):
     def test_missing_name_gets_one_deterministic_retry_with_context(self):

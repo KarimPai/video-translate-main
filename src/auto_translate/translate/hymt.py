@@ -229,7 +229,13 @@ class HymtTranslator:
     def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         source_context = "\n".join((context, ja))
         names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
-        terms = names + [term for term in self.glossary.find(ja, context=source_context) if term not in names]
+        found = self.glossary.find(ja, context=source_context)
+        extra = [term for term in found if term not in names]
+        # Prioritize short nicknames that match the source as whole words so
+        # they are not crowded out by longer terms under the MAX_TERMS cap.
+        exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
+        rest = [t for t in extra if t not in exact]
+        terms = names + exact + rest
         return terms[:MAX_TERMS], names
 
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> str:

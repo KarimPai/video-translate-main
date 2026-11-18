@@ -254,47 +254,41 @@ def run_asr(
             forget()
             last_accepted_end_s = None
         utt.timings.asr_start = time.monotonic()
+        # Hold the inference gate for the actual model request, not only its
+        # expired-cue precheck. This prevents concurrent ASR/MT CUDA work under
+        # Safe Playback, especially important with Haas + Whisper on 8 GiB.
+        text = ""
+        asr_attempt = 0
         try:
             with (gate.operation("asr", current=get_generation, generation=utt.generation)
                   if gate is not None else nullcontext()):
                 if live and _expired_live_cue(utt, playback_position, live_late_window_s):
                     increment_counter("expired")
                     continue
+                while True:
+                    text = asr.transcribe(utt.audio, utt.probe)
+                    if text and text.strip():
+                        break
+                    reason = _rejection_reason(asr, text)
+                    last_rejection = getattr(asr, "last_rejection", None)
+                    # Retry transport failures only, not hallucinations or silence.
+                    if (asr_attempt < 2 and last_rejection == "error"):
+                        asr_attempt += 1
+                        record_event("asr_retry", generation=utt.generation, attempt=asr_attempt,
+                                     source_start_s=utt.start_s, source_end_s=utt.end_s,
+                                     reason=reason)
+                        time.sleep(0.25 * asr_attempt)
+                        continue
+                    increment_counter("asr_rejected")
+                    record_event("asr_rejected", generation=utt.generation, reason=reason,
+                                 raw_text=_raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
+                                 source_start_s=utt.start_s, source_end_s=utt.end_s,
+                                 retries=asr_attempt)
+                    log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
+                              utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
+                    break
         except CancelledError:
             continue
-
-        # ASR with bounded retry for transient transport failures. Quality
-        # rejections (no_speech, language, context_echo, etc.) are not retried;
-        # only server/transport errors (last_rejection == "error") are.
-        asr_max_retries = 2
-        asr_attempt = 0
-        text = ""
-        while True:
-            try:
-                text = asr.transcribe(utt.audio, utt.probe)
-            except CancelledError:
-                continue
-            if text and text.strip():
-                break
-            reason = _rejection_reason(asr, text)
-            last_rejection = getattr(asr, "last_rejection", None)
-            if (asr_attempt < asr_max_retries
-                    and isinstance(last_rejection, str)
-                    and last_rejection == "error"):
-                asr_attempt += 1
-                record_event("asr_retry", generation=utt.generation, attempt=asr_attempt,
-                             source_start_s=utt.start_s, source_end_s=utt.end_s,
-                             reason=reason)
-                time.sleep(0.25 * asr_attempt)
-                continue
-            increment_counter("asr_rejected")
-            record_event("asr_rejected", generation=utt.generation, reason=reason,
-                         raw_text=_raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
-                         source_start_s=utt.start_s, source_end_s=utt.end_s,
-                         retries=asr_attempt)
-            log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
-                      utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
-            break
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
             continue

@@ -300,8 +300,8 @@ class VideoTranslateWindow(QMainWindow):
         self.feature_settings = QGroupBox("Accuracy and playback settings (apply when starting)")
         settings = QFormLayout(self.feature_settings)
         self.asr_model = QLineEdit()
-        self.asr_model.setPlaceholderText("Path to the Qwen3-ASR GGUF model")
-        self.asr_model.setToolTip("Speech recognition model; its mmproj comes from config.toml.")
+        self.asr_model.setPlaceholderText("Haas model ID (or Qwen GGUF with qwen backend)")
+        self.asr_model.setToolTip("Default dual ASR: Haas model ID or speech.cpp model path. Whisper is configured in config.toml.")
         settings.addRow("ASR model", self.asr_model)
         self.mt_model = QLineEdit()
         self.mt_model.setPlaceholderText("Path to the Hy-MT2 GGUF model")
@@ -370,7 +370,7 @@ class VideoTranslateWindow(QMainWindow):
     def _load_feature_settings(self):
         try:
             cfg = load_config(self.root / "config.toml")
-            self.asr_model.setText(cfg.asr.model_path)
+            self.asr_model.setText(cfg.asr.haas_model if cfg.asr.backend == "dual" else cfg.asr.model_path)
             self.mt_model.setText(cfg.translate.model_path)
             self.context_lines.setValue(cfg.translate.context_lines)
             self.safe_playback_checkbox.setChecked(cfg.safe_playback.enabled)

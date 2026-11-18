@@ -1,5 +1,23 @@
-# Relative paths are resolved from the project directory.
+# Dual-ASR mode uses speech.cpp (Haas) and cached faster-whisper (Whisper Turbo).
+# Qwen3-ASR remains optional with backend="qwen"; its models are not needed for dual mode.
+# Reuse existing models via absolute paths; models are not bundled.
 [asr]
+backend = "dual"
+haas_model = "haas-ja-v1.0"
+haas_device = "Vulkan0"
+haas_decode_on_cpu = false
+haas_keywords_enabled = false
+secondary_model = "h2oai/faster-whisper-large-v3-turbo"
+secondary_device = "cuda"
+secondary_compute_type = "int8_float16"
+secondary_beam_size = 6
+secondary_live_mode = "selective"
+secondary_vod_mode = "all"
+secondary_selective_chars = 9
+secondary_live_timeout_s = 8
+secondary_vod_timeout_s = 25
+secondary_startup_timeout_s = 180
+# Below are only used with backend = "qwen".
 model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
 mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
@@ -16,7 +34,7 @@ live_response_timeout_s = 15
 blocklist = []
 
 [gpu_budget]
-# Load ASR first, then trim translation GPU layers against measured free memory.
+# Load both ASR workers first, then trim HY-MT2 GPU offload against free memory.
 startup_headroom_gb = 1.0
 low_free_gb = 0.75
 emergency_free_gb = 0.25
@@ -46,8 +64,8 @@ split_context_ms = 160
 fallback_s = 0.0
 
 [language_filter]
-# Qwen3-ASR already identifies language; this optional CPU gate is normally off.
-enabled = false
+# Haas/Whisper do not reliably identify language; enable the optional CPU gate when supported.
+enabled = true
 min_duration_s = 2.5
 max_window_s = 5.0
 drop_probability = 0.80
@@ -117,7 +135,7 @@ api_key = ""
 timeout_s = 5.0
 
 [safe_playback]
-enabled = false
+enabled = true
 max_inference_concurrency = 1
 queue_size = 4
 audio_chunks = 32

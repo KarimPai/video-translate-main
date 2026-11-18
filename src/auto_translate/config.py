@@ -371,7 +371,7 @@ class MpvConfig:
 
 @dataclass
 class SafePlaybackConfig:
-    enabled: bool = False
+    enabled: bool = True
     max_inference_concurrency: int = 1
     queue_size: int = 4
     audio_chunks: int = 32

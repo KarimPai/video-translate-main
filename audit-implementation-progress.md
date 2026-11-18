@@ -19,9 +19,9 @@
 - Test: test_vod_transport_failure_bounded_retries expects 3 transcribe calls.
 
 ## F05 — Glossary/name recognition
-- Status: In progress
-- Partial: MAX_TERMS increased 12→16 (commit bc6eaff). Glossary has context-aware disambiguation for ambiguous terms (ぼたん/みこ/まつり).
-- Need: Test Matsuri, Miko, Mikochi, Botan, Lap, Lap-sama, Watame nicknames are preserved not expanded.
+- Status: Fixed (commit 06dea3b)
+- Change: MAX_TERMS increased 12→16 (commit bc6eaff). _terms_for prioritizes short nickname exact matches under term cap. Glossary has context-aware disambiguation for ambiguous terms (ぼたん/みこ/まつり).
+- Tests: short nicknames (ラプ→Lap, みこ→Miko, みこち→Mikochi, まつり→Matsuri, ぼたん→Botan, わため→Watame) are preserved, not expanded to literal words. Prompts include short nicknames.
 
 ## F06 — Fragment joining
 - Status: Investigated; no code change needed
@@ -40,7 +40,9 @@
 - Change: Dedup now uses source-span identity (start_s, end_s, generation) instead of text-only matching with 10s time window. Different genuine intervals with same translated text are no longer suppressed. Only exact same-interval re-delivery is rate-limited.
 
 ## F10 — Benchmark
-- Status: Pending
+- Status: Fixed (commit cb46556)
+- Change: Benchmark harness exists at scripts/benchmark.py (CER, chrF, name recall, RTF metrics). Added --validate-only mode to validate manifest/audio without models. Added regression tests for validate-only path.
+- Blocker: Real-audio evaluation requires annotated WAV clips; none available in repo. Harness is ready; run `python scripts/benchmark.py --validate-only cases.json` to validate, then `python scripts/benchmark.py cases.json --config config.toml` with annotated audio.
 
 ## Test Suite
-- 410 tests pass, 1 skipped, 0 failures.
+- 419 tests pass, 1 skipped, 0 failures.

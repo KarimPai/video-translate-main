@@ -92,6 +92,13 @@ haas_keywords_alpha = 1.0
 [mpv]
 live_forward_cache_mib = 1024
 live_back_cache_mib = 1024
+# Readable English: wrap, split long cues, and avoid flashes shorter than reading time.
+max_line_chars = 42
+max_cue_lines = 2
+reading_cps = 15
+max_subtitle_duration_s = 7.0
+# Default 1.2s from the dual-ASR branch; does not change the ASR models.
+min_subtitle_duration_s = 1.2
 
 [chat]
 # Public YouTube chat is weak evidence for terms already present in ASR.

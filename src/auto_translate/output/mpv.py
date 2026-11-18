@@ -1593,9 +1593,12 @@ class MpvOutput:
                              cfg.reading_cps, cfg.max_subtitle_duration_s)
 
     def _render(self, now: float) -> None:
+        live = self.ingest.source.live
+        generation = getattr(self.ingest, "generation", None)
         with self._lock:
             self._lines = [
                 ln for ln in self._lines if ln.show_until > now - 60
+                and (not live or generation is None or ln.sub.generation == generation)
             ]
             active = [
                 ln for ln in self._lines
@@ -1676,6 +1679,22 @@ class MpvOutput:
                 return
             if text and not self._shown:
                 log.debug("MPV subtitle overlay accepted at %.3fs", now)
+            if text:
+                # Debug the *displayed* cue's lateness against the source
+                # timeline without guessing a wall-clock broadcast delay.
+                for ln in active:
+                    onset = (ln.sub.speech_start_s
+                             if ln.sub.speech_start_s is not None else ln.sub.start_s)
+                    anchor = getattr(self, "_mpv_anchor", None)
+                    source_anchor = getattr(self, "_clock_source_anchor", None)
+                    record_event("subtitle_displayed",
+                                 generation=ln.sub.generation,
+                                 speech_start_s=onset, speech_end_s=ln.sub.end_s,
+                                 source_position_s=now, onset_lateness_s=now - onset,
+                                 mpv_position_s=getattr(self, "_last_live_mpv_pos", None),
+                                 source_to_mpv_offset_s=(anchor - source_anchor
+                                    if isinstance(anchor, (int, float))
+                                    and isinstance(source_anchor, (int, float)) else None))
             self._shown = text
 
 

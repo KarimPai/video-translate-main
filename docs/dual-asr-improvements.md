@@ -13,6 +13,7 @@ This branch starts from `feature/haas-whisper-turbo-dual-asr-20261114`. It is no
 - Faster repeated-generation detection, unpaired double-quote cleanup and a shared output validation boundary. Substantial Japanese text or obvious template output cannot leak into the English overlay or its translation-memory cache. Profanity is not censored.
 - VAD onset recovery after a forced segment split: padded silence no longer masquerades as spoken onset.
 - GPU peak-used and lowest-free-memory metrics, without an artificial VRAM ceiling.
+- MPV wraps and time-slices long English subtitles, retains original RTX VSR controls, and logs rendered-cue onset lateness. Stale prior-generation livestream overlays are discarded.
 - PLaMo dialogue history clears after 15 seconds of *media timeline* silence, and on seek/generation changes. It does not reset merely because the viewer pauses video.
 - Original FireRedVAD sensitivity thresholds remain unchanged. A direct port of the Qwen branch's more aggressive VAD defaults admitted game noise in regression testing and was deliberately reverted.
 

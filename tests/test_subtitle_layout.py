@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from auto_translate.config import MpvConfig
-from auto_translate.output.mpv import MpvOutput, _ass_many
+from auto_translate.output.mpv import MpvOutput, _Line, _ass_many
 from auto_translate.session_cache import SessionSubtitleCache
 from auto_translate.subtitle_layout import chunk_at, display_until, split_cue, wrap_lines
 from auto_translate.types import Subtitle
@@ -94,6 +94,16 @@ class MpvReadabilityTests(unittest.TestCase):
         # Three rows fit only the newest wrapped cue and possibly one shorter cue.
         self.assertNotIn(" 0", output._shown)
         self.assertIn(" 2", output._shown)
+
+    def test_live_generation_change_hides_stale_subtitles(self):
+        output = self.make_output(live=True)
+        output.ingest.generation = 3
+        old = Subtitle(0, 6, "あ", "STALE", generation=2)
+        new = Subtitle(0, 6, "あ", "CURRENT", generation=3)
+        output._lines = [_Line(old, 0, 6), _Line(new, 0, 6)]
+        output._render(2)
+        self.assertNotIn("STALE", output._shown)
+        self.assertIn("CURRENT", output._shown)
 
     def test_vod_cache_uses_reading_time(self):
         output = self.make_output()

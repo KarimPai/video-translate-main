@@ -1,6 +1,6 @@
 # Haas + Whisper Large-v3 Turbo Japanese dual-ASR
 
-**Current branch:** `feature/haas-whisper-turbo-dual-asr-20261114`, based on the Japanese-only language-filter branch.
+**Improved branch:** `feature/dual-asr-improvements-20261119`, based on the original dual-ASR branch. No ASR, selector, or translator model is changed. See [improvement notes](docs/dual-asr-improvements.md).
 
 ## Windows GUI (recommended)
 
@@ -30,6 +30,14 @@ project folder first). `Setup.bat` is for first-time installation;
 Setup installs Deno and verifies the pinned speech.cpp installer and llama.cpp archives. It downloads the default PLaMo GGUF into the Hugging Face cache. Existing installations can reuse their llama.cpp model cache.
 
 Use `config.example.toml` for supported overrides. The live player tries video stream copy, then NVENC, then software H.264 if the initial HLS segments cannot be written.
+
+## Overhaul improvements (models unchanged)
+
+- **English subtitle guards:** preserve uncensored language and proper names, remove unpaired double quotes, and suppress obviously untranslated Japanese or prompt/template leakage rather than publishing bad English. Cached cues follow the same boundary.
+- **PLaMo context continuity:** keep the existing context and glossary system; clear dialogue history only after more than 15 seconds of audio-timeline silence or a seek/generation reset.
+- **Subtitle readability:** balanced wrapping and time-sliced long lines, with optional `[mpv]` line length, reading speed, and duration controls. The original GUI, MPV hardware decoder and RTX VSR code remain intact.
+- **VAD:** fix speech-onset timestamps after long-form forced cuts. The original dual-ASR thresholds remain unchanged: transplanting the Qwen branch's more permissive defaults produced game-noise regressions.
+- **GPU/diagnostics:** report measured peak used/minimum free GPU memory and per-cue subtitle-display lateness. No model VRAM allocations or hard limits are added.
 
 ## Context, correction, and playback diagnostics
 

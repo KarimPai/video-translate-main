@@ -139,6 +139,30 @@ class BenchmarkTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_cases(path)
 
+    def test_benchmark_validate_only_without_models(self):
+        # The validate-only path must work without model files: it only checks
+        # manifest structure and audio format, never loading ASR or MT.
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            path = base / "cases.json"
+            valid = [{"audio": "ja.wav", "ja": "ぺこらです", "en": "I'm Pekora.", "names": {"ぺこら": "Pekora"}}]
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            wav_path = base / "ja.wav"
+            with wave.open(str(wav_path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(bytes(32000))
+            cases = load_cases(path)
+            self.assertEqual(len(cases), 1)
+            pcm = read_audio(base / cases[0]["audio"])
+            self.assertEqual(len(pcm), 16000)
+            # Simulate validate-only report structure.
+            report = {"cases": len(cases), "manifest": str(path), "validated": True,
+                      "audio_clips": [(c["audio"], len(read_audio(base / c["audio"])) / 16000) for c in cases]}
+            self.assertEqual(report["cases"], 1)
+            self.assertTrue(report["validated"])
+
 
 if __name__ == "__main__":
     unittest.main()

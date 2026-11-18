@@ -143,9 +143,27 @@ def main() -> None:
     parser.add_argument("--context-english", action="store_true", help="include earlier English in context")
     parser.add_argument("--no-context", action="store_true",
                         help="translate each cue without dialogue history or stream metadata")
+    parser.add_argument("--validate-only", action="store_true",
+                        help="validate manifest and audio files without loading models or running inference")
     args = parser.parse_args()
     cases = load_cases(args.manifest)
-    audio = [read_audio(args.manifest.parent / case["audio"]) for case in cases]
+    base = args.manifest.parent
+    for case in cases:
+        pcm = read_audio(base / case["audio"])
+        case["_duration_s"] = len(pcm) / 16000
+    if args.validate_only:
+        report = {"cases": len(cases),
+                  "manifest": str(args.manifest),
+                  "validated": True,
+                  "audio_clips": [(c["audio"], c["_duration_s"]) for c in cases],
+                  "note": "Validation only; real ASR/MT results require --config and model files."}
+        text = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.write_text(text + "\n", encoding="utf-8")
+        else:
+            print(text)
+        return
+    audio = [read_audio(base / case["audio"]) for case in cases]
     cfg = load_config(args.config)
     cfg = replace(cfg, translate=replace(cfg.translate, **translation_overrides(args)))
     glossary = Glossary.load(Path(cfg.translate.glossary))

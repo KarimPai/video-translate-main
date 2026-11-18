@@ -1,10 +1,8 @@
 import hashlib
-import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
 
 @dataclass(frozen=True)
@@ -35,12 +33,12 @@ MODELS = (
         sha256="46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
     ),
     ModelFile(
-        repo_id="tencent/Hy-MT2-7B-GGUF",
-        revision="ab8472660ac61fac25f1af43fac2599d52a8a775",
-        filename="Hy-MT2-7B-Q4_K_M.gguf",
-        directory="models/hy-mt",
-        size=4624648896,
-        sha256="9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b",
+        repo_id="pfnet/plamo-3-translate-2b-GGUF",
+        revision="4f672106b847200bfdc0f6af6c321cd94eba1aed",
+        filename="plamo-3-translate-2b-Q4_K_M.gguf",
+        directory="models/plamo",
+        size=1807203040,
+        sha256="1ffd9073afcc70e35ccc942428aa2b73d7aa2b9ea779bf504b775369e0276c13",
     ),
 )
 
@@ -55,35 +53,45 @@ def verify_file(path: Path, model: ModelFile) -> bool:
     return digest.hexdigest() == model.sha256
 
 
-def ensure_model(model: ModelFile, project_dir: Path) -> Path:
-    destination = project_dir / model.directory / model.filename
+def cached_model(model: ModelFile) -> Path | None:
+    hit = try_to_load_from_cache(model.repo_id, model.filename, revision=model.revision)
+    if isinstance(hit, str):
+        path = Path(hit)
+        if path.is_file() and path.stat().st_size == model.size:
+            return path
+    return None
+
+
+def model_at_default_path(path: str) -> ModelFile | None:
+    candidate = Path(path).resolve()
+    return next((model for model in MODELS
+                 if candidate == (Path(model.directory) / model.filename).resolve()), None)
+
+
+def ensure_model(model: ModelFile, project_dir: Path, configured: str = "") -> Path:
+    default = project_dir / model.directory / model.filename
+    destination = Path(configured).expanduser().resolve() if configured else default
     print(f"Checking {destination}...", flush=True)
     if verify_file(destination, model):
-        print(f"Size and SHA256 verified; reusing {model.filename}", flush=True)
         return destination
-
-    print(f"Downloading {model.filename} at revision {model.revision}...", flush=True)
-    source = Path(hf_hub_download(
-        repo_id=model.repo_id,
-        revision=model.revision,
-        filename=model.filename,
-    ))
+    if destination != default.resolve():
+        raise ValueError(f"Configured model failed size/SHA256 verification: {destination}")
+    source = cached_model(model)
+    if source is None:
+        print(f"Downloading {model.filename} at revision {model.revision}...", flush=True)
+        source = Path(hf_hub_download(repo_id=model.repo_id, revision=model.revision, filename=model.filename))
     if not verify_file(source, model):
         raise ValueError(f"Cached model failed size/SHA256 verification: {source}")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    # Stage beside the destination so interrupted copies cannot replace it.
-    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".model-copy-") as folder:
-        staged = Path(folder) / model.filename
-        shutil.copyfile(source, staged)
-        staged.replace(destination)
-    print(f"Size and SHA256 verified; installed {destination}", flush=True)
-    return destination
+    return source
 
 
 def main() -> None:
-    for model in MODELS:
-        ensure_model(model, Path.cwd())
+    from .config import load_config
+
+    cfg = load_config(Path("config.toml"))
+    paths = (cfg.asr.model_path, cfg.asr.mmproj_path, cfg.translate.model_path)
+    for model, configured in zip(MODELS, paths, strict=True):
+        print(f"Verified {model.filename}: {ensure_model(model, Path.cwd(), configured)}", flush=True)
 
 
 if __name__ == "__main__":

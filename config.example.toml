@@ -55,7 +55,7 @@ max_japanese_probability = 0.12
 min_top_margin = 0.45
 
 [translate]
-model_path = "models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf"
+model_path = "models/plamo/plamo-3-translate-2b-Q4_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 # -1 selects adaptive GPU offload; 0 keeps the translation model on CPU.
 gpu_layers = -1
@@ -63,7 +63,7 @@ context_size = 2048
 cuda_device = 0
 threads = 8
 max_tokens = 192
-temperature = 0.2
+temperature = 0.0
 top_k = 20
 top_p = 0.6
 repeat_penalty = 1.05
@@ -73,9 +73,7 @@ max_context_chars = 600
 context_max_gap_s = 15.0
 # Showing earlier English can improve consistency but can also repeat mistakes.
 context_english = false
-# Hy-MT2 style instruction, in Chinese: "简洁直白" = plain and concise.
-# Try "简洁、自然的口语" for casual speech; "" uses the default template.
-style = "简洁直白"
+style = "Plain and concise"
 # Join a cue without sentence-final punctuation with the next close cue.
 # Live (with MPV) holds a fragment only until playback is within
 # live_merge_margin_s of its onset, so sentences are not cut mid-way.

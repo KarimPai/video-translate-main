@@ -89,6 +89,7 @@ class VadConfig:
     fallback_s: float = 0.0  # do not ASR-decode VAD-negative music/game audio
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
+    model_dir: str = ""
 
     def __post_init__(self):
         if not 0 <= self.neg_threshold <= self.threshold <= 1 or not 0 <= self.short_reply_probability <= 1:
@@ -200,17 +201,16 @@ class GpuBudgetConfig:
 
 @dataclass
 class TranslateConfig:
-    """Tencent Hy-MT2-7B on an owned llama.cpp server (sole translation engine)."""
+    """PLaMo 3 Translate 2B on an owned llama.cpp server (sole translation engine)."""
 
-    model_path: str = "models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf"
+    model_path: str = "models/plamo/plamo-3-translate-2b-Q4_K_M.gguf"
     server_path: str = LLAMA_SERVER_PATH
     gpu_layers: int = -1  # -1: offload as many layers as GPU headroom allows
     context_size: int = 2048
     cuda_device: int = 0
     threads: int = 8
     max_tokens: int = 192
-    # Tencent's recommended sampling, at a lower temperature for subtitle stability.
-    temperature: float = 0.2
+    temperature: float = 0.0
     top_k: int = 20
     top_p: float = 0.6
     repeat_penalty: float = 1.05
@@ -218,8 +218,7 @@ class TranslateConfig:
     max_context_chars: int = 600  # includes stream metadata
     context_max_gap_s: float = 15.0
     context_english: bool = False  # also show prior English; can propagate earlier mistakes
-    # Hy-MT2 style instruction (Chinese works best); empty uses the default template.
-    style: str = "简洁直白"
+    style: str = "Plain and concise"
     # Join a cue without sentence-final punctuation with the next close cue.
     # Live holds a fragment only until playback nears its onset.
     merge_fragments: bool = True
@@ -443,6 +442,12 @@ def load_config(path: Path) -> Config:
             del values[key]
     for key in data.keys() - {section.name for section in fields(Config)}:
         logging.getLogger(__name__).warning("Ignoring unknown config section %s", key)
+
+    translation = data.get("translate", {})
+    model_path = translation.get("model_path")
+    if isinstance(model_path, str) and Path(model_path).name.casefold() == "hy-mt2-7b-q4_k_m.gguf":
+        logging.getLogger(__name__).info("Using the PLaMo default in place of the legacy translation model path")
+        del translation["model_path"]
 
     return Config(
         safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),

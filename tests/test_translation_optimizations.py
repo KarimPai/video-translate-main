@@ -1,4 +1,4 @@
-"""Offline tests for Hy-MT2 prompt construction and context-gated glossary hints."""
+"""Offline tests for PLaMo prompt construction and context-gated glossary hints."""
 from pathlib import Path
 import tempfile
 import unittest
@@ -6,8 +6,8 @@ import unittest
 from auto_translate.config import TranslateConfig
 from auto_translate.glossary import Glossary
 from auto_translate.stream_context import StreamContext, describe_stream
-from auto_translate.translate.hymt import (
-    HymtTranslator, build_context, build_prompt, clean_output, garbled_name, missing_names,
+from auto_translate.translate.plamo import (
+    PlamoTranslator, build_context, build_prompt, clean_output, garbled_name, missing_names,
 )
 from test_english_reliability import fake_translator
 
@@ -16,33 +16,32 @@ GLOSSARY = Glossary.load(Path("glossary.toml"))
 
 class PromptTemplateTests(unittest.TestCase):
     def test_plain_template_without_terms_or_context(self):
-        self.assertEqual(build_prompt("こんにちは", [], ""),
-                         "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\nこんにちは")
+        self.assertEqual(build_prompt("こんにちは", [], ""), {
+            "messages": [{"role": "user", "content": "こんにちは"}],
+            "chat_template_kwargs": {"source_lang": "ja", "target_lang": "en"},
+        })
 
     def test_terminology_template(self):
         prompt = build_prompt("ぺこらだよ", [("ぺこら", "Pekora")], "")
-        self.assertEqual(prompt, "参考下面的翻译：\nぺこら 翻译成 Pekora\n"
-                                 "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\nぺこらだよ")
+        self.assertEqual(prompt["chat_template_kwargs"]["glossary"], [
+            {"source": "ぺこら", "target": "Pekora"},
+        ])
 
     def test_background_template_combined_with_terms(self):
         prompt = build_prompt("草", [("草", "lol")], "前の文\nEarlier line.")
-        # Context leads so the growing dialogue stays a cacheable prefix.
-        self.assertTrue(prompt.startswith("【背景信息】\n前の文\nEarlier line.\n\n参考下面的翻译：\n草 翻译成 lol\n请结合"))
-        self.assertTrue(prompt.endswith("不要额外解释。\n\n【待翻译文本】\n草"))
-        self.assertEqual(build_prompt("草", [], "前の文"),
-                         "【背景信息】\n前の文\n\n请结合背景信息将以下文本翻译为英语，"
-                         "注意只需要输出翻译后的结果，不要额外解释。\n\n【待翻译文本】\n草")
+        self.assertEqual(prompt["messages"], [{"role": "user", "content": "草"}])
+        options = prompt["chat_template_kwargs"]
+        self.assertTrue(options["context"].endswith("前の文\nEarlier line."))
+        self.assertIn({"source": "草", "target": "lol"}, options["glossary"])
 
     def test_style_template_with_and_without_context(self):
-        self.assertEqual(build_prompt("草", [("草", "lol")], "", "简洁直白"),
-                         "参考下面的翻译：\n草 翻译成 lol\n"
-                         "请将以下文本翻译为 英语。\n注意翻译的风格要严格符合【简洁直白】\n\n草")
-        self.assertEqual(build_prompt("草", [], "前の文", "简洁直白"),
-                         "【背景信息】\n前の文\n\n请结合背景信息将以下文本翻译为 英语。\n"
-                         "注意翻译的风格要严格符合【简洁直白】\n\n【待翻译文本】\n草")
+        for reference in ("", "前の文"):
+            prompt = build_prompt("草", [], reference, "Casual")
+            self.assertEqual(prompt["messages"][0]["content"], "草")
+            self.assertIn("Style: Casual.", prompt["chat_template_kwargs"]["context"])
 
     def test_style_config_validation(self):
-        self.assertEqual(TranslateConfig().style, "简洁直白")
+        self.assertEqual(TranslateConfig().style, "Plain and concise")
         self.assertEqual(TranslateConfig(style="").style, "")
         for bad in ("【x】", "a\nb", 3, "x" * 41):
             with self.subTest(style=bad), self.assertRaises(ValueError):
@@ -111,11 +110,12 @@ class GlossaryHintTests(unittest.TestCase):
         obj.stream = StreamContext(title="【宝鐘マリン】雑談")
         obj.cfg = TranslateConfig(context_lines=2)
         prompt = obj.prompt_for("船長が来た", [("おはよう", "Good morning."), ("元気？", "How are you?")])
-        self.assertIn("船長 翻译成 Senchou", prompt)
-        self.assertTrue(prompt.startswith("【背景信息】\n配信タイトル：【宝鐘マリン】雑談\n直前の会話：\nおはよう\n元気？\n\n"))
-        self.assertNotIn("Good morning.", prompt)
-        self.assertNotIn("How are you?", prompt)
-        self.assertTrue(prompt.endswith("船長が来た"))
+        options = prompt["chat_template_kwargs"]
+        self.assertIn({"source": "船長", "target": "Senchou"}, options["glossary"])
+        self.assertTrue(options["context"].endswith("配信タイトル：【宝鐘マリン】雑談\n直前の会話：\nおはよう\n元気？"))
+        self.assertNotIn("Good morning.", options["context"])
+        self.assertNotIn("How are you?", options["context"])
+        self.assertEqual(prompt["messages"], [{"role": "user", "content": "船長が来た"}])
 
     def test_stream_profile_chapter_and_cast_lead_the_prompt(self):
         stream = describe_stream({"title": "【コラボ】雑談", "channel": "Marine Ch. 宝鐘マリン",
@@ -136,9 +136,10 @@ class GlossaryHintTests(unittest.TestCase):
         obj.stream = stream
         obj.set_position(900)
         prompt = obj.prompt_for("船長が来た", [])
-        self.assertTrue(prompt.startswith("【背景信息】\n配信タイトル：【コラボ】雑談\n"))
-        self.assertIn("現在のチャプター：マイクラ", prompt)
-        self.assertIn("船長 翻译成 Senchou", prompt)
+        options = prompt["chat_template_kwargs"]
+        self.assertIn("配信タイトル：【コラボ】雑談", options["context"])
+        self.assertIn("現在のチャプター：マイクラ", options["context"])
+        self.assertIn({"source": "船長", "target": "Senchou"}, options["glossary"])
 
     def test_stream_without_metadata_or_glossary_is_empty(self):
         self.assertEqual(describe_stream(None), StreamContext())
@@ -226,7 +227,8 @@ class GlossaryHintTests(unittest.TestCase):
         obj = fake_translator()
         source = "ナイスショット フレームレート ソロキュー ヘッドショット リスポーン地点 "
         source += "クールタイム スキル回し マッチング エイムアシスト 範囲攻撃 リロード 弾薬 スイちゃんが来た"
-        self.assertIn("スイちゃん 翻译成 Sui-chan", obj.prompt_for(source, []))
+        self.assertIn({"source": "スイちゃん", "target": "Sui-chan"},
+                      obj.prompt_for(source, [])["chat_template_kwargs"]["glossary"])
 
     def test_short_nicknames_are_preserved_not_expanded(self):
         # Spoken nicknames map to proper names, not ordinary vocabulary.
@@ -251,29 +253,29 @@ class GlossaryHintTests(unittest.TestCase):
         obj = fake_translator()
         # Short nickname should appear in the prompt when it matches the source.
         prompt = obj.prompt_for("ラプが来た。", [])
-        self.assertIn("ラプ 翻译成 Lap", prompt)
+        self.assertIn({"source": "ラプ", "target": "Lap"}, prompt["chat_template_kwargs"]["glossary"])
 
     def test_terms_prioritizes_exact_matches_under_term_cap(self):
         obj = fake_translator()
         # Many terms match; short nickname exact match must not be crowded out.
         source = "ラプ"
         prompt = obj.prompt_for(source, [])
-        self.assertIn("ラプ 翻译成 Lap", prompt)
+        self.assertIn({"source": "ラプ", "target": "Lap"}, prompt["chat_template_kwargs"]["glossary"])
 
 
 
 class NameConsistencyTests(unittest.TestCase):
-    def test_missing_name_gets_one_deterministic_retry_with_context(self):
+    def test_missing_name_gets_one_deterministic_retry_without_history(self):
         obj = fake_translator("Suixian shot me.", "Sui-chan shot me.")
         history = [("前の会話", "Incorrect prior English.")]
         self.assertEqual(obj.translate("スイちゃんに撃たれた。", history), "Sui-chan shot me.")
         self.assertEqual(obj._chat.call_count, 2)
         retry = obj._chat.call_args_list[1]
-        self.assertEqual(retry.args[0], obj._chat.call_args_list[0].args[0])
-        self.assertIn("スイちゃん 翻译成 Sui-chan", retry.args[0])
-        self.assertIn("前の会話", retry.args[0])
-        self.assertNotIn("Incorrect prior English.", retry.args[0])
-        self.assertNotIn("Suixian", retry.args[0])
+        options = retry.args[0]["chat_template_kwargs"]
+        self.assertIn({"source": "スイちゃん", "target": "Sui-chan"}, options["glossary"])
+        self.assertIn("前の会話", obj._chat.call_args_list[0].args[0]["chat_template_kwargs"]["context"])
+        self.assertNotIn("context", options)
+        self.assertEqual(retry.args[0]["messages"], [{"role": "user", "content": "スイちゃんに撃たれた。"}])
         self.assertEqual(retry.kwargs["temperature"], 0.0)
 
     def test_failed_name_retry_keeps_only_a_name_omission(self):
@@ -286,10 +288,10 @@ class NameConsistencyTests(unittest.TestCase):
 
     def test_best_attempt_prefers_valid_then_named_then_earliest(self):
         names = [("スイちゃん", "Sui-chan")]
-        self.assertEqual(HymtTranslator._best(["She shot me.", "Sui-chan shot me."], names), "Sui-chan shot me.")
-        self.assertEqual(HymtTranslator._best(["She shot me.", "Someone shot me."], names), "She shot me.")
-        self.assertEqual(HymtTranslator._best(["撃たれた", "She shot me."], names), "She shot me.")
-        self.assertEqual(HymtTranslator._best(["撃たれた", "Suixian shot me."], names), "")
+        self.assertEqual(PlamoTranslator._best(["She shot me.", "Sui-chan shot me."], names), "Sui-chan shot me.")
+        self.assertEqual(PlamoTranslator._best(["She shot me.", "Someone shot me."], names), "She shot me.")
+        self.assertEqual(PlamoTranslator._best(["撃たれた", "She shot me."], names), "She shot me.")
+        self.assertEqual(PlamoTranslator._best(["撃たれた", "Suixian shot me."], names), "")
 
     def test_garbled_names_are_near_misses_not_other_words(self):
         self.assertTrue(garbled_name("Suixian shot me.", ["Sui-chan"]))

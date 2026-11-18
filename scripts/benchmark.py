@@ -23,7 +23,7 @@ from auto_translate.glossary import Glossary
 from auto_translate.gpu_budget import GpuBudget
 from auto_translate.stream_context import StreamContext, describe_stream
 from auto_translate.subtitle_clean import clean_english_output
-from auto_translate.translate.hymt import useful_context
+from auto_translate.translate.plamo import useful_context
 
 CHRF_ORDER = 6
 CHRF_BETA = 2

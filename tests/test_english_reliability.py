@@ -11,11 +11,11 @@ from auto_translate.subtitle_clean import (
     clean_english_output, english_output_issue, sanitize_english_output,
     unmatched_double_quote_cleanup,
 )
-from auto_translate.translate.hymt import HymtTranslator, clean_output
+from auto_translate.translate.plamo import PlamoTranslator, clean_output
 
 
 def fake_translator(*outputs, glossary=None):
-    obj = object.__new__(HymtTranslator)
+    obj = object.__new__(PlamoTranslator)
     obj.cfg = TranslateConfig()
     obj.glossary = glossary or Glossary.load(Path("glossary.toml"))
     obj.stream = StreamContext()
@@ -63,23 +63,25 @@ class EnglishReliabilityTests(unittest.TestCase):
             self.assertIsNone(english_output_issue(text))
             self.assertEqual(sanitize_english_output(text), text)
 
-    def test_invalid_initial_response_is_retried_with_context_then_plainly(self):
+    def test_invalid_initial_response_is_retried_once_without_history(self):
         history = [("前の文", "Earlier line.")]
         obj = fake_translator("今日は晴れです", "It's sunny today.")
         self.assertEqual(obj.translate("今日は晴れです", history), "It's sunny today.")
-        self.assertEqual(obj._chat.call_count, 2)
-        retry_prompt = obj._chat.call_args_list[1].args[0]
-        self.assertIn("前の文", retry_prompt)
-        self.assertEqual(obj._chat.call_args_list[1].kwargs["temperature"], 0.0)
+        first, retry = obj._chat.call_args_list
+        self.assertIn("前の文", first.args[0]["chat_template_kwargs"]["context"])
+        self.assertNotIn("context", retry.args[0]["chat_template_kwargs"])
+        self.assertEqual(retry.kwargs["temperature"], 0.0)
 
-        obj = fake_translator("今日は晴れです", "今日は晴れです", "It's sunny today.")
-        self.assertEqual(obj.translate("今日は晴れです", history), "It's sunny today.")
-        self.assertEqual(obj._chat.call_count, 3)
-        plain = obj._chat.call_args_list[2]
-        self.assertTrue(plain.args[0].startswith("请将以下文本翻译为 英语"))
-        self.assertIn("【简洁直白】", plain.args[0])
-        self.assertNotIn("前の文", plain.args[0])
-        self.assertEqual(plain.kwargs["temperature"], 0.0)
+    def test_equivalent_deterministic_request_is_not_repeated(self):
+        obj = fake_translator("今日は晴れです")
+        obj.cfg.style = ""
+        self.assertEqual(obj.translate("今日は晴れです", []), "")
+        obj._chat.assert_called_once()
+
+    def test_template_leaks_are_rejected_but_profanity_is_preserved(self):
+        for text in ("Output only the translation.", "<|plamo:tag|>English"):
+            self.assertEqual(clean_output(text), "")
+        self.assertEqual(clean_output("EN: That's **fucking** funny."), "That's fucking funny.")
 
     def test_all_invalid_candidates_suppress_and_continue(self):
         obj = fake_translator("今日は晴れです", "It is 晴れです", "Hello!")

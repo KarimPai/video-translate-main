@@ -16,7 +16,7 @@ from auto_translate.ingest import parse_time, start_from_url
 from auto_translate.output.mpv import MpvIpc, MpvOutput, _WindowsPipe, _create_kill_job
 from auto_translate.output.web import BACKLOG, WebOutput
 from auto_translate.session_cache import SessionSubtitleCache
-from auto_translate.translate.hymt import clean_output as _clean
+from auto_translate.translate.plamo import clean_output as _clean
 from auto_translate.types import Subtitle
 from auto_translate.ytdlp import cache_key
 

@@ -27,7 +27,7 @@ from .ingest import Ingest
 from .output.base import Output
 from .session_cache import SessionSubtitleCache
 from .translate.base import Translator, TranslatorUnavailable
-from .translate.hymt import useful_context
+from .translate.plamo import useful_context
 from .types import (
     SAMPLE_RATE,
     AudioChunk,

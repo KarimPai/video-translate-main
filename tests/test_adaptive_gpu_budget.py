@@ -45,7 +45,7 @@ class CpuVadTests(unittest.TestCase):
         self.assertEqual(cfg.device, "cpu")
         with patch("auto_translate.vad.StreamingFireRedVAD") as ctor:
             seg = Segmenter(cfg)
-            ctor.assert_called_once_with(cfg.threshold, "cpu")
+            ctor.assert_called_once_with(cfg.threshold, "cpu", "")
             self.assertEqual(seg.min_silence, 55)
             self.assertEqual(seg.pad, 40)  # 400 ms of audio at 10 ms/frame
 

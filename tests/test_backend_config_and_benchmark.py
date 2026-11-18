@@ -26,6 +26,18 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.asr.recent_context_lines, 2)
         self.assertFalse(cfg.language_filter.enabled)
 
+    def test_legacy_translation_model_path_migrates_without_resetting_preferences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_file = Path(directory) / "config.toml"
+            config_file.write_text(
+                '[translate]\nmodel_path = "models/hymt/Hy-MT2-7B-Q4_K_M.gguf"\ncontext_lines = 9\n',
+                encoding="utf-8",
+            )
+            cfg = load_config(config_file)
+            self.assertEqual(cfg.translate.model_path, TranslateConfig().model_path)
+            self.assertEqual(cfg.translate.context_lines, 9)
+            self.assertIn("Hy-MT2", config_file.read_text(encoding="utf-8"))
+
     def test_translation_context_defaults(self):
         cfg = TranslateConfig()
         self.assertEqual(cfg.context_lines, 6)

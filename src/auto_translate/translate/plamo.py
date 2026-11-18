@@ -1,13 +1,4 @@
-"""Tencent Hy-MT2-7B served by an owned llama.cpp server.
-
-Prompts follow the official Hy-MT2 templates: glossary hits use the
-terminology form, recent dialogue uses the background-information form, an
-optional style uses the style form, and they are combined when present.
-Hy-MT2 is used without a system prompt.
-
-Context comes first and grows between cues so llama.cpp can reuse the cached
-prompt prefix; per-cue terms and the source line come last.
-"""
+"""PLaMo 3 Translate 2B served by an owned llama.cpp server."""
 from __future__ import annotations
 
 import logging
@@ -30,24 +21,25 @@ log = logging.getLogger(__name__)
 
 MAX_TERMS = 16
 RELIEF_LAYERS = 4
-_PLAIN = "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}"
-_TERMS = "参考下面的翻译：\n{terms}\n"
-_BACKGROUND = "【背景信息】\n{context}\n\n"
-_CONTEXT = "请结合背景信息将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释。\n\n【待翻译文本】\n{text}"
-_STYLE_PLAIN = "请将以下文本翻译为 英语。\n注意翻译的风格要严格符合【{style}】\n\n{text}"
-_STYLE_CONTEXT = "请结合背景信息将以下文本翻译为 英语。\n注意翻译的风格要严格符合【{style}】\n\n【待翻译文本】\n{text}"
+_GUIDANCE = ("Translate only the current Japanese into natural English subtitles. "
+             "Preserve spoken nicknames, intent and profanity. Use pronouns when supported by the dialogue. "
+             "The reference below is not part of the current speech. Output only the translation.")
+_TAG = re.compile(r"<\|plamo:[a-z_]+\|>", re.I)
+_MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)\*(?=\S)(.+?)(?<=\S)\*(?!\w)")
 _DIALOGUE = "直前の会話："
 _ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION)\s*[:：]\s*", re.I)
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
 
 
-def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "") -> str:
-    block = _TERMS.format(terms="\n".join(f"{ja} 翻译成 {en}" for ja, en in terms)) if terms else ""
-    if context:
-        tail = _STYLE_CONTEXT.format(style=style, text=text) if style else _CONTEXT.format(text=text)
-        return _BACKGROUND.format(context=context) + block + tail
-    return block + (_STYLE_PLAIN.format(style=style, text=text) if style else _PLAIN.format(text=text))
+def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "") -> dict:
+    options = {"source_lang": "ja", "target_lang": "en"}
+    if context or style:
+        guidance = _GUIDANCE + (f" Style: {style}." if style else "")
+        options["context"] = _TAG.sub("", "\n".join(part for part in (guidance, context) if part))
+    if terms:
+        options["glossary"] = [{"source": ja, "target": en} for ja, en in terms]
+    return {"messages": [{"role": "user", "content": text}], "chat_template_kwargs": options}
 
 
 def useful_context(text: str) -> bool:
@@ -110,11 +102,17 @@ def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> b
 def clean_output(text: str) -> str:
     """Join lines and remove role prefixes, wrapping quotes and orphan quotes."""
     line = " ".join(part.strip() for part in text.strip().splitlines() if part.strip())
+    if _TAG.search(line) or any(phrase in line.casefold() for phrase in (
+        "translate only the current japanese", "reference below is not part of the current speech",
+        "output only the translation",
+    )):
+        return ""
     line = _ROLE.sub("", line).strip()
+    line = _MARKDOWN.sub(lambda match: match[1] or match[2], line)
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
 
 
-class HymtTranslator:
+class PlamoTranslator:
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, stream: StreamContext | None = None,
                  gpu_layers: int | None = None) -> None:
         self.cfg = cfg
@@ -123,7 +121,7 @@ class HymtTranslator:
         self._position: float | None = None
         self._anchor: tuple[str, str] | None = None
         self._newest: tuple[str, str] | None = None
-        self.model = require_gguf(cfg.model_path, "Hy-MT2 model")
+        self.model = require_gguf(cfg.model_path, "PLaMo 3 Translate 2B model")
         self.layer_count = gguf_block_count(self.model) or 32
         requested = cfg.gpu_layers if gpu_layers is None else gpu_layers
         self.gpu_layers = self.layer_count if requested < 0 else min(requested, self.layer_count)
@@ -141,14 +139,14 @@ class HymtTranslator:
     def _args(self) -> list[str]:
         # Offload all layers +1 so the output layer also stays on the GPU.
         layers = self.gpu_layers + 1 if self.gpu_layers >= self.layer_count else self.gpu_layers
-        return ["-m", str(self.model), "-c", str(self.cfg.context_size), "-np", "1", "--jinja",
+        return ["-m", str(self.model), "-c", str(self.cfg.context_size), "-np", "1", "--jinja", "--no-prefill-assistant",
                 "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "-fit", "off", "-ngl", str(layers),
                 "-t", str(self.cfg.threads), "--device", f"CUDA{self.cfg.cuda_device}"]
 
     def _start(self) -> None:
         check_running()
         if self._closed:
-            raise LlamaServerError("Hy-MT2 translator is closed")
+            raise LlamaServerError("PLaMo 3 Translate 2B translator is closed")
         self.server.args = self._args()
         try:
             self.server.start()
@@ -166,14 +164,14 @@ class HymtTranslator:
             check_running()
         except (httpx.HTTPError, ValueError) as exc:
             check_running()
-            raise LlamaServerError(f"Hy-MT2 startup request failed: {exc}. {self.server.log_tail()}") from exc
+            raise LlamaServerError(f"PLaMo 3 Translate 2B startup request failed: {exc}. {self.server.log_tail()}") from exc
         self._relief.clear()
-        update_metrics(workers={"mt": f"ready (Hy-MT2-7B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
-        log.info("Hy-MT2 ready with %d/%d GPU layers", self.gpu_layers, self.layer_count)
+        update_metrics(workers={"mt": f"ready (PLaMo 3 Translate 2B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
+        log.info("PLaMo 3 Translate 2B ready with %d/%d GPU layers", self.gpu_layers, self.layer_count)
 
     def reload(self, gpu_layers: int, reason: str) -> None:
         self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
-        log.warning("Reloading Hy-MT2 at %d GPU layers (%s)", self.gpu_layers, reason)
+        log.warning("Reloading PLaMo 3 Translate 2B at %d GPU layers (%s)", self.gpu_layers, reason)
         record_event("mt_reload", gpu_layers=self.gpu_layers, reason=reason)
         update_metrics(workers={"mt": "reloading"})
         self._start()
@@ -185,9 +183,10 @@ class HymtTranslator:
         self._relief.set()
         return True
 
-    def _chat(self, prompt: str, *, timeout: float, temperature: float | None = None) -> str:
+    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
         body = {
-            "messages": [{"role": "user", "content": prompt}],
+            **prompt,
+            "stop": ["<|plamo:tag|>", "<|plamo:bos|>", "<|plamo:eos|>"],
             "temperature": self.cfg.temperature if temperature is None else temperature,
             "top_k": self.cfg.top_k, "top_p": self.cfg.top_p,
             "repeat_penalty": self.cfg.repeat_penalty,
@@ -238,7 +237,7 @@ class HymtTranslator:
         terms = names + exact + rest
         return terms[:MAX_TERMS], names
 
-    def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> str:
+    def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> dict:
         context = self._context(history)
         terms, _ = self._terms_for(ja, context)
         return build_prompt(ja, terms, context, self.cfg.style)
@@ -269,15 +268,14 @@ class HymtTranslator:
                     english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
                 missing = missing_names(english, names)
                 if not self._closed and (english_output_issue(english) or missing):
-                    increment_counter("mt_retries")
-                    if missing:
-                        record_event("mt_name_retry", names=missing)
-                    candidates = [english, clean_output(self._chat(prompt, timeout=self.cfg.timeout_s,
-                                                                   temperature=0.0))]
-                    # Context itself can provoke untranslated or echoed output.
-                    if context and not self._closed and english_output_issue(candidates[-1]):
-                        candidates.append(clean_output(self._chat(build_prompt(ja, terms, "", self.cfg.style),
-                                                                  timeout=self.cfg.timeout_s, temperature=0.0)))
+                    fallback = build_prompt(ja, terms, "")
+                    candidates = [english]
+                    if fallback != prompt or self.cfg.temperature != 0:
+                        increment_counter("mt_retries")
+                        if missing:
+                            record_event("mt_name_retry", names=missing)
+                        candidates.append(clean_output(self._chat(fallback, timeout=self.cfg.timeout_s,
+                                                                  temperature=0.0)))
                     english = self._best(candidates, names)
                 return "" if self._closed else english
             except (httpx.HTTPError, LlamaServerError, ValueError):
@@ -309,7 +307,7 @@ class HymtTranslator:
         try:
             self.reload(self.gpu_layers - RELIEF_LAYERS * 2, reason)
         except LlamaServerError as exc:
-            raise TranslatorUnavailable(f"Hy-MT2 server could not restart: {exc}") from exc
+            raise TranslatorUnavailable(f"PLaMo 3 Translate 2B server could not restart: {exc}") from exc
 
     def interrupt(self) -> None:
         self._closed = True

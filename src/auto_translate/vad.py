@@ -32,7 +32,7 @@ class StreamingFireRedVAD:
 
     WINDOW_SAMPLES = 400  # 25 ms model window
 
-    def __init__(self, speech_threshold: float, device: str = "cpu") -> None:
+    def __init__(self, speech_threshold: float, device: str = "cpu", model_dir: str = "") -> None:
         from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
@@ -42,18 +42,23 @@ class StreamingFireRedVAD:
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("FireRedVAD requested CUDA, but CUDA is unavailable")
 
-        assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad"
         revision = "7990aaccc6b7aec1e527743bd30201f2c4a03b8c"
-        assets = assets / revision
-        model_dir = assets / "Stream-VAD"
-        if not (model_dir / "cmvn.ark").is_file() or not (model_dir / "model.pth.tar").is_file():
-            log.info("Downloading FireRedVAD streaming model from Hugging Face...")
-            snapshot_download(
-                repo_id="FireRedTeam/FireRedVAD",
-                revision=revision,
-                allow_patterns=["Stream-VAD/*"],
-                local_dir=str(assets),
-            )
+        assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad" / revision
+        directory = Path(model_dir).expanduser() if model_dir else assets / "Stream-VAD"
+        required = ("cmvn.ark", "model.pth.tar")
+        if not all((directory / filename).is_file() for filename in required):
+            if model_dir:
+                raise FileNotFoundError(f"Incomplete FireRedVAD model directory: {directory}")
+            from huggingface_hub.errors import LocalEntryNotFoundError
+            options = dict(repo_id="FireRedTeam/FireRedVAD", revision=revision,
+                           allow_patterns=[f"Stream-VAD/{filename}" for filename in required])
+            try:
+                directory = Path(snapshot_download(**options, local_files_only=True)) / "Stream-VAD"
+            except LocalEntryNotFoundError:
+                pass
+            if not all((directory / filename).is_file() for filename in required):
+                log.info("Downloading FireRedVAD streaming model from Hugging Face...")
+                directory = Path(snapshot_download(**options)) / "Stream-VAD"
 
         config = FireRedStreamVadConfig(
             use_gpu=(device == "cuda"),
@@ -65,7 +70,7 @@ class StreamingFireRedVAD:
             min_silence_frame=1,
             chunk_max_frame=30000,
         )
-        self._stream = FireRedStreamVad.from_pretrained(str(model_dir), config)
+        self._stream = FireRedStreamVad.from_pretrained(str(directory), config)
         self._history = np.zeros(self.WINDOW_SAMPLES - FRAME, dtype=np.int16)
         self.device = torch.cuda.get_device_name(0) if device == "cuda" else "CPU"
         log.info("FireRed VAD initialized on %s", self.device)
@@ -188,7 +193,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device)
+        self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device, cfg.model_dir)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:

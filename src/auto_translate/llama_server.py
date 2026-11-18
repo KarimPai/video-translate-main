@@ -35,7 +35,13 @@ def resolve_executable(path: str) -> Path:
 def require_gguf(path: str, label: str) -> Path:
     model = Path(path).expanduser().resolve()
     if not model.is_file():
-        raise LlamaServerError(f"{label} not found: {model}. Run Setup.bat to download it.")
+        from .models import cached_model, model_at_default_path
+
+        spec = model_at_default_path(path)
+        cached = cached_model(spec) if spec is not None else None
+        if cached is None:
+            raise LlamaServerError(f"{label} not found: {model}. Configure an existing model path or run Setup.bat.")
+        model = cached
     with model.open("rb") as stream:
         if stream.read(4) != b"GGUF":
             raise LlamaServerError(f"{label} is not a GGUF file: {model}. Run Setup.bat to repair it.")

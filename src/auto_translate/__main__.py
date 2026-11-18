@@ -51,7 +51,7 @@ def _main(resources: ExitStack) -> None:
                         help="previous dialogue lines given to the translator")
     parser.add_argument("--asr-model", type=Path, help="Qwen3-ASR GGUF model")
     parser.add_argument("--asr-mmproj", type=Path, help="Qwen3-ASR audio projector (mmproj) GGUF")
-    parser.add_argument("--mt-model", type=Path, help="Hy-MT2 GGUF model")
+    parser.add_argument("--mt-model", type=Path, help="PLaMo 3 Translate 2B GGUF model")
     parser.add_argument("--llama-server", type=Path, help="llama.cpp llama-server executable (CUDA)")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
@@ -257,7 +257,7 @@ def _main(resources: ExitStack) -> None:
     check_running()
     translator = _load_translator(cfg, glossary, stream_context, budget, log)
     record_event("mt_loaded", gpu=budget.snapshot(), gpu_layers=translator.gpu_layers)
-    log.info("Hy-MT2 ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
+    log.info("PLaMo 3 Translate 2B ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
              translator.gpu_layers, translator.layer_count, len(glossary.terms),
              time.perf_counter()-t0, budget.free)
     resources.callback(translator.close)
@@ -340,7 +340,7 @@ def _main(resources: ExitStack) -> None:
         relieve_pressure()
     print("ASR: Qwen3-ASR-1.7B (llama.cpp CUDA) | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
-          f"MT: Hy-MT2-7B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
+          f"MT: PLaMo 3 Translate 2B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
     check_running()
     budget.start(relieve_pressure)
     try:
@@ -363,7 +363,7 @@ def _main(resources: ExitStack) -> None:
 
 
 def _load_translator(cfg, glossary, stream_context, budget, log):
-    """Start Hy-MT2, then trim GPU layers until measured free memory meets the headroom target."""
+    """Start PLaMo 3 Translate 2B, then trim GPU layers until measured free memory meets the headroom target."""
     import math
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
     from .translate import create_translator
@@ -374,7 +374,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
     if auto and budget.free is not None:
         layers = 0
         if budget.free > headroom:
-            model = require_gguf(cfg.translate.model_path, "Hy-MT2 model")
+            model = require_gguf(cfg.translate.model_path, "PLaMo 3 Translate 2B model")
             layer_count = gguf_block_count(model) or 32
             per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
             # Full-offload probing can evict idle ASR pages under Windows WDDM.
@@ -388,7 +388,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
             if layers == 0 or not auto:
                 raise
             layers = 16 if layers is None else layers // 2
-            log.warning("Hy-MT2 startup failed; retrying with %d GPU layers", layers, exc_info=True)
+            log.warning("PLaMo 3 Translate 2B startup failed; retrying with %d GPU layers", layers, exc_info=True)
     try:
         if not auto:
             budget.refresh()

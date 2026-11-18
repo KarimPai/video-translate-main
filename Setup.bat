@@ -2,16 +2,17 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Qwen3-ASR + Hy-MT2 - First-time Setup
+title Qwen3-ASR + PLaMo 3 - First-time Setup
 
 echo ============================================
-echo   Qwen3-ASR + Hy-MT2 - Windows Setup
+echo   Qwen3-ASR + PLaMo 3 - Windows Setup
 echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
-echo CUDA llama.cpp.
-echo Setup downloads/verifies Qwen3-ASR-1.7B Q8_0,
-echo its Q8_0 audio projector, and Hy-MT2-7B Q4_K_M.
+echo and CUDA llama.cpp.
+echo Setup reuses compatible local models when available:
+echo Qwen3-ASR-1.7B Q8_0, its Q8_0 audio projector,
+echo and PLaMo 3 Translate 2B Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 

@@ -9,7 +9,7 @@ from auto_translate.__main__ import _load_translator
 from auto_translate.config import Config
 from auto_translate.glossary import Glossary
 from auto_translate.llama_server import LlamaServerError
-from auto_translate.translate.hymt import build_context
+from auto_translate.translate.plamo import build_context
 from auto_translate.windows_subprocess import stopping
 from test_english_reliability import fake_translator
 
@@ -18,7 +18,7 @@ def completion(text, finish="stop"):
     return {"choices": [{"message": {"content": text}, "finish_reason": finish}]}
 
 
-class HymtLifecycleTests(unittest.TestCase):
+class PlamoLifecycleTests(unittest.TestCase):
     def test_truncated_output_retries_once_and_never_publishes_fragment(self):
         for retry, expected in ((completion("It's sunny today."), "It's sunny today."),
                                 (completion("It's a very", "length"), "")):
@@ -71,7 +71,7 @@ class HymtLifecycleTests(unittest.TestCase):
         obj = fake_translator("Hello", "Thank you!")
         obj._args = Mock(return_value=[])
         obj._start()
-        prompts = [call.args[0] for call in obj._chat.call_args_list]
+        prompts = [call.args[0]["chat_template_kwargs"]["context"] for call in obj._chat.call_args_list]
         self.assertEqual(len(prompts), 2)
         self.assertGreater(len(prompts[0]), len(prompts[1]) * 3)
 
@@ -87,7 +87,8 @@ class HymtLifecycleTests(unittest.TestCase):
         self.assertEqual(build_context("Long title", [], 3, 4), "Long")
         obj = fake_translator(glossary=Glossary({}, nicknames={"ボタン": "Botan", "獅白ぼたん": "Shishiro Botan"}))
         obj.cfg.context_lines = 0
-        self.assertNotIn("ボタン 翻译成", obj.prompt_for("ボタンが来た", [("獅白ぼたん", "Shishiro Botan")]))
+        prompt = obj.prompt_for("ボタンが来た", [("獅白ぼたん", "Shishiro Botan")])
+        self.assertNotIn("glossary", prompt["chat_template_kwargs"])
 
     def test_initial_auto_offload_reserves_memory_instead_of_probing_all_layers(self):
         obj = fake_translator()

@@ -6,7 +6,7 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    branches: [feature/haas-whisper-turbo-dual-asr-20261114]
+    branches: [feature/haas-whisper-turbo-dual-asr-20261114, feature/dual-asr-improvements-20261119]
     paths:
       - "src/auto_translate/gui.py"
       - "src/auto_translate/__main__.py"
@@ -26,6 +26,9 @@ on:
       - "src/auto_translate/gpu_budget.py"
       - "src/auto_translate/safe_playback.py"
       - "src/auto_translate/pipeline.py"
+      - "src/auto_translate/subtitle_clean.py"
+      - "src/auto_translate/subtitle_layout.py"
+      - "src/auto_translate/session_cache.py"
       - "src/auto_translate/vad.py"
       - "src/auto_translate/separation.py"
       - "src/auto_translate/ingest.py"

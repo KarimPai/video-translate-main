@@ -28,6 +28,16 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.asr.backend, "dual")
         self.assertTrue(cfg.safe_playback.enabled)
 
+    def test_dual_asr_configuration_validation(self):
+        self.assertEqual(AsrConfig().backend, "dual")
+        for bad in (
+            {"backend": "voxtral"}, {"secondary_live_mode": "sometimes"},
+            {"secondary_beam_size": 0}, {"secondary_compute_type": "invalid"},
+            {"secondary_startup_timeout_s": 0}, {"haas_model": ""},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                AsrConfig(**bad)
+
     def test_translation_context_defaults(self):
         cfg = TranslateConfig()
         self.assertEqual(cfg.context_lines, 6)

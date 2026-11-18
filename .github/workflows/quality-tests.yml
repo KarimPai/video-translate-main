@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [experiment/voxtral-mini-4b-single-asr]
+    branches: [feature/dual-asr-hymt2-overhaul-20261119]
   pull_request:
 
 jobs:

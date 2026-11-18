@@ -5,7 +5,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
+def hf_hub_download(*args, **kwargs):
+    """Lazy import so the offline CI suite need not install HF download tools."""
+    from huggingface_hub import hf_hub_download as download
+    return download(*args, **kwargs)
 
 
 @dataclass(frozen=True)

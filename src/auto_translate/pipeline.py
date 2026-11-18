@@ -273,7 +273,9 @@ def run_asr(
             try:
                 text = asr.transcribe(utt.audio, utt.probe)
             except CancelledError:
-                continue
+                break
+            if cancelled(utt.generation):
+                break
             if text and text.strip():
                 break
             reason = _rejection_reason(asr, text)
@@ -295,6 +297,8 @@ def run_asr(
             log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
                       utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
             break
+        if cancelled(utt.generation):
+            continue
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
             continue

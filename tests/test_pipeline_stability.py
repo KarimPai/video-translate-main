@@ -1,4 +1,5 @@
 """Offline regressions for live expiry and clean pipeline shutdown."""
+from concurrent.futures import CancelledError
 import queue
 import threading
 import unittest
@@ -93,6 +94,38 @@ class ExpiredLiveWorkTests(unittest.TestCase):
 
 
 class ShutdownCancellationTests(unittest.TestCase):
+    def test_cancelled_inflight_asr_is_not_retried_after_stop(self):
+        stop = threading.Event()
+        worker = Mock()
+
+        def cancel(*_args):
+            stop.set()
+            raise CancelledError()
+
+        worker.transcribe.side_effect = cancel
+        aq, tq = queue.Queue(), queue.Queue()
+        aq.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
+        aq.put(None)
+        run_asr(worker, aq, tq, stop=stop)
+        worker.transcribe.assert_called_once()
+        self.assertEqual(list(tq.queue), [None])
+
+    def test_asr_failure_from_old_generation_is_not_retried_after_seek(self):
+        generation = [0]
+        worker = Mock(last_rejection="error")
+
+        def fail_after_seek(*_args):
+            generation[0] = 1
+            return ""
+
+        worker.transcribe.side_effect = fail_after_seek
+        aq, tq = queue.Queue(), queue.Queue()
+        aq.put(Utterance(2, 3, np.ones(16000, dtype=np.float32), generation=0))
+        aq.put(None)
+        run_asr(worker, aq, tq, get_generation=lambda: generation[0])
+        worker.transcribe.assert_called_once()
+        self.assertEqual(list(tq.queue), [None])
+
     def test_queued_asr_is_discarded_after_player_close(self):
         import threading
         stop = threading.Event()

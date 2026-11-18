@@ -810,15 +810,19 @@ def run(
                     continue
 
                 if item.generation != last_guard_generation:
-                    last_guard_key, last_guard_end, identical_count = "", -float("inf"), 0
+                    last_guard_key, last_guard_start, last_guard_end, identical_count = "", -float("inf"), -float("inf"), 0
                     last_guard_generation = item.generation
                 key = normalized_cue(item.en) if item.en else ""
+                # Idempotency: suppress only the exact same source interval
+                # re-delivered (e.g. retry/cache duplicate), not different
+                # genuine speech intervals that happen to share translated text.
                 if (key and len(key.split()) >= 2 and key == last_guard_key
-                        and -0.2 <= item.start_s - last_guard_end <= 10.0):
+                        and item.start_s == last_guard_start
+                        and item.end_s == last_guard_end):
                     identical_count += 1
                 else:
                     identical_count = 1
-                last_guard_key, last_guard_end = key, item.end_s
+                last_guard_key, last_guard_start, last_guard_end = key, item.start_s, item.end_s
                 if (key and identical_count >
                         max(1, int(cfg.translate.max_identical_cues))):
                     log.info("Suppressed repeat subtitle: gen=%d count=%d text=%r",

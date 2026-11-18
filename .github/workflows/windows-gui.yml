@@ -6,7 +6,7 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    branches: [experiment/voxtral-mini-4b-single-asr]
+    branches: [feature/qwen-plamo-optimized]
     paths:
       - "src/**"
       - "tests/**"
@@ -364,7 +364,7 @@ jobs:
       - name: Upload frontend EXE
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: VideoTranslate-Voxtral-EXE-Only
+          name: VideoTranslate-PLaMo-EXE-Only
           path: dist/VideoTranslate/VideoTranslate.exe
           compression-level: 9
           retention-days: 30
@@ -372,7 +372,7 @@ jobs:
       - name: Upload full GUI (new installs)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: VideoTranslate-Voxtral-Windows-GUI
+          name: VideoTranslate-PLaMo-Windows-GUI
           path: dist/VideoTranslate/
           retention-days: 30
           if-no-files-found: error

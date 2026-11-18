@@ -19,8 +19,8 @@
 - Test: test_vod_transport_failure_bounded_retries expects 3 transcribe calls.
 
 ## F05 — Glossary/name recognition
-- Status: Fixed (commit 06dea3b)
-- Change: MAX_TERMS increased 12→16 (commit bc6eaff). _terms_for prioritizes short nickname exact matches under term cap. Glossary has context-aware disambiguation for ambiguous terms (ぼたん/みこ/まつり).
+- Status: Fixed (commits bc6eaff, 06dea3b)
+- Change: MAX_TERMS increased 12→16. _terms_for prioritizes short nickname exact matches under term cap. name_terms now includes nicknames (term in self.nicknames) so short names like ラプ→Lap pass the canonical_names filter. Glossary has context-aware disambiguation for ambiguous terms (ぼたん/みこ/まつり).
 - Tests: short nicknames (ラプ→Lap, みこ→Miko, みこち→Mikochi, まつり→Matsuri, ぼたん→Botan, わため→Watame) are preserved, not expanded to literal words. Prompts include short nicknames.
 
 ## F06 — Fragment joining
@@ -40,9 +40,18 @@
 - Change: Dedup now uses source-span identity (start_s, end_s, generation) instead of text-only matching with 10s time window. Different genuine intervals with same translated text are no longer suppressed. Only exact same-interval re-delivery is rate-limited.
 
 ## F10 — Benchmark
-- Status: Fixed (commit cb46556)
-- Change: Benchmark harness exists at scripts/benchmark.py (CER, chrF, name recall, RTF metrics). Added --validate-only mode to validate manifest/audio without models. Added regression tests for validate-only path.
-- Blocker: Real-audio evaluation requires annotated WAV clips; none available in repo. Harness is ready; run `python scripts/benchmark.py --validate-only cases.json` to validate, then `python scripts/benchmark.py cases.json --config config.toml` with annotated audio.
+- Status: Fixed (commit cb46556 + benchmark latency metrics)
+- Change: Benchmark harness exists at scripts/benchmark.py (CER, chrF, name recall, RTF metrics). Added --validate-only mode. Added subtitle_ready_s and speech_to_subtitle_s end-to-end latency metrics to rows and summary (subtitle_ready_p95_s, speech_to_subtitle_p95_s). Added regression tests for validate-only path.
+- Blocker: Real-audio evaluation requires annotated WAV clips; none available in repo. Harness is ready.
+
+## Additional fixes (beyond original F01-F10)
+- **subtitle_clean.py**: has_generation_loop optimized from O(n^3) list comparison to O(n^2) tuple n-gram comparison with early exit for n<18.
+- **config.toml**: safe_playback.enabled changed false→true (RTX 3070 8 GB VRAM bounding for concurrent Qwen3-ASR + Hy-MT2).
+- **VideoTranslate.spec**: Added PySide6 plugins (platforms, styles, imageformats) to datas for reliable GUI launch on clean machines.
+
+## Build
+- EXE: C:\Games\video-translate-qwen-hymt\dist\VideoTranslate\VideoTranslate.exe (2,393,097 bytes, valid PE, launches successfully)
+- PySide6 plugins included: qwindows.dll, qmodernwindowsstyle.dll, etc.
 
 ## Test Suite
 - 419 tests pass, 1 skipped, 0 failures.

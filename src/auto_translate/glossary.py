@@ -167,7 +167,8 @@ class Glossary:
 
     def name_terms(self, ja: str, *, context: str = "") -> list[tuple[str, str]]:
         return [(term, en) for term, en in self._matches(ja, context)
-                if self._identity(term, en) in self._canonical_names and en[:1].isupper()]
+                if (self._identity(term, en) in self._canonical_names or term in self.nicknames)
+                and en[:1].isupper()]
 
     def _talents(self, context: str) -> frozenset[str]:
         return frozenset(self._identity(term, en) for term, en in self._matches(context, "")

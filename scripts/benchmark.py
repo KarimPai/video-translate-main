@@ -93,6 +93,8 @@ def load_cases(path: Path) -> list[dict]:
         for key in ("en", "title", "channel", "description", "group"):
             if key in case and not isinstance(case[key], str):
                 raise ValueError(f"Case {key} must be a string")
+        if "speech_start_s" in case and not isinstance(case["speech_start_s"], (int, float)):
+            raise ValueError("Case speech_start_s must be a number")
         names = case.get("names", {})
         if not isinstance(names, dict) or any(not isinstance(k, str) or not k.strip() or not isinstance(v, str)
                                               or not v.strip() for k, v in names.items()):
@@ -106,6 +108,8 @@ def summarize(rows: list[dict]) -> dict:
     expected = sum(row["reference_chars"] for row in rows)
     names = sum(row["name_count"] for row in rows)
     duration = sum(row["duration_s"] for row in rows)
+    subtitle_latencies = [row["subtitle_ready_s"] for row in rows if row.get("subtitle_ready_s") is not None]
+    onset_errors = [row["speech_to_subtitle_s"] for row in rows if row.get("speech_to_subtitle_s") is not None]
     return {
         "cases": len(rows),
         "cer": sum(row["char_errors"] for row in rows) / expected if expected else None,
@@ -115,6 +119,8 @@ def summarize(rows: list[dict]) -> dict:
         "mt_rtf": sum(row["mt_s"] for row in rows) / duration,
         "asr_p95_s": float(np.percentile([row["asr_s"] for row in rows], 95)),
         "mt_p95_s": float(np.percentile([row["mt_s"] for row in rows], 95)),
+        "subtitle_ready_p95_s": float(np.percentile(subtitle_latencies, 95)) if subtitle_latencies else None,
+        "speech_to_subtitle_p95_s": float(np.percentile(onset_errors, 95)) if onset_errors else None,
         "chrf": chrf([(row["reference_en"], row["en"]) for row in rows if row.get("reference_en")]),
         "english_review": "Human review required; chrF and name recall only approximate translation accuracy.",
     }
@@ -205,9 +211,14 @@ def main() -> None:
             names = case.get("names", {})
             errors = edit_distance(ref, hypothesis)
             reference_en = case.get("en", "")
+            subtitle_ready_s = asr_s + mt_s
+            speech_to_subtitle_s = None
+            if ja and "speech_start_s" in case:
+                speech_to_subtitle_s = subtitle_ready_s - case["speech_start_s"]
             rows.append({"audio": case["audio"], "group": group, "reference_ja": case["ja"], "ja": ja,
                          "reference_en": reference_en, "en": en,
                          "duration_s": len(pcm) / 16000, "asr_s": asr_s, "mt_s": mt_s,
+                         "subtitle_ready_s": subtitle_ready_s, "speech_to_subtitle_s": speech_to_subtitle_s,
                          "reference_chars": len(ref), "char_errors": errors,
                          "cer": errors / len(ref) if ref else None,
                          "chrf": chrf([(reference_en, en)]) if reference_en else None,

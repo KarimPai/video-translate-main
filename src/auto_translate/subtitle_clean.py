@@ -90,13 +90,18 @@ def has_generation_loop(text: str) -> bool:
     Earlier checks only recognized 2–6-word spans, missing repetition of
     complete sentences. Three consecutive identical phrases are suspicious.
     Short shouted repeats ("go, go, go") are intentionally excluded.
+
+    Uses tuple n-gram comparison for O(n^2) instead of O(n^3) list comparison.
     """
     words = _WORD.findall(text.casefold().replace("’", "'"))
-    for width in range(6, min(48, len(words) // 3) + 1):
-        for start in range(len(words) - 3 * width + 1):
-            phrase = words[start:start + width]
-            if (words[start + width:start + 2 * width] == phrase
-                    and words[start + 2 * width:start + 3 * width] == phrase):
+    n = len(words)
+    if n < 18:
+        return False
+    for width in range(6, min(48, n // 3) + 1):
+        for start in range(n - 3 * width + 1):
+            phrase = tuple(words[start:start + width])
+            if (tuple(words[start + width:start + 2 * width]) == phrase
+                    and tuple(words[start + 2 * width:start + 3 * width]) == phrase):
                 return True
     return False
 

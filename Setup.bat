@@ -10,7 +10,7 @@ echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
 echo CUDA llama.cpp.
-echo Setup downloads/verifies the BuzzASR Japanese checkpoint\necho and Hy-MT2-7B Q4_K_M.
+echo Setup downloads/verifies the BuzzASR Japanese checkpoint and Hy-MT2-7B Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 

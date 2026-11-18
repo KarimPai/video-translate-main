@@ -205,7 +205,7 @@ def _main(resources: ExitStack) -> None:
             "live HLS" if source.live else "VOD HTTPS/DASH first",
         )
 
-    # Video metadata biases ASR spellings and gives translation scene context.
+    # Video metadata supplies scene context to the translator.
     # It is context, not proof of who spoke the current utterance.
     from .stream_context import describe_stream
 

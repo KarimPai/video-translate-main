@@ -1,10 +1,10 @@
-# Video Translate — Qwen3-ASR + Hy-MT2
+# Video Translate — BuzzASR + Hy-MT2
 
 Local Japanese-to-English subtitles for YouTube livestreams and VODs on Windows.
 
-`YouTube → FFmpeg 16 kHz audio → CPU FireRedVAD → Qwen3-ASR-1.7B → Hy-MT2-7B → MPV subtitles`
+`YouTube → FFmpeg 16 kHz audio → CPU FireRedVAD → BuzzASR → Hy-MT2-7B → MPV subtitles`
 
-The `experiment/qwen3-asr-hymt` branch uses two application-owned llama.cpp servers on loopback. Audio and inference stay local; YouTube access and installation downloads require internet access. This branch replaces Voxtral/audio.cpp and PLaMo, including their name-repair, caption, chat, and extended-memory heuristics.
+BuzzASR runs in a dedicated CUDA Python worker. HY-MT2 runs in its own llama.cpp server. Both process data locally.
 
 ## Install and run
 
@@ -15,8 +15,7 @@ Setup installs uv, Python 3.12, yt-dlp, Deno, FFmpeg, MPV, CPU FireRedVAD, Qt, a
 | Component | Location |
 | --- | --- |
 | llama.cpp b12318 CUDA 12.4 | `.runtime/llama-b12318-cuda12/` |
-| Qwen3-ASR-1.7B Q8_0, 2.17 GB | `models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf` |
-| Qwen3-ASR audio projector Q8_0, 356 MB | `models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` |
+| BuzzASR Japanese, 3.09 GB | `models/buzzasr-japanese/` |
 | Hy-MT2-7B Q4_K_M, 4.62 GB | `models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf` |
 | Python environment | `.venv/` |
 
@@ -28,11 +27,11 @@ Copy `config.example.toml` to `config.toml` for local overrides. This branch has
 uv run --no-sync auto-translate "YOUTUBE_URL" --mpv --no-web --context-lines 3
 ```
 
-Model overrides are `--asr-model`, `--asr-mmproj`, `--mt-model`, and `--llama-server`. The GUI exposes ASR/translation model paths and 0–20 previous dialogue lines; the projector/server paths remain in configuration.
+Use `--asr-model` for the BuzzASR checkpoint directory, `--mt-model` for the HY-MT2 GGUF, and `--llama-server` for the translation runtime.
 
 ## Accuracy and context
 
-Qwen3-ASR receives optional `asr.context` and metadata-selected canonical names with one spoken alias each, capped at four talents/eight hints. Raw titles and the full nickname dictionary are not sent as recognition hints because they can be echoed as speech; the title still guides translation. Its language tag gates Japanese output; kana-bearing Japanese mislabelled Chinese is retained. Empty, implausible, repeated, context-echoed, and token-truncated results are rejected instead of inventing speech. Quiet speech receives at most 18 dB (8×) gain with peak limiting; the near-silence gate uses 10 ms RMS windows so silent VAD padding does not hide a short reply. The optional CPU language filter defaults off because the ASR model already identifies language.
+BuzzASR decodes VAD-positive audio with its Japanese tokenizer. Stream titles, glossaries, and previous dialogue enter the translator only. The optional CPU language filter can screen non-Japanese speech before recognition.
 
 Hy-MT2-7B uses Tencent's official default, terminology, background-information, and style templates, combined when present, without a system prompt. The default style `简洁直白` asks for plain, concise English (`translate.style = ""` disables it). Sampling follows Tencent's 7B recommendation (top-k 20, top-p 0.6, repetition penalty 1.05) at temperature 0.2 instead of 0.7 for subtitle stability. Relevant glossary terms, the stream title/channel/host/cast/chapter, and the most recent six informative Japanese lines guide translation within a 600-character budget; previous English is excluded by default. Dialogue resets on seeking, switching videos, or more than 15 seconds of audio-timeline silence, not a playback pause. Simple acknowledgements do not displace useful context. Kana spelling variants share declared talent identities, while ambiguous bare Botan/Miko/Matsuri hints still require that talent in context; clear button, festival, shrine, and ship uses remain ordinary words. Recognized registered names take priority in the glossary hints. Invalid English or a missing expected name gets one terminology-preserving, context-free retry; still-invalid output is suppressed rather than rewritten. No deterministic name substitution or pronoun rewrite is applied. Text benchmarks still require human review for meaning and naturalness.
 

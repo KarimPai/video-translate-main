@@ -1,11 +1,11 @@
 # Windows GUI setup and executable
 
-This checkout starts Qwen3-ASR-1.7B and Hy-MT2-7B using separate owned llama.cpp servers. The intended system is Windows x64 with an NVIDIA RTX 3070 8 GiB and a current driver.
+Setup installs a dedicated BuzzASR CUDA worker and the HY-MT2 llama.cpp server.
 
 ## Install and launch
 
-1. Use the local `experiment/qwen3-asr-hymt` checkout.
-2. Run `Setup.bat` for dependencies, pinned llama.cpp CUDA runtime, ASR model/projector, and translation model.
+1. Use the local `feature/buzzasr-hymt2` checkout.
+2. Run `Setup.bat` for dependencies, pinned llama.cpp CUDA runtime, BuzzASR checkpoint, and translation model.
 3. Double-click `Start GUI.vbs` for the source frontend.
 4. Enter a YouTube URL, select resolution, and start translation.
 
@@ -15,7 +15,7 @@ The VBS launcher uses `pythonw.exe`; native helpers suppress external console wi
 
 Pause/resume, VOD seeking, fullscreen, and 360p/480p/720p/1080p selection remain available. Qt owns the seekbar; MPV hardware decoding and scaling remain enabled. The Console tab retains transcript/log output.
 
-Settings exposes the ASR GGUF path, Hy-MT2 GGUF path, and 0–20 context lines (default six). Changes apply at the next start. Seeking or switching videos clears recent dialogue context. The ASR projector and server executable are configured in `config.toml`, not inferred from arbitrary selected model paths.
+Settings exposes the BuzzASR checkpoint directory, Hy-MT2 GGUF path, and 0–20 context lines (default six). Changes apply at the next start. Seeking or switching videos clears recent dialogue context. The worker interpreter is configurable in `config.toml`.
 
 Safe Playback bounds queued audio and inference concurrency. Diagnostics displays observed GPU memory/activity, ASR/translation timings, playback facts, queue counts, and owned workers. Missing metrics remain unknown. Diagnostic export runs in the background; Windows event metadata is opt-in.
 
@@ -25,9 +25,9 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 
 | Setting | Default |
 | --- | --- |
-| `asr.model_path` | `models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf` |
-| `asr.mmproj_path` | `models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` |
-| `asr.server_path`, `translate.server_path` | `.runtime/llama-b12318-cuda12/llama-server.exe` |
+| `asr.model_path` | `models/buzzasr-japanese` |
+| `asr.python_path` | `.runtime/buzzasr/Scripts/python.exe` |
+| `translate.server_path` | `.runtime/llama-b12318-cuda12/llama-server.exe` |
 | `translate.model_path` | `models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf` |
 | `translate.gpu_layers` | `-1` (measured adaptive offload) |
 | `translate.context_lines` | `6` Japanese dialogue lines |
@@ -40,7 +40,6 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `mpv.en_size`, `mpv.background_opacity` | `32` (relative to a 720-pixel-high screen), `0.3` dark box behind the text (`0` = outline only) |
 | `mpv.max_line_chars`, `mpv.max_cue_lines`, `mpv.max_subtitle_rows` | `42`, `2` (longer cues split into timed chunks), `4` wrapped rows |
 | `holodex.api_key` | `""` (optional; or `HOLODEX_API_KEY`, adds the tagged collab cast) |
-| `asr.recent_context_lines` | `2` previous transcripts in the ASR prompt |
 | `vad.adaptive_split_s` | `5.0` (VOD natural-pause split target) |
 | `asr.response_timeout_s` | `30` |
 | `asr.live_response_timeout_s` | `15` |
@@ -68,6 +67,6 @@ Keep the complete `dist/VideoTranslate/` directory inside the installed checkout
 
 ## Troubleshooting and validation
 
-Inspect `logs/asr-server.log` and `logs/mt-server.log` for loading/request failures. Verify the complete llama.cpp CUDA runtime, Microsoft Visual C++ x64 Redistributable, and NVIDIA driver. Let Hy-MT2 reduce GPU layers or set a lower fixed count if unrelated workloads consume memory; model download size is not VRAM usage.
+Inspect the backend console and `logs/mt-server.log` for loading/request failures. Verify the complete llama.cpp CUDA runtime, Microsoft Visual C++ x64 Redistributable, and NVIDIA driver. Let Hy-MT2 reduce GPU layers or set a lower fixed count if unrelated workloads consume memory; model download size is not VRAM usage.
 
 Verify real audio, live timing, VOD seeks, video switching, and stopping during model startup/inference. The application should terminate only its owned backend, MPV, and model servers. A successful Qt launch or synthetic model probe does not establish real Hololive accuracy or sustained playback reliability.

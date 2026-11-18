@@ -49,8 +49,7 @@ def _main(resources: ExitStack) -> None:
     option.add_argument("--no-safe-playback", dest="safe_playback", action="store_false")
     parser.add_argument("--context-lines", type=int, choices=range(21), metavar="0..20",
                         help="previous dialogue lines given to the translator")
-    parser.add_argument("--asr-model", type=Path, help="Qwen3-ASR GGUF model")
-    parser.add_argument("--asr-mmproj", type=Path, help="Qwen3-ASR audio projector (mmproj) GGUF")
+    parser.add_argument("--asr-model", type=Path, help="BuzzASR Japanese checkpoint directory")
     parser.add_argument("--mt-model", type=Path, help="Hy-MT2 GGUF model")
     parser.add_argument("--llama-server", type=Path, help="llama.cpp llama-server executable (CUDA)")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
@@ -134,9 +133,7 @@ def _main(resources: ExitStack) -> None:
     cfg = load_config(args.config)
     for option, section, field_name in (
         ("asr_model", cfg.asr, "model_path"),
-        ("asr_mmproj", cfg.asr, "mmproj_path"),
         ("mt_model", cfg.translate, "model_path"),
-        ("llama_server", cfg.asr, "server_path"),
         ("llama_server", cfg.translate, "server_path"),
         ("context_lines", cfg.translate, "context_lines"),
         ("safe_playback", cfg.safe_playback, "enabled"),
@@ -246,11 +243,11 @@ def _main(resources: ExitStack) -> None:
     timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
     t0 = time.perf_counter()
     check_running()
-    asr = create_asr(timed_cfg, glossary, stream_context.recognition_text())
+    asr = create_asr(timed_cfg)
     resources.callback(asr.close)
     budget.refresh()
     record_event("asr_loaded", gpu=budget.snapshot())
-    log.info("Qwen3-ASR ready in %.1fs (timeout %.1fs); measured GPU free=%s GB",
+    log.info("BuzzASR ready in %.1fs (timeout %.1fs); measured GPU free=%s GB",
              time.perf_counter()-t0, decode_timeout, budget.free)
 
     t0 = time.perf_counter()
@@ -338,7 +335,7 @@ def _main(resources: ExitStack) -> None:
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
-    print("ASR: Qwen3-ASR-1.7B (llama.cpp CUDA) | "
+    print("ASR: BuzzASR Japanese (PyTorch CUDA) | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
           f"MT: Hy-MT2-7B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
     check_running()

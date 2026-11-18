@@ -2,16 +2,15 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Qwen3-ASR + Hy-MT2 - First-time Setup
+title BuzzASR + Hy-MT2 - First-time Setup
 
 echo ============================================
-echo   Qwen3-ASR + Hy-MT2 - Windows Setup
+echo   BuzzASR + Hy-MT2 - Windows Setup
 echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
 echo CUDA llama.cpp.
-echo Setup downloads/verifies Qwen3-ASR-1.7B Q8_0,
-echo its Q8_0 audio projector, and Hy-MT2-7B Q4_K_M.
+echo Setup downloads/verifies the BuzzASR Japanese checkpoint\necho and Hy-MT2-7B Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 

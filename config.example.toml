@@ -1,15 +1,8 @@
 # Relative paths are resolved from the project directory.
 [asr]
-model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
-mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+model_path = "models/buzzasr-japanese"
+python_path = ".runtime/buzzasr/Scripts/python.exe"
 cuda_device = 0
-threads = 8
-context = ""
-max_context_chars = 2000
-# Previous accepted transcripts added to the ASR prompt for continuity.
-recent_context_lines = 2
-context_size = 4096
 startup_timeout_s = 180
 response_timeout_s = 30
 live_response_timeout_s = 15
@@ -46,7 +39,7 @@ split_context_ms = 160
 fallback_s = 0.0
 
 [language_filter]
-# Qwen3-ASR already identifies language; this optional CPU gate is normally off.
+# Optional CPU language identification before the Japanese-only decoder.
 enabled = false
 min_duration_s = 2.5
 max_window_s = 5.0

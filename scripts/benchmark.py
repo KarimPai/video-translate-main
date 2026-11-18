@@ -17,7 +17,7 @@ import wave
 import numpy as np
 
 from auto_translate.__main__ import _load_translator
-from auto_translate.asr import asr_context, create_asr
+from auto_translate.asr import create_asr
 from auto_translate.config import load_config
 from auto_translate.glossary import Glossary
 from auto_translate.gpu_budget import GpuBudget
@@ -179,7 +179,7 @@ def main() -> None:
     with ExitStack() as resources:
         budget = GpuBudget(cfg.gpu_budget)
         resources.callback(budget.close)
-        asr = create_asr(cfg.asr, glossary)
+        asr = create_asr(cfg.asr)
         resources.callback(asr.close)
         budget.refresh()
         translator = _load_translator(cfg, glossary, None, budget, log)
@@ -190,17 +190,13 @@ def main() -> None:
             group = case.get("group")
             if group is None or group != previous_group:
                 history.clear()
-                asr.forget()
             previous_group = group
             stream = describe_stream({key: case.get(key, "") for key in ("title", "channel", "description")},
                                      glossary)
-            asr.set_context(asr_context(cfg.asr, glossary, stream.recognition_text()))
             translator.stream = StreamContext() if args.no_context else stream
             started = time.perf_counter()
             ja = asr.transcribe(pcm)
             asr_s = time.perf_counter() - started
-            if ja:
-                asr.remember(ja)
             started = time.perf_counter()
             en = clean_english_output(translator.translate(ja, list(history))) if ja else ""
             mt_s = time.perf_counter() - started if ja else 0.0

@@ -110,39 +110,23 @@ LLAMA_SERVER_PATH = ".runtime/llama-b12318-cuda12/llama-server.exe"
 
 @dataclass
 class AsrConfig:
-    """Qwen3-ASR settings with optional user context and metadata-selected canonical names."""
+    """Local BuzzASR checkpoint and CUDA worker settings."""
 
-    model_path: str = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
-    mmproj_path: str = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-    server_path: str = LLAMA_SERVER_PATH
-    context: str = ""
-    max_context_chars: int = 2000
-    recent_context_lines: int = 2  # previous accepted transcripts added to the ASR system prompt
-    context_size: int = 4096
+    model_path: str = "models/buzzasr-japanese"
+    python_path: str = ".runtime/buzzasr/Scripts/python.exe"
     cuda_device: int = 0
-    threads: int = 8
     blocklist: list[str] = field(default_factory=list)
     response_timeout_s: float = 30.0
     live_response_timeout_s: float = 15.0
     startup_timeout_s: float = 180.0
 
     def __post_init__(self):
-        for name in ("model_path", "mmproj_path", "server_path"):
+        for name in ("model_path", "python_path"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"asr.{name} must be a nonempty path")
-        if not isinstance(self.context, str):
-            raise ValueError("asr.context must be a string")
-        if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 8000:
-            raise ValueError("asr.max_context_chars must be an integer in 0..8000")
-        if type(self.recent_context_lines) is not int or not 0 <= self.recent_context_lines <= 4:
-            raise ValueError("asr.recent_context_lines must be an integer in 0..4")
-        if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
-            raise ValueError("asr.context_size must be an integer in 1024..32768")
         if type(self.cuda_device) is not int or self.cuda_device < 0:
             raise ValueError("asr.cuda_device must be a nonnegative integer")
-        if type(self.threads) is not int or not 1 <= self.threads <= 256:
-            raise ValueError("asr.threads must be an integer in 1..256")
         if not isinstance(self.blocklist, list) or any(not isinstance(x, str) or not x.strip() for x in self.blocklist):
             raise ValueError("asr.blocklist requires nonempty strings")
         for name in ("startup_timeout_s", "response_timeout_s", "live_response_timeout_s"):
@@ -153,7 +137,7 @@ class AsrConfig:
 
 @dataclass
 class LanguageFilterConfig:
-    """Optional pre-ASR language gate; Qwen3-ASR already tags each utterance.
+    """Optional pre-ASR language gate; BuzzASR is monolingual.
 
     Ambiguous or very short utterances stay in the original Japanese path to
     avoid losing Japanese speech during VTuber code-switching.

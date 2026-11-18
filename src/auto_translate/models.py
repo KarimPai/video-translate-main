@@ -4,7 +4,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 
 @dataclass(frozen=True)
@@ -18,22 +18,6 @@ class ModelFile:
 
 
 MODELS = (
-    ModelFile(
-        repo_id="ggml-org/Qwen3-ASR-1.7B-GGUF",
-        revision="36a678687ba7d07a74ca70ccb0e36902e005fb80",
-        filename="Qwen3-ASR-1.7B-Q8_0.gguf",
-        directory="models/qwen3-asr",
-        size=2165034944,
-        sha256="58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
-    ),
-    ModelFile(
-        repo_id="ggml-org/Qwen3-ASR-1.7B-GGUF",
-        revision="36a678687ba7d07a74ca70ccb0e36902e005fb80",
-        filename="mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
-        directory="models/qwen3-asr",
-        size=355709344,
-        sha256="46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
-    ),
     ModelFile(
         repo_id="tencent/Hy-MT2-7B-GGUF",
         revision="ab8472660ac61fac25f1af43fac2599d52a8a775",
@@ -82,6 +66,12 @@ def ensure_model(model: ModelFile, project_dir: Path) -> Path:
 
 
 def main() -> None:
+    snapshot_download(
+        repo_id="BuzzASR/japanese",
+        revision="a64b1cf652ba0eb73a9671b0462d142b2c9b17b3",
+        local_dir=Path.cwd() / "models/buzzasr-japanese",
+        allow_patterns=["*.json", "merges.txt", "model.safetensors"],
+    )
     for model in MODELS:
         ensure_model(model, Path.cwd())
 

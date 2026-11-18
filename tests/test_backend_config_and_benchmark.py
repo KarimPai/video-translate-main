@@ -15,7 +15,7 @@ class BackendConfigTests(unittest.TestCase):
     def test_example_uses_new_model_schema(self):
         cfg = load_config(Path("config.example.toml"))
         self.assertEqual(cfg.asr.model_path, AsrConfig().model_path)
-        self.assertEqual(cfg.asr.mmproj_path, AsrConfig().mmproj_path)
+        self.assertEqual(cfg.asr.python_path, AsrConfig().python_path)
         self.assertEqual(cfg.translate.model_path, TranslateConfig().model_path)
         self.assertEqual(cfg.translate.gpu_layers, -1)
         self.assertEqual(cfg.translate.context_lines, 6)
@@ -23,7 +23,6 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.translate.context_max_gap_s, 15.0)
         self.assertFalse(cfg.translate.context_english)
         self.assertTrue(cfg.translate.merge_fragments)
-        self.assertEqual(cfg.asr.recent_context_lines, 2)
         self.assertFalse(cfg.language_filter.enabled)
 
     def test_translation_context_defaults(self):
@@ -45,10 +44,8 @@ class BackendConfigTests(unittest.TestCase):
                 TranslateConfig(context_max_gap_s=gap)
 
     def test_asr_boundary_validation(self):
-        for kwargs in ({"model_path": ""}, {"mmproj_path": " "}, {"cuda_device": -1},
-                       {"threads": True}, {"context": []}, {"context_size": 100},
-                       {"max_context_chars": 8001}, {"blocklist": [""]},
-                       {"response_timeout_s": float("nan")}, {"recent_context_lines": 5}):
+        for kwargs in ({"model_path": ""}, {"python_path": " "}, {"cuda_device": -1},
+                       {"blocklist": [""]}, {"response_timeout_s": float("nan")}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 AsrConfig(**kwargs)
 

@@ -100,6 +100,161 @@ class QtDiagnosticSettingsTests(unittest.TestCase):
         self.window.deleteLater()
         self.folder.cleanup()
 
+    def _cursor_tick(self, point, now, *, active=True, buttons=None):
+        from PySide6.QtCore import Qt
+        with patch("auto_translate.gui.QCursor.pos", return_value=point), patch(
+                "auto_translate.gui.time.monotonic", return_value=now), patch.object(
+                self.window, "isActiveWindow", return_value=active), patch(
+                "auto_translate.gui.QApplication.mouseButtons",
+                return_value=buttons or Qt.MouseButton.NoButton):
+            self.window._player_activity_tick()
+
+    def test_idle_video_cursor_hides_and_movement_restores_in_both_modes(self):
+        from PySide6.QtCore import QPoint, Qt
+        window = self.window
+        window.show()
+        window._session_ready()
+        self.app.processEvents()
+        self.assertTrue(window._player_activity_timer.isActive())
+        for fullscreen in (False, True):
+            with self.subTest(fullscreen=fullscreen):
+                if fullscreen:
+                    window.toggle_fullscreen()
+                    self.app.processEvents()
+                point = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+                self._cursor_tick(point, 100)
+                self._cursor_tick(point, 102.9)
+                self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+                self._cursor_tick(point, 103.1)
+                self.assertEqual(window.video_surface.cursor().shape(), Qt.CursorShape.BlankCursor)
+                self.assertEqual(window.video_controls.isHidden(), fullscreen)
+                self._cursor_tick(point + QPoint(10, 0), 105)
+                self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+                self.assertFalse(window.video_controls.isHidden())
+
+    def test_cursor_restores_over_controls_and_outside_video(self):
+        from PySide6.QtCore import Qt
+        window = self.window
+        window.show()
+        window._session_ready()
+        self.app.processEvents()
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        controls = window.pause_button.mapToGlobal(window.pause_button.rect().center())
+        self._cursor_tick(video, 100)
+        self._cursor_tick(video, 104)
+        self._cursor_tick(controls, 105)
+        self._cursor_tick(controls, 110)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        window.toggle_fullscreen()
+        self.app.processEvents()
+        controls = window.pause_button.mapToGlobal(window.pause_button.rect().center())
+        self._cursor_tick(controls, 111)
+        self._cursor_tick(controls, 115)
+        self.assertFalse(window.video_controls.isHidden())
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+
+    def test_cursor_restores_on_focus_loss_and_tab_switch(self):
+        from PySide6.QtCore import Qt
+        window = self.window
+        window.show()
+        window._session_ready()
+        self.app.processEvents()
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        self._cursor_tick(video, 100)
+        self._cursor_tick(video, 104)
+        self._cursor_tick(video, 105, active=False)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        self._cursor_tick(video, 106)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        self._cursor_tick(video, 110)
+        self.assertEqual(window.video_surface.cursor().shape(), Qt.CursorShape.BlankCursor)
+        window.tabs.setCurrentWidget(window.console_tab)
+        self._cursor_tick(video, 111)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+
+    def test_cursor_stays_visible_while_dragging_or_holding_mouse(self):
+        from PySide6.QtCore import Qt
+        window = self.window
+        window.show()
+        window._session_ready()
+        self.app.processEvents()
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        self._cursor_tick(video, 100)
+        self._cursor_tick(video, 104, buttons=Qt.MouseButton.LeftButton)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        window._seeking = True
+        self._cursor_tick(video, 108)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+
+    def test_dialog_popup_and_occluding_window_restore_cursor(self):
+        from PySide6.QtCore import Qt
+        window = self.window
+        window.show()
+        window._session_ready()
+        window.toggle_fullscreen()
+        self.app.processEvents()
+        for index, (method, result) in enumerate((("activeModalWidget", window),
+                                                  ("activePopupWidget", window),
+                                                  ("widgetAt", None))):
+            with self.subTest(method=method):
+                video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+                now = 100 + index * 20
+                self._cursor_tick(video, now)
+                self._cursor_tick(video, now + 4)
+                self.assertEqual(window.video_surface.cursor().shape(), Qt.CursorShape.BlankCursor)
+                with patch(f"auto_translate.gui.QApplication.{method}", return_value=result):
+                    self._cursor_tick(video, now + 5)
+                    self._cursor_tick(video, now + 10)
+                self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+                self.assertFalse(window.video_controls.isHidden())
+
+    def test_cursor_remains_visible_before_playback_and_resets_with_player(self):
+        from PySide6.QtCore import Qt
+        window = self.window
+        window.show()
+        self.app.processEvents()
+        self.assertFalse(window._player_activity_timer.isActive())
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        self._cursor_tick(video, 100)
+        self._cursor_tick(video, 104)
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        window._session_ready()
+        self.app.processEvents()
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        self._cursor_tick(video, 110)
+        self._cursor_tick(video, 114)
+        self.assertEqual(window.video_surface.cursor().shape(), Qt.CursorShape.BlankCursor)
+        window._reset_player_controls()
+        self.assertFalse(window._player_activity_timer.isActive())
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+
+    def test_mode_change_stop_and_close_restore_video_cursor(self):
+        from PySide6.QtCore import Qt
+        window = self.window
+        window.show()
+        window._session_ready()
+        self.app.processEvents()
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        self._cursor_tick(video, 100)
+        self._cursor_tick(video, 104)
+        window.toggle_fullscreen()
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        self.app.processEvents()
+        video = window.video_surface.mapToGlobal(window.video_surface.rect().center())
+        self._cursor_tick(video, 110)
+        self._cursor_tick(video, 114)
+        window.exit_fullscreen()
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        self.assertTrue(window._player_activity_timer.isActive())
+        window.stop_translation()
+        self.assertFalse(window._player_activity_timer.isActive())
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+        window._reset_player_activity()
+        window._player_activity_timer.start()
+        window.close()
+        self.assertFalse(window._player_activity_timer.isActive())
+        self.assertFalse(window.video_surface.testAttribute(Qt.WidgetAttribute.WA_SetCursor))
+
     def test_feature_defaults_and_context_controls(self):
         window = self.window
         self.assertEqual(window.context_lines.value(), 6)

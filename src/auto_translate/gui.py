@@ -105,7 +105,7 @@ class SeekSlider(QSlider):
 
 
 class VideoTranslateWindow(QMainWindow):
-    FULLSCREEN_CONTROLS_TIMEOUT_S = 3.0
+    PLAYER_IDLE_TIMEOUT_S = 3.0
     diagnosticsExported = Signal(str, str)
 
     def __init__(self, root: Path):
@@ -131,8 +131,8 @@ class VideoTranslateWindow(QMainWindow):
         self._pending_seek_target = None
         self._fullscreen = False
         self._was_maximized = False
-        self._fullscreen_cursor_pos = None
-        self._fullscreen_activity_at = 0.0
+        self._player_cursor_pos = None
+        self._player_activity_at = 0.0
         self._export_thread = None
         self.setWindowTitle("Video Translate")
         self.setMinimumSize(750, 520)
@@ -147,11 +147,10 @@ class VideoTranslateWindow(QMainWindow):
         self._control_timer.timeout.connect(self._poll_control)
         self._build_ui()
         self.diagnosticsExported.connect(self._on_diagnostics_exported)
-        # Qt mouse events never reach the host while embedded native MPV owns
-        # its HWND. Poll the global pointer instead of relying on enter/move.
-        self._fullscreen_controls_timer = QTimer(self)
-        self._fullscreen_controls_timer.setInterval(150)
-        self._fullscreen_controls_timer.timeout.connect(self._fullscreen_controls_tick)
+        # Embedded MPV cannot autohide the host cursor; Qt owns its idle state.
+        self._player_activity_timer = QTimer(self)
+        self._player_activity_timer.setInterval(150)
+        self._player_activity_timer.timeout.connect(self._player_activity_tick)
         # Application-level shortcuts also work when focus is on the seekbar
         # or other Qt controls. Native MPV keys are forwarded through IPC.
         for key, callback in (("F11", self.toggle_fullscreen),
@@ -641,6 +640,8 @@ class VideoTranslateWindow(QMainWindow):
         if self._ready or self._stopping:
             return
         self._ready = True
+        self._reset_player_activity()
+        self._player_activity_timer.start()
         self.setup_panel.setVisible(False)
         self.tabs.setCurrentWidget(self.player_tab)
         self.fullscreen_button.setEnabled(True)
@@ -659,6 +660,8 @@ class VideoTranslateWindow(QMainWindow):
                 f"{minutes:02}:{seconds:02}")
 
     def _reset_player_controls(self):
+        self._player_activity_timer.stop()
+        self._reset_player_activity()
         self._duration_s = None
         self._live = False
         self._seeking = False
@@ -771,7 +774,7 @@ class VideoTranslateWindow(QMainWindow):
     def _begin_seek(self):
         self._seeking = True
         if self._fullscreen:
-            self._fullscreen_activity_at = time.monotonic()
+            self._player_activity_at = time.monotonic()
 
     def _seek_preview(self, value: int):
         if self._seeking and self._duration_s is not None:
@@ -783,7 +786,7 @@ class VideoTranslateWindow(QMainWindow):
         """Submit a completed timeline action; never seek live streams."""
         if self._fullscreen:
             self.video_controls.show()
-            self._fullscreen_activity_at = time.monotonic()
+            self._player_activity_at = time.monotonic()
         if self._live or self._duration_s is None or not self._ready:
             self.status.setText("Seeking unavailable for live or uninitialized playback.")
             return
@@ -800,26 +803,37 @@ class VideoTranslateWindow(QMainWindow):
     def _finish_seek(self):
         self._seeking = False
         if self._fullscreen:
-            self._fullscreen_activity_at = time.monotonic()
+            self._player_activity_at = time.monotonic()
         self._request_seek(float(self.seek_slider.value()))
 
-    def _fullscreen_controls_tick(self):
-        """Reveal on pointer movement; hide after 3s of fullscreen inactivity."""
-        if not self._fullscreen:
-            self._fullscreen_controls_timer.stop()
-            return
+    def _reset_player_activity(self):
+        self._player_cursor_pos = QCursor.pos()
+        self._player_activity_at = time.monotonic()
+        self.video_surface.unsetCursor()
+
+    def _player_activity_tick(self):
         now = time.monotonic()
         cursor = QCursor.pos()
-        if cursor != self._fullscreen_cursor_pos:
-            self._fullscreen_cursor_pos = cursor
-            self._fullscreen_activity_at = now
-            self.video_controls.show()
-        elif self.seek_slider.isSliderDown() or self._seeking:
-            # Never dismiss controls while dragging the VOD timeline.
-            self._fullscreen_activity_at = now
-            self.video_controls.show()
-        elif now - self._fullscreen_activity_at >= self.FULLSCREEN_CONTROLS_TIMEOUT_S:
-            self.video_controls.hide()
+        over_video = (
+            self._ready and not self._stopping and not self._closing
+            and self.isActiveWindow() and self.video_surface.isVisible()
+            and QApplication.activeModalWidget() is None
+            and QApplication.activePopupWidget() is None
+            and QApplication.widgetAt(cursor) is self.video_surface
+        )
+        interacting = (QApplication.mouseButtons() != Qt.MouseButton.NoButton
+                       or self.seek_slider.isSliderDown() or self._seeking)
+        if cursor != self._player_cursor_pos or not over_video or interacting:
+            self._player_activity_at = now
+            self.video_surface.unsetCursor()
+            if self._fullscreen:
+                self.video_controls.show()
+        elif now - self._player_activity_at >= self.PLAYER_IDLE_TIMEOUT_S:
+            if self.video_surface.cursor().shape() != Qt.CursorShape.BlankCursor:
+                self.video_surface.setCursor(Qt.CursorShape.BlankCursor)
+            if self._fullscreen:
+                self.video_controls.hide()
+        self._player_cursor_pos = cursor
 
     def toggle_fullscreen(self):
         if getattr(self, "_fullscreen_transition", False):
@@ -856,15 +870,13 @@ class VideoTranslateWindow(QMainWindow):
         # Keep MPV's native child HWND in place. Fullscreening the *host*
         # (rather than the --wid child window) preserves its render surface.
         self.showFullScreen()
-        self._fullscreen_cursor_pos = QCursor.pos()
-        self._fullscreen_activity_at = time.monotonic()
-        self._fullscreen_controls_timer.start()
+        self._reset_player_activity()
 
     def exit_fullscreen(self):
         if not self._fullscreen:
             return
         self._fullscreen = False
-        self._fullscreen_controls_timer.stop()
+        self._reset_player_activity()
         self.showNormal()
         if self._was_maximized:
             self.showMaximized()
@@ -882,6 +894,8 @@ class VideoTranslateWindow(QMainWindow):
 
     def stop_translation(self):
         self.exit_fullscreen()
+        self._player_activity_timer.stop()
+        self._reset_player_activity()
         if self.process is None or self._stopping:
             return
         self._stopping = True
@@ -982,6 +996,8 @@ class VideoTranslateWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self._closing = True
+        self._player_activity_timer.stop()
+        self._reset_player_activity()
         if self.process is not None:
             self.stop_translation()
             event.ignore()

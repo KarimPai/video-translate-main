@@ -37,20 +37,41 @@ def valid_youtube_url(value: str) -> bool:
         return False
 
 
+def _is_project(path: Path) -> bool:
+    return ((path / "pyproject.toml").is_file() and
+            (path / "src" / "auto_translate" / "__main__.py").is_file())
+
+
+def _venv_python(root: Path) -> Path:
+    return root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _has_gui_runtime(root: Path) -> bool:
+    python = _venv_python(root)
+    return python.is_file() and (os.name != "nt" or python.with_name("pythonw.exe").is_file())
+
+
 def discover_project_root(executable: str | None = None, cwd: Path | None = None) -> Path:
-    """Find project beside the source checkout or a dist/VideoTranslate.exe."""
-    sources = [Path(cwd or Path.cwd()), Path(executable or sys.executable).resolve().parent,
-               Path(__file__).resolve().parent]
+    """Find the source project or a standalone or checkout-local GUI package."""
+    entry = Path(executable or sys.executable).resolve()
+    package = entry.parent
+    if (package.parent.name.lower() == "dist" and package.name.lower() == "videotranslate"
+            and entry.name.lower() == "videotranslate.exe" and _is_project(package)):
+        checkout = package.parent.parent
+        if _has_gui_runtime(package):
+            return package
+        if _is_project(checkout) and _has_gui_runtime(checkout):
+            return checkout
+    sources = [Path(cwd or Path.cwd()), entry.parent, Path(__file__).resolve().parent]
     for source in sources:
         for candidate in (source, *source.parents):
-            if ((candidate / "pyproject.toml").is_file() and
-                    (candidate / "src" / "auto_translate" / "__main__.py").is_file()):
+            if _is_project(candidate):
                 return candidate
     raise FileNotFoundError("Project folder not found. Keep VideoTranslate.exe inside the project/dist folder.")
 
 
 def backend_python(root: Path, frozen: bool = False, executable: str | None = None) -> Path:
-    venv = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    venv = _venv_python(root)
     if venv.is_file():
         return venv
     if not frozen:

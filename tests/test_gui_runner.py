@@ -88,6 +88,25 @@ class GuiRunnerTests(unittest.TestCase):
             exe.touch()
             self.assertEqual(discover_project_root(executable=str(exe), cwd=exe.parent), root)
 
+    def test_checkout_package_uses_provisioned_runtime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = Path(folder)
+            package = checkout / "dist/VideoTranslate"
+            for root in (checkout, package):
+                source = root / "src/auto_translate"
+                source.mkdir(parents=True)
+                (source / "__main__.py").touch()
+                (root / "pyproject.toml").touch()
+            exe = package / "VideoTranslate.exe"
+            self.assertEqual(discover_project_root(executable=str(exe), cwd=package), package)
+            for root in (checkout, package):
+                python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                python.parent.mkdir(parents=True)
+                python.touch()
+                if os.name == "nt":
+                    python.with_name("pythonw.exe").touch()
+                self.assertEqual(discover_project_root(executable=str(exe), cwd=package), root)
+
     def test_gui_child_creationflags_only_when_gui_env_is_set(self):
         with patch.object(os, "name", "nt"), patch.object(
                 subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):

@@ -658,6 +658,11 @@ class MpvOutput:
                 )
                 show_from = now
                 until = now + self.LIVE_LATE_DISPLAY_S
+                # Record drift between actual speech time and display position.
+                display_lag_s = now - (sub.speech_start_s if sub.speech_start_s is not None else sub.start_s)
+                record_event("subtitle_display_lag", generation=sub.generation,
+                             speech_start_s=sub.speech_start_s, pcm_start_s=sub.start_s,
+                             display_at_s=now, lag_s=round(display_lag_s, 3), live=True)
             else:
                 log.warning(
                     "dropping expired subtitle: generation=%d "

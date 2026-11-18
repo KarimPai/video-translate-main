@@ -368,6 +368,10 @@ class MpvConfig:
     ja_size: int = 0
     min_subtitle_duration_s: float = 1.2
     max_subtitle_rows: int = 3
+    reading_cps: float = 15.0  # 0 disables reading-speed extension
+    max_subtitle_duration_s: float = 7.0
+    max_line_chars: int = 42  # 0 disables wrapping and splitting
+    max_cue_lines: int = 2
 
     def __post_init__(self):
         for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):
@@ -375,6 +379,14 @@ class MpvConfig:
                 raise ValueError("MPV timing values must be finite and nonnegative")
         if not 0 <= self.min_subtitle_duration_s <= 10:
             raise ValueError("MPV minimum subtitle duration must be between 0 and 10 seconds")
+        if not 0 <= self.max_subtitle_duration_s <= 10:
+            raise ValueError("mpv.max_subtitle_duration_s must be between 0 and 10 seconds")
+        if type(self.reading_cps) not in (int, float) or not 0 <= self.reading_cps <= 60:
+            raise ValueError("mpv.reading_cps must be in 0..60")
+        if type(self.max_line_chars) is not int or not (self.max_line_chars == 0 or 16 <= self.max_line_chars <= 120):
+            raise ValueError("mpv.max_line_chars must be 0 or in 16..120")
+        if type(self.max_cue_lines) is not int or not 1 <= self.max_cue_lines <= 4:
+            raise ValueError("mpv.max_cue_lines must be in 1..4")
         if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
             raise ValueError("Invalid MPV live cache size")
 

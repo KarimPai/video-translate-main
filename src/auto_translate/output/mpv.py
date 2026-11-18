@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -39,6 +39,7 @@ from .rtx_vsr import (
 from ..ingest import Ingest, fmt_hms
 from ..types import Subtitle
 from ..session_cache import SessionSubtitleCache
+from ..subtitle_layout import wrap_lines, split_cue, chunk_at, display_until
 from ..timeline import record_session_anchor
 
 log = logging.getLogger(__name__)
@@ -736,8 +737,7 @@ class MpvOutput:
                 increment_counter("expired")
                 return
 
-        minimum = getattr(self.cfg, "min_subtitle_duration_s", 1.2)
-        line = _Line(sub, show_from, max(until, show_from + minimum))
+        line = _Line(sub, show_from, self._display_until(sub, show_from, until))
         with self._lock:
             if sub.generation != getattr(self.ingest, "generation", sub.generation):
                 increment_counter("dropped")
@@ -1587,6 +1587,11 @@ class MpvOutput:
 
         return found
 
+    def _display_until(self, sub: Subtitle, onset: float, end: float) -> float:
+        cfg = self.cfg
+        return display_until(sub.en, onset, end, cfg.min_subtitle_duration_s,
+                             cfg.reading_cps, cfg.max_subtitle_duration_s)
+
     def _render(self, now: float) -> None:
         with self._lock:
             self._lines = [
@@ -1602,19 +1607,30 @@ class MpvOutput:
         # The per-video text cache survives seek resets and the rolling
         # in-memory display list. Ask it for cues at the current timestamp.
         cache = getattr(self, "_subtitle_cache", None)
-        if cache is not None:
+        if cache is not None and not self.ingest.source.live:
             active = [
-                _Line(
-                    sub,
-                    sub.speech_start_s
-                    if sub.speech_start_s is not None else sub.start_s,
-                    sub.end_s,
-                )
-                for sub in cache.active_at(now, getattr(self.cfg, "min_subtitle_duration_s", 1.2))
+                _Line(sub, onset, self._display_until(sub, onset, sub.end_s))
+                for sub in cache.active_at(
+                    now, max(self.cfg.min_subtitle_duration_s, self.cfg.max_subtitle_duration_s))
+                for onset in (sub.speech_start_s if sub.speech_start_s is not None else sub.start_s,)
                 if sub.end_s > getattr(self, "_last_seek_position", -1.0)
+                and now < self._display_until(sub, onset, sub.end_s)
             ]
 
         active.sort(key=lambda ln: ln.show_from)
+
+        # Split long English into consecutive readable chunks while retaining
+        # the original speech timestamps and keeping the full cached subtitle.
+        shown_lines: list[_Line] = []
+        for ln in active:
+            chunks = split_cue(ln.sub.en, self.cfg.max_line_chars, self.cfg.max_cue_lines)
+            if len(chunks) > 1:
+                spoken_end = (ln.sub.end_s if ln.sub.end_s > ln.show_from + 0.5
+                              else ln.show_until)
+                ln = _Line(replace(ln.sub, en=chunk_at(chunks, ln.show_from, spoken_end, now)),
+                           ln.show_from, ln.show_until)
+            shown_lines.append(ln)
+        active = shown_lines
 
         selected: list[_Line] = []
         used_rows = 0
@@ -1623,7 +1639,7 @@ class MpvOutput:
             # The limit counts subtitle entries, not individual language rows.
             # Each entry may contain Japanese above its English translation.
             # Each visible utterance occupies one English-only row.
-            row_count = int(bool(ln.sub.en))
+            row_count = len(wrap_lines(ln.sub.en, self.cfg.max_line_chars))
 
             if (
                 selected
@@ -1687,7 +1703,7 @@ def _ass_many(
         if sub.en:
             rows.append(
                 rf"{{\fs{cfg.en_size}\1c&HFFFFFF&}}"
-                + esc(sub.en)
+                + r"\N".join(esc(line) for line in wrap_lines(sub.en, cfg.max_line_chars))
             )
 
         if not rows:

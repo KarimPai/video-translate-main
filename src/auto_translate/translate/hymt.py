@@ -28,7 +28,7 @@ from .base import TranslatorUnavailable
 
 log = logging.getLogger(__name__)
 
-MAX_TERMS = 12
+MAX_TERMS = 16
 RELIEF_LAYERS = 4
 _PLAIN = "将以下文本翻译为英语，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}"
 _TERMS = "参考下面的翻译：\n{terms}\n"

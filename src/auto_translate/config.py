@@ -110,8 +110,24 @@ LLAMA_SERVER_PATH = ".runtime/llama-b12318-cuda12/llama-server.exe"
 
 @dataclass
 class AsrConfig:
-    """Qwen3-ASR settings with optional user context and metadata-selected canonical names."""
+    """Select the dual Haas/Whisper engine or retain Qwen as an optional fallback."""
 
+    backend: str = "dual"  # dual (default), qwen
+    haas_model: str = "haas-ja-v1.0"
+    haas_device: str = "Vulkan0"
+    haas_decode_on_cpu: bool = False
+    haas_keywords_enabled: bool = False
+    haas_keywords_alpha: float = 1.0
+    secondary_model: str = "h2oai/faster-whisper-large-v3-turbo"
+    secondary_device: str = "cuda"
+    secondary_compute_type: str = "int8_float16"
+    secondary_beam_size: int = 6
+    secondary_live_mode: str = "selective"  # off, selective, all
+    secondary_vod_mode: str = "all"
+    secondary_selective_chars: int = 9
+    secondary_vod_timeout_s: float = 25.0
+    secondary_live_timeout_s: float = 8.0
+    secondary_startup_timeout_s: float = 180.0
     model_path: str = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
     mmproj_path: str = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
     server_path: str = LLAMA_SERVER_PATH
@@ -127,6 +143,24 @@ class AsrConfig:
     startup_timeout_s: float = 180.0
 
     def __post_init__(self):
+        if self.backend not in ("dual", "qwen"):
+            raise ValueError("asr.backend must be dual or qwen")
+        if self.haas_device == "" or not self.haas_model.strip():
+            raise ValueError("Haas model and device must be nonempty")
+        if self.secondary_live_mode not in ("off", "selective", "all") or self.secondary_vod_mode not in ("off", "selective", "all"):
+            raise ValueError("secondary mode must be off, selective, or all")
+        if self.secondary_device not in ("cpu", "cuda") or not self.secondary_model.strip():
+            raise ValueError("Invalid Whisper model or device")
+        if self.secondary_compute_type not in ("int8_float16", "float16", "int8", "float32"):
+            raise ValueError("Invalid Whisper compute type")
+        if type(self.secondary_beam_size) is not int or not 1 <= self.secondary_beam_size <= 12:
+            raise ValueError("Whisper beam must be in 1..12")
+        if type(self.secondary_selective_chars) is not int or not 0 <= self.secondary_selective_chars <= 100:
+            raise ValueError("Secondary selective characters must be in 0..100")
+        for name in ("secondary_vod_timeout_s", "secondary_live_timeout_s", "secondary_startup_timeout_s"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"asr.{name} must be positive")
         for name in ("model_path", "mmproj_path", "server_path"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():

@@ -1,8 +1,9 @@
-"""The application's single local Japanese ASR backend."""
+"""Selectable dual Haas/Whisper or Qwen Japanese ASR backends."""
 from ..config import AsrConfig
 from ..glossary import Glossary
 from .base import ASR
 from .qwen3 import Qwen3ASR
+from .dual import DualASR
 
 
 def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "") -> str:
@@ -30,5 +31,7 @@ def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "
     return text[: cfg.max_context_chars]
 
 
-def create_asr(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "") -> ASR:
+def create_asr(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "", *, live: bool = False) -> ASR:
+    if cfg.backend == "dual":
+        return DualASR(cfg, live=live)
     return Qwen3ASR(cfg, asr_context(cfg, glossary, title))

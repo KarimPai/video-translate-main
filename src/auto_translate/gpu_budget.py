@@ -108,6 +108,8 @@ class GpuBudget:
         self.used = None
         self.total = None
         self.free = None
+        self.peak_used_gb = None
+        self.minimum_free_gb = None
         self.stop = threading.Event()
         self.thread = None
         self._last_pressure = "normal"
@@ -121,8 +123,14 @@ class GpuBudget:
             used, total = gpu_memory_gb()
             self.used, self.total = used, total
             self.free = None if used is None else max(0., total - used)
+            if self.used is not None:
+                self.peak_used_gb = max(self.used, self.peak_used_gb or 0.)
+                self.minimum_free_gb = min(
+                    self.free, self.minimum_free_gb if self.minimum_free_gb is not None else self.free)
             self.metrics = {**_LAST_METRICS, "used_gb": self.used,
-                            "total_gb": self.total, "free_gb": self.free}
+                            "total_gb": self.total, "free_gb": self.free,
+                            "peak_used_gb": self.peak_used_gb,
+                            "minimum_free_gb": self.minimum_free_gb}
         return self.used
 
     def snapshot(self):

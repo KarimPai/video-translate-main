@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main, feature/haas-whisper-turbo-dual-asr-20261114]
+    branches: [main, feature/haas-whisper-turbo-dual-asr-20261114, feature/dual-asr-improvements-20261119]
   pull_request:
 
 jobs:

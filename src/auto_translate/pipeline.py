@@ -22,7 +22,7 @@ from .captions import CaptionIndex, PendingCaptions
 from .context_memory import repair_near_repeated_word
 from .proper_names import resolve_names
 from .text_filter import is_usable_transcript
-from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo
+from .subtitle_clean import clean_english_output, has_generation_loop, normalized_cue, looks_like_prompt_echo, sanitize_english_output
 from .config import AsrConfig, Config, vad_for_source
 from .gui_control import emit_event
 from .runtime_diagnostics import update_metrics, increment_counter, record_event
@@ -155,6 +155,9 @@ def run_asr(
             session_cache.match(utt.start_s, utt.end_s)
             if session_cache is not None else None
         )
+        if cached is not None:
+            clean_cached = sanitize_english_output(cached.en)
+            cached = replace(cached, en=clean_cached) if clean_cached else None
         if cached is not None:
             if get_generation is not None and utt.generation != get_generation():
                 continue
@@ -448,8 +451,13 @@ def run_translate(
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.
         if isinstance(tr, Subtitle):
-            if tr.ja and tr.en:
-                history.append((tr.ja, tr.en))
+            clean_cached = sanitize_english_output(tr.en)
+            if not clean_cached:
+                increment_counter("dropped")
+                continue
+            tr = replace(tr, en=clean_cached)
+            if tr.ja:
+                history.append((tr.ja, clean_cached))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
             out_q.put(tr)
@@ -533,6 +541,10 @@ def run_translate(
                     if not en:
                         suppressed = True
 
+            if en:
+                en = sanitize_english_output(en)
+                if not en:
+                    suppressed = True
             if en:
                 history.append((tr.ja, en))
 

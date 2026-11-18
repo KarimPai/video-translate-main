@@ -305,6 +305,10 @@ class Segmenter:
 
         self._frames.append(frame)
         self._probs.append(prob)
+        if self._speech_start_sample is None and prob >= cfg.threshold:
+            # A split may contain silent pre-roll: timestamp the next
+            # positive frame rather than treating padded silence as speech.
+            self._speech_start_sample = self._next_frame_sample
         self._silence = self._silence + 1 if prob < cfg.neg_threshold else 0
 
         if self._silence >= self.min_silence:
@@ -356,7 +360,8 @@ class Segmenter:
                 end / SAMPLE_RATE,
                 np.concatenate(frames),
                 generation=self._generation,
-                speech_start_s=self._speech_start_sample / SAMPLE_RATE,
+                speech_start_s=(self._speech_start_sample / SAMPLE_RATE
+                                if self._speech_start_sample is not None else None),
                 vad_confidence=sum(speech_probs) / len(speech_probs),
             )
             # Estimate when the utterance's last sample arrived: the current chunk's read time,
@@ -371,10 +376,10 @@ class Segmenter:
         if keep_rest:
             self._frames, self._probs = rest_frames, rest_probs
             self._start_sample = end
-            self._speech_start_sample = end + next(
-                (i for i, p in enumerate(rest_probs) if p >= self.cfg.threshold),
-                0,
-            ) * FRAME
+            first_positive = next((i for i, p in enumerate(rest_probs)
+                                   if p >= self.cfg.threshold), None)
+            self._speech_start_sample = (end + first_positive * FRAME
+                                         if first_positive is not None else None)
         else:
             self._in_speech = False
             self._frames, self._probs = [], []

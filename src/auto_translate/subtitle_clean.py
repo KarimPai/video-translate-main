@@ -90,13 +90,18 @@ def has_generation_loop(text: str) -> bool:
     Earlier checks only recognized 2–6-word spans, missing repetition of
     complete sentences. Three consecutive identical phrases are suspicious.
     Short shouted repeats ("go, go, go") are intentionally excluded.
+
+    Uses tuple n-gram comparison for O(n^2) instead of O(n^3) list comparison.
     """
     words = _WORD.findall(text.casefold().replace("’", "'"))
-    for width in range(6, min(48, len(words) // 3) + 1):
-        for start in range(len(words) - 3 * width + 1):
-            phrase = words[start:start + width]
-            if (words[start + width:start + 2 * width] == phrase
-                    and words[start + 2 * width:start + 3 * width] == phrase):
+    n = len(words)
+    if n < 18:
+        return False
+    for width in range(6, min(48, n // 3) + 1):
+        for start in range(n - 3 * width + 1):
+            phrase = tuple(words[start:start + width])
+            if (tuple(words[start + width:start + 2 * width]) == phrase
+                    and tuple(words[start + 2 * width:start + 3 * width]) == phrase):
                 return True
     return False
 
@@ -118,6 +123,60 @@ def looks_like_prompt_echo(text: str) -> bool:
     return any(marker in phrase for marker in markers)
 
 
+def unmatched_double_quote_cleanup(text: str) -> str:
+    """Remove orphan double quotes while retaining balanced dialogue and apostrophes.
+
+    Each cue is self-contained: an opener from a previous subtitle must never
+    authorize a dangling closer in this one. No missing words/quotes are added.
+    """
+    pending: list[tuple[int, str]] = []
+    paired: set[int] = set()
+    for index, char in enumerate(text):
+        if char in '“„‟':
+            if char == '“' and pending and pending[-1][1] == '„':
+                opening, _ = pending.pop()
+                paired.update((opening, index))
+            else:
+                pending.append((index, char))
+        elif char == '”':
+            if pending:
+                opening, _ = pending.pop()
+                paired.update((opening, index))
+        elif char == '"':
+            if pending:
+                opening, _ = pending.pop()
+                paired.update((opening, index))
+            else:
+                pending.append((index, char))
+    return ''.join(char for index, char in enumerate(text)
+                   if char not in '"“”„‟' or index in paired).strip()
+
+
+# The translator must return English; Latin-script names, honorifics, and cultural
+# terms remain valid. Japanese script is not a romanized name or honorific.
+_JAPANESE_OUTPUT = re.compile(
+    r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
+    r"\uf900-\ufaff\uff66-\uff9f\U00020000-\U000323af]"
+)
+
+
+def english_output_issue(text: str) -> str | None:
+    """Return a hard output failure, independent of proper-name validation."""
+    if not text.strip():
+        return "empty_english"
+    if _JAPANESE_OUTPUT.search(text):
+        return "untranslated_japanese"
+    if has_generation_loop(text) or looks_like_prompt_echo(text):
+        return "prompt_echo_or_loop"
+    return None
+
+
+def sanitize_english_output(text: str) -> str:
+    """Shared final boundary for models, history, caches, and all renderers."""
+    value = unmatched_double_quote_cleanup(text)
+    return "" if english_output_issue(value) else value
+
+
 def clean_english_output(
     text: str,
     *,
@@ -126,7 +185,7 @@ def clean_english_output(
 ) -> str:
     """Discard nonverbal filler and repeated *identical* sentences only."""
     value = concise_english(
-        text,
+        sanitize_english_output(text),
         remove_fillers=remove_fillers,
         collapse_repetitions=collapse_repetitions,
     )

@@ -72,7 +72,7 @@ try {
     }
     $adapterNames = @((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name))
     if (@($adapterNames | Where-Object { $_ -match 'NVIDIA' }).Count -eq 0) {
-        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Qwen3-ASR + HY-MT.'
+        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Qwen3-ASR + Hy-MT2.'
     }
     Write-Host 'Detected video adapters:' ($adapterNames -join '; ')
 
@@ -112,14 +112,14 @@ try {
     & nvidia-smi.exe --query-gpu=name,driver_version,memory.total,memory.free --format=csv
     if ($LASTEXITCODE -ne 0) { throw 'NVIDIA driver query failed. Repair/update the NVIDIA driver before using CUDA llama.cpp.' }
 
-    Step 'Installing pinned CUDA 12.4 llama.cpp runtime for Qwen3-ASR + HY-MT'
+    Step 'Installing pinned CUDA 12.4 llama.cpp runtime for Qwen3-ASR + Hy-MT2'
     $installRoot = Join-Path $ProjectDir '.runtime'
     $llamaRoot = Join-Path $installRoot 'llama-b12318-cuda12'
     $pathFile = Join-Path $cache 'llama-bin-path.txt'
     New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
-        $headers = @{ 'User-Agent' = 'VideoTranslate-Qwen3-ASR-HY-MT-Setup'; 'Accept' = 'application/vnd.github+json' }
+        $headers = @{ 'User-Agent' = 'VideoTranslate-Qwen3-ASR-Hy-MT2-Setup'; 'Accept' = 'application/vnd.github+json' }
         $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b12318' -Headers $headers
         $build = $release.assets | Where-Object name -eq 'llama-b12318-bin-win-cuda-12.4-x64.zip'
         $runtime = $release.assets | Where-Object name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'
@@ -151,12 +151,12 @@ try {
         & uv run --no-sync python -c 'import numpy, fireredvad, torch, onnxruntime, PySide6, auto_translate; assert torch.version.cuda is None'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
         & uv run --no-sync python -m auto_translate.models
-        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Qwen3-ASR + HY-MT models. Rerun Setup to resume.' }
-        Write-Host 'Python dependencies, Qwen3-ASR Q8_0 and HY-MT Q4_K_M model integrity checks OK'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Qwen3-ASR + Hy-MT2 models. Rerun Setup to resume.' }
+        Write-Host 'Python dependencies, Qwen3-ASR Q8_0 and Hy-MT2 Q4_K_M model integrity checks OK'
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host 'Qwen3-ASR Q8_0 and audio projector ready under models\qwen3-asr; HY-MT Q4_K_M ready under models\hy-mt.'
+    Write-Host 'Qwen3-ASR Q8_0 and audio projector ready under models\qwen3-asr; Hy-MT2 Q4_K_M ready under models\hy-mt.'
     Write-Host 'A CUDA-capable NVIDIA driver is required. FireRedVAD runs on CPU.'
     exit 0
 } catch {

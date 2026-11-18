@@ -52,7 +52,7 @@ class QwenProtocolTests(unittest.TestCase):
         self.assertFalse(is_japanese(None, "hello"))
 
     def test_mono_wav_and_bounded_quiet_gain(self):
-        for level, expected in ((0, 0), (.0001, .0001), (.002, .008), (.03, .03)):
+        for level, expected in ((0, 0), (.0001, .0001), (.002, .016), (.01, .02), (.03, .03)):
             with self.subTest(level=level):
                 with wave.open(io.BytesIO(wav_bytes(np.full(16000, level))), "rb") as wav:
                     self.assertEqual((wav.getnchannels(), wav.getsampwidth(), wav.getframerate()), (1, 2, 16000))
@@ -62,6 +62,48 @@ class QwenProtocolTests(unittest.TestCase):
             wav_bytes(np.ones((2, 3)))
         with self.assertRaises(ValueError):
             wav_bytes(np.array([float("nan")]))
+
+    def test_quiet_short_reply_gain_is_not_disabled_by_silent_padding(self):
+        audio = np.zeros(14720, dtype=np.float32)
+        audio[6400:8320] = .002
+        original = audio.copy()
+        self.assertLess(float(np.sqrt(np.mean(audio * audio))), .001)
+        with wave.open(io.BytesIO(wav_bytes(audio)), "rb") as wav:
+            self.assertEqual(wav.getnframes(), len(audio))
+            pcm = np.frombuffer(wav.readframes(len(audio)), dtype="<i2") / 32767
+        np.testing.assert_array_equal(audio, original)
+        np.testing.assert_array_equal(pcm[:6400], 0)
+        np.testing.assert_array_equal(pcm[8320:], 0)
+        np.testing.assert_allclose(pcm[6400:8320], .016, atol=1 / 32767)
+
+    def test_gain_keeps_peak_headroom_and_probe_audio_unchanged(self):
+        audio = np.full(16003, .002, dtype=np.float32)
+        audio[8000] = .8
+        with wave.open(io.BytesIO(wav_bytes(audio)), "rb") as wav:
+            pcm = np.frombuffer(wav.readframes(len(audio)), dtype="<i2") / 32767
+        self.assertEqual(len(pcm), len(audio))
+        self.assertLessEqual(float(pcm.max()), .95)
+        self.assertAlmostEqual(float(pcm[0]), .002 * .95 / .8, delta=1 / 32767)
+        with wave.open(io.BytesIO(wav_bytes(audio, normalize=False)), "rb") as wav:
+            pcm = np.frombuffer(wav.readframes(len(audio)), dtype="<i2") / 32767
+        np.testing.assert_allclose(pcm, audio, atol=1 / 32767)
+
+    def test_transient_can_enable_gain_but_cannot_exceed_gain_cap(self):
+        audio = np.full(16000, .0001, dtype=np.float32)
+        audio[8000] = .1
+        self.assertLess(float(np.sqrt(np.mean(audio * audio))), .001)
+        with wave.open(io.BytesIO(wav_bytes(audio)), "rb") as wav:
+            pcm = np.frombuffer(wav.readframes(len(audio)), dtype="<i2") / 32767
+        np.testing.assert_allclose(pcm, audio * 8, atol=1 / 32767)
+
+    def test_empty_and_subframe_audio_remain_valid_wav(self):
+        for length in (0, 1, 159, 161):
+            with self.subTest(length=length):
+                audio = np.full(length, .002, dtype=np.float32)
+                with wave.open(io.BytesIO(wav_bytes(audio)), "rb") as wav:
+                    self.assertEqual(wav.getnframes(), length)
+                    pcm = np.frombuffer(wav.readframes(length), dtype="<i2") / 32767
+                np.testing.assert_allclose(pcm, .016, atol=1 / 32767)
 
     def test_context_uses_metadata_selected_names_not_raw_titles(self):
         glossary = Glossary({"兎田ぺこら": "Usada Pekora", "ホロライブ": "Hololive"}, nicknames={"ボタン": "Botan"})

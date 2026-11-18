@@ -66,15 +66,15 @@ class VadConfig:
     """
 
     device: str = "cpu"  # keep PyTorch CUDA context off the RTX 3070 by default
-    threshold: float = 0.30
-    neg_threshold: float = 0.20
+    threshold: float = 0.24
+    neg_threshold: float = 0.16
     min_silence_ms: int = 550  # wait for genuine phrase-ending silence
     speech_pad_ms: int = 400  # preserve soft/overlapped word starts and tails
-    min_speech_ms: int = 160
-    short_reply_ms: int = 120
+    min_speech_ms: int = 120
+    short_reply_ms: int = 80
     short_reply_probability: float = 0.85
-    onset_ms: int = 30
-    prob_smooth_frames: int = 5
+    onset_ms: int = 20
+    prob_smooth_frames: int = 3
     max_utterance_s: float = 14.0  # VOD soft cap: more sentence context
     max_split_extension_s: float = 2.0  # VOD hard cap: 16s
     live_max_utterance_s: float = 7.0  # fits around 9s live buffer
@@ -215,7 +215,7 @@ class TranslateConfig:
     top_p: float = 0.6
     repeat_penalty: float = 1.05
     context_lines: int = 6
-    max_context_chars: int = 600  # includes stream metadata; HY-MT is not upgraded for 8 GB VRAM
+    max_context_chars: int = 600  # includes stream metadata
     context_max_gap_s: float = 15.0
     context_english: bool = False  # also show prior English; can propagate earlier mistakes
     # Hy-MT2 style instruction (Chinese works best); empty uses the default template.

@@ -2,10 +2,10 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Qwen3-ASR + HY-MT - First-time Setup
+title Qwen3-ASR + Hy-MT2 - First-time Setup
 
 echo ============================================
-echo   Qwen3-ASR + HY-MT - Windows Setup
+echo   Qwen3-ASR + Hy-MT2 - Windows Setup
 echo ============================================
 echo.
 echo This installs Windows tools, Python packages,

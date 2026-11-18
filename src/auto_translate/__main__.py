@@ -257,7 +257,7 @@ def _main(resources: ExitStack) -> None:
     check_running()
     translator = _load_translator(cfg, glossary, stream_context, budget, log)
     record_event("mt_loaded", gpu=budget.snapshot(), gpu_layers=translator.gpu_layers)
-    log.info("HY-MT ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
+    log.info("Hy-MT2 ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
              translator.gpu_layers, translator.layer_count, len(glossary.terms),
              time.perf_counter()-t0, budget.free)
     resources.callback(translator.close)
@@ -363,7 +363,7 @@ def _main(resources: ExitStack) -> None:
 
 
 def _load_translator(cfg, glossary, stream_context, budget, log):
-    """Start HY-MT, then trim GPU layers until measured free memory meets the headroom target."""
+    """Start Hy-MT2, then trim GPU layers until measured free memory meets the headroom target."""
     import math
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
     from .translate import create_translator
@@ -374,7 +374,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
     if auto and budget.free is not None:
         layers = 0
         if budget.free > headroom:
-            model = require_gguf(cfg.translate.model_path, "HY-MT model")
+            model = require_gguf(cfg.translate.model_path, "Hy-MT2 model")
             layer_count = gguf_block_count(model) or 32
             per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
             # Full-offload probing can evict idle ASR pages under Windows WDDM.
@@ -388,7 +388,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
             if layers == 0 or not auto:
                 raise
             layers = 16 if layers is None else layers // 2
-            log.warning("HY-MT startup failed; retrying with %d GPU layers", layers, exc_info=True)
+            log.warning("Hy-MT2 startup failed; retrying with %d GPU layers", layers, exc_info=True)
     try:
         if not auto:
             budget.refresh()

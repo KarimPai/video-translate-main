@@ -8,7 +8,7 @@ if exist "%LLAMA_PATH_FILE%" (
         if exist "%%P\llama-server.exe" set "PATH=%%P;%PATH%"
     )
 )
-title Qwen3-ASR + HY-MT
+title Qwen3-ASR + Hy-MT2
 cd /d "%~dp0"
 if errorlevel 1 (
     echo ERROR: Cannot enter the project directory.
@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 echo.
 echo ========================================
-echo   Qwen3-ASR Japanese ASR + HY-MT
+echo   Qwen3-ASR Japanese ASR + Hy-MT2
 echo ========================================
 echo.
 set "VIDEO_URL="
@@ -60,7 +60,7 @@ if defined PYTHONPATH (
 )
 uv run --no-sync python -c "import numpy, fireredvad, onnxruntime, auto_translate" >nul 2>nul
 if errorlevel 1 (
-    echo Installing Qwen3-ASR + HY-MT pipeline Python dependencies...
+    echo Installing Qwen3-ASR + Hy-MT2 pipeline Python dependencies...
     uv sync --locked
     if errorlevel 1 (
         echo ERROR: Dependency installation failed.

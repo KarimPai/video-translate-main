@@ -62,10 +62,14 @@ def wav_bytes(audio: np.ndarray, *, normalize: bool = True) -> bytes:
         raise ValueError("ASR requires finite mono float32 audio at 16000 Hz")
     value = np.clip(value, -1, 1)
     if normalize and value.size:
-        rms = float(np.sqrt(np.mean(value * value)))
-        if 0.001 <= rms < 0.02:
-            # Lift quiet speech by at most 12 dB; leave near-silence untouched.
-            gain = max(1.0, min(4.0, 0.02 / rms, 0.95 / float(np.max(np.abs(value)))))
+        power = value * value
+        rms = float(np.sqrt(np.mean(power)))
+        # Silent VAD padding must not push a short reply below the gain floor.
+        starts = np.arange(0, value.size, 160)
+        frame_power = np.add.reduceat(power, starts) / np.minimum(160, value.size - starts)
+        active_rms = float(np.sqrt(np.max(frame_power)))
+        if active_rms >= 0.001 and rms < 0.02:
+            gain = max(1.0, min(8.0, 0.02 / rms, 0.95 / float(np.max(np.abs(value)))))
             value = value * gain
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:

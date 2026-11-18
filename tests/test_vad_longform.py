@@ -38,7 +38,42 @@ class LongformBoundaryTests(unittest.TestCase):
         pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
         probs = np.full(frames, 0.01, dtype=np.float32)
         probs[120:134] = 0.98  # 140ms, should not meet 250ms voiced minimum
-        self.assertEqual(self._process(pcm, probs, VadConfig(min_speech_ms=250)), [])
+        self.assertEqual(self._process(pcm, probs, VadConfig(
+            min_speech_ms=250, short_reply_ms=160,
+        )), [])
+
+    def test_fainter_speech_survives_below_previous_threshold(self):
+        pcm = np.full(300 * FRAME, .002, dtype=np.float32)
+        probs = np.full(300, .01, dtype=np.float32)
+        probs[100:170] = .27
+        result = self._process(pcm, probs)
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].speech_start_s, 1., delta=.03)
+        self.assertEqual(self._process(pcm, probs, VadConfig(threshold=.30)), [])
+
+    def test_130ms_quiet_reply_survives_without_strong_reply_exception(self):
+        pcm = np.full(300 * FRAME, .002, dtype=np.float32)
+        probs = np.full(300, .01, dtype=np.float32)
+        probs[100:113] = .45
+        self.assertEqual(len(self._process(pcm, probs)), 1)
+        self.assertEqual(self._process(pcm, probs, VadConfig(min_speech_ms=160)), [])
+
+    def test_100ms_confident_reply_uses_short_reply_exception(self):
+        pcm = np.full(300 * FRAME, .004, dtype=np.float32)
+        probs = np.full(300, .01, dtype=np.float32)
+        probs[100:110] = .99
+        self.assertEqual(len(self._process(pcm, probs, VadConfig(min_speech_ms=160))), 1)
+        self.assertEqual(self._process(pcm, probs, VadConfig(
+            min_speech_ms=160, short_reply_ms=120,
+        )), [])
+
+    def test_default_strong_reply_boundary_includes_smoothing(self):
+        pcm = np.full(300 * FRAME, .004, dtype=np.float32)
+        for voiced_frames, expected in ((6, 0), (8, 0), (10, 1)):
+            with self.subTest(voiced_frames=voiced_frames):
+                probs = np.full(300, .01, dtype=np.float32)
+                probs[100:100 + voiced_frames] = .99
+                self.assertEqual(len(self._process(pcm, probs)), expected)
 
     def test_quiet_sustained_speech_survives_recall_threshold(self):
         frames = 300
@@ -63,14 +98,14 @@ class LongformBoundaryTests(unittest.TestCase):
 
     def test_sustained_subthreshold_noise_is_not_decoded(self):
         pcm = np.full(300 * FRAME, .2, dtype=np.float32)
-        probs = np.full(300, .29, dtype=np.float32)
+        probs = np.full(300, .23, dtype=np.float32)
         self.assertEqual(self._process(pcm, probs), [])
 
     def test_short_low_confidence_game_noise_is_still_rejected(self):
         frames = 300
         pcm = np.full(frames * FRAME, .2, dtype=np.float32)
         probs = np.full(frames, .01, dtype=np.float32)
-        probs[100:114] = .36
+        probs[100:109] = .36
         self.assertEqual(self._process(pcm, probs), [])
 
     def test_high_confidence_short_japanese_reply_survives(self):
@@ -86,7 +121,7 @@ class LongformBoundaryTests(unittest.TestCase):
         frames = 300
         pcm = np.full(frames * FRAME, 0.25, dtype=np.float32)
         probs = np.full(frames, 0.01, dtype=np.float32)
-        probs[120:134] = 0.60
+        probs[120:129] = 0.60
         self.assertEqual(self._process(pcm, probs), [])
 
     def test_sustained_speech_survives_onset_filter(self):

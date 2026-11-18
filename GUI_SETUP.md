@@ -15,7 +15,7 @@ The VBS launcher uses `pythonw.exe`; native helpers suppress external console wi
 
 Pause/resume, VOD seeking, fullscreen, and 360p/480p/720p/1080p selection remain available. Qt owns the seekbar; MPV hardware decoding and scaling remain enabled. The Console tab retains transcript/log output.
 
-Settings exposes the ASR GGUF path, HY-MT GGUF path, and 0–20 context lines (default six). Changes apply at the next start. Seeking or switching videos clears recent dialogue context. The ASR projector and server executable are configured in `config.toml`, not inferred from arbitrary selected model paths.
+Settings exposes the ASR GGUF path, Hy-MT2 GGUF path, and 0–20 context lines (default six). Changes apply at the next start. Seeking or switching videos clears recent dialogue context. The ASR projector and server executable are configured in `config.toml`, not inferred from arbitrary selected model paths.
 
 Safe Playback bounds queued audio and inference concurrency. Diagnostics displays observed GPU memory/activity, ASR/translation timings, playback facts, queue counts, and owned workers. Missing metrics remain unknown. Diagnostic export runs in the background; Windows event metadata is opt-in.
 
@@ -45,6 +45,12 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `asr.response_timeout_s` | `30` |
 | `asr.live_response_timeout_s` | `15` |
 | `vad.device` | `cpu` |
+| `vad.threshold`, `vad.neg_threshold` | `0.24`, `0.16` (speech onset/continuation probability) |
+| `vad.min_speech_ms` | `120` voiced milliseconds |
+| `vad.short_reply_ms`, `vad.short_reply_probability` | `80` sustained milliseconds at smoothed probability `0.85` for shorter replies (not an 80 ms raw-audio guarantee) |
+| `vad.onset_ms`, `vad.prob_smooth_frames` | `20` ms, `3` ten-millisecond frames |
+| `vad.speech_pad_ms`, `vad.min_silence_ms` | `400` ms padding, `550` ms end-of-phrase silence |
+| `vad.fallback_s` | `0.0` (no ASR probes of VAD-negative audio) |
 
 Paths are relative to this checkout. Setup records discovered MPV/runtime paths in `.cache/` and verifies model revisions/hashes.
 
@@ -62,6 +68,6 @@ Keep the complete `dist/VideoTranslate/` directory inside the installed checkout
 
 ## Troubleshooting and validation
 
-Inspect `logs/asr-server.log` and `logs/mt-server.log` for loading/request failures. Verify the complete llama.cpp CUDA runtime, Microsoft Visual C++ x64 Redistributable, and NVIDIA driver. Let HY-MT reduce GPU layers or set a lower fixed count if unrelated workloads consume memory; model download size is not VRAM usage.
+Inspect `logs/asr-server.log` and `logs/mt-server.log` for loading/request failures. Verify the complete llama.cpp CUDA runtime, Microsoft Visual C++ x64 Redistributable, and NVIDIA driver. Let Hy-MT2 reduce GPU layers or set a lower fixed count if unrelated workloads consume memory; model download size is not VRAM usage.
 
 Verify real audio, live timing, VOD seeks, video switching, and stopping during model startup/inference. The application should terminate only its owned backend, MPV, and model servers. A successful Qt launch or synthetic model probe does not establish real Hololive accuracy or sustained playback reliability.

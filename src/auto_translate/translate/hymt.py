@@ -123,7 +123,7 @@ class HymtTranslator:
         self._position: float | None = None
         self._anchor: tuple[str, str] | None = None
         self._newest: tuple[str, str] | None = None
-        self.model = require_gguf(cfg.model_path, "HY-MT model")
+        self.model = require_gguf(cfg.model_path, "Hy-MT2 model")
         self.layer_count = gguf_block_count(self.model) or 32
         requested = cfg.gpu_layers if gpu_layers is None else gpu_layers
         self.gpu_layers = self.layer_count if requested < 0 else min(requested, self.layer_count)
@@ -148,7 +148,7 @@ class HymtTranslator:
     def _start(self) -> None:
         check_running()
         if self._closed:
-            raise LlamaServerError("HY-MT translator is closed")
+            raise LlamaServerError("Hy-MT2 translator is closed")
         self.server.args = self._args()
         try:
             self.server.start()
@@ -166,14 +166,14 @@ class HymtTranslator:
             check_running()
         except (httpx.HTTPError, ValueError) as exc:
             check_running()
-            raise LlamaServerError(f"HY-MT startup request failed: {exc}. {self.server.log_tail()}") from exc
+            raise LlamaServerError(f"Hy-MT2 startup request failed: {exc}. {self.server.log_tail()}") from exc
         self._relief.clear()
         update_metrics(workers={"mt": f"ready (Hy-MT2-7B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
-        log.info("HY-MT ready with %d/%d GPU layers", self.gpu_layers, self.layer_count)
+        log.info("Hy-MT2 ready with %d/%d GPU layers", self.gpu_layers, self.layer_count)
 
     def reload(self, gpu_layers: int, reason: str) -> None:
         self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
-        log.warning("Reloading HY-MT at %d GPU layers (%s)", self.gpu_layers, reason)
+        log.warning("Reloading Hy-MT2 at %d GPU layers (%s)", self.gpu_layers, reason)
         record_event("mt_reload", gpu_layers=self.gpu_layers, reason=reason)
         update_metrics(workers={"mt": "reloading"})
         self._start()
@@ -303,7 +303,7 @@ class HymtTranslator:
         try:
             self.reload(self.gpu_layers - RELIEF_LAYERS * 2, reason)
         except LlamaServerError as exc:
-            raise TranslatorUnavailable(f"HY-MT server could not restart: {exc}") from exc
+            raise TranslatorUnavailable(f"Hy-MT2 server could not restart: {exc}") from exc
 
     def interrupt(self) -> None:
         self._closed = True

@@ -1,4 +1,4 @@
-"""Offline tests for HY-MT prompt construction and context-gated glossary hints."""
+"""Offline tests for Hy-MT2 prompt construction and context-gated glossary hints."""
 from pathlib import Path
 import tempfile
 import unittest

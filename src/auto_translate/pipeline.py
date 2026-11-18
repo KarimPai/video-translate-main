@@ -260,28 +260,50 @@ def run_asr(
                 if live and _expired_live_cue(utt, playback_position, live_late_window_s):
                     increment_counter("expired")
                     continue
-                text = asr.transcribe(utt.audio, utt.probe)
         except CancelledError:
             continue
+
+        # ASR with bounded retry for transient transport failures. Quality
+        # rejections (no_speech, language, context_echo, etc.) are not retried;
+        # only server/transport errors (last_rejection == "error") are.
+        asr_max_retries = 2
+        asr_attempt = 0
+        text = ""
+        while True:
+            try:
+                text = asr.transcribe(utt.audio, utt.probe)
+            except CancelledError:
+                continue
+            if text and text.strip():
+                break
+            reason = _rejection_reason(asr, text)
+            last_rejection = getattr(asr, "last_rejection", None)
+            if (asr_attempt < asr_max_retries
+                    and isinstance(last_rejection, str)
+                    and last_rejection == "error"):
+                asr_attempt += 1
+                record_event("asr_retry", generation=utt.generation, attempt=asr_attempt,
+                             source_start_s=utt.start_s, source_end_s=utt.end_s,
+                             reason=reason)
+                time.sleep(0.25 * asr_attempt)
+                continue
+            increment_counter("asr_rejected")
+            record_event("asr_rejected", generation=utt.generation, reason=reason,
+                         raw_text=_raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
+                         source_start_s=utt.start_s, source_end_s=utt.end_s,
+                         retries=asr_attempt)
+            log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
+                      utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
+            break
         utt.timings.asr_end = time.monotonic()
+        if not (isinstance(text, str) and text.strip()):
+            continue
         update_metrics(stages={"asr_s": utt.timings.asr_end - utt.timings.asr_start})
         record_event("asr_complete", generation=utt.generation,
                      source_start_s=utt.start_s, speech_start_s=utt.speech_start_s,
                      source_end_s=utt.end_s, pcm_start_sample=round(utt.start_s * SAMPLE_RATE),
                      segmented_at=utt.timings.segmented,
                      asr_completed_at=utt.timings.asr_end)
-        if cancelled(utt.generation):
-            continue
-
-        if not isinstance(text, str) or not text.strip():
-            reason = _rejection_reason(asr, text)
-            increment_counter("asr_rejected")
-            record_event("asr_rejected", generation=utt.generation, reason=reason,
-                         raw_text=_raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
-                         source_start_s=utt.start_s, source_end_s=utt.end_s)
-            log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
-                      utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
-            continue
         issue = transcript_problem(text, utt.end_s - utt.start_s)
         if issue:
             increment_counter("dropped")

@@ -68,9 +68,10 @@ max_context_chars = 600
 context_max_gap_s = 15.0
 # Showing earlier English can improve consistency but can also repeat mistakes.
 context_english = false
-# Hy-MT2 style instruction, in Chinese: "简洁直白" = plain and concise.
-# Try "简洁、自然的口语" for casual speech; "" uses the default template.
-style = "简洁直白"
+# Concise conversational speech; preserve source profanity without censorship.
+style = "简洁、自然的口语，保留原文的脏话，不要审查"
+# Optional verified audio metadata; no emotion classifier is installed.
+event_context = false
 # Join a cue without sentence-final punctuation with the next close cue.
 # Live (with MPV) holds a fragment only until playback is within
 # live_merge_margin_s of its onset, so sentences are not cut mid-way.
@@ -81,8 +82,8 @@ live_merge_margin_s = 1.5
 timeout_s = 30
 load_timeout_s = 300
 glossary = "glossary.toml"
-remove_fillers = true
-collapse_repetitions = true
+remove_fillers = false
+collapse_repetitions = false
 max_identical_cues = 2
 
 [mpv]

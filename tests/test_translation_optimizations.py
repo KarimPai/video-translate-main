@@ -42,7 +42,7 @@ class PromptTemplateTests(unittest.TestCase):
                          "注意翻译的风格要严格符合【简洁直白】\n\n【待翻译文本】\n草")
 
     def test_style_config_validation(self):
-        self.assertEqual(TranslateConfig().style, "简洁直白")
+        self.assertEqual(TranslateConfig().style, "简洁、自然的口语，保留原文的脏话，不要审查")
         self.assertEqual(TranslateConfig(style="").style, "")
         for bad in ("【x】", "a\nb", 3, "x" * 41):
             with self.subTest(style=bad), self.assertRaises(ValueError):

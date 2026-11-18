@@ -22,7 +22,8 @@ from ..glossary import Glossary
 from ..llama_server import LlamaServer, LlamaServerError, gguf_block_count, require_gguf, resolve_executable
 from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..stream_context import StreamContext
-from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup
+from ..subtitle_clean import english_output_issue, sanitize_english_output
+from ..text_artifacts import clean_asr_text
 from ..windows_subprocess import check_running
 from .base import TranslatorUnavailable
 
@@ -63,7 +64,8 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     header = header[:max_chars]
     sources: list[str] = []
     used = len(header) + (len(_DIALOGUE) + 1 if header else 0)
-    recent = [(ja, en) for ja, en in history if useful_context(ja)]
+    recent = [(clean_asr_text(ja).text, sanitize_english_output(en)) for ja, en in history]
+    recent = [(ja, en) for ja, en in recent if ja and useful_context(ja)]
     for ja, en in reversed(recent[-lines:] if lines else []):
         line = f"{ja}（英訳：{en}）" if english and en else ja
         if used + len(line) + bool(used) > max_chars:
@@ -111,7 +113,7 @@ def clean_output(text: str) -> str:
     """Join lines and remove role prefixes, wrapping quotes and orphan quotes."""
     line = " ".join(part.strip() for part in text.strip().splitlines() if part.strip())
     line = _ROLE.sub("", line).strip()
-    return unmatched_double_quote_cleanup(line.strip("「」『』"))
+    return sanitize_english_output(line.strip("「」『』"))
 
 
 class HymtTranslator:
@@ -121,6 +123,7 @@ class HymtTranslator:
         self.glossary = glossary
         self.stream = stream or StreamContext()
         self._position: float | None = None
+        self._audio_context = ""
         self._anchor: tuple[str, str] | None = None
         self._newest: tuple[str, str] | None = None
         self.model = require_gguf(cfg.model_path, "Hy-MT2 model")
@@ -199,15 +202,33 @@ class HymtTranslator:
         payload = self.server.chat(body, timeout=timeout)
         check_running()
         choice = payload["choices"][0]
+        record_event("mt_exchange", prompt=prompt[:6000],
+                     raw_output=str(choice["message"]["content"])[:2000])
         return "" if choice.get("finish_reason") == "length" else choice["message"]["content"]
 
     def set_position(self, start_s: float | None) -> None:
         self._position = start_s
 
+    def set_audio_context(self, context: str) -> None:
+        self._audio_context = context[:160]
+
+    def _prompt_context(self, context: str) -> str:
+        audio = getattr(self, "_audio_context", "")
+        if not self.cfg.event_context or not audio:
+            return context
+        budget = self.cfg.max_context_chars
+        audio = audio[:min(160, budget // 3)]
+        return "\n".join(p for p in (context[:max(0, budget-len(audio)-1)], audio) if p)
+
     def _window(self, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
         """Grow from a fixed first line, then restart at half size, so the prefix stays cached."""
         lines = self.cfg.context_lines
-        usable = [pair for pair in history if useful_context(pair[0])][-lines:] if lines else []
+        cleaned_history = []
+        for pair in history:
+            clean = clean_asr_text(pair[0]).text
+            if clean and useful_context(clean):
+                cleaned_history.append(pair if clean == pair[0] else (clean, sanitize_english_output(pair[1])))
+        usable = cleaned_history[-lines:] if lines else []
         start = 0
         if self._anchor is not None:
             index = next((i for i, pair in enumerate(usable) if pair is self._anchor), None)
@@ -239,11 +260,15 @@ class HymtTranslator:
         return terms[:MAX_TERMS], names
 
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> str:
+        ja = clean_asr_text(ja).text
         context = self._context(history)
         terms, _ = self._terms_for(ja, context)
-        return build_prompt(ja, terms, context, self.cfg.style)
+        return build_prompt(ja, terms, self._prompt_context(context), self.cfg.style)
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
+        ja = clean_asr_text(ja).text
+        if not ja:
+            return ""
         with self._lock:
             if self._closed:
                 return ""
@@ -256,7 +281,7 @@ class HymtTranslator:
                     self._recover("server exited")
                 context = self._context(history)
                 terms, names = self._terms_for(ja, context)
-                prompt = build_prompt(ja, terms, context, self.cfg.style)
+                prompt = build_prompt(ja, terms, self._prompt_context(context), self.cfg.style)
                 try:
                     english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:

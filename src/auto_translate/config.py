@@ -204,7 +204,8 @@ class TranslateConfig:
     context_max_gap_s: float = 15.0
     context_english: bool = False  # also show prior English; can propagate earlier mistakes
     # Hy-MT2 style instruction (Chinese works best); empty uses the default template.
-    style: str = "简洁直白"
+    style: str = "简洁、自然的口语，保留原文的脏话，不要审查"
+    event_context: bool = False  # requires independently verified audio metadata
     # Join a cue without sentence-final punctuation with the next close cue.
     # Live holds a fragment only until playback nears its onset.
     merge_fragments: bool = True
@@ -214,8 +215,8 @@ class TranslateConfig:
     timeout_s: float = 30.0
     load_timeout_s: float = 300.0
     glossary: str = "glossary.toml"
-    remove_fillers: bool = True
-    collapse_repetitions: bool = True
+    remove_fillers: bool = False
+    collapse_repetitions: bool = False
     max_identical_cues: int = 2
 
     def __post_init__(self):
@@ -246,7 +247,7 @@ class TranslateConfig:
         if (type(self.context_max_gap_s) not in (int, float)
                 or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
             raise ValueError("translate.context_max_gap_s must be finite and positive")
-        for name in ("context_english", "merge_fragments"):
+        for name in ("context_english", "merge_fragments", "event_context"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"translate.{name} must be boolean")
         if (type(self.merge_max_gap_s) not in (int, float) or not 0 <= self.merge_max_gap_s <= 3

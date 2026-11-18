@@ -7,6 +7,7 @@ PCM sample count. Wall-clock times live only in `Timings` and are used for laten
 from dataclasses import dataclass, field
 
 import numpy as np
+from .audio_events import AudioEvent
 
 SAMPLE_RATE = 16000
 
@@ -55,6 +56,7 @@ class Utterance:
     vad_confidence: float | None = None  # mean VAD speech confidence
     speaker_handoff: bool = False  # future-compatible boundary metadata
     speaker_split: bool = False
+    audio_events: tuple[AudioEvent, ...] = ()  # supplied only by independent audio verification
 
 @dataclass
 class Transcript:

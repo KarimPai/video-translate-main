@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 from ..config import AsrConfig
-from ..runtime_diagnostics import update_metrics
+from ..runtime_diagnostics import update_metrics, record_event
+from ..text_artifacts import clean_asr_text
 from ..text_filter import trim_repetition_tail
 from ..windows_subprocess import hidden_console_flags, owned_popen
 from .quality_guard import transcript_problem
@@ -27,6 +28,7 @@ class BuzzASR:
     def __init__(self, cfg: AsrConfig):
         self.cfg = cfg
         self.last_raw_transcript = ""
+        self.last_cleaned_transcript = ""
         self.last_rejection = None
         self._generation = 0
         self._closed = False
@@ -95,6 +97,7 @@ class BuzzASR:
         with self._state:
             self._generation += 1
             self.last_raw_transcript = ""
+            self.last_cleaned_transcript = ""
             self.last_rejection = None
 
     def transcribe(self, audio, probe=False):
@@ -104,6 +107,7 @@ class BuzzASR:
         with self._state:
             generation = self._generation
             self.last_raw_transcript = ""
+            self.last_cleaned_transcript = ""
             self.last_rejection = None
             if self._closed or not audio.size or not np.any(audio):
                 self.last_rejection = "no_speech"
@@ -139,7 +143,12 @@ class BuzzASR:
                 if self._closed or generation != self._generation:
                     return ""
                 self.last_raw_transcript = raw
-                text = trim_repetition_tail(raw.strip())
+                cleaned = clean_asr_text(raw)
+                text = trim_repetition_tail(cleaned.text)
+                self.last_cleaned_transcript = text
+                if cleaned.removed:
+                    record_event("asr_artifacts_removed", raw=raw[:512], cleaned=text[:512],
+                                 removed=cleaned.removed[:16])
                 self.last_rejection = transcript_problem(text, audio.size / 16000)
                 if any(word in text for word in self.cfg.blocklist):
                     self.last_rejection = "blocklist"

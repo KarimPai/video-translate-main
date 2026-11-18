@@ -16,6 +16,8 @@ from typing import Callable
 
 from .asr.base import ASR
 from .asr.quality_guard import transcript_problem
+from .audio_events import AudioEvent, EventHistory
+from .text_artifacts import clean_asr_text
 from .subtitle_clean import (
     clean_english_output, has_generation_loop, normalized_cue,
     looks_like_prompt_echo, sanitize_english_output,
@@ -227,6 +229,9 @@ def run_asr(
         utt = item
         if utt.generation != current_generation:
             reset_generation(utt.generation)
+        for event in utt.audio_events:
+            if event.generation == utt.generation:
+                out_q.put(event)
         if live and _expired_live_cue(utt, playback_position, live_late_window_s):
             increment_counter("expired")
             continue
@@ -238,6 +243,7 @@ def run_asr(
         if cached is not None:
             if cancelled(utt.generation):
                 continue
+            cached = replace(cached, ja=clean_asr_text(cached.ja).text)
             accepted(cached.ja, utt.end_s)
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
@@ -296,6 +302,7 @@ def run_asr(
                       utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
             break
         utt.timings.asr_end = time.monotonic()
+        text = clean_asr_text(text).text if isinstance(text, str) else ""
         if not (isinstance(text, str) and text.strip()):
             continue
         update_metrics(stages={"asr_s": utt.timings.asr_end - utt.timings.asr_start})
@@ -357,6 +364,9 @@ def run_translate(
     last_speech_end_s: float | None = None
     context_max_gap_s = getattr(getattr(translator, "cfg", None), "context_max_gap_s", 15.0)
     set_position = getattr(translator, "set_position", None)
+    set_audio_context = getattr(translator, "set_audio_context", None)
+    event_history = EventHistory()
+    event_context = getattr(getattr(translator, "cfg", None), "event_context", False)
     items = iter(in_q.get, object())
     if merge is not None and live and playback_position is not None:
         def due(held: Transcript) -> bool:
@@ -386,11 +396,19 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                event_history.reset(item.generation)
                 last_speech_end_s = None
                 consecutive_failures = 0
             memory_generation = item.generation
 
             out_q.put(item)
+            continue
+
+        if isinstance(item, AudioEvent):
+            if event_context and (get_generation is None or item.generation == get_generation()):
+                if event_history.add(item):
+                    record_event("verified_audio_event", kind=item.kind, evidence=item.evidence,
+                                 generation=item.generation, start_s=item.start_s, end_s=item.end_s)
             continue
 
         tr = item
@@ -409,6 +427,11 @@ def run_translate(
             last_speech_end_s = None
             consecutive_failures = 0
         memory_generation = tr.generation
+        # Defense in depth for cached/externally supplied transcripts. Empty
+        # nonverbal segments never enter ordinary dialogue history.
+        tr = replace(tr, ja=clean_asr_text(tr.ja).text)
+        if not tr.ja:
+            continue
         if last_speech_end_s is not None and tr.start_s - last_speech_end_s > context_max_gap_s:
             history.clear()
         last_speech_end_s = tr.end_s
@@ -442,6 +465,9 @@ def run_translate(
                     model_started = time.monotonic()
                     if callable(set_position):
                         set_position(tr.start_s)
+                    if callable(set_audio_context):
+                        set_audio_context(event_history.context(tr.start_s, tr.end_s, tr.generation)
+                                          if event_context else "")
                     en = translator.translate(tr.ja, list(history) if context_lines else [])
                     update_metrics(stages={"mt_s": time.monotonic() - model_started})
                 consecutive_failures = 0
@@ -481,8 +507,8 @@ def run_translate(
                 else:
                     en = clean_english_output(
                         en,
-                        remove_fillers=getattr(tcfg, "remove_fillers", True),
-                        collapse_repetitions=getattr(tcfg, "collapse_repetitions", True),
+                        remove_fillers=getattr(tcfg, "remove_fillers", False),
+                        collapse_repetitions=getattr(tcfg, "collapse_repetitions", False),
                     )
                     if not en:
                         suppressed = True
@@ -511,6 +537,7 @@ def run_translate(
                      source_start_s=tr.start_s, speech_start_s=tr.speech_start_s,
                      source_end_s=tr.end_s, asr_completed_at=tr.timings.asr_end,
                      mt_completed_at=tr.timings.mt_end,
+                     cleaned_asr=tr.ja[:512], final_english=en[:512],
                      suppressed=suppressed)
         if suppressed:
             increment_counter("dropped")

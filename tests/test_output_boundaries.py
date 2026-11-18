@@ -215,7 +215,7 @@ class OutputBoundaryTests(unittest.TestCase):
 
     def test_acknowledgements_preserve_short_names_and_audio_continuity(self):
         acknowledgements = [('はい', 'Yes.'), ('うん', 'Yeah.'), ('そうそう', "That's right."),
-                            ('はい！？', 'Yes!'), (' うん… ', 'Yeah.'), ('そうそう。', "That's right.")]
+                            ('はい！？', 'Yes!'), ('うん…', 'Yeah.'), ('そうそう。', "That's right.")]
         for name, english in (('ぼたん', 'Botan.'), ('蘭', 'Ran.')):
             with self.subTest(name=name):
                 sources = [(name, english)] + acknowledgements + [('待ってください', 'Please wait.')]
@@ -231,7 +231,7 @@ class OutputBoundaryTests(unittest.TestCase):
 
     def test_cached_acknowledgements_preserve_name_context_and_continuity(self):
         sources = [('蘭', 'Ran.'), ('はい', 'Yes.'), ('うん', 'Yeah.'), ('そうそう', "That's right."),
-                   ('はい！？', 'Yes!'), (' うん… ', 'Yeah.'), ('そうそう。', "That's right.")]
+                   ('はい！？', 'Yes!'), ('うん…', 'Yeah.'), ('そうそう。', "That's right.")]
         translator = SimpleNamespace(translate=Mock(return_value='Please wait.'))
         result = self.translate([Subtitle(i * 10, i * 10 + 1, ja, en)
                                  for i, (ja, en) in enumerate(sources)]

@@ -7,6 +7,7 @@ words, negate speech, hallucinate shorter paraphrases, or remove profanity.
 from __future__ import annotations
 
 import re
+from .text_artifacts import strip_artifacts
 
 # Isolated non-verbal subtitle output is not useful in the English overlay.
 _NONVERBAL_ONLY = re.compile(
@@ -173,7 +174,16 @@ def english_output_issue(text: str) -> str | None:
 
 def sanitize_english_output(text: str) -> str:
     """Shared final boundary for models, history, caches, and all renderers."""
-    value = unmatched_double_quote_cleanup(text)
+    value = strip_artifacts(text, english=True).text
+    # Remove formatting/stray stars, never infix censorship such as f*ck.
+    value = re.sub(r"(?<!\w)\*+|\*+(?!\w)", "", value)
+    value = re.sub(r"(?:\.{2,}|…{2,}|(?:\.\s+){2,}\.)", "…", value)
+    value = re.sub(r"([!?])\1+", r"\1", value)
+    value = re.sub(r"—{2,}", "—", value)
+    value = re.sub(r"\s+([.!?,;:…])", r"\1", value)
+    value = unmatched_double_quote_cleanup(" ".join(value.split()))
+    if not any(char.isalnum() for char in value):
+        return ""
     return "" if english_output_issue(value) else value
 
 

@@ -89,6 +89,14 @@ class BuzzAdapterTests(unittest.TestCase):
                 create_asr(AsrConfig(model_path=folder))
             spawn.assert_not_called()
 
+    def test_artifact_cleanup_preserves_raw_and_cleaned_transcripts(self):
+        engine = self.start("    print(json.dumps({'text':'*SGigh* ありがとう'}),flush=True)\n")
+        self.assertEqual(engine.transcribe(np.ones(16000)), 'ありがとう')
+        self.assertEqual(engine.last_raw_transcript, '*SGigh* ありがとう')
+        self.assertEqual(engine.last_cleaned_transcript, 'ありがとう')
+        engine.cancel_pending()
+        self.assertEqual(engine.last_cleaned_transcript, '')
+
     def test_cuda_error_restarts_in_fresh_process_and_retries_audio(self):
         engine = self.start("", replies=[
             "    print(json.dumps({'error':'CUDA error: illegal memory access'}),flush=True)\n"

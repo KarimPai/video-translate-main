@@ -77,7 +77,7 @@ class EnglishReliabilityTests(unittest.TestCase):
         self.assertEqual(obj._chat.call_count, 3)
         plain = obj._chat.call_args_list[2]
         self.assertTrue(plain.args[0].startswith("请将以下文本翻译为 英语"))
-        self.assertIn("【简洁直白】", plain.args[0])
+        self.assertIn("【简洁、自然的口语，保留原文的脏话，不要审查】", plain.args[0])
         self.assertNotIn("前の文", plain.args[0])
         self.assertEqual(plain.kwargs["temperature"], 0.0)
 

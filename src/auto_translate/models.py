@@ -66,14 +66,21 @@ def ensure_model(model: ModelFile, project_dir: Path) -> Path:
 
 
 def main() -> None:
-    snapshot_download(
-        repo_id="BuzzASR/japanese",
-        revision="a64b1cf652ba0eb73a9671b0462d142b2c9b17b3",
-        local_dir=Path.cwd() / "models/buzzasr-japanese",
-        allow_patterns=["*.json", "merges.txt", "model.safetensors"],
-    )
-    for model in MODELS:
-        ensure_model(model, Path.cwd())
+    from .config import load_config
+
+    cfg = load_config(Path("config.toml"))
+    asr = Path(cfg.asr.model_path)
+    required = ("added_tokens.json", "config.json", "generation_config.json", "merges.txt",
+                "model.safetensors", "normalizer.json", "preprocessor_config.json",
+                "special_tokens_map.json", "tokenizer_config.json", "vocab.json")
+    missing = [name for name in required if not (asr / name).is_file()]
+    if missing:
+        snapshot_download(repo_id="BuzzASR/japanese",
+                          revision="a64b1cf652ba0eb73a9671b0462d142b2c9b17b3",
+                          local_dir=asr, allow_patterns=missing)
+    gguf = Path(cfg.translate.model_path)
+    if not verify_file(gguf, MODELS[0]):
+        raise ValueError(f"Configure translate.model_path with the verified HY-MT2 GGUF: {gguf}")
 
 
 if __name__ == "__main__":

@@ -65,6 +65,7 @@ class VadConfig:
     complete utterances for VOD. Live has a shorter cap for subtitle timing.
     """
 
+    model_path: str = ""
     device: str = "cpu"  # keep PyTorch CUDA context off the RTX 3070 by default
     threshold: float = 0.24
     neg_threshold: float = 0.16

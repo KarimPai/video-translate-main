@@ -1,6 +1,7 @@
 """Japanese BuzzASR adapter for 16 kHz VAD utterances."""
 import base64
 import json
+import logging
 import queue
 import subprocess
 import threading
@@ -15,6 +16,12 @@ from ..text_filter import trim_repetition_tail
 from ..windows_subprocess import hidden_console_flags, owned_popen
 from .quality_guard import transcript_problem
 
+log = logging.getLogger(__name__)
+
+
+class BuzzWorkerError(RuntimeError):
+    """Fatal error reported by the isolated decoder."""
+
 
 class BuzzASR:
     def __init__(self, cfg: AsrConfig):
@@ -25,9 +32,16 @@ class BuzzASR:
         self._closed = False
         self._state = threading.Lock()
         self._decode = threading.Lock()
+        self._lifecycle = threading.RLock()
+        self._restarts = 0
         self._responses = queue.Queue()
         if not Path(cfg.model_path, "model.safetensors").is_file():
             raise FileNotFoundError(f"BuzzASR checkpoint missing from {cfg.model_path}. Run Setup.bat.")
+        self._start_worker()
+
+    def _start_worker(self):
+        cfg = self.cfg
+        self._responses = queue.Queue()
         self._proc = owned_popen(
             [cfg.python_path, "-u", str(Path(__file__).with_name("buzz_worker.py")),
              cfg.model_path, f"cuda:{cfg.cuda_device}"],
@@ -58,7 +72,24 @@ class BuzzASR:
             raise TimeoutError("BuzzASR worker timed out") from exc
         if line is None:
             raise RuntimeError("BuzzASR worker exited. Check its startup or inference error in the log.")
-        return json.loads(line)
+        response = json.loads(line)
+        if "error" in response:
+            raise BuzzWorkerError(response["error"])
+        return response
+
+    def _restart_worker(self, error):
+        with self._lifecycle:
+            if self._closed:
+                return False
+            # A CUDA fault invalidates the entire worker context. Retry once in
+            # a fresh process, never reuse the poisoned model or loop forever.
+            if self._restarts >= 1 or "CUDA" not in str(error):
+                raise error
+            self._restarts += 1
+            log.warning("Restarting BuzzASR worker after CUDA failure: %s", error)
+            self._stop_worker()
+            self._start_worker()
+            return True
 
     def cancel_pending(self):
         with self._state:
@@ -86,9 +117,18 @@ class BuzzASR:
             if self._closed or generation != self._generation:
                 return ""
             try:
-                self._proc.stdin.write(base64.b64encode(audio.tobytes()) + b"\n")
-                self._proc.stdin.flush()
-                raw = self._receive(self.cfg.response_timeout_s)["text"]
+                payload = base64.b64encode(audio.tobytes()) + b"\n"
+                for attempt in range(2):
+                    try:
+                        self._proc.stdin.write(payload)
+                        self._proc.stdin.flush()
+                        raw = self._receive(self.cfg.response_timeout_s)["text"]
+                        break
+                    except BuzzWorkerError as exc:
+                        if attempt:
+                            raise
+                        if not self._restart_worker(exc) or generation != self._generation:
+                            return ""
             except TimeoutError:
                 raise
             except (OSError, RuntimeError, ValueError):
@@ -112,6 +152,10 @@ class BuzzASR:
                 return
             self._closed = True
             self._generation += 1
+        with self._lifecycle:
+            self._stop_worker()
+
+    def _stop_worker(self):
         if self._proc.poll() is None:
             self._proc.kill()
         self._proc.wait()

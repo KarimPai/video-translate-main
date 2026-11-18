@@ -17,6 +17,21 @@ class ModelDownloadTests(unittest.TestCase):
         return self.module.ModelFile("test/repo", "revision", "model.gguf", "models/test",
                                      len(data), hashlib.sha256(data).hexdigest())
 
+    def test_main_reuses_configured_paths_without_download(self):
+        from auto_translate.config import Config
+        cfg = Config()
+        cfg.asr.model_path = "shared/asr"
+        cfg.translate.model_path = "shared/translation.gguf"
+        with patch("auto_translate.config.load_config", return_value=cfg), \
+                patch.object(Path, "is_file", return_value=True), \
+                patch.object(self.module, "verify_file", return_value=True) as verify, \
+                patch.object(self.module, "snapshot_download") as snapshot, \
+                patch.object(self.module, "hf_hub_download") as download:
+            self.module.main()
+        verify.assert_called_once_with(Path(cfg.translate.model_path), self.module.MODELS[0])
+        snapshot.assert_not_called()
+        download.assert_not_called()
+
     def test_valid_existing_model_is_reused_without_download(self):
         data = b"GGUFtest-model"
         model = self.model(data)

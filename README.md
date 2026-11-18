@@ -45,6 +45,8 @@ ASR loads first. Hy-MT2 estimates initial offload from free VRAM with a CUDA-wor
 
 Optional **Safe Playback** bounds audio read-ahead and inference concurrency without changing video resolution or decoding. **Diagnostics** displays measured GPU, ASR/translation timings, queue/cue counts, and owned process status; unsupported counters remain unknown. Diagnostic exports can contain transcript and video metadata, so review them before sharing.
 
+The BuzzASR worker warms its encoder and decoder before reporting ready so translation offload accounts for its initial inference workspace. Attention uses PyTorch Flash SDPA with a math fallback, excluding automatic cuDNN and memory-efficient SDPA selection. A reported CUDA inference failure terminates the damaged worker; the adapter permits one fresh-worker recovery per session and retries the current audio only if its playback generation is still current. Repeated failures report the original worker error instead of becoming a generic response timeout.
+
 ## Tests and benchmark
 
 ```cmd

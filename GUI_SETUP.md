@@ -44,6 +44,7 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `asr.response_timeout_s` | `30` |
 | `asr.live_response_timeout_s` | `15` |
 | `vad.device` | `cpu` |
+| `vad.model_path` | `""` (default project cache; set to an existing Stream-VAD directory to reuse it) |
 | `vad.threshold`, `vad.neg_threshold` | `0.24`, `0.16` (speech onset/continuation probability) |
 | `vad.min_speech_ms` | `120` voiced milliseconds |
 | `vad.short_reply_ms`, `vad.short_reply_probability` | `80` sustained milliseconds at smoothed probability `0.85` for shorter replies (not an 80 ms raw-audio guarantee) |
@@ -51,7 +52,7 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 | `vad.speech_pad_ms`, `vad.min_silence_ms` | `400` ms padding, `550` ms end-of-phrase silence |
 | `vad.fallback_s` | `0.0` (no ASR probes of VAD-negative audio) |
 
-Paths are relative to this checkout. Setup records discovered MPV/runtime paths in `.cache/` and verifies model revisions/hashes.
+Paths can be absolute or relative to this checkout. Setup records discovered MPV/runtime paths in `.cache/`. Model setup honors configured ASR and translation paths, downloads only missing BuzzASR snapshot files, and verifies the existing HY-MT2 GGUF size and SHA256. A missing or invalid GGUF requires configuring a verified existing file. An explicitly configured incomplete VAD directory fails without downloading into or modifying it.
 
 ## Windows executable
 

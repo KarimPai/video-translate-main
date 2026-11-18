@@ -16,6 +16,8 @@ emergency_free_gb = 0.25
 sample_interval_s = 2.0
 
 [vad]
+# Optional existing Stream-VAD directory containing cmvn.ark and model.pth.tar.
+model_path = ""
 device = "cpu"
 threshold = 0.24
 neg_threshold = 0.16

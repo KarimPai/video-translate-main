@@ -16,7 +16,7 @@ from auto_translate.config import AsrConfig
 class BuzzAdapterTests(unittest.TestCase):
     """Exercise the real worker transport with a deterministic stand-in decoder."""
 
-    def start(self, reply, **options):
+    def start(self, reply, *, replies=None, **options):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         Path(folder.name, "model.safetensors").touch()
@@ -24,13 +24,14 @@ class BuzzAdapterTests(unittest.TestCase):
             "import sys, json, base64, time\n"
             "print(json.dumps({'ready': True}), flush=True)\n"
             "for line in sys.stdin.buffer:\n"
-            "    pcm = base64.b64decode(line)\n" + reply
+            "    pcm = base64.b64decode(line)\n"
         )
+        scripted = iter(replies or [reply])
         def launch(args, **kwargs):
-            return subprocess.Popen([sys.executable, "-u", "-c", program], **kwargs)
+            return subprocess.Popen([sys.executable, "-u", "-c", program + next(scripted)], **kwargs)
         cfg = AsrConfig(model_path=folder.name, **options)
-        with patch("auto_translate.asr.buzz.owned_popen", side_effect=launch):
-            engine = create_asr(cfg)
+        self.enterContext(patch("auto_translate.asr.buzz.owned_popen", side_effect=launch))
+        engine = create_asr(cfg)
         self.addCleanup(engine.close)
         return engine
 
@@ -87,3 +88,49 @@ class BuzzAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "Setup.bat"):
                 create_asr(AsrConfig(model_path=folder))
             spawn.assert_not_called()
+
+    def test_cuda_error_restarts_in_fresh_process_and_retries_audio(self):
+        engine = self.start("", replies=[
+            "    print(json.dumps({'error':'CUDA error: illegal memory access'}),flush=True)\n"
+            "    time.sleep(10)\n",
+            "    print(json.dumps({'text':'やばい'}),flush=True)\n",
+        ])
+        previous = engine._proc
+        self.assertEqual(engine.transcribe(np.ones(1600)), "やばい")
+        self.assertIsNotNone(previous.poll())
+        self.assertNotEqual(engine._proc.pid, previous.pid)
+        self.assertEqual(engine._restarts, 1)
+
+    def test_repeated_cuda_error_is_bounded_and_preserves_cause(self):
+        error = "    print(json.dumps({'error':'CUDA error: illegal memory access'}),flush=True)\n"
+        engine = self.start("", replies=[error, error])
+        with self.assertRaisesRegex(RuntimeError, "CUDA error: illegal memory access"):
+            engine.transcribe(np.ones(1600))
+        self.assertEqual(engine._restarts, 1)
+
+    def test_non_cuda_worker_error_is_not_retried_or_hidden_by_timeout(self):
+        engine = self.start("    print(json.dumps({'error':'ValueError: bad model input'}),flush=True)\n")
+        with self.assertRaisesRegex(RuntimeError, "ValueError: bad model input"):
+            engine.transcribe(np.ones(1600))
+        self.assertEqual(engine._restarts, 0)
+
+    def test_seek_during_cuda_failure_recovers_without_replaying_stale_audio(self):
+        engine = self.start("", replies=[
+            "    print(json.dumps({'error':'CUDA error: illegal memory access'}),flush=True)\n",
+            "    print(json.dumps({'text':'やばい'}),flush=True)\n",
+        ])
+        receive = engine._receive
+        waiting, release = threading.Event(), threading.Event()
+        def pause_once(timeout):
+            if not waiting.is_set():
+                waiting.set()
+                self.assertTrue(release.wait(3))
+            return receive(timeout)
+        with patch.object(engine, "_receive", side_effect=pause_once), ThreadPoolExecutor(1) as pool:
+            result = pool.submit(engine.transcribe, np.ones(1600))
+            self.assertTrue(waiting.wait(3))
+            engine.cancel_pending()
+            release.set()
+            self.assertEqual(result.result(3), "")
+        self.assertEqual(engine._restarts, 1)
+        self.assertEqual(engine.transcribe(np.ones(1600)), "やばい")

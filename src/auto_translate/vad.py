@@ -32,7 +32,7 @@ class StreamingFireRedVAD:
 
     WINDOW_SAMPLES = 400  # 25 ms model window
 
-    def __init__(self, speech_threshold: float, device: str = "cpu") -> None:
+    def __init__(self, speech_threshold: float, device: str = "cpu", model_path: str = "") -> None:
         from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
@@ -45,8 +45,10 @@ class StreamingFireRedVAD:
         assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad"
         revision = "7990aaccc6b7aec1e527743bd30201f2c4a03b8c"
         assets = assets / revision
-        model_dir = assets / "Stream-VAD"
+        model_dir = Path(model_path) if model_path else assets / "Stream-VAD"
         if not (model_dir / "cmvn.ark").is_file() or not (model_dir / "model.pth.tar").is_file():
+            if model_path:
+                raise FileNotFoundError(f"Incomplete configured FireRedVAD directory: {model_dir}")
             log.info("Downloading FireRedVAD streaming model from Hugging Face...")
             snapshot_download(
                 repo_id="FireRedTeam/FireRedVAD",
@@ -188,7 +190,7 @@ class Segmenter:
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
         # Keep one FireRed model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device)
+        self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device, cfg.model_path)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:

@@ -65,23 +65,23 @@ class VadConfig:
     complete utterances for VOD. Live has a shorter cap for subtitle timing.
     """
 
-    device: str = "cpu"  # default: CPU to preserve Vulkan/CUDA memory for Haas, Whisper and PLaMo
-    threshold: float = 0.24  # modest quiet-speech recall improvement; 0.3 is very permissive
-    neg_threshold: float = 0.16
+    device: str = "cpu"  # keep PyTorch CUDA context off the RTX 3070 by default
+    threshold: float = 0.34  # modest quiet-speech recall improvement; 0.3 is very permissive
+    neg_threshold: float = 0.25
     min_silence_ms: int = 550  # wait for genuine phrase-ending silence
     speech_pad_ms: int = 400  # preserve soft/overlapped word starts and tails
-    min_speech_ms: int = 120  # keep short game-sfx rejection; strong short replies still survive
-    short_reply_ms: int = 80
+    min_speech_ms: int = 200  # keep short game-sfx rejection; strong short replies still survive
+    short_reply_ms: int = 120
     short_reply_probability: float = 0.85
-    onset_ms: int = 20  # recover quieter and short initial speech
-    prob_smooth_frames: int = 3
+    onset_ms: int = 50  # recover quieter and short initial speech
+    prob_smooth_frames: int = 5
     max_utterance_s: float = 14.0  # VOD soft cap: more sentence context
     max_split_extension_s: float = 2.0  # VOD hard cap: 16s
     live_max_utterance_s: float = 7.0  # fits around 9s live buffer
     live_max_split_extension_s: float = 1.0  # live hard cap: 8s
     # Natural-pause splitting begins before the long-form hard cap.
     adaptive_split: bool = True
-    adaptive_split_s: float = 5.0  # VOD: keep context unless a clear pause occurs
+    adaptive_split_s: float = 6.5  # VOD: keep context unless a clear pause occurs
     live_adaptive_split_s: float = 4.0  # live: leave room for ASR + translation
     adaptive_pause_ms: int = 180  # avoid cutting at very brief VAD dips
     split_pause_min_ms: int = 120

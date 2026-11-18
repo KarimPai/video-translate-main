@@ -8,24 +8,26 @@ import re
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import CancelledError
 from contextlib import nullcontext
-from dataclasses import replace
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass, field, replace
 
 from .asr.base import ASR
 from .asr.quality_guard import transcript_problem
-from .subtitle_clean import (
-    clean_english_output, has_generation_loop, normalized_cue,
-    looks_like_prompt_echo, sanitize_english_output,
-)
 from .config import Config, vad_for_source
 from .gui_control import emit_event
-from .runtime_diagnostics import update_metrics, increment_counter, record_event
 from .ingest import Ingest
 from .output.base import Output
+from .runtime_diagnostics import increment_counter, record_event, update_metrics
 from .session_cache import SessionSubtitleCache
+from .subtitle_clean import (
+    clean_english_output,
+    has_generation_loop,
+    looks_like_prompt_echo,
+    normalized_cue,
+    sanitize_english_output,
+)
 from .translate.base import Translator, TranslatorUnavailable
 from .translate.plamo import useful_context
 from .types import (
@@ -179,6 +181,7 @@ def run_asr(
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
     import re
+
     import numpy as np
 
     current_generation = None

@@ -1,8 +1,8 @@
 """Offline regressions for live expiry and clean pipeline shutdown."""
-from concurrent.futures import CancelledError
 import queue
 import threading
 import unittest
+from concurrent.futures import CancelledError
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -12,7 +12,14 @@ from auto_translate.config import Config, IngestConfig
 from auto_translate.ingest import Ingest, Source
 from auto_translate.pipeline import run, run_asr, run_translate
 from auto_translate.translate.base import TranslatorUnavailable
-from auto_translate.types import AudioChunk, AudioProgress, SAMPLE_RATE, SourceEOF, Transcript, Utterance
+from auto_translate.types import (
+    SAMPLE_RATE,
+    AudioChunk,
+    AudioProgress,
+    SourceEOF,
+    Transcript,
+    Utterance,
+)
 from auto_translate.vad import FRAME, Segmenter, run_segmenter
 
 
@@ -154,6 +161,7 @@ class ShutdownCancellationTests(unittest.TestCase):
 class ShutdownOrderingTests(unittest.TestCase):
     def test_asr_cancelled_before_join_and_translator_closes_after_workers(self):
         import threading
+
         from auto_translate.pipeline import run
 
         stop = threading.Event()
@@ -224,24 +232,25 @@ class WorkerFailureShutdownTests(unittest.TestCase):
                 if failed_stage == "translate":
                     translator.translate.side_effect = failure
 
-                def thread_factory(*args, **kwargs):
-                    worker = thread_type(*args, **kwargs)
-                    workers.append(worker)
+                def thread_factory(*args, _thread_type=thread_type, _workers=workers, **kwargs):
+                    worker = _thread_type(*args, **kwargs)
+                    _workers.append(worker)
                     return worker
 
-                def produce(audio_q):
-                    ready.wait(timeout=3)
-                    if failed_stage == "ingest":
-                        raise failure
+                def produce(audio_q, _ready=ready, _failed_stage=failed_stage, _failure=failure):
+                    _ready.wait(timeout=3)
+                    if _failed_stage == "ingest":
+                        raise _failure
                     for index in range(4):
                         audio_q.put(AudioChunk(index * SAMPLE_RATE,
                                               np.ones(SAMPLE_RATE, dtype=np.float32), 0.0))
                     audio_q.put(None)
 
-                def segment(_seg, audio_q, utt_q, *_args):
-                    ready.wait(timeout=3)
-                    if failed_stage == "vad":
-                        raise failure
+                def segment(_seg, audio_q, utt_q, *_args,
+                            _ready=ready, _failed_stage=failed_stage, _failure=failure):
+                    _ready.wait(timeout=3)
+                    if _failed_stage == "vad":
+                        raise _failure
                     while True:
                         chunk = audio_q.get()
                         if chunk is None:
@@ -250,24 +259,26 @@ class WorkerFailureShutdownTests(unittest.TestCase):
                         start = chunk.start_sample / SAMPLE_RATE
                         utt_q.put(Utterance(start, start + 1, chunk.pcm, vad_confidence=0.95))
 
-                def recognize(*args):
-                    ready.wait(timeout=3)
+                def recognize(*args, _ready=ready):
+                    _ready.wait(timeout=3)
                     run_asr(*args)
 
-                def translate(*args):
-                    ready.wait(timeout=3)
+                def translate(*args, _ready=ready):
+                    _ready.wait(timeout=3)
                     run_translate(*args)
 
                 ingest.run.side_effect = produce
-                translator.close.side_effect = lambda: self.assertFalse(any(t.is_alive() for t in workers))
+                translator.close.side_effect = lambda _workers=workers: self.assertFalse(
+                    any(t.is_alive() for t in _workers)
+                )
                 with (patch("auto_translate.pipeline.Segmenter"),
                       patch("auto_translate.pipeline.threading.Thread", side_effect=thread_factory),
                       patch("auto_translate.pipeline.run_segmenter", side_effect=segment),
                       patch("auto_translate.pipeline.run_asr", side_effect=recognize),
                       patch("auto_translate.pipeline.run_translate", side_effect=translate),
-                      patch("auto_translate.pipeline.record_event") as events):
-                    with self.assertRaisesRegex(RuntimeError, f"worker '{failed_stage}' failed") as raised:
-                        run(ingest, cfg, primary, translator, [], stop)
+                      patch("auto_translate.pipeline.record_event") as events,
+                      self.assertRaisesRegex(RuntimeError, f"worker '{failed_stage}' failed") as raised):
+                    run(ingest, cfg, primary, translator, [], stop)
                 self.assertIs(raised.exception.__cause__, failure)
                 self.assertEqual(len(workers), 4)
                 self.assertFalse(any(t.is_alive() for t in workers))

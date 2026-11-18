@@ -408,6 +408,8 @@ def run_translate(
     history_limit = max(context_lines, getattr(translator, "memory_lines", context_lines))
     history: deque[tuple[str, str]] = deque(maxlen=history_limit)
     memory_generation: int | None = None
+    last_speech_end_s: float | None = None
+    context_max_gap_s = getattr(getattr(translator, "cfg", None), "context_max_gap_s", 15.0)
 
     while True:
         item = in_q.get()
@@ -426,6 +428,7 @@ def run_translate(
                 and item.generation != memory_generation
             ):
                 history.clear()
+                last_speech_end_s = None
                 consecutive_failures = 0
             memory_generation = item.generation
 
@@ -445,8 +448,14 @@ def run_translate(
         # against a new generation reaching this queue before its marker.
         if memory_generation is not None and tr.generation != memory_generation:
             history.clear()
+            last_speech_end_s = None
             consecutive_failures = 0
         memory_generation = tr.generation
+        if (last_speech_end_s is not None
+                and tr.start_s - last_speech_end_s > context_max_gap_s):
+            # Only audio-timeline gaps reset dialogue. Playback pauses do not.
+            history.clear()
+        last_speech_end_s = tr.end_s
 
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not call PLaMo again for the same VOD cue.

@@ -307,6 +307,7 @@ class TranslateConfig:
     timeout_s: float = 30.0  # more time for full translation, not a delay target
     load_timeout_s: float = 300.0
     context_lines: int = 3  # OverlaySubs-style bounded dialogue exchange
+    context_max_gap_s: float = 15.0  # reset dialogue only after actual media-timeline silence
     # Prefer reliable recent bilingual pairs to speculative long-term scene memory.
     memory_lines: int = 16
     extended_memory: bool = True
@@ -328,6 +329,9 @@ class TranslateConfig:
         for name in ("context_lines", "memory_lines"):
             if type(getattr(self, name)) is not int or not 0 <= getattr(self, name) <= 20:
                 raise ValueError(f"translate.{name} must be an integer in 0..20")
+        if (type(self.context_max_gap_s) not in (int, float)
+                or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
+            raise ValueError("translate.context_max_gap_s must be finite and positive")
         for value in (self.timeout_s, self.load_timeout_s, self.retry_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")

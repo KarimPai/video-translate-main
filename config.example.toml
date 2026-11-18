@@ -66,6 +66,8 @@ min_top_margin = 0.45
 
 
 [translate]
+# Reset translation conversation after 15s of actual silence, not a player pause.
+context_max_gap_s = 15.0
 # Accuracy-first OverlaySubs-style context. Use legacy to restore previous behavior.
 context_profile = "compact" # compact, legacy
 context_lines = 3

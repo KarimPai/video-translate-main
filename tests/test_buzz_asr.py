@@ -142,3 +142,22 @@ class BuzzAdapterTests(unittest.TestCase):
             self.assertEqual(result.result(3), "")
         self.assertEqual(engine._restarts, 1)
         self.assertEqual(engine.transcribe(np.ones(1600)), "やばい")
+
+    def test_final_worker_error_reaps_poisoned_process(self):
+        # A non-CUDA worker error is not retried; the poisoned worker must be
+        # stopped before the error surfaces, not left orphaned until shutdown.
+        engine = self.start("    print(json.dumps({'error':'ValueError: bad model input'}),flush=True)\n")
+        with self.assertRaisesRegex(RuntimeError, "ValueError: bad model input"):
+            engine.transcribe(np.ones(1600))
+        self.assertIsNotNone(engine._proc.poll())
+        self.assertEqual(engine._restarts, 0)
+
+    def test_repeated_cuda_error_reaps_both_workers(self):
+        # After one bounded restart, a second CUDA error must stop the replacement
+        # worker instead of leaving it orphaned on the GPU.
+        error = "    print(json.dumps({'error':'CUDA error: illegal memory access'}),flush=True)\n"
+        engine = self.start("", replies=[error, error])
+        with self.assertRaisesRegex(RuntimeError, "CUDA error: illegal memory access"):
+            engine.transcribe(np.ones(1600))
+        self.assertEqual(engine._restarts, 1)
+        self.assertIsNotNone(engine._proc.poll())

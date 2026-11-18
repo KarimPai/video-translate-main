@@ -138,6 +138,10 @@ class BuzzASR:
             except (OSError, RuntimeError, ValueError):
                 if self._closed and generation != self._generation:
                     return ""
+                # A final ASR failure leaves the current worker poisoned. Stop it
+                # here instead of waiting for pipeline shutdown, so a short-lived
+                # CUDA/transport fault cannot leave an orphaned GPU process behind.
+                self.close()
                 raise
             with self._state:
                 if self._closed or generation != self._generation:

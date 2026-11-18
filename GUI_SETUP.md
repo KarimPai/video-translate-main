@@ -53,17 +53,15 @@ Copy `config.example.toml` to `config.toml` when creating a new installation. Ol
 
 Paths are relative to this checkout. Setup records discovered MPV/runtime paths in `.cache/` and verifies model revisions/hashes.
 
-## Build
+## Windows executable
 
-The preexisting `VideoTranslate.exe` is not automatically updated by this branch. To build a matching frontend, install the GUI extras and PyInstaller, then run from this project:
+After Setup.bat completes, double-click the included VideoTranslate.exe in the project root. The launcher runs the GUI with the project Python environment. It uses the same Qt installation as the source frontend. Model weights remain in the models directory.
 
-```cmd
-uv sync --locked --extra gui --extra diagnostics
-uv pip install pyinstaller
-uv run --no-sync python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics --hidden-import auto_translate.gui src/auto_translate/gui_bootstrap.py
+To rebuild the launcher from the project root in PowerShell:
+
+```powershell
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /out:VideoTranslate.exe scripts\VideoTranslate.cs
 ```
-
-Keep the complete `dist/VideoTranslate/` directory inside the installed checkout, including `_internal`. The frontend deliberately does not embed model weights or the backend Python environment. A complete distribution also needs matching source/setup files, glossary, configuration, web assets, and dependency lockfile.
 
 ## Troubleshooting and validation
 

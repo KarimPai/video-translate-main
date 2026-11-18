@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -55,12 +56,61 @@ def verify_file(path: Path, model: ModelFile) -> bool:
     return digest.hexdigest() == model.sha256
 
 
+def find_reusable_model(model: ModelFile, project_dir: Path) -> Path | None:
+    """Find verified model weights without copying or modifying source files.
+
+    Search only known video-translate model directories and HF snapshots;
+    avoid recursive scans through installed Python environments.
+    """
+    candidates: list[Path] = [project_dir / model.directory / model.filename]
+    configured_hub = os.environ.get("HF_HUB_CACHE")
+    configured_home = os.environ.get("HF_HOME")
+    hubs = [Path(configured_hub)] if configured_hub else []
+    if configured_home:
+        hubs.append(Path(configured_home) / "hub")
+    hubs.append(Path.home() / ".cache" / "huggingface" / "hub")
+    hf_repo = "models--" + model.repo_id.replace("/", "--")
+    for hub in hubs:
+        candidates.extend((hub / hf_repo / "snapshots").glob("*/" + model.filename))
+    games = Path("C:/Games") if os.name == "nt" else None
+    if games and games.is_dir():
+        for project in games.glob("video-translate*"):
+            for subdir in ("models/hy-mt", "models/qwen3-asr", "models/hymt2", "models"):
+                candidates.append(project / subdir / model.filename)
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        if verify_file(candidate, model):
+            return candidate.resolve()
+    return None
+
+
+def resolve_cached_gguf(configured_path: str, model: ModelFile) -> str:
+    path = Path(configured_path).expanduser()
+    if path.is_file():
+        return str(path)
+    if path.name != model.filename:
+        return configured_path  # Never substitute a model of another quantization.
+    found = find_reusable_model(model, Path.cwd())
+    if found:
+        print(f"Reusing existing {model.filename} at {found}", flush=True)
+        return str(found)
+    return configured_path
+
+
 def ensure_model(model: ModelFile, project_dir: Path) -> Path:
     destination = project_dir / model.directory / model.filename
     print(f"Checking {destination}...", flush=True)
     if verify_file(destination, model):
         print(f"Size and SHA256 verified; reusing {model.filename}", flush=True)
         return destination
+
+    reusable = find_reusable_model(model, project_dir)
+    if reusable and reusable != destination.resolve():
+        print(f"Reusing verified {model.filename} without copying: {reusable}", flush=True)
+        return reusable
 
     print(f"Downloading {model.filename} at revision {model.revision}...", flush=True)
     source = Path(hf_hub_download(
@@ -82,7 +132,19 @@ def ensure_model(model: ModelFile, project_dir: Path) -> Path:
 
 
 def main() -> None:
-    for model in MODELS:
+    from .config import load_config
+
+    cfg = load_config(Path("config.toml"))
+    selected = (MODELS[-1],) if cfg.asr.backend == "dual" else MODELS
+    for model in selected:
+        configured = (cfg.translate.model_path if model == MODELS[-1] else
+                      cfg.asr.mmproj_path if "mmproj" in model.filename else cfg.asr.model_path)
+        path = Path(configured).expanduser()
+        if path.is_file():
+            if verify_file(path, model):
+                print(f"Reusing configured model: {path.resolve()}", flush=True)
+                continue
+            raise ValueError(f"Configured model failed SHA256 verification: {path}")
         ensure_model(model, Path.cwd())
 
 

@@ -53,12 +53,9 @@ class LanguageFilter:
 
         self.cfg = cfg
         self.retry_at = 0.0
-        log.info(
-            "Initializing CPU-only VoxLingua107 language filter (first run "
-            "downloads a ~27 MB INT8 ONNX model and its language labels)"
-        )
-        model_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_MODEL_FILE)
-        label_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_LABEL_FILE)
+        log.info("Initializing cached CPU-only VoxLingua107 language filter (no implicit downloads)")
+        model_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_MODEL_FILE, local_files_only=True)
+        label_path = hf_hub_download(repo_id=_MODEL_REPO, filename=_LABEL_FILE, local_files_only=True)
         with open(label_path, "r", encoding="utf-8-sig") as file:
             self.labels = [line.strip().lower() for line in file if line.strip()]
         if len(self.labels) != 107 or "ja" not in self.labels or not {"en", "id"}.issubset(self.labels):

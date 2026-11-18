@@ -22,6 +22,7 @@ from ..glossary import Glossary
 from ..llama_server import LlamaServer, LlamaServerError, gguf_block_count, require_gguf, resolve_executable
 from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..stream_context import StreamContext
+from ..models import MODELS, resolve_cached_gguf
 from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup
 from ..windows_subprocess import check_running
 from .base import TranslatorUnavailable
@@ -123,7 +124,7 @@ class HymtTranslator:
         self._position: float | None = None
         self._anchor: tuple[str, str] | None = None
         self._newest: tuple[str, str] | None = None
-        self.model = require_gguf(cfg.model_path, "Hy-MT2 model")
+        self.model = require_gguf(resolve_cached_gguf(cfg.model_path, MODELS[-1]), "Hy-MT2 model")
         self.layer_count = gguf_block_count(self.model) or 32
         requested = cfg.gpu_layers if gpu_layers is None else gpu_layers
         self.gpu_layers = self.layer_count if requested < 0 else min(requested, self.layer_count)

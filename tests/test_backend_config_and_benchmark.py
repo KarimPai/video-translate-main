@@ -24,7 +24,9 @@ class BackendConfigTests(unittest.TestCase):
         self.assertFalse(cfg.translate.context_english)
         self.assertTrue(cfg.translate.merge_fragments)
         self.assertEqual(cfg.asr.recent_context_lines, 2)
-        self.assertFalse(cfg.language_filter.enabled)
+        self.assertTrue(cfg.language_filter.enabled)
+        self.assertEqual(cfg.asr.backend, "dual")
+        self.assertTrue(cfg.safe_playback.enabled)
 
     def test_translation_context_defaults(self):
         cfg = TranslateConfig()

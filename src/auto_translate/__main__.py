@@ -369,6 +369,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
     """Start Hy-MT2, then trim GPU layers until measured free memory meets the headroom target."""
     import math
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
+    from .models import MODELS, resolve_cached_gguf
     from .translate import create_translator
 
     headroom = cfg.gpu_budget.startup_headroom_gb
@@ -377,7 +378,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
     if auto and budget.free is not None:
         layers = 0
         if budget.free > headroom:
-            model = require_gguf(cfg.translate.model_path, "Hy-MT2 model")
+            model = require_gguf(resolve_cached_gguf(cfg.translate.model_path, MODELS[-1]), "Hy-MT2 model")
             layer_count = gguf_block_count(model) or 32
             per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
             # Full-offload probing can evict idle ASR pages under Windows WDDM.

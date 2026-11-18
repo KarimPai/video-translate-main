@@ -125,6 +125,7 @@ class AsrConfig:
     secondary_live_mode: str = "selective"  # off, selective, all
     secondary_vod_mode: str = "all"
     secondary_selective_chars: int = 9
+    normalize_quiet_audio: bool = True
     secondary_vod_timeout_s: float = 25.0
     secondary_live_timeout_s: float = 8.0
     secondary_startup_timeout_s: float = 180.0
@@ -145,6 +146,8 @@ class AsrConfig:
     def __post_init__(self):
         if self.backend not in ("dual", "qwen"):
             raise ValueError("asr.backend must be dual or qwen")
+        if type(self.normalize_quiet_audio) is not bool:
+            raise ValueError("asr.normalize_quiet_audio must be boolean")
         if self.haas_device == "" or not self.haas_model.strip():
             raise ValueError("Haas model and device must be nonempty")
         if self.secondary_live_mode not in ("off", "selective", "all") or self.secondary_vod_mode not in ("off", "selective", "all"):

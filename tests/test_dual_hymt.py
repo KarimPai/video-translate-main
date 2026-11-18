@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from auto_translate.asr.dual import DualASR, canonical, plausible, select_candidate
+from auto_translate.asr.dual import DualASR, canonical, normalized_audio, plausible, select_candidate
 from auto_translate.config import AsrConfig
 
 
@@ -18,6 +18,16 @@ class CandidateSelectionTests(unittest.TestCase):
     def test_canonical_preserves_spoken_nicknames(self):
         self.assertEqual(canonical("ラプ 様！"), canonical("ラプ様"))
         self.assertNotEqual(canonical("ラプ"), canonical("ラプラス"))
+
+    def test_quiet_speech_gain_is_bounded_and_probes_untouched(self):
+        quiet = np.full(16000, 0.002, dtype=np.float32)
+        raised = normalized_audio(quiet, quiet_gain=True, probe=False)
+        self.assertGreater(float(raised.mean()), 0.002)
+        self.assertLessEqual(float(raised.max()), 0.0161)
+        self.assertTrue(np.array_equal(normalized_audio(quiet, quiet_gain=True, probe=True), quiet))
+        self.assertTrue(np.array_equal(normalized_audio(np.zeros(16000, dtype=np.float32),
+                                                       quiet_gain=True, probe=False),
+                                       np.zeros(16000, dtype=np.float32)))
 
     def test_rejects_phantom_outro_and_english_prompt(self):
         self.assertFalse(plausible("ご視聴ありがとうございました", 0.4, []))

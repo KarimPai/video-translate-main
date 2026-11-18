@@ -225,7 +225,9 @@ def main() -> None:
                          "name_count": len(names), "asr_names_correct": sum(name in ja for name in names),
                          "mt_names_correct": sum(name.casefold() in en.casefold() for name in names.values()),
                          "asr_rejection": asr.last_rejection})
-        report = {"models": {"asr": cfg.asr.model_path, "mt": cfg.translate.model_path,
+        report = {"models": {"asr": cfg.asr.haas_model if cfg.asr.backend == "dual" else cfg.asr.model_path,
+                             "secondary_asr": cfg.asr.secondary_model if cfg.asr.backend == "dual" else None,
+                             "mt": cfg.translate.model_path,
                              "mt_gpu_layers": translator.gpu_layers},
                   "settings": {"context_lines": cfg.translate.context_lines,
                                "max_context_chars": cfg.translate.max_context_chars,

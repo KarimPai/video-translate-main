@@ -69,12 +69,14 @@ Inspect `logs/run.log`, `logs/asr-server.log`, `logs/mt-server.log`, `logs/mpv.l
 
 ## Dual-ASR settings and limitations
 
-- \`asr.backend = "dual"\` defaults to Haas + Whisper Turbo. Use \`asr.backend = "qwen"\` to run the preserved Qwen backend.
-- Haas uses \`asr.haas_model = "haas-ja-v1.0"\` and \`asr.haas_device = "Vulkan0"\` via the existing \`speech.exe\` worker.
-- Whisper uses the cached \`h2oai/faster-whisper-large-v3-turbo\` CTranslate2 model with beam 6 and \`int8_float16\` by default. Supply an absolute directory when its original HF cache is elsewhere. **Weights are not downloaded automatically by Whisper.**
-- \`secondary_live_mode = "selective"\` checks empty/short Haas lines with Whisper; \`secondary_vod_mode = "all"\` checks every VOD utterance. Set either to \`all\`, \`selective\`, or \`off\`.
+- `asr.backend = "dual"` defaults to Haas + Whisper Turbo. Use `asr.backend = "qwen"` to run the preserved Qwen backend.
+- Haas uses `asr.haas_model = "haas-ja-v1.0"` and `asr.haas_device = "Vulkan0"` via the existing `speech.exe` worker.
+- Whisper uses the cached `h2oai/faster-whisper-large-v3-turbo` CTranslate2 model with beam 6 and `int8_float16` by default. Supply an absolute directory when its original HF cache is elsewhere. **Weights are not downloaded automatically by Whisper.**
+- `secondary_live_mode = "selective"` checks empty/short Haas lines with Whisper; `secondary_vod_mode = "all"` checks every VOD utterance. Set either to `all`, `selective`, or `off`.
 - If Whisper startup fails, Haas continues with a warning and the diagnostics worker status says Haas only. A timeout retires the Whisper child rather than letting a stale reply contaminate new audio.
 - The selector uses transcript plausibility, agreement and Whisper's **model-internal** acoustic evidence. It is deliberately conservative on unresolved disagreements; an unsupported correction is not inserted into subtitles.
-- \`Safe Playback\` is on by default in this branch; it serializes **actual ASR and translation inference**, bounds queued audio and preserves MPV's hardware decode. Mixed Vulkan/CUDA workloads must still be tested on Windows.
-- At startup HY-MT2 searches the configured model path, known \`C:\Games\video-translate*\models\` locations, and the HF cache for the **exact verified Q4_K_M model**; it does not duplicate verified weights. Qwen weights are only installed when the optional Qwen backend is chosen.
+- `Safe Playback` is on by default in this branch; it serializes **actual ASR and translation inference**, bounds queued audio and preserves MPV's hardware decode. Mixed Vulkan/CUDA workloads must still be tested on Windows.
+- At startup HY-MT2 searches the configured model path, known `C:\Games\video-translate*\models` locations, and the HF cache for the **exact verified Q4_K_M model**; it does not duplicate verified weights. Qwen weights are only installed when the optional Qwen backend is chosen.
 - The new source branch is not a rebuilt Windows EXE. After pulling, launch the source GUI or rebuild the EXE with the existing spec. GitHub CI can run offline tests, not RTX 3070 acoustic/inference tests.
+
+Quiet Japanese dialogue receives optional bounded 10 ms-frame gain before both ASR decoders (`asr.normalize_quiet_audio = true`); a VAD-negative probe is never amplified. The offline benchmark supports dual mode without inserting metadata as artificial speech context.

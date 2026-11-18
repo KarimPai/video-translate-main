@@ -193,7 +193,7 @@ class Qwen3ASR:
         problem = (("no_speech" if not text else None)
                    or (None if is_japanese(language, text) else f"language:{language}")
                    or ("probe_unconfirmed" if probe and language != "Japanese" else None)
-                   or ("context_echo" if len(text) >= 12 and text in self.context else None)
+                   or ("context_echo" if len(text) >= 12 and (text in self.context or text in self._system_prompt()) else None)
                    or ("truncated" if choice.get("finish_reason") == "length" else None)
                    or transcript_problem(text, duration_s)
                    or ("blocklist" if any(word in text for word in self.cfg.blocklist) else None))

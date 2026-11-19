@@ -171,9 +171,13 @@ class Gemma4Translator:
 
     def _args(self) -> list[str]:
         """Build llama-server arguments with reasoning enabled."""
-        # Offload all layers +1 so the output layer also stays on the GPU.
-        # Gemma 4 needs extra layers for the reasoning head.
-        layers = self.gpu_layers + 1 + _REASONING_LLM if self.gpu_layers >= self.layer_count else self.gpu_layers
+        # Use 999 for full offload so llama.cpp places every layer (including the
+        # output projection and reasoning head) on the GPU.  For partial offload,
+        # add the reasoning-head layers so the offloaded slice is contiguous.
+        if self.gpu_layers >= self.layer_count:
+            layers = 999
+        else:
+            layers = self.gpu_layers + 1 + _REASONING_LLM
         # Auto-detect GPU device using the actual executable (CUDA build from .runtime/)
         device = detect_device(self.executable)
         return [

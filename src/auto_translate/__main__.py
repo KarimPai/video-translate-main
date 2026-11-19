@@ -376,8 +376,10 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
             model = require_gguf(cfg.translate.model_path, "Gemma 4 E4B model")
             layer_count = gguf_block_count(model) or 32
             per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
-            # Full-offload probing can evict idle ASR pages under Windows WDDM.
-            available = budget.free - headroom - .75
+            # WDDM safety margin: reduced from 0.75 to 0.25 GB since the measured
+            # free memory already accounts for ASR + system usage.  The headroom
+            # target (startup_headroom_gb) provides the main guardrail.
+            available = budget.free - headroom - .25
             layers = max(0, min(layer_count, math.floor(available / per_layer_gb)))
     while True:
         try:

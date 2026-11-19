@@ -180,13 +180,9 @@ def run_asr(
     gate=None,
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
-    import re
-
     import numpy as np
 
     current_generation = None
-    last_text = ""
-    repeated = 0
     last_accepted_end_s: float | None = None
     remember = getattr(asr, "remember", None)
     forget = getattr(asr, "forget", None)
@@ -200,8 +196,8 @@ def run_asr(
                 or (get_generation is not None and generation != get_generation()))
 
     def reset_generation(generation):
-        nonlocal current_generation, last_text, repeated, last_accepted_end_s
-        last_text, repeated, last_accepted_end_s = "", 0, None
+        nonlocal current_generation, last_accepted_end_s
+        last_accepted_end_s = None
         cancel = getattr(asr, "cancel_pending", None)
         if callable(cancel):
             cancel()
@@ -257,24 +253,38 @@ def run_asr(
             forget()
             last_accepted_end_s = None
         utt.timings.asr_start = time.monotonic()
-        try:
-            with (gate.operation("asr", current=get_generation, generation=utt.generation)
-                  if gate is not None else nullcontext()):
-                if live and _expired_live_cue(utt, playback_position, live_late_window_s):
-                    increment_counter("expired")
-                    continue
-        except CancelledError:
-            continue
-
-        # ASR with bounded retry for transient transport failures. Quality
-        # rejections (no_speech, language, context_echo, etc.) are not retried;
-        # only server/transport errors (last_rejection == "error") are.
         asr_max_retries = 2
         asr_attempt = 0
         text = ""
+        reviewed = False
         while True:
             try:
-                text = asr.transcribe(utt.audio, utt.probe)
+                with (gate.operation("asr", current=get_generation, generation=utt.generation)
+                      if gate is not None else nullcontext()):
+                    if cancelled(utt.generation):
+                        break
+                    if live and _expired_live_cue(utt, playback_position, live_late_window_s):
+                        increment_counter("expired")
+                        break
+                    text = asr.transcribe(utt.audio, utt.probe)
+                    reason = _rejection_reason(asr, text)
+                    if not text and reason in ("context_echo", "repeated_output"):
+                        reviewed = True
+                        remaining = asr.cfg.response_timeout_s - (time.monotonic() - utt.timings.asr_start)
+                        retry = (asr.cfg.context_retry_limit and remaining > 0
+                                 and not cancelled(utt.generation)
+                                 and not (live and _expired_live_cue(utt, playback_position, live_late_window_s)))
+                        log.info("ASR_LEAK_DETECTED reason=%s segment_start=%.2f segment_end=%.2f "
+                                 "match_score=%.2f action=%s", reason, utt.start_s, utt.end_s,
+                                 asr.last_match_score, "retry_without_context" if retry else "discard")
+                        if retry:
+                            text = asr.recover_context_echo(utt.audio, utt.probe, utt.vad_confidence, remaining)
+                        if cancelled(utt.generation) or (live and _expired_live_cue(
+                                utt, playback_position, live_late_window_s)):
+                            text = ""
+                        log.info("ASR_LEAK_OUTCOME segment_start=%.2f segment_end=%.2f outcome=%s reason=%s",
+                                 utt.start_s, utt.end_s, "accepted" if text else "discarded",
+                                 "audio_recovery" if text else getattr(asr, "last_rejection", None) or "stale")
             except CancelledError:
                 break
             if cancelled(utt.generation):
@@ -283,7 +293,7 @@ def run_asr(
                 break
             reason = _rejection_reason(asr, text)
             last_rejection = getattr(asr, "last_rejection", None)
-            if (asr_attempt < asr_max_retries
+            if (not reviewed and asr_attempt < asr_max_retries
                     and isinstance(last_rejection, str)
                     and last_rejection == "error"):
                 asr_attempt += 1
@@ -294,7 +304,7 @@ def run_asr(
                 continue
             increment_counter("asr_rejected")
             record_event("asr_rejected", generation=utt.generation, reason=reason,
-                         raw_text=_raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
+                         raw_text="" if reviewed else _raw_transcript(asr)[:160], vad_confidence=utt.vad_confidence,
                          source_start_s=utt.start_s, source_end_s=utt.end_s,
                          retries=asr_attempt)
             log.debug("Rejected ASR %.2f-%.2fs (%s): %s",
@@ -315,13 +325,6 @@ def run_asr(
         if issue:
             increment_counter("dropped")
             record_event("asr_suppressed", reason=issue, generation=utt.generation)
-            continue
-        compact = re.sub(r"[\W_]+", "", text.casefold())
-        repeated = repeated + 1 if compact == last_text else 1
-        last_text = compact
-        # Retain spoken repeated reactions; only suppress sustained long loops.
-        if len(compact) >= 12 and repeated >= 4:
-            increment_counter("dropped")
             continue
         # Familiar hallucinated outros on faint, sub-second non-speech are
         # insufficient evidence for a subtitle. Never reject a normal short reply.

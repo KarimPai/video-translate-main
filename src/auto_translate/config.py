@@ -119,6 +119,7 @@ class AsrConfig:
     context: str = ""
     max_context_chars: int = 2000
     recent_context_lines: int = 2  # previous accepted transcripts added to the ASR system prompt
+    context_retry_limit: int = 1
     context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8
@@ -138,6 +139,8 @@ class AsrConfig:
             raise ValueError("asr.max_context_chars must be an integer in 0..8000")
         if type(self.recent_context_lines) is not int or not 0 <= self.recent_context_lines <= 4:
             raise ValueError("asr.recent_context_lines must be an integer in 0..4")
+        if type(self.context_retry_limit) is not int or self.context_retry_limit not in (0, 1):
+            raise ValueError("asr.context_retry_limit must be 0 or 1")
         if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
             raise ValueError("asr.context_size must be an integer in 1024..32768")
         if type(self.cuda_device) is not int or self.cuda_device < 0:

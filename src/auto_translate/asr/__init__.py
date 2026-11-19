@@ -20,7 +20,10 @@ def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "
     if kept:
         text = (text + "\n" if text else "") + "人名：" + "、".join(kept)
     words = []
-    for word in glossary.vocabulary if glossary else ():
+    # A stream tag alone is weak evidence for any particular utterance. Keep
+    # the default shortlist small and give terms actually in the title priority.
+    vocabulary = glossary.vocabulary if glossary else ()
+    for word in sorted(vocabulary, key=lambda word: word not in title)[:4]:
         if budget - len(word) - 5 < 0:
             break
         words.append(word)

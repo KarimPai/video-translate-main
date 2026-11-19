@@ -25,6 +25,7 @@ from ..llama_server import LlamaServer, LlamaServerError, require_gguf, resolve_
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
 from ..windows_subprocess import check_running
+from .context_echo import active_seconds, context_match, speech_key
 from .quality_guard import transcript_problem
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,9 @@ class Qwen3ASR:
         self.cfg = cfg
         self.context = context.strip()[: cfg.max_context_chars]
         self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
+        self._accepted_keys: deque[str] = deque(maxlen=32)
+        self.last_match_score = 0.0
+        self._review_context = ""
         self.last_raw_transcript = ""
         self.last_rejection: str | None = None
         self.last_language: str | None = None
@@ -107,7 +111,7 @@ class Qwen3ASR:
             # Reserve encoder workspace for the default VOD hard cap before budgeting MT.
             warmup_s = 16.0
             self._request(wav_bytes(np.zeros(int(16000 * warmup_s), np.float32)), warmup_s,
-                          timeout=cfg.startup_timeout_s)
+                          timeout=cfg.startup_timeout_s, system="")
             check_running()
         except BaseException:
             self.close()
@@ -124,11 +128,13 @@ class Qwen3ASR:
             self._generation += 1
             self.last_raw_transcript = ""
             self._recent.clear()
+            self._accepted_keys.clear()
 
     def remember(self, text: str) -> None:
         """Bias the next decode toward continuity with recently accepted speech."""
         with self._state_lock:
             self._recent.append(text[-120:])
+            self._accepted_keys.append(speech_key(text))
 
     def forget(self) -> None:
         with self._state_lock:
@@ -141,25 +147,55 @@ class Qwen3ASR:
             return self.context
         return "\n".join(part for part in (self.context, "直前の発話：", *recent) if part)
 
-    def _request(self, wav: bytes, duration_s: float, *, timeout: float) -> dict:
-        messages = []
-        system = self._system_prompt()
-        if system:
-            messages.append({"role": "system", "content": system})
+    def _request(self, wav: bytes, duration_s: float, *, timeout: float, system: str) -> dict:
+        messages = [{"role": "system", "content": system}]
         messages.append({"role": "user", "content": [{
             "type": "input_audio",
             "input_audio": {"data": base64.b64encode(wav).decode("ascii"), "format": "wav"},
         }]})
         body = {"messages": messages, "temperature": 0.0, "stream": False,
                 "max_tokens": min(512, 48 + int(duration_s * 16))}
+        if not system:
+            body["cache_prompt"] = False
         return self.server.chat(body, timeout=timeout)
 
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
+        return self._decode(audio, probe, self._system_prompt(), self.cfg.response_timeout_s)
+
+    def recover_context_echo(self, audio: np.ndarray, probe: bool, vad_confidence: float | None,
+                             timeout: float) -> str:
+        """Decode identical PCM without hints/history. Retain a spoken list if corroborated."""
+        original = speech_key(parse_output(self.last_raw_transcript)[1])
+        context = self._review_context
+        text = self._decode(audio, probe, "", timeout, recovery=True)
+        if not text:
+            return ""
+        key = speech_key(text)
+        active = active_seconds(audio)
+        # A language tag and an energy floor are weak individually. Require both,
+        # plausible duration, and substantially stronger support for a copied list.
+        supported = self.last_language == "Japanese" and active >= .04 and len(key) <= 10 + 18 * active
+        if probe or (vad_confidence is not None and vad_confidence < .35):
+            # With little VAD support, an unrelated second guess is uncertain.
+            supported = supported and len(key) >= 2 and key in original
+        if context_match(text, context) or key == original:
+            supported = (supported and key == original and active >= len(key) / 16
+                         and not probe and (vad_confidence is None or vad_confidence >= .5))
+        if re.match(r"^(用語|人名|直前の発話)[:：]", text) and text[:2] in context:
+            supported = False
+        if not supported:
+            self.last_rejection = "unconfirmed_recovery"
+            return ""
+        return text
+
+    def _decode(self, audio: np.ndarray, probe: bool, system: str, timeout: float,
+                *, recovery: bool = False) -> str:
         with self._state_lock:
             generation = self._generation
             self.last_raw_transcript = ""
             self.last_rejection = None
             self.last_language = None
+            self.last_match_score = 0.0
         duration_s = len(audio) / 16000
         if duration_s > 60:
             raise ValueError("ASR utterance exceeds 60 seconds; check VAD segmentation")
@@ -174,7 +210,7 @@ class Qwen3ASR:
             if not self.server.alive():
                 self._restart("server exited")
             try:
-                payload = self._request(wav, duration_s, timeout=self.cfg.response_timeout_s)
+                payload = self._request(wav, duration_s, timeout=timeout, system=system)
             except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
                 if self._closed:
                     return ""
@@ -193,10 +229,21 @@ class Qwen3ASR:
         problem = (("no_speech" if not text else None)
                    or (None if is_japanese(language, text) else f"language:{language}")
                    or ("probe_unconfirmed" if probe and language != "Japanese" else None)
-                   or ("context_echo" if len(text) >= 12 and (text in self.context or text in self._system_prompt()) else None)
                    or ("truncated" if choice.get("finish_reason") == "length" else None)
                    or transcript_problem(text, duration_s)
                    or ("blocklist" if any(word in text for word in self.cfg.blocklist) else None))
+        if not recovery and text and is_japanese(language, text):
+            score = context_match(text, system)
+            key = speech_key(text)
+            with self._state_lock:
+                repeated = len(key) >= 10 and key in self._accepted_keys
+            if score:
+                problem = "context_echo"
+            elif repeated and (probe or len(key) > 10 + 18 * active_seconds(audio)):
+                problem, score = "repeated_output", 1.0
+            if score:
+                self.last_match_score = score
+                self._review_context = system
         if problem:
             self.last_rejection = problem
             log.debug("Discarding ASR output (%s): %s", problem, " ".join(raw[:200].split()))

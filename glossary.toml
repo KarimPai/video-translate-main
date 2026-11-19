@@ -551,7 +551,8 @@
 # "terms" are added to the translation glossary for that stream only.
 [topics.gta]
 match = ["GTA", "グラセフ", "ストグラ"]
-asr = ["店舗強盗", "銀行強盗", "宝石店強盗", "コンビニ強盗", "指名手配", "現着", "応援", "無線", "救急隊", "犯人", "パトカー"]
+# The first four are broad recognition hints. Title matches take precedence.
+asr = ["銀行強盗", "無線", "救急隊", "指名手配", "店舗強盗", "宝石店強盗", "コンビニ強盗", "現着", "応援", "犯人", "パトカー"]
 
 [topics.gta.terms]
 "店舗強盗" = "store robbery"

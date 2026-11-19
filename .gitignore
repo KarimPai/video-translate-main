@@ -27,5 +27,6 @@ temp/
 .runtime/
 dist/
 build/
+_internal/
 *.spec
 logs/

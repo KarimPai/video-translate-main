@@ -99,6 +99,8 @@ max_identical_cues = 2
 suppress_empty_translation = true
 # When false, allow Japanese characters in translation output instead of rejecting them.
 suppress_japanese_in_english = true
+# VOD mode: release held fragments after this many seconds (prevents deadlock).
+vod_merge_timeout_s = 5.0
 
 [mpv]
 hwdec = "auto-safe"

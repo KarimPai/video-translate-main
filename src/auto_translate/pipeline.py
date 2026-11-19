@@ -125,23 +125,47 @@ def _ticking(in_q: queue.Queue, interval_s: float):
             yield _TICK
 
 
-def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None):
+def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None, on_hold=None):
     """Hold a transcript that ends mid-sentence and join it with a closely following one.
 
     Progress markers that could precede the continuation are parked behind the
     held cue, so no marker ever claims time the held cue still covers. With
     ``due``, a tick releases the held cue once ``due(held)`` says it cannot wait.
+    When a ``SourceEOF`` arrives, any held fragment is yielded immediately.
+    When ``on_hold`` is provided, it is called when a fragment begins being held.
     """
     held: Transcript | None = None
     parked: list[AudioProgress] = []
     for item in items:
         if item is _TICK:
-            if held is not None and due is not None and due(held):
-                increment_counter("released_fragments")
+            if held is not None:
+                age_s = time.monotonic() - held.timings.audio_read if held.timings.audio_read else None
+                if due is not None and due(held):
+                    reason = "timeout" if age_s is not None and age_s > 3.0 else "playback_near"
+                    log.debug(
+                        "Releasing held fragment (%s): %.2f-%.2fs age=%.1fs ja=%r",
+                        reason, held.start_s, held.end_s,
+                        age_s if age_s is not None else -1, held.ja[:80],
+                    )
+                    increment_counter("released_fragments")
+                    yield held
+                    yield from parked
+                    parked.clear()
+                    held = None
+            continue
+        if isinstance(item, SourceEOF):
+            # Flush any held fragment on EOF so it reaches translation
+            if held is not None:
+                log.debug(
+                    "Flushing held fragment on EOF: %.2f-%.2fs ja=%r",
+                    held.start_s, held.end_s, held.ja[:80],
+                )
+                increment_counter("released_fragments_eof")
                 yield held
                 yield from parked
                 parked.clear()
                 held = None
+            yield item
             continue
         if held is not None:
             if (isinstance(item, AudioProgress) and not item.reset and item.generation == held.generation
@@ -161,6 +185,8 @@ def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None):
         if (type(item) is Transcript and not _SENTENCE_END.search(item.ja)
                 and not (due is not None and due(item))):
             held = item
+            if on_hold is not None:
+                on_hold(held)
             continue
         yield item
         yield from parked
@@ -375,6 +401,11 @@ def run_translate(
     last_speech_end_s: float | None = None
     context_max_gap_s = getattr(getattr(translator, "cfg", None), "context_max_gap_s", 15.0)
     set_position = getattr(translator, "set_position", None)
+    # VOD merge timeout: release held fragments after this many seconds of real-time waiting
+    _vod_timeout_raw = getattr(getattr(translator, "cfg", None), "vod_merge_timeout_s", None)
+    vod_merge_timeout_s = 5.0
+    if isinstance(_vod_timeout_raw, (int, float)) and 0 < _vod_timeout_raw <= 30:
+        vod_merge_timeout_s = float(_vod_timeout_raw)
     items = iter(in_q.get, object())
     if merge is not None and live and playback_position is not None:
         def due(held: Transcript) -> bool:
@@ -383,7 +414,20 @@ def run_translate(
             return position is None or position >= onset - live_merge_margin_s
         items = _join_fragments(_ticking(in_q, MERGE_TICK_S), *merge, due=due)
     elif merge is not None:
-        items = _join_fragments(items, *merge)
+        # VOD mode: use ticking with a real-time timeout so held fragments
+        # are released when no continuation arrives within vod_merge_timeout_s.
+        # This prevents the circular deadlock where a held fragment blocks
+        # progress markers, which exhausts translation lead, which auto-pauses
+        # MPV, which blocks FFmpeg, which never produces the continuation.
+        held_since: dict[int, float] = {}  # generation -> monotonic time when held
+        def vod_due(held: Transcript) -> bool:
+            ts = held_since.get(held.generation)
+            if ts is None:
+                return False
+            return time.monotonic() - ts >= vod_merge_timeout_s
+        def vod_on_hold(held: Transcript) -> None:
+            held_since[held.generation] = time.monotonic()
+        items = _join_fragments(_ticking(in_q, MERGE_TICK_S), *merge, due=vod_due, on_hold=vod_on_hold)
 
     for item in items:
         if item is None:
@@ -1041,6 +1085,74 @@ def run(
                 if backlog and now - last_activity > 30.0 and now - last_warning > 30.0:
                     last_warning = now
                     log.warning("ASR/translation pipeline waiting with queued work: %s", backlog)
+
+            # Recovery watchdog: detect VOD deadlock and attempt recovery
+            # when no subtitle published for 15s with pending work and auto-pause active.
+            if not ingest.source.live and now - last_activity > 15.0:
+                # Check if any output is auto-paused
+                auto_paused = False
+                for out in outputs:
+                    if getattr(out, "_vod_auto_paused", False):
+                        auto_paused = True
+                        break
+                if auto_paused and backlog:
+                    # Check if this is the current generation (not a stale seek)
+                    if ingest.generation == observed_generation:
+                        # Attempt recovery: log diagnostics and try to resume
+                        record_event(
+                            "vod_deadlock_recovery",
+                            queues=backlog,
+                            elapsed_s=now - last_activity,
+                            generation=ingest.generation,
+                        )
+                        log.warning(
+                            "VOD deadlock detected: no subtitle for %.0fs with "
+                            "pending work %s and auto-pause active; attempting recovery",
+                            now - last_activity, backlog,
+                        )
+                        # Try to resume MPV to break the circular wait
+                        for out in outputs:
+                            if getattr(out, "_vod_auto_paused", False):
+                                resume = getattr(out, "resume_from_auto_pause", None)
+                                if callable(resume):
+                                    resume()
+                                else:
+                                    # Direct fallback: unpause via MPV command
+                                    try:
+                                        out._player_command("set_property", "pause", False)
+                                        out._vod_auto_paused = False
+                                        log.info("Recovery: forced MPV resume")
+                                    except Exception:
+                                        log.exception("Recovery: failed to resume MPV")
+                        last_activity = now
+                        last_warning = now
+
+            # Watermark diagnostics: log translation progress every 10s during VOD
+            if not ingest.source.live:
+                last_diag = getattr(run, "_last_vod_diag", 0.0)
+                if now - last_diag > 10.0:
+                    run._last_vod_diag = now
+                    # Collect watermark positions from outputs
+                    tu = None
+                    vp = None
+                    ps = None
+                    for out in outputs:
+                        tu = getattr(out, "_translated_until", None)
+                        vp = getattr(out, "_vad_progress", None)
+                        pspeech = getattr(out, "_pending_speech", None)
+                        try:
+                            ps = len(pspeech) if pspeech else None
+                        except TypeError:
+                            ps = None
+                    depths = {name: q.qsize() for name, q in queues.items()}
+                    log.info(
+                        "VOD diagnostics: translated_until=%.1fs vad_progress=%.1fs "
+                        "pending_speech=%d queues=%s",
+                        tu if tu is not None else -1,
+                        vp if vp is not None else -1,
+                        ps if ps is not None else -1,
+                        depths,
+                    )
 
             for name, q in queues.items():
                 stats.max_q[name] = max(

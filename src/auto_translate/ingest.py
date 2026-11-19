@@ -328,6 +328,9 @@ class Ingest:
         self._vod_max_audio_lead_s = 0.0
         self._playback_position_s = float(source.start_s)
         self._vod_pacing_waiting_generation: int | None = None
+        # Optional callback that returns True when MPV is auto-paused (not manually paused).
+        # When auto-paused, the read-ahead cap is relaxed so audio continues flowing.
+        self._is_auto_paused_cb: "Callable[[], bool] | None" = None
 
     def _new_video_playlist(self, source_start_s: float) -> Path:
         """Create a new HLS event playlist while retaining prior session fragments."""
@@ -484,6 +487,16 @@ class Ingest:
                 self._playback_position_s = max(0.0, float(position_s))
                 self._proc_lock.notify_all()
 
+    def set_auto_paused_callback(self, cb: "Callable[[], bool] | None") -> None:
+        """Set a callback that returns True when MPV is auto-paused (not manually paused).
+
+        When auto-paused, the read-ahead cap is relaxed so audio continues flowing
+        for translation, preventing the circular deadlock.
+        """
+        with self._proc_lock:
+            self._is_auto_paused_cb = cb
+            self._proc_lock.notify_all()
+
     def is_vod_audio_lead_limited(self) -> bool:
         """True only while the CURRENT VOD PCM reader is intentionally parked.
 
@@ -498,11 +511,25 @@ class Ingest:
             )
 
     def _wait_for_vod_lead(self, sample: int, generation: int) -> bool:
-        """Return False immediately when a stop/seek invalidates this read."""
+        """Return False immediately when a stop/seek invalidates this read.
+
+        When MPV is auto-paused (not manually paused), the read-ahead cap is
+        doubled so audio continues flowing for translation, preventing the
+        circular deadlock where paused playback blocks FFmpeg which blocks
+        new transcripts which keeps the player paused.
+        """
         with self._proc_lock:
             while not self._stopped and generation == self._generation:
                 lead = self._vod_max_audio_lead_s
-                if lead <= 0 or sample / SAMPLE_RATE <= self._playback_position_s + lead:
+                # When auto-paused, relax the cap so audio continues flowing
+                is_auto_paused = False
+                if self._is_auto_paused_cb is not None:
+                    try:
+                        is_auto_paused = self._is_auto_paused_cb()
+                    except Exception:
+                        is_auto_paused = False
+                effective_lead = lead * 2.0 if is_auto_paused and lead > 0 else lead
+                if lead <= 0 or sample / SAMPLE_RATE <= self._playback_position_s + effective_lead:
                     self._vod_pacing_waiting_generation = None
                     return True
                 self._vod_pacing_waiting_generation = generation

@@ -248,6 +248,9 @@ class TranslateConfig:
     suppress_empty_translation: bool = True
     # Reject output containing Japanese script (untranslated Japanese). Set to false to allow mixed output.
     suppress_japanese_in_english: bool = True
+    # VOD mode: release held fragments after this many seconds of real-time waiting
+    # for a continuation that never arrives. Prevents indefinite blocking.
+    vod_merge_timeout_s: float = 5.0
 
     def __post_init__(self):
         for name in ("model_path", "server_path", "glossary"):
@@ -293,6 +296,9 @@ class TranslateConfig:
         for value in (self.timeout_s, self.load_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Translation timeouts must be finite and positive")
+        if (type(self.vod_merge_timeout_s) not in (int, float)
+                or not math.isfinite(self.vod_merge_timeout_s) or self.vod_merge_timeout_s <= 0):
+            raise ValueError("translate.vod_merge_timeout_s must be finite and positive")
 
 
 @dataclass

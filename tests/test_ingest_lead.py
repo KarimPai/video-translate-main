@@ -24,6 +24,7 @@ def dummy_ingest(*, live=False):
     ing._vod_max_audio_lead_s = 0.0
     ing._playback_position_s = 0.0
     ing._vod_pacing_waiting_generation = None
+    ing._is_auto_paused_cb = None
     return ing
 
 

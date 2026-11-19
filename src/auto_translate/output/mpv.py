@@ -496,6 +496,11 @@ class MpvOutput:
             ingest.enable_vod_playback_pacing(
                 getattr(ingest.cfg, "vod_max_audio_lead_s", 75.0)
             )
+            # Let Ingest relax its read-ahead cap when MPV is auto-paused
+            # (not manually paused) so audio continues flowing for translation.
+            set_cb = getattr(ingest, "set_auto_paused_callback", None)
+            if callable(set_cb):
+                set_cb(lambda: self._vod_auto_paused)
 
         mpv_log = (Path.cwd() / "logs" / "mpv.log")
         mpv_log.parent.mkdir(parents=True, exist_ok=True)
@@ -1209,19 +1214,27 @@ class MpvOutput:
                     # Translation falling behind — auto-pause MPV
                     if self._player_command("set_property", "pause", True):
                         self._vod_auto_paused = True
+                        lead = self._translated_until - self._now if self._now else 0
+                        with self._buffer_condition:
+                            pending = len(self._pending_speech)
                         log.info(
-                            "VOD auto-pause: translation lead %.1fs < %.1fs threshold",
-                            self._translated_until - self._now if self._now else 0,
-                            getattr(self.cfg, "vod_pause_threshold_s", 2.0),
+                            "VOD auto-pause: translation lead %.1fs < %.1fs threshold "
+                            "(now=%.1fs translated_until=%.1fs pending_speech=%d)",
+                            lead, getattr(self.cfg, "vod_pause_threshold_s", 2.0),
+                            self._now if self._now else -1,
+                            self._translated_until, pending,
                         )
                 elif self._vod_auto_paused and self._vod_should_resume():
                     # Translation caught up — resume MPV
                     if self._player_command("set_property", "pause", False):
                         self._vod_auto_paused = False
+                        lead = self._translated_until - self._now if self._now else 0
                         log.info(
-                            "VOD auto-resume: translation lead %.1fs >= %.1fs threshold",
-                            self._translated_until - self._now if self._now else 0,
-                            getattr(self.cfg, "vod_resume_threshold_s", 8.0),
+                            "VOD auto-resume: translation lead %.1fs >= %.1fs threshold "
+                            "(now=%.1fs translated_until=%.1fs)",
+                            lead, getattr(self.cfg, "vod_resume_threshold_s", 8.0),
+                            self._now if self._now else -1,
+                            self._translated_until,
                         )
 
             replay, delta = self._read_player_events()

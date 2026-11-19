@@ -1,9 +1,15 @@
 import json
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
 import wave
+
+# Ensure project root is on sys.path for scripts/ imports.
+_root = (Path(__file__).resolve().parent.parent)
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 
 from auto_translate.config import AsrConfig, TranslateConfig, load_config
 from scripts.benchmark import (

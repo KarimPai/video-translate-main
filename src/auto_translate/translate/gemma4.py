@@ -164,25 +164,37 @@ class Gemma4Translator:
             raise
 
     def _args(self) -> list[str]:
-        """Build llama-server arguments for translation."""
+        """Build llama-server arguments for translation.
+
+        When reasoning is enabled, uses llama.cpp reasoning mode with
+        enable_thinking in the Jinja chat template and a configurable
+        reasoning token budget.  FP16 KV cache is always preserved.
+        """
         if self.gpu_layers >= self.layer_count:
             layers = 999
         else:
             layers = self.gpu_layers + 1
         device = detect_device(self.executable)
-        return [
+        reasoning = "on" if self.cfg.reasoning_enabled else "off"
+        args = [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),
             "-np", str(self.cfg.parallel_slots),
             "--jinja",
             "--no-prefill-assistant",
-            "--reasoning", "off",
+            "--reasoning", reasoning,
             "-fa", "on",
             "-fit", "off",
             "-ngl", str(layers),
             "-t", str(self.cfg.threads),
             "--device", device,
         ]
+        if self.cfg.reasoning_enabled:
+            args.extend([
+                "--jinja-chat-format", "gemma4",
+                "--reasoning-budget", str(self.cfg.reasoning_budget_tokens),
+            ])
+        return args
 
 
     def _start(self) -> None:
@@ -226,33 +238,107 @@ class Gemma4Translator:
         return True
 
     def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
-        """Send a chat request and return the translation content."""
+        """Send a chat request and return ONLY the translation content.
+
+        When reasoning mode is active, the model produces internal reasoning
+        tokens (reasoning_content) before the final translation (content).
+        Only message.content becomes the subtitle; reasoning_content is NEVER
+        used for the final translation, even when content is empty.
+
+        Per-request diagnostics are recorded for inference monitoring:
+        input/output/reasoning token counts, finish_reason, timing, cache status.
+        """
+        # When reasoning is on, increase max_tokens to allow room for
+        # both reasoning tokens and the final translation output.
+        if self.cfg.reasoning_enabled:
+            max_tokens = self.cfg.max_tokens + self.cfg.reasoning_budget_tokens
+        else:
+            max_tokens = self.cfg.max_tokens
         body = {
             **prompt,
             "temperature": self.cfg.temperature if temperature is None else temperature,
             "top_k": self.cfg.top_k,
             "top_p": self.cfg.top_p,
             "repeat_penalty": self.cfg.repeat_penalty,
-            "max_tokens": self.cfg.max_tokens,
+            "max_tokens": max_tokens,
             "stream": False,
             "cache_prompt": True,
         }
         check_running()
         if self._closed:
             return ""
+
+        started = time.monotonic()
         payload = self.server.chat(body, timeout=timeout)
         check_running()
+        request_time = time.monotonic() - started
+
         choice = payload["choices"][0]
         message = choice["message"]
-        # Gemma 4 may place output in "reasoning" when thinking mode is active;
-        # prefer "content", fall back to "reasoning" when content is empty.
-        content = message.get("content") or message.get("reasoning") or ""
+        # CRITICAL: Only message.content becomes the subtitle.
+        # reasoning_content is internal model reasoning — never use it as
+        # the final translation, even when content is empty.
+        content = message.get("content") or ""
 
-        # Detect truncated responses
+        # Extract usage statistics from the API response
+        usage = payload.get("usage")
+        input_tokens = 0
+        output_tokens = 0
+        reasoning_tokens = 0
+        prompt_eval_time = 0.0
+        generation_time = 0.0
+        cache_hits = 0
+
+        if isinstance(usage, dict):
+            input_tokens = usage.get("prompt_tokens", 0) or 0
+            output_tokens = usage.get("completion_tokens", 0) or 0
+            reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
+            # Some llama.cpp builds expose timing in usage
+            prompt_eval_time = usage.get("prompt_eval_time", 0.0) or 0.0
+            generation_time = usage.get("generation_time", 0.0) or 0.0
+            cache_hits = usage.get("cache_hits", 0) or 0
+
+        # Also track reasoning content from message for word-based count
+        if self.cfg.reasoning_enabled:
+            reasoning_content = message.get("reasoning_content") or message.get("reasoning") or ""
+            if reasoning_content and not reasoning_tokens:
+                # Fallback: word-based count when API doesn't provide token count
+                reasoning_tokens = len(reasoning_content.split())
+                increment_counter("mt_reasoning_tokens", reasoning_tokens)
+                log.debug("Reasoning tokens: %d (budget=%d)", reasoning_tokens, self.cfg.reasoning_budget_tokens)
+            elif reasoning_tokens:
+                increment_counter("mt_reasoning_tokens_api", reasoning_tokens)
+
+        # Detect and track finish_reason
         finish_reason = choice.get("finish_reason", "")
         if finish_reason == "length":
-            log.debug("Truncated response (max_tokens=%d)", self.cfg.max_tokens)
+            log.debug("Truncated response (max_tokens=%d)", max_tokens)
             increment_counter("mt_truncated")
+        elif finish_reason == "stop":
+            increment_counter("mt_finish_stop")
+        elif finish_reason:
+            # Track unexpected finish reasons for diagnostics
+            log.debug("Unexpected finish_reason: %s", finish_reason)
+            increment_counter("mt_finish_other")
+        else:
+            increment_counter("mt_finish_none")
+
+        # Record per-request diagnostics
+        record_event(
+            "mt_request",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            finish_reason=finish_reason,
+            request_time_s=round(request_time, 3),
+            prompt_eval_time_s=round(prompt_eval_time, 4) if prompt_eval_time else None,
+            generation_time_s=round(generation_time, 4) if generation_time else None,
+            cache_hits=cache_hits,
+            cache_enabled=True,
+            max_tokens=max_tokens,
+            reasoning_enabled=self.cfg.reasoning_enabled,
+            has_content=bool(content.strip()),
+        )
 
         return content
 
@@ -314,6 +400,7 @@ class Gemma4Translator:
                 # Latency budget enforcement
                 started = time.monotonic()
                 latency_budget = self.cfg.timeout_s * 0.7  # 70% of timeout for translation
+                retry_count = 0
 
                 try:
                     english = self._chat(prompt, timeout=self.cfg.timeout_s)
@@ -336,23 +423,41 @@ class Gemma4Translator:
 
                 # Handle empty output — retry with reduced context
                 if not english:
+                    issue = english_output_issue(english)
+                    if issue:
+                        record_event("mt_rejected", reason=issue, retry=True)
                     fallback = build_prompt(ja, terms, "")
                     increment_counter("mt_retries")
+                    retry_count += 1
                     english = self._chat(fallback, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
-                # Check for missing names and retry if needed
+                # Check for output issues and retry if needed
+                output_issue = english_output_issue(english)
                 missing = missing_names(english, names)
-                if not self._closed and (english_output_issue(english) or missing):
+                if not self._closed and (output_issue or missing):
+                    # Record rejection reason for diagnostics
+                    if output_issue:
+                        record_event("mt_rejected", reason=output_issue, retry=True)
+                        increment_counter("mt_rejected")
                     fallback = build_prompt(ja, terms, "")
                     candidates = [english]
                     if fallback != prompt or self.cfg.temperature != 0:
                         increment_counter("mt_retries")
+                        retry_count += 1
                         if missing:
                             record_event("mt_name_retry", names=missing)
                         candidate = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
                         candidates.append(clean_output(candidate))
                     english = self._best(candidates, names)
+
+                # Record final translation diagnostics
+                record_event(
+                    "mt_result",
+                    has_output=bool(english),
+                    retry_count=retry_count,
+                    elapsed_s=round(time.monotonic() - started, 3),
+                )
 
                 return "" if self._closed else english
             except (httpx.HTTPError, LlamaServerError, ValueError):

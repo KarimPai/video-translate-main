@@ -159,6 +159,53 @@ _JAPANESE_OUTPUT = re.compile(
     r"\uf900-\ufaff\uff66-\uff9f\U00020000-\U000323af]"
 )
 
+# Gemma 4 and other models may emit control tokens abnormally when generation
+# degrades (e.g. upstream llama.cpp issue #21338).  Detect floods of repeated
+# special tokens before they reach the subtitle renderer.
+_SPECIAL_TOKENS = {
+    "<unused49>", "<unused8>", "<fin>", "<start_of_turn>", "<end_of_turn>",
+    "<eos>", "<bos>", "<pad>", "<mask>", "<extra_id_0>", "<extra_id_1>",
+}
+_SPECIAL_TOKEN_PATTERN = re.compile(
+    r"|".join(re.escape(t) for t in _SPECIAL_TOKENS)
+)
+# A flood is 3+ occurrences of the same special token, or 2+ different special tokens
+# that dominate the output (more than 50% of non-whitespace tokens).
+_MIN_FLOOD_COUNT = 3
+_DOMINANCE_THRESHOLD = 0.5
+
+
+def has_special_token_flood(text: str) -> bool:
+    """Detect abnormal repetition of model control tokens in generation output.
+
+    Gemma 4 is known to flood output with repeated special tokens such as
+    ``<unused49>`` when reasoning mode misbehaves (llama.cpp issue #21338).
+    This check rejects such output before it reaches the subtitle renderer.
+
+    Returns True if:
+    - Any single special token appears 3+ times, OR
+    - Special tokens dominate the output (>50% of non-whitespace tokens)
+    """
+    if not text or len(text) < 10:
+        return False
+
+    matches = _SPECIAL_TOKEN_PATTERN.findall(text)
+    if len(matches) < 2:
+        return False
+
+    # Check for single-token flood
+    from collections import Counter
+    counts = Counter(matches)
+    if counts.most_common(1)[0][1] >= _MIN_FLOOD_COUNT:
+        return True
+
+    # Check for dominance: special tokens > 50% of all non-whitespace tokens
+    all_tokens = text.split()
+    if len(all_tokens) >= 4 and len(matches) / len(all_tokens) > _DOMINANCE_THRESHOLD:
+        return True
+
+    return False
+
 
 def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | None:
     """Return a hard output failure, independent of proper-name validation."""
@@ -168,6 +215,8 @@ def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | No
         return "untranslated_japanese"
     if has_generation_loop(text) or looks_like_prompt_echo(text):
         return "prompt_echo_or_loop"
+    if has_special_token_flood(text):
+        return "special_token_flood"
     return None
 
 

@@ -23,7 +23,7 @@ MODELS = (
         revision="main",
         filename="google_gemma-4-E4B-it-Q4_K_M.gguf",
         directory="models/gemma4",
-        size=3221225472,  # approximate; will be verified by SHA256
+        size=5392788480,  # actual file size: ~5.15 GB
         sha256="",  # will be set after downloading the file
     ),
 )

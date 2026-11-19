@@ -41,6 +41,14 @@ def mock_player(live=False, duration=600.0):
     player._gui_commands = queue.Queue(maxsize=16)
     player._subtitle_ready = threading.Event()
     player._last_gui_status_at = 0.0
+    # VOD sync watermark attributes
+    player._source_finished = False
+    player._vod_auto_paused = False
+    player._vad_progress = 0.0
+    player._translated_until = 0.0
+    player._pending_speech = []
+    player._pending_generation = 0
+    player._buffer_condition = threading.Condition()
     return player
 
 

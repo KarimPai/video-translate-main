@@ -107,7 +107,7 @@ class JapanesePipelineOnlyTests(unittest.TestCase):
     def exercise(verdict):
         filter_mock = Mock()
         filter_mock.classify.return_value = verdict
-        primary = Mock()
+        primary = Mock(last_timing=None)
         primary.transcribe.return_value = "今日はどうする？"
         input_q, output_q = queue.Queue(), queue.Queue()
         utt = Utterance(5., 9., audio(), vad_confidence=.9)

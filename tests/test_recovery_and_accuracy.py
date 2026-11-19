@@ -37,7 +37,7 @@ class AccuracyTests(unittest.TestCase):
                 output = queue.Queue()
                 audio.put(Utterance(0, 2, np.ones(32000), vad_confidence=.9))
                 audio.put(None)
-                asr = Mock()
+                asr = Mock(last_timing=None)
                 asr.transcribe.return_value = text
                 run_asr(asr, audio, output)
                 asr.transcribe.assert_called_once()

@@ -6,7 +6,8 @@ model_path = "haas-ja-v1.0"
 server_path = ""
 speech_server_path = ""
 cuda_device = 0
-threads = 8
+# Split CPU threads with translation (e.g. 4 for ASR + 4 for MT on 8-core CPU)
+threads = 4
 context = ""
 max_context_chars = 2000
 # Previous accepted transcripts added to the ASR prompt for continuity.
@@ -20,11 +21,12 @@ live_response_timeout_s = 15
 blocklist = []
 
 [gpu_budget]
-# Load ASR first, then trim translation GPU layers against measured free memory.
-startup_headroom_gb = 1.0
-low_free_gb = 0.75
+# Reduce headroom on 8GB GPUs to maximize GPU offload layers.
+# If VRAM is not tight (e.g. 3+ GB free after full offload), use 0.25 for all.
+startup_headroom_gb = 0.25
+low_free_gb = 0.25
 emergency_free_gb = 0.25
-sample_interval_s = 2.0
+sample_interval_s = 3.0
 
 [vad]
 device = "cpu"
@@ -50,7 +52,7 @@ split_context_ms = 160
 fallback_s = 0.0
 
 [language_filter]
-# Qwen3-ASR already identifies language; this optional CPU gate is normally off.
+# Haas ASR already identifies language; this optional CPU gate is normally off.
 enabled = false
 min_duration_s = 2.5
 max_window_s = 5.0
@@ -61,12 +63,14 @@ min_top_margin = 0.45
 [translate]
 model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
-# -1 selects adaptive GPU offload; 0 keeps the translation model on CPU.
-gpu_layers = -1
+# Force all layers onto GPU for maximum speed; set to -1 for adaptive if VRAM is tight.
+gpu_layers = 42
+# Use 4096 context so FP16 KV cache fits on 8GB GPUs (Q8_0 cache corrupts Gemma output)
 context_size = 4096
 cuda_device = 0
-threads = 8
-max_tokens = 512  # increased for reasoning budget
+# Split CPU threads with ASR (e.g. 4 for MT + 4 for ASR on 8-core CPU)
+threads = 4
+max_tokens = 128
 temperature = 0.0
 top_k = 20
 top_p = 0.6
@@ -91,6 +95,10 @@ glossary = "glossary.toml"
 remove_fillers = true
 collapse_repetitions = true
 max_identical_cues = 2
+# When false, show Japanese original instead of dropping subtitle when translation is empty.
+suppress_empty_translation = true
+# When false, allow Japanese characters in translation output instead of rejecting them.
+suppress_japanese_in_english = true
 
 [mpv]
 hwdec = "auto-safe"
@@ -110,6 +118,10 @@ max_cue_lines = 2
 max_subtitle_rows = 4
 # Dark box behind the outlined text, 0..1 (0 = outline only).
 background_opacity = 0.3
+# Adaptive VOD sync: pause when translation lead drops below threshold,
+# resume when it exceeds the higher threshold (hysteresis prevents oscillation).
+vod_pause_threshold_s = 0.5
+vod_resume_threshold_s = 3.0
 
 [holodex]
 # Optional: a Holodex API key (holodex.net > Account Settings) adds the
@@ -119,14 +131,14 @@ api_key = ""
 timeout_s = 5.0
 
 [safe_playback]
-enabled = false
-max_inference_concurrency = 1
-queue_size = 4
-audio_chunks = 32
-max_audio_lead_s = 20.0
+enabled = true
+max_inference_concurrency = 2
+queue_size = 16
+audio_chunks = 48
+max_audio_lead_s = 30.0
 
 [diagnostics]
 enabled = true
-sample_interval_s = 2.0
+sample_interval_s = 4.0
 max_bytes = 2000000
 backups = 3

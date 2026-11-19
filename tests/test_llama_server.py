@@ -18,9 +18,9 @@ class GgufTests(unittest.TestCase):
             data = value.encode()
             return struct.pack("<Q", len(data)) + data
         data = struct.pack("<4sIQQ", b"GGUF", 3, 0, 3)
-        data += string("general.architecture") + struct.pack("<I", 8) + string("qwen2")
+        data += string("general.architecture") + struct.pack("<I", 8) + string("llm")
         data += string("tokenizer.tokens") + struct.pack("<IIQ", 9, 8, 2) + string("a") + string("b")
-        data += string("qwen2.block_count") + struct.pack("<II", 4, 32)
+        data += string("llm.block_count") + struct.pack("<II", 4, 32)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "model.gguf"
             path.write_bytes(data)

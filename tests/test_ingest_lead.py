@@ -95,6 +95,17 @@ class PlaybackPacingTests(unittest.TestCase):
         player._native_seek_at = None
         player._lock = threading.Lock()
         player._lines = []
+        # VOD sync watermark attributes — set high enough so VOD auto-pause
+        # does not trigger during this test (which only checks initial unpause).
+        player._source_finished = False
+        player._vod_auto_paused = False
+        player._vad_progress = 910.0
+        player._translated_until = 910.0
+        player._pending_speech = []
+        player._pending_generation = 0
+        player._user_paused = False
+        player._manually_paused = False
+        player._buffer_condition = threading.Condition()
         with patch("auto_translate.output.mpv.time.monotonic", side_effect=[0, 5, 5]):
             player._play_session(False)
         player.ingest.first_pts_ready.wait.assert_not_called()

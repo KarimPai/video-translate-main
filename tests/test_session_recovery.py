@@ -128,6 +128,11 @@ class SessionRecoveryTests(unittest.TestCase):
         player._now = 20.0
         player._translated_until = 20.0
         player._subtitle_cache = None
+        # VOD sync watermark attributes
+        player._vad_progress = 20.0
+        player._pending_speech = []
+        player._pending_generation = 0
+        player._vod_auto_paused = False
         player.finish(0)
         self.assertFalse(player._translation_ready())
         player.finish(1)

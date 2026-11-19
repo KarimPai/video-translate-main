@@ -37,7 +37,7 @@ class RecordingTranslator:
         self.calls = []
         self.callback = callback
 
-    def translate(self, japanese, history):
+    def translate(self, japanese, history, timings=None):
         self.calls.append((japanese, list(history)))
         if self.callback:
             return self.callback(len(self.calls))
@@ -256,7 +256,7 @@ class SafePlaybackRegressions(unittest.TestCase):
 
     def test_shutdown_during_asr_discards_transcript(self):
         stop = threading.Event()
-        primary = Mock()
+        primary = Mock(last_timing=None)
         primary.transcribe.side_effect = lambda *args: stop.set() or "待って"
         incoming, outgoing = self.queues(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
         pipeline.run_asr(primary, incoming, outgoing, stop=stop,
@@ -380,7 +380,7 @@ class SafePlaybackRegressions(unittest.TestCase):
     def test_asr_expiring_while_admission_blocked_never_starts_model(self):
         gate = self.gate()
         position = [2.0]
-        primary = Mock()
+        primary = Mock(last_timing=None)
         primary.transcribe.return_value = "待って"
         incoming, outgoing = self.queues(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
         with gate.operation("mt"):
@@ -459,7 +459,7 @@ class SafePlaybackRegressions(unittest.TestCase):
             outgoing.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
             outgoing.put(None)
 
-        output, cache, primary = Mock(), Mock(), Mock()
+        output, cache, primary = Mock(), Mock(), Mock(last_timing=None)
         cache.match.return_value = None
         primary.transcribe.return_value = "待って"
         with patch.object(pipeline.queue, "Queue", side_effect=make_queue), \

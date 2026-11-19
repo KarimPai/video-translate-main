@@ -23,6 +23,7 @@ from .runtime_diagnostics import increment_counter, record_event, update_metrics
 from .session_cache import SessionSubtitleCache
 from .subtitle_clean import (
     clean_english_output,
+    english_output_issue,
     has_generation_loop,
     looks_like_prompt_echo,
     normalized_cue,
@@ -252,6 +253,8 @@ def run_asr(
                 and utt.start_s - last_accepted_end_s > ASR_CONTEXT_GAP_S):
             forget()
             last_accepted_end_s = None
+        # Record queue wait time: time from segmented to ASR start (waiting for inference slot)
+        utt.timings.asr_queue_wait = time.monotonic() - utt.timings.segmented
         utt.timings.asr_start = time.monotonic()
         asr_max_retries = 2
         asr_attempt = 0
@@ -315,6 +318,10 @@ def run_asr(
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
             continue
+        # Record client-side HTTP timing from Haas for stall diagnosis
+        last_timing = getattr(asr, "last_timing", None)
+        if last_timing is not None:
+            utt.timings.asr_http_s = last_timing.get("http_request_s", 0.0)
         update_metrics(stages={"asr_s": utt.timings.asr_end - utt.timings.asr_start})
         record_event("asr_complete", generation=utt.generation,
                      source_start_s=utt.start_s, speech_start_s=utt.speech_start_s,
@@ -355,6 +362,7 @@ def run_translate(
     gate=None,
     merge: tuple[float, float] | None = None,
     live_merge_margin_s: float = 1.5,
+    record_speech_cb: Callable[[float, float, int], None] | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress.
 
@@ -438,9 +446,16 @@ def run_translate(
             out_q.put(tr)
             continue
 
+        # Record queue wait time: time from ASR completion to translation start
+        tr.timings.mt_queue_wait = time.monotonic() - tr.timings.asr_end
         tr.timings.mt_start = time.monotonic()
         en = ""
         suppressed = False
+
+        # Record this speech region as pending translation so the watermark
+        # knows not to advance past it until the subtitle is published.
+        if record_speech_cb is not None:
+            record_speech_cb(tr.start_s, tr.end_s, tr.generation)
 
         if translator is not None:
             try:
@@ -480,26 +495,53 @@ def run_translate(
                 increment_counter("expired")
                 continue
 
+            # Track suppression reason for better diagnostics
+            suppression_reason = None
+            tcfg = getattr(translator, "cfg", None)
+            allow_japanese = getattr(tcfg, "suppress_japanese_in_english", True) is False
+            suppress_empty = getattr(tcfg, "suppress_empty_translation", True)
             if en:
-                tcfg = getattr(translator, "cfg", None)
                 if has_generation_loop(en) or looks_like_prompt_echo(en):
+                    suppression_reason = "generation_loop_or_prompt_echo"
                     log.warning(
-                        "Suppressed repeated/prompt-like translation output: gen=%d source=%.2f-%.2fs",
-                        tr.generation, tr.start_s, tr.end_s,
+                        "Suppressed repeated/prompt-like translation output: gen=%d source=%.2f-%.2fs raw=%r",
+                        tr.generation, tr.start_s, tr.end_s, en[:120],
                     )
                     en, suppressed = "", True
                 else:
-                    en = clean_english_output(
+                    en_cleaned = clean_english_output(
                         en,
                         remove_fillers=getattr(tcfg, "remove_fillers", True),
                         collapse_repetitions=getattr(tcfg, "collapse_repetitions", True),
+                        allow_japanese=allow_japanese,
                     )
-                    if not en:
-                        suppressed = True
+                    if not en_cleaned:
+                        suppression_reason = "cleaned_to_empty"
+                        log.debug(
+                            "Translation cleaned to empty: gen=%d source=%.2f-%.2fs raw=%r",
+                            tr.generation, tr.start_s, tr.end_s, en[:120],
+                        )
+                    en = en_cleaned
 
-            en = sanitize_english_output(en)
+            en_sanitized = sanitize_english_output(en, allow_japanese=allow_japanese)
+            if not en_sanitized and not suppression_reason:
+                issue = english_output_issue(en, allow_japanese=allow_japanese)
+                suppression_reason = issue or "sanitize_empty"
+                log.debug(
+                    "Translation rejected by sanitize (%s): gen=%d source=%.2f-%.2fs raw=%r",
+                    suppression_reason, tr.generation, tr.start_s, tr.end_s, en[:120],
+                )
+            en = en_sanitized
             if not en:
-                suppressed = True
+                if suppress_empty:
+                    suppressed = True
+                else:
+                    # Fall back to Japanese original when translation is empty
+                    en = tr.ja
+                    log.debug(
+                        "Translation empty - falling back to Japanese: gen=%d source=%.2f-%.2fs ja=%r",
+                        tr.generation, tr.start_s, tr.end_s, tr.ja[:110],
+                    )
 
             # Recognized Japanese stays useful context even when its English failed.
             if useful_context(tr.ja):
@@ -524,12 +566,20 @@ def run_translate(
                      suppressed=suppressed)
         if suppressed:
             increment_counter("dropped")
+            reason_str = f" ({suppression_reason})" if suppression_reason else ""
             log.info(
-                "Translated cue %.2f-%.2fs suppressed by English output guard; "
+                "Translated cue %.2f-%.2fs suppressed by English output guard%s; "
                 "Japanese ASR recognized speech: %r",
-                tr.start_s, tr.end_s, tr.ja[:110],
+                tr.start_s, tr.end_s, reason_str, tr.ja[:110],
             )
             continue
+
+        # If we fell back to Japanese, log it
+        if en == tr.ja and tr.ja:
+            log.debug(
+                "Showing Japanese original (translation empty): %.2f-%.2s ja=%r",
+                tr.start_s, tr.end_s, tr.ja[:110],
+            )
 
         out_q.put(
             Subtitle(
@@ -559,6 +609,20 @@ class Stats:
     max_q: dict[str, int] = field(default_factory=dict)
     recent_lag_s: deque[float] = field(default_factory=lambda: deque(maxlen=512))
     deadline_misses: int = 0
+    # ASR HTTP timing for stall diagnosis
+    asr_http_sum_s: float = 0.0
+    asr_http_max_s: float = 0.0
+    asr_stall_count: int = 0  # utterances where HTTP request > 2s
+    # Queue wait time tracking
+    asr_queue_wait_sum_s: float = 0.0
+    mt_queue_wait_sum_s: float = 0.0
+    # Expired subtitle tracking
+    expired_subtitles: int = 0
+    # Latency percentiles
+    latency_p50_s: float = 0.0
+    latency_p95_s: float = 0.0
+    latency_p99_s: float = 0.0
+    latency_median_s: float = 0.0
 
     def add(self, sub: Subtitle, deadline_s: float | None = None) -> None:
         tm = sub.timings
@@ -570,11 +634,36 @@ class Stats:
         self.mt_sum_s += mt_s
         self.total_sum_s += total_s
         self.recent_lag_s.append(total_s)
-        if deadline_s is not None and total_s > deadline_s:
+        # Fix deadline miss reporting: use a configurable default of 10s
+        # when no explicit deadline is provided
+        effective_deadline = deadline_s if deadline_s is not None else 10.0
+        if total_s > effective_deadline:
             self.deadline_misses += 1
         self.asr_max_s = max(self.asr_max_s, asr_s)
         self.mt_max_s = max(self.mt_max_s, mt_s)
         self.total_max_s = max(self.total_max_s, total_s)
+        # Track ASR HTTP timing for stall diagnosis
+        asr_http_s = tm.asr_http_s
+        if asr_http_s > 0:
+            self.asr_http_sum_s += asr_http_s
+            self.asr_http_max_s = max(self.asr_http_max_s, asr_http_s)
+            if asr_http_s > 2.0:
+                self.asr_stall_count += 1
+        # Track queue wait times
+        self.asr_queue_wait_sum_s += tm.asr_queue_wait
+        self.mt_queue_wait_sum_s += tm.mt_queue_wait
+
+    def _percentiles(self) -> tuple[float, float, float, float]:
+        """Calculate latency percentiles from recent_lag_s."""
+        if not self.recent_lag_s:
+            return (0.0, 0.0, 0.0, 0.0)
+        sorted_lag = sorted(self.recent_lag_s)
+        n = len(sorted_lag)
+        p50 = sorted_lag[n // 2]
+        p95 = sorted_lag[min(n - 1, int(n * 0.95))]
+        p99 = sorted_lag[min(n - 1, int(n * 0.99))]
+        median = sorted_lag[n // 2] if n % 2 == 1 else (sorted_lag[n // 2 - 1] + sorted_lag[n // 2]) / 2
+        return (p50, p95, p99, median)
 
     def summary(self) -> str:
         if not self.lines:
@@ -590,16 +679,35 @@ class Stats:
             f"{k}={v}" for k, v in self.max_q.items()
         )
 
-        sorted_lag = sorted(self.recent_lag_s)
-        p95 = sorted_lag[min(len(sorted_lag) - 1, int(len(sorted_lag) * 0.95))]
-        return (
-            f"{self.lines} lines | "
-            f"pipeline p95 {p95:.2f}s, deadline misses {self.deadline_misses} | "
-            f"{fmt('asr', self.asr_sum_s, self.asr_max_s)} | "
-            f"{fmt('mt', self.mt_sum_s, self.mt_max_s)} | "
-            f"{fmt('latency', self.total_sum_s, self.total_max_s)} | "
-            f"max queue {maxq}"
-        )
+        p50, p95, p99, median = self._percentiles()
+        # Update percentile fields for diagnostics
+        self.latency_p50_s = p50
+        self.latency_p95_s = p95
+        self.latency_p99_s = p99
+        self.latency_median_s = median
+
+        parts = [
+            f"{self.lines} lines",
+            f"latency median {median:.2f}s p95 {p95:.2f}s p99 {p99:.2f}s, deadline misses {self.deadline_misses}",
+            fmt('asr', self.asr_sum_s, self.asr_max_s),
+            fmt('mt', self.mt_sum_s, self.mt_max_s),
+            fmt('latency', self.total_sum_s, self.total_max_s),
+        ]
+        # Queue wait times
+        if self.asr_queue_wait_sum_s > 0 or self.mt_queue_wait_sum_s > 0:
+            parts.append(
+                f"queue_wait asr {self.asr_queue_wait_sum_s / self.lines:.2f}s "
+                f"mt {self.mt_queue_wait_sum_s / self.lines:.2f}s"
+            )
+        if self.asr_http_sum_s > 0:
+            parts.append(
+                f"asr_http avg {self.asr_http_sum_s / self.lines:.2f}s "
+                f"max {self.asr_http_max_s:.2f}s, stalls {self.asr_stall_count}"
+            )
+        if self.expired_subtitles > 0:
+            parts.append(f"expired subtitles {self.expired_subtitles}")
+        parts.append(f"max queue {maxq}")
+        return " | ".join(parts)
 
 
 def run(
@@ -686,6 +794,17 @@ def run(
             name="asr",
             daemon=True,
         ),
+    ]
+
+    # Build the record_speech callback for the contiguous watermark
+    record_speech_cb = None
+    for out in outputs:
+        rs = getattr(out, "record_speech", None)
+        if rs is not None:
+            record_speech_cb = rs
+            break
+
+    threads.append(
         threading.Thread(
             target=_guard_stage,
             args=(
@@ -704,11 +823,12 @@ def run(
                  if cfg.translate.merge_fragments
                  and (not ingest.source.live or playback_position is not None) else None),
                 cfg.translate.live_merge_margin_s,
+                record_speech_cb,
             ),
             name="translate",
             daemon=True,
-        ),
-    ]
+        )
+    )
 
     for thread in threads:
         thread.start()
@@ -822,7 +942,9 @@ def run(
                     )
 
                 if item.en:
-                    cleaned = sanitize_english_output(item.en)
+                    tcfg = getattr(translator, "cfg", None)
+                    allow_jp = tcfg is not None and getattr(tcfg, "suppress_japanese_in_english", True) is False
+                    cleaned = sanitize_english_output(item.en, allow_japanese=allow_jp)
                     if not cleaned:
                         increment_counter("dropped")
                         continue
@@ -863,6 +985,18 @@ def run(
                 stats.add(item, deadline_s=cfg.mpv.delay_s if ingest.source.live else None)
                 latency = max(0., time.monotonic() - item.timings.audio_read) if item.timings.audio_read else None
                 update_metrics(counters={"latency_s": latency})
+                # Track subtitle latency with full breakdown
+                if latency is not None:
+                    record_event("subtitle_latency", latency_s=round(latency, 3),
+                                 generation=item.generation,
+                                 asr_queue_wait=round(item.timings.asr_queue_wait, 3),
+                                 mt_queue_wait=round(item.timings.mt_queue_wait, 3),
+                                 asr_s=round(max(0, item.timings.asr_end - item.timings.asr_start), 3),
+                                 mt_s=round(max(0, item.timings.mt_end - item.timings.mt_start), 3),
+                                 asr_http_s=round(item.timings.asr_http_s, 3))
+                    # Track late subtitles (> 10s)
+                    if latency > 10.0:
+                        increment_counter("subtitle_late")
                 if latency is not None and latency > max(30., cfg.mpv.delay_s):
                     record_event("subtitle_latency_spike", latency_s=round(latency, 3), generation=item.generation)
 
@@ -883,6 +1017,10 @@ def run(
 
                 for out in outputs:
                     out.show(item)
+                    # Advance the translation watermark to cover this published subtitle
+                    advance_to_sub = getattr(out, "advance_to_subtitle", None)
+                    if advance_to_sub is not None:
+                        advance_to_sub(item.end_s, item.generation)
 
             except queue.Empty:
                 pass

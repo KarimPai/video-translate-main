@@ -88,8 +88,12 @@ class RuntimeDiagnostics:
         self._close_lock = threading.Lock()
         self._closed = False
         self._metrics = {"gpu": {}, "stages": {}, "queues": {},
-                         "counters": {"dropped": 0, "expired": 0, "pending_subtitles": 0, "latency_s": None},
-                         "playback": {}, "workers": {}}
+                         "counters": {"dropped": 0, "expired": 0, "pending_subtitles": 0, "latency_s": None,
+                                      "asr_stall_count": 0, "asr_http_total_s": 0.0,
+                                      "subtitle_expired": 0, "subtitle_late": 0, "queue_full_event": 0,
+                                      "asr_queue_wait_total_s": 0.0, "mt_queue_wait_total_s": 0.0},
+                         "playback": {}, "workers": {},
+                         "latency_percentiles": {"p50": 0.0, "p95": 0.0, "p99": 0.0, "median": 0.0}}
         self._queue = queue.Queue(maxsize=512)
         self._stop = threading.Event()
         self._thread = None

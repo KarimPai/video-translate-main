@@ -17,8 +17,11 @@ class Timings:
 
     audio_read: float = 0.0  # (estimated) the utterance's last sample arrived from ffmpeg
     segmented: float = 0.0  # VAD decided the utterance was complete
+    asr_queue_wait: float = 0.0  # time waiting for ASR inference slot
     asr_start: float = 0.0
     asr_end: float = 0.0
+    asr_http_s: float = 0.0  # client-side HTTP round-trip time for Haas transcription
+    mt_queue_wait: float = 0.0  # time waiting for translation inference slot
     mt_start: float = 0.0  # translation
     mt_end: float = 0.0
 

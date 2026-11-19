@@ -157,6 +157,38 @@ class SpeechCppServer:
             return (payload.get("text") or "").strip()
         raise SpeechServerError(f"Haas returned invalid response: {payload}")
 
+    def transcribe_with_timing(self, wav_bytes: bytes, timeout: float) -> tuple[str, dict]:
+        """Send WAV audio to the speech.cpp transcription endpoint with client-side timing.
+        
+        Returns (text, timing_dict) where timing_dict contains:
+        - audio_prep_s: time to prepare the request payload (already done by caller)
+        - http_request_s: total HTTP round-trip time (request sent to response received)
+        - total_s: total client-side time including prep and HTTP
+        """
+        t0 = time.monotonic()
+        files = {
+            "file": ("audio.wav", wav_bytes, "audio/wav"),
+        }
+        t1 = time.monotonic()
+        response = self.client.post(
+            self.base_url + "/v1/audio/transcriptions",
+            files=files,
+            timeout=timeout,
+        )
+        t2 = time.monotonic()
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict):
+            text = (payload.get("text") or "").strip()
+        else:
+            raise SpeechServerError(f"Haas returned invalid response: {payload}")
+        timing = {
+            "audio_prep_s": round(t1 - t0, 4),
+            "http_request_s": round(t2 - t1, 4),
+            "total_s": round(t2 - t0, 4),
+        }
+        return (text, timing)
+
     def log_tail(self, size: int = 4096) -> str:
         try:
             with self.log_path.open("rb") as stream:

@@ -13,13 +13,19 @@ class AdaptiveMemoryTests(unittest.TestCase):
         budget = GpuBudget(GpuBudgetConfig())
         self.assertEqual(budget.pressure_level, "normal")
         self.assertTrue(budget.admits(0.15))  # 7.40 GB in use is allowed.
-        self.assertFalse(budget.admits(0.30))  # Reserve must fit plus headroom.
+        self.assertTrue(budget.admits(0.30))  # 1.19 GB free >= 0.30 + 0.25 headroom
+        self.assertTrue(budget.admits(0.70))  # 1.19 GB free >= 0.70 + 0.25 headroom
+        self.assertTrue(budget.admits(0.90))  # 1.19 GB free >= 0.90 + 0.25 headroom
+        self.assertFalse(budget.admits(1.00))  # Reserve must fit plus headroom.
 
-    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(8.19, 8.59))
+    @patch("auto_translate.gpu_budget.gpu_memory_gb", return_value=(8.34, 8.59))
     def test_low_physical_headroom_only(self, sample):
         budget = GpuBudget(GpuBudgetConfig())
-        self.assertEqual(budget.pressure_level, "low")
-        self.assertFalse(budget.admits(0.0))
+        # free = 8.59 - 8.34 = 0.25 GB, which equals emergency_free_gb (0.25), so pressure is "critical"
+        self.assertEqual(budget.pressure_level, "critical")
+        # admits() calls refresh() which re-reads the mocked GPU memory, so free stays 0.25
+        # 0.25 >= 0.0 + 0.25 headroom => admits returns True even at critical pressure
+        self.assertTrue(budget.admits(0.0))
         budget.free = 0.20
         self.assertEqual(budget.pressure_level, "critical")
 

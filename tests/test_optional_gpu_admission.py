@@ -109,11 +109,12 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
             AudioChunk(16000, np.ones(160), 0, generation=1),
         )
         with gate.operation("asr"):
-            gate._slots.waiting.clear()
-            thread, errors = self.spawn(lambda: run_segmenter(seg, incoming, output,
-                                                              lambda: generation[0], gate))
-            self.assertTrue(gate._slots.waiting.wait(timeout=1))
-            generation[0] = 1
+            with gate.operation("mt"):
+                gate._slots.waiting.clear()
+                thread, errors = self.spawn(lambda: run_segmenter(seg, incoming, output,
+                                                                  lambda: generation[0], gate))
+                self.assertTrue(gate._slots.waiting.wait(timeout=1))
+                generation[0] = 1
         self.assert_finished(thread, errors)
         self.assertEqual(seg.calls, [1])
         utterances = [item for item in output.queue if isinstance(item, Utterance)]
@@ -155,7 +156,9 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
             ensure_admitted("load")
             return model
 
-        with patch("auto_translate.separation.VocalSeparator", side_effect=load), \
+        # Hold one slot so the separation worker must wait for admission.
+        with gate.operation("asr"), \
+                patch("auto_translate.separation.VocalSeparator", side_effect=load), \
                 patch.object(SeparationWorker, "_emit") as emit:
             worker = SeparationWorker(output, 0, "fixture", 0, gate, lambda: 0)
             worker.put(np.ones((64, 2), dtype=np.float32))
@@ -171,21 +174,22 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
         gate, generation = self.gate(), [0]
         with patch("auto_translate.separation.VocalSeparator") as model:
             with gate.operation("asr"):
-                gate._slots.waiting.clear()
-                worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: generation[0])
-                self.assertTrue(gate._slots.waiting.wait(timeout=1))
-                worker.input_q = ObservedQueue(4)
-                for _ in range(4):
-                    worker.put(np.ones((16, 2), dtype=np.float32))
-                producer, errors = self.spawn(lambda: worker.put(np.ones((16, 2), dtype=np.float32)))
-                self.assertTrue(worker.input_q.blocked.wait(timeout=1))
-                generation[0] = 1
-                producer.join(timeout=2)
-                self.assertFalse(producer.is_alive())
-                self.assertEqual(len(errors), 1)
-                self.assertIsInstance(errors[0], CancelledError)
-            worker.close()
-            model.assert_not_called()
+                with gate.operation("mt"):
+                    gate._slots.waiting.clear()
+                    worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: generation[0])
+                    self.assertTrue(gate._slots.waiting.wait(timeout=1))
+                    worker.input_q = ObservedQueue(4)
+                    for _ in range(4):
+                        worker.put(np.ones((16, 2), dtype=np.float32))
+                    producer, errors = self.spawn(lambda: worker.put(np.ones((16, 2), dtype=np.float32)))
+                    self.assertTrue(worker.input_q.blocked.wait(timeout=1))
+                    generation[0] = 1
+                    producer.join(timeout=2)
+                    self.assertFalse(producer.is_alive())
+                    self.assertEqual(len(errors), 1)
+                    self.assertIsInstance(errors[0], CancelledError)
+                worker.close()
+                model.assert_not_called()
         self.assertIsNone(worker.error)
         self.assertFalse(worker.worker.is_alive())
 
@@ -193,15 +197,16 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
         gate = self.gate()
         with patch("auto_translate.separation.VocalSeparator", side_effect=RuntimeError("fixture model failure")):
             with gate.operation("asr"):
-                gate._slots.waiting.clear()
-                worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: 0)
-                self.assertTrue(gate._slots.waiting.wait(timeout=1))
-                for _ in range(4):
-                    worker.put(np.ones((16, 2), dtype=np.float32))
-            worker.worker.join(timeout=2)
-            self.assertFalse(worker.worker.is_alive())
-            with self.assertRaisesRegex(RuntimeError, "fixture model failure"):
-                worker.close()
+                with gate.operation("mt"):
+                    gate._slots.waiting.clear()
+                    worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: 0)
+                    self.assertTrue(gate._slots.waiting.wait(timeout=1))
+                    for _ in range(4):
+                        worker.put(np.ones((16, 2), dtype=np.float32))
+                worker.worker.join(timeout=2)
+                self.assertFalse(worker.worker.is_alive())
+                with self.assertRaisesRegex(RuntimeError, "fixture model failure"):
+                    worker.close()
 
     def test_separation_active_result_cannot_emit_after_seek(self):
         gate, generation = self.gate(), [0]
@@ -244,23 +249,24 @@ class OptionalGpuAdmissionTests(unittest.TestCase):
         gate = self.gate()
         with patch("auto_translate.separation.VocalSeparator") as model:
             with gate.operation("asr"):
-                gate._slots.waiting.clear()
-                worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: 0)
-                self.assertTrue(gate._slots.waiting.wait(timeout=1))
-                worker.input_q = ObservedQueue(4)
-                for _ in range(4):
-                    worker.put(np.ones((16, 2), dtype=np.float32))
-                producer, errors = self.spawn(lambda: worker.put(np.ones((16, 2), dtype=np.float32)))
-                self.assertTrue(worker.input_q.blocked.wait(timeout=1))
-                stopping.set()
-                producer.join(timeout=2)
-                self.assertFalse(producer.is_alive())
-                self.assertEqual(len(errors), 1)
-                self.assertIsInstance(errors[0], CancelledError)
-            closers = [self.spawn(worker.close) for _ in range(2)]
-            for closer, failures in closers:
-                self.assert_finished(closer, failures)
-            model.assert_not_called()
+                with gate.operation("mt"):
+                    gate._slots.waiting.clear()
+                    worker = SeparationWorker(queue.Queue(), 0, "fixture", 0, gate, lambda: 0)
+                    self.assertTrue(gate._slots.waiting.wait(timeout=1))
+                    worker.input_q = ObservedQueue(4)
+                    for _ in range(4):
+                        worker.put(np.ones((16, 2), dtype=np.float32))
+                    producer, errors = self.spawn(lambda: worker.put(np.ones((16, 2), dtype=np.float32)))
+                    self.assertTrue(worker.input_q.blocked.wait(timeout=1))
+                    stopping.set()
+                    producer.join(timeout=2)
+                    self.assertFalse(producer.is_alive())
+                    self.assertEqual(len(errors), 1)
+                    self.assertIsInstance(errors[0], CancelledError)
+                closers = [self.spawn(worker.close) for _ in range(2)]
+                for closer, failures in closers:
+                    self.assert_finished(closer, failures)
+                model.assert_not_called()
         self.assertIsNone(worker.error)
         self.assertFalse(worker.worker.is_alive())
 

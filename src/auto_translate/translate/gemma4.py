@@ -1,9 +1,4 @@
-"""Gemma 4 E4B translator with reasoning support.
-
-Uses internal reasoning for better translation quality while keeping only
-the final translation output in subtitles. Reasoning content is never
-displayed or stored in translation history.
-"""
+"""Gemma 4 E4B translator for Japanese-to-English subtitles."""
 from __future__ import annotations
 
 import logging
@@ -27,7 +22,6 @@ log = logging.getLogger(__name__)
 
 MAX_TERMS = 16
 RELIEF_LAYERS = 4
-_REASONING_LLM = 4  # extra layers for the reasoning head in Gemma 4
 
 _SYSTEM_PROMPT = (
     "You are a professional Japanese-to-English subtitle translator. "
@@ -141,7 +135,7 @@ def clean_output(text: str) -> str:
 
 
 class Gemma4Translator:
-    """Gemma 4 E4B translator with reasoning support."""
+    """Gemma 4 E4B translator for Japanese-to-English subtitles."""
 
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, stream: StreamContext | None = None,
                  gpu_layers: int | None = None) -> None:
@@ -170,32 +164,26 @@ class Gemma4Translator:
             raise
 
     def _args(self) -> list[str]:
-        """Build llama-server arguments with reasoning enabled."""
-        # Use 999 for full offload so llama.cpp places every layer (including the
-        # output projection and reasoning head) on the GPU.  For partial offload,
-        # add the reasoning-head layers so the offloaded slice is contiguous.
+        """Build llama-server arguments for translation."""
         if self.gpu_layers >= self.layer_count:
             layers = 999
         else:
-            layers = self.gpu_layers + 1 + _REASONING_LLM
-        # Auto-detect GPU device using the actual executable (CUDA build from .runtime/)
+            layers = self.gpu_layers + 1
         device = detect_device(self.executable)
         return [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),
-            "-np", "1",
+            "-np", str(self.cfg.parallel_slots),
             "--jinja",
             "--no-prefill-assistant",
+            "--reasoning", "off",
             "-fa", "on",
-            "-ctk", "q8_0",
-            "-ctv", "q8_0",
             "-fit", "off",
             "-ngl", str(layers),
             "-t", str(self.cfg.threads),
             "--device", device,
-            "--reasoning", "on",
-            "--reasoning-budget", str(self.cfg.max_tokens // 2),
         ]
+
 
     def _start(self) -> None:
         check_running()
@@ -220,8 +208,8 @@ class Gemma4Translator:
             check_running()
             raise LlamaServerError(f"Gemma 4 E4B startup request failed: {exc}. {self.server.log_tail()}") from exc
         self._relief.clear()
-        update_metrics(workers={"mt": f"ready (Gemma 4 E4B, {self.gpu_layers}/{self.layer_count} GPU layers, reasoning on)"})
-        log.info("Gemma 4 E4B ready with %d/%d GPU layers (reasoning enabled)", self.gpu_layers, self.layer_count)
+        update_metrics(workers={"mt": f"ready (Gemma 4 E4B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
+        log.info("Gemma 4 E4B ready with %d/%d GPU layers (slots=%d)", self.gpu_layers, self.layer_count, self.cfg.parallel_slots)
 
     def reload(self, gpu_layers: int, reason: str) -> None:
         self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
@@ -237,12 +225,8 @@ class Gemma4Translator:
         self._relief.set()
         return True
 
-    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> tuple[str, str]:
-        """Send a chat request and return (content, reasoning_content).
-
-        Returns only the final answer content for subtitles; reasoning_content
-        is returned separately for diagnostics but never stored in history.
-        """
+    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
+        """Send a chat request and return the translation content."""
         body = {
             **prompt,
             "temperature": self.cfg.temperature if temperature is None else temperature,
@@ -255,26 +239,22 @@ class Gemma4Translator:
         }
         check_running()
         if self._closed:
-            return "", ""
+            return ""
         payload = self.server.chat(body, timeout=timeout)
         check_running()
         choice = payload["choices"][0]
-        finish_reason = choice.get("finish_reason", "")
-        content = choice["message"]["content"] or ""
-        reasoning = payload.get("_reasoning_content", "") or ""
-
-        # Detect reasoning overflow: empty content with non-empty reasoning
-        if not content.strip() and reasoning.strip():
-            log.warning("Reasoning overflow: reasoning consumed all tokens. finish_reason=%s", finish_reason)
-            increment_counter("mt_reasoning_overflow")
-            return "", reasoning
+        message = choice["message"]
+        # Gemma 4 may place output in "reasoning" when thinking mode is active;
+        # prefer "content", fall back to "reasoning" when content is empty.
+        content = message.get("content") or message.get("reasoning") or ""
 
         # Detect truncated responses
+        finish_reason = choice.get("finish_reason", "")
         if finish_reason == "length":
             log.debug("Truncated response (max_tokens=%d)", self.cfg.max_tokens)
             increment_counter("mt_truncated")
 
-        return content, reasoning
+        return content
 
     def set_position(self, start_s: float | None) -> None:
         self._position = start_s
@@ -336,7 +316,7 @@ class Gemma4Translator:
                 latency_budget = self.cfg.timeout_s * 0.7  # 70% of timeout for translation
 
                 try:
-                    english, reasoning = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    english = self._chat(prompt, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
                     if self._closed:
@@ -345,7 +325,7 @@ class Gemma4Translator:
                     if self.server.alive():
                         raise
                     self._recover(str(exc))
-                    english, reasoning = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    english = self._chat(prompt, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
                 # Check latency budget
@@ -358,7 +338,7 @@ class Gemma4Translator:
                 if not english:
                     fallback = build_prompt(ja, terms, "")
                     increment_counter("mt_retries")
-                    english, _ = self._chat(fallback, timeout=self.cfg.timeout_s)
+                    english = self._chat(fallback, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
                 # Check for missing names and retry if needed
@@ -370,14 +350,9 @@ class Gemma4Translator:
                         increment_counter("mt_retries")
                         if missing:
                             record_event("mt_name_retry", names=missing)
-                        candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
+                        candidate = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
                         candidates.append(clean_output(candidate))
                     english = self._best(candidates, names)
-
-                # Final validation: never return reasoning content
-                if reasoning and not english:
-                    log.warning("Empty final answer after reasoning; returning empty")
-                    return ""
 
                 return "" if self._closed else english
             except (httpx.HTTPError, LlamaServerError, ValueError):

@@ -25,7 +25,7 @@ from auto_translate.vad import FRAME, Segmenter, run_segmenter
 
 class ExpiredLiveWorkTests(unittest.TestCase):
     def test_asr_skips_only_cues_already_past_player(self):
-        primary = Mock()
+        primary = Mock(last_timing=None)
         primary.transcribe.return_value = "待って"
         input_q, output_q = queue.Queue(), queue.Queue()
         input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
@@ -36,7 +36,7 @@ class ExpiredLiveWorkTests(unittest.TestCase):
         self.assertEqual(list(output_q.queue), [None])
 
     def test_mismatched_mpv_clock_never_discards_all_live_speech(self):
-        primary = Mock()
+        primary = Mock(last_timing=None)
         primary.transcribe.return_value = "待って"
         input_q, output_q = queue.Queue(), queue.Queue()
         input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
@@ -47,7 +47,7 @@ class ExpiredLiveWorkTests(unittest.TestCase):
         self.assertEqual(len(output_q.queue), 2)
 
     def test_vod_transport_failure_bounded_retries(self):
-        primary = Mock(last_rejection="error")
+        primary = Mock(last_rejection="error", last_timing=None)
         primary.transcribe.return_value = ""
         input_q, output_q = queue.Queue(), queue.Queue()
         input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32),
@@ -59,7 +59,7 @@ class ExpiredLiveWorkTests(unittest.TestCase):
         self.assertEqual(primary.transcribe.call_count, 3)
 
     def test_vod_keeps_older_cues(self):
-        primary = Mock()
+        primary = Mock(last_timing=None)
         primary.transcribe.return_value = "待って"
         input_q, output_q = queue.Queue(), queue.Queue()
         input_q.put(Utterance(2, 3, np.ones(16000, dtype=np.float32)))
@@ -196,7 +196,7 @@ class ShutdownOrderingTests(unittest.TestCase):
             sub_q.put(None)
 
         ingest.run.side_effect = produce
-        asr = Mock()
+        asr = Mock(last_timing=None)
         translator = Mock()
         translator.close.side_effect = lambda: self.assertTrue(mt_done.is_set())
         with patch("auto_translate.pipeline.Segmenter"), patch("auto_translate.pipeline.run_segmenter", side_effect=fake_vad), \
@@ -223,7 +223,7 @@ class WorkerFailureShutdownTests(unittest.TestCase):
                 failure = (TranslatorUnavailable("fixture outage") if failed_stage == "translate"
                            else RuntimeError("fixture stage failure"))
                 ingest = Mock(source=SimpleNamespace(live=False, start_s=0.0), generation=0)
-                primary = Mock(last_failed=False)
+                primary = Mock(last_failed=False, last_timing=None)
                 primary.transcribe.return_value = "待って"
                 translator = Mock(memory_lines=0)
                 translator.translate.return_value = "Wait."
@@ -328,7 +328,7 @@ class SourceCompletionTests(unittest.TestCase):
         self.addCleanup(ingest.stop)
         workers = []
         thread_type = threading.Thread
-        primary = Mock(last_failed=False)
+        primary = Mock(last_failed=False, last_timing=None)
         primary.transcribe.return_value = "待って"
         translator = Mock(memory_lines=0)
         translator.translate.return_value = "Wait."

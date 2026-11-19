@@ -160,21 +160,21 @@ _JAPANESE_OUTPUT = re.compile(
 )
 
 
-def english_output_issue(text: str) -> str | None:
+def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | None:
     """Return a hard output failure, independent of proper-name validation."""
     if not text.strip():
         return "empty_english"
-    if _JAPANESE_OUTPUT.search(text):
+    if not allow_japanese and _JAPANESE_OUTPUT.search(text):
         return "untranslated_japanese"
     if has_generation_loop(text) or looks_like_prompt_echo(text):
         return "prompt_echo_or_loop"
     return None
 
 
-def sanitize_english_output(text: str) -> str:
+def sanitize_english_output(text: str, *, allow_japanese: bool = False) -> str:
     """Shared final boundary for models, history, caches, and all renderers."""
     value = unmatched_double_quote_cleanup(text)
-    return "" if english_output_issue(value) else value
+    return "" if english_output_issue(value, allow_japanese=allow_japanese) else value
 
 
 def clean_english_output(
@@ -182,10 +182,11 @@ def clean_english_output(
     *,
     remove_fillers: bool = True,
     collapse_repetitions: bool = True,
+    allow_japanese: bool = False,
 ) -> str:
     """Discard nonverbal filler and repeated *identical* sentences only."""
     value = concise_english(
-        sanitize_english_output(text),
+        sanitize_english_output(text, allow_japanese=allow_japanese),
         remove_fillers=remove_fillers,
         collapse_repetitions=collapse_repetitions,
     )

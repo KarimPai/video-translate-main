@@ -112,7 +112,8 @@ class AsrContinuityTests(unittest.TestCase):
         return Utterance(start, end, np.full(int((end - start) * SR), .1, dtype=np.float32), generation=generation)
 
     def test_accepted_transcripts_are_remembered_and_gaps_forget(self):
-        asr = Mock(spec=["transcribe", "remember", "forget", "cancel_pending"])
+        asr = Mock(spec=["transcribe", "remember", "forget", "cancel_pending", "last_timing"])
+        asr.last_timing = None
         asr.transcribe.side_effect = ["こんにちは。", "今日はゲームです。", "おかえり。"]
         events = []
         asr.remember.side_effect = lambda text: events.append(("remember", text))
@@ -123,14 +124,16 @@ class AsrContinuityTests(unittest.TestCase):
                                   ("forget",), ("remember", "おかえり。")])
 
     def test_rejected_transcripts_are_not_remembered(self):
-        asr = Mock(spec=["transcribe", "remember", "forget", "cancel_pending", "last_rejection"])
+        asr = Mock(spec=["transcribe", "remember", "forget", "cancel_pending", "last_rejection", "last_timing"])
         asr.last_rejection = "empty"
+        asr.last_timing = None
         asr.transcribe.side_effect = ["", "はい。"]
         self.run_asr(asr, self.utterance(0, 2), self.utterance(3, 5))
         asr.remember.assert_called_once_with("はい。")
 
     def test_seek_reset_clears_recent_transcripts(self):
-        asr = Mock(spec=["transcribe", "remember", "forget", "cancel_pending"])
+        asr = Mock(spec=["transcribe", "remember", "forget", "cancel_pending", "last_timing"])
+        asr.last_timing = None
         asr.transcribe.side_effect = ["こんにちは。", "おかえり。"]
         self.run_asr(asr, self.utterance(0, 2), AudioProgress(0, reset=True), self.utterance(30, 32))
         # Reset clears the ASR's own history; no stale gap triggers a second forget.

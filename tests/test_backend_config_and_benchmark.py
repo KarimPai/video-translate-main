@@ -23,7 +23,7 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.asr.model_path, AsrConfig().model_path)
         self.assertEqual(cfg.asr.speech_server_path, AsrConfig().speech_server_path)
         self.assertEqual(cfg.translate.model_path, TranslateConfig().model_path)
-        self.assertEqual(cfg.translate.gpu_layers, -1)
+        self.assertEqual(cfg.translate.gpu_layers, 42)
         self.assertEqual(cfg.translate.context_lines, 6)
         self.assertEqual(cfg.translate.max_context_chars, 600)
         self.assertEqual(cfg.translate.context_max_gap_s, 15.0)

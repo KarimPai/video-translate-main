@@ -1,4 +1,4 @@
-"""Gemma 4 E4B is the Japanese-to-English translation engine with reasoning support."""
+"""Gemma 4 E4B is the Japanese-to-English translation engine."""
 
 from ..config import TranslateConfig
 from ..glossary import Glossary

@@ -32,6 +32,7 @@ def fake_asr(*responses, cfg=None, context=""):
     obj._inference_lock = threading.Lock()
     obj._generation = obj._failures = obj._restarts = 0
     obj._closed = False
+    obj.last_timing = None
     obj.server = Mock(alive=Mock(return_value=True))
     _resp = iter(responses)
     def transcribe_side_effect(wav, timeout):
@@ -39,7 +40,15 @@ def fake_asr(*responses, cfg=None, context=""):
         if isinstance(value, Exception):
             raise value
         return value
+    def transcribe_with_timing_side_effect(wav, timeout):
+        value = next(_resp)
+        if isinstance(value, Exception):
+            raise value
+        timing = {"audio_prep_s": 0.0, "http_request_s": 0.01, "total_s": 0.01}
+        obj.last_timing = timing
+        return (value, timing)
     obj.server.transcribe = Mock(side_effect=transcribe_side_effect)
+    obj.server.transcribe_with_timing = Mock(side_effect=transcribe_with_timing_side_effect)
     return obj
 
 

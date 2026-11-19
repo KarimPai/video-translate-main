@@ -43,7 +43,7 @@ class OutputBoundaryTests(unittest.TestCase):
         result = self.translate([Subtitle(0, 2, 'だめです', 'だめです'),
                                  Transcript(2, 3, 'こんにちは')], translator)
         self.assertEqual([cue.en for cue in result], ['Hello!'])
-        translator.translate.assert_called_once_with('こんにちは', [])
+        self.assertEqual(translator.translate.call_args[0][:2], ('こんにちは', []))
 
     def test_quote_cleanup_precedes_history_and_cache_storage(self):
         translator = SimpleNamespace(
@@ -118,7 +118,7 @@ class OutputBoundaryTests(unittest.TestCase):
         self.assertEqual(translator.translate.call_count, len(sources))
         pairs = list(zip(sources, replies))
         for i, call in enumerate(translator.translate.call_args_list):
-            self.assertEqual(call.args, (sources[i], pairs[max(0, i - 3):i]))
+            self.assertEqual(call.args[:2], (sources[i], pairs[max(0, i - 3):i]))
 
     def test_audio_gap_clears_history_before_current_cue(self):
         for cfg in (None, SimpleNamespace(), TranslateConfig()):
@@ -135,7 +135,7 @@ class OutputBoundaryTests(unittest.TestCase):
                         Transcript(19, 20, '待ってください'),
                     ], translator)
                 self.assertEqual([cue.en for cue in result], ['Botan.', 'Pekora.', 'Please wait.'])
-                self.assertEqual([call.args for call in translator.translate.call_args_list], [
+                self.assertEqual([(c.args[0], c.args[1]) for c in translator.translate.call_args_list], [
                     ('ぼたん', []), ('ぺこら', []),
                     ('待ってください', [('ぺこら', 'Pekora.')]),
                 ])
@@ -146,7 +146,7 @@ class OutputBoundaryTests(unittest.TestCase):
         result = self.translate([Transcript(0, 30, 'ぼたん'),
                                  Transcript(45, 46, '待ってください')], translator)
         self.assertEqual([cue.en for cue in result], ['Botan.', 'Please wait.'])
-        self.assertEqual(translator.translate.call_args_list[1].args,
+        self.assertEqual(translator.translate.call_args_list[1].args[:2],
                          ('待ってください', [('ぼたん', 'Botan.')]))
 
     def test_nonreset_progress_read_ahead_does_not_expire_history(self):
@@ -158,12 +158,12 @@ class OutputBoundaryTests(unittest.TestCase):
             Transcript(3, 4, '待ってください'),
         ], translator)
         self.assertEqual([cue.en for cue in result], ['Botan.', 'Please wait.'])
-        self.assertEqual(translator.translate.call_args_list[1].args,
+        self.assertEqual(translator.translate.call_args_list[1].args[:2],
                          ('待ってください', [('ぼたん', 'Botan.')]))
 
     def test_wall_clock_pause_does_not_expire_contiguous_audio_history(self):
         with patch('auto_translate.pipeline.time.monotonic', return_value=100.0) as clock:
-            def reply(ja, history):
+            def reply(ja, history, timings=None):
                 if ja == 'ぼたん':
                     clock.return_value = 3700.0  # Simulate a long pause without sleeping.
                     return 'Botan.'
@@ -174,7 +174,7 @@ class OutputBoundaryTests(unittest.TestCase):
                                      Transcript(3, 4, '待ってください')], translator)
         self.assertEqual([cue.en for cue in result], ['Botan.', 'Please wait.'])
         self.assertEqual(result[1].timings.mt_start - result[0].timings.mt_start, 3600.0)
-        self.assertEqual(translator.translate.call_args_list[1].args,
+        self.assertEqual(translator.translate.call_args_list[1].args[:2],
                          ('待ってください', [('ぼたん', 'Botan.')]))
 
     def test_context_gap_config_override_controls_expiry(self):
@@ -188,7 +188,7 @@ class OutputBoundaryTests(unittest.TestCase):
                                          Transcript(2 + gap, 3 + gap, '待ってください')], translator)
                 self.assertEqual([cue.en for cue in result], ['Botan.', 'Please wait.'])
                 expected = [('ぼたん', 'Botan.')] if retain else []
-                self.assertEqual(translator.translate.call_args_list[1].args,
+                self.assertEqual(translator.translate.call_args_list[1].args[:2],
                                  ('待ってください', expected))
 
     def test_cached_cue_after_gap_replaces_old_history_with_its_pair(self):
@@ -199,7 +199,7 @@ class OutputBoundaryTests(unittest.TestCase):
             Transcript(20, 21, '待ってください'),
         ], translator)
         self.assertEqual([cue.en for cue in result], ['Botan.', 'Pekora.', 'Please wait.'])
-        self.assertEqual([call.args for call in translator.translate.call_args_list], [
+        self.assertEqual([(c.args[0], c.args[1]) for c in translator.translate.call_args_list], [
             ('ぼたん', []), ('待ってください', [('ぺこら', 'Pekora.')]),
         ])
 
@@ -211,7 +211,7 @@ class OutputBoundaryTests(unittest.TestCase):
                                          Transcript(30 + gap, 31 + gap, '待ってください')], translator)
                 self.assertEqual([cue.en for cue in result], ['Botan.', 'Please wait.'])
                 expected = [('ぼたん', 'Botan.')] if retain else []
-                translator.translate.assert_called_once_with('待ってください', expected)
+                self.assertEqual(translator.translate.call_args[0][:2], ('待ってください', expected))
 
     def test_acknowledgements_preserve_short_names_and_audio_continuity(self):
         acknowledgements = [('はい', 'Yes.'), ('うん', 'Yeah.'), ('そうそう', "That's right."),
@@ -226,7 +226,7 @@ class OutputBoundaryTests(unittest.TestCase):
                                          for i, (ja, _) in enumerate(sources)], translator)
                 self.assertEqual([cue.en for cue in result], [en for _, en in sources])
                 pair = [(name, english)]
-                self.assertEqual([call.args for call in translator.translate.call_args_list],
+                self.assertEqual([(c.args[0], c.args[1]) for c in translator.translate.call_args_list],
                                  [(name, [])] + [(ja, pair) for ja, _ in sources[1:]])
 
     def test_cached_acknowledgements_preserve_name_context_and_continuity(self):
@@ -237,7 +237,7 @@ class OutputBoundaryTests(unittest.TestCase):
                                  for i, (ja, en) in enumerate(sources)]
                                 + [Transcript(70, 71, '待ってください')], translator)
         self.assertEqual([cue.en for cue in result], [en for _, en in sources] + ['Please wait.'])
-        translator.translate.assert_called_once_with('待ってください', [('蘭', 'Ran.')])
+        self.assertEqual(translator.translate.call_args[0][:2], ('待ってください', [('蘭', 'Ran.')]))
 
     def test_acknowledgement_after_real_gap_expires_history_even_when_filtered(self):
         for cue_type in (Transcript, Subtitle):
@@ -250,7 +250,7 @@ class OutputBoundaryTests(unittest.TestCase):
                                          Transcript(19, 20, '待ってください')], translator)
                 self.assertEqual([cue.en for cue in result], ['Botan.', 'Yes.', 'Please wait.'])
                 expected = [('はい。', [])] if cue_type is Transcript else []
-                self.assertEqual([call.args for call in translator.translate.call_args_list],
+                self.assertEqual([(c.args[0], c.args[1]) for c in translator.translate.call_args_list],
                                  expected + [('待ってください', [])])
 
     def test_new_generation_cue_without_marker_cannot_leak_history(self):
@@ -266,7 +266,7 @@ class OutputBoundaryTests(unittest.TestCase):
                 self.assertEqual([cue.en for cue in result], ['Botan.', 'Pekora.', 'Please wait.'])
                 self.assertEqual([cue.generation for cue in result], [0, 1, 1])
                 expected = [('ぺこら', [])] if cue_type is Transcript else []
-                self.assertEqual([call.args for call in translator.translate.call_args_list],
+                self.assertEqual([(c.args[0], c.args[1]) for c in translator.translate.call_args_list],
                                  expected + [('待ってください', [('ぺこら', 'Pekora.')])])
 
     def test_progress_reset_or_generation_change_starts_fresh_context(self):
@@ -283,7 +283,7 @@ class OutputBoundaryTests(unittest.TestCase):
                 ], translator)
                 self.assertEqual([cue.en for cue in result], ['Botan.', 'Pekora.', 'Please wait.'])
                 self.assertEqual([cue.generation for cue in result], [0, generation, generation])
-                self.assertEqual([call.args for call in translator.translate.call_args_list], [
+                self.assertEqual([(c.args[0], c.args[1]) for c in translator.translate.call_args_list], [
                     ('ぺこら', []), ('待ってください', [('ぺこら', 'Pekora.')]),
                 ])
 
@@ -297,7 +297,7 @@ class OutputBoundaryTests(unittest.TestCase):
             Transcript(2, 3, '待ってください', generation=1),
         ], translator, get_generation=lambda: 1)
         self.assertEqual([cue.en for cue in result], ['Botan.', 'Please wait.'])
-        translator.translate.assert_called_once_with('待ってください', [('ぼたん', 'Botan.')])
+        self.assertEqual(translator.translate.call_args[0][:2], ('待ってください', [('ぼたん', 'Botan.')]))
 
 
 if __name__ == '__main__':

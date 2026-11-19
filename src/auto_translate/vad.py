@@ -62,7 +62,7 @@ class StreamingFireRedVAD:
 
         config = FireRedStreamVadConfig(
             use_gpu=(device == "cuda"),
-            smooth_window_size=5,
+            smooth_window_size=3,  # reduced from 5 for lower VAD latency (~20ms per utterance)
             speech_threshold=speech_threshold,
             pad_start_frame=5,
             min_speech_frame=8,

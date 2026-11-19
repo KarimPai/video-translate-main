@@ -20,7 +20,7 @@ def completion(text, finish="stop"):
 
 class Gemma4LifecycleTests(unittest.TestCase):
     def test_truncated_output_retries_once_and_never_publishes_fragment(self):
-        # Test 1: empty first (reasoning overflow), then successful retry
+        # Test 1: empty first, then successful retry
         obj = fake_translator("", "It's sunny today.")
         result = obj.translate("今日は晴れです", [])
         self.assertEqual(result, "It's sunny today.")
@@ -106,14 +106,17 @@ class Gemma4LifecycleTests(unittest.TestCase):
             _load_translator(Config(), Glossary({}), None, budget, Mock())
         layers = create.call_args.kwargs["gpu_layers"]
         self.assertGreater(layers, 0)
-        self.assertLess(layers, 24)
+        # With headroom=0.25, WDDM margin=0.25: available = 4.0 - 0.25 - 0.25 = 3.5 GB
+        # per_layer = 4GB / 34 = 0.1176 GB => layers = floor(3.5/0.1176) = 29
+        self.assertLess(layers, 34)
 
     def test_headroom_trim_failure_closes_untransferred_translator(self):
         obj = fake_translator()
         obj.model = Path("model.gguf")
         obj.reload = Mock(side_effect=LlamaServerError("reload failed"))
         obj.close = Mock()
-        budget = Mock(free=.5)
+        # free=0.2 is below headroom=0.25, so trim loop triggers reload
+        budget = Mock(free=.2)
         with patch("auto_translate.translate.create_translator", return_value=obj), patch(
                 "auto_translate.__main__.os.path.getsize", return_value=4 * 1024**3):
             with self.assertRaises(LlamaServerError):

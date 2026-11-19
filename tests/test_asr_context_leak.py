@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import httpx
 import numpy as np
 
-from test_qwen3_asr import fake_asr
+from test_haas_asr import fake_asr
 from auto_translate.asr import asr_context
 from auto_translate.config import AsrConfig
 from auto_translate.glossary import Glossary

@@ -195,17 +195,17 @@ class LanguageFilterConfig:
 class GpuBudgetConfig:
     """GPU capacity-relative headroom; no fixed application VRAM limit."""
 
-    startup_headroom_gb: float = 1.0
-    low_free_gb: float = 0.75
+    startup_headroom_gb: float = 0.25  # minimal headroom when VRAM is not tight
+    low_free_gb: float = 0.25
     emergency_free_gb: float = 0.25
-    sample_interval_s: float = 2.0
+    sample_interval_s: float = 3.0
 
     def __post_init__(self):
         values = (self.startup_headroom_gb, self.low_free_gb,
                   self.emergency_free_gb, self.sample_interval_s)
         if any(type(value) not in (int, float) for value in values):
             raise ValueError("GPU headroom settings must be numeric")
-        if not (0 <= self.emergency_free_gb < self.low_free_gb
+        if not (0 <= self.emergency_free_gb <= self.low_free_gb
                 <= self.startup_headroom_gb <= 2
                 and 0.5 <= self.sample_interval_s <= 30):
             raise ValueError("invalid GPU free-memory headroom settings")
@@ -213,19 +213,16 @@ class GpuBudgetConfig:
 
 @dataclass
 class TranslateConfig:
-    """Gemma 4 E4B on an owned llama.cpp server with reasoning enabled.
-
-    Uses internal reasoning for better translation quality while keeping only
-    the final translation output in subtitles.
-    """
+    """Gemma 4 E4B on an owned llama.cpp server for Japanese-to-English translation."""
 
     model_path: str = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
     server_path: str = LLAMA_SERVER_PATH
     gpu_layers: int = -1  # -1: offload as many layers as GPU headroom allows
-    context_size: int = 4096
+    context_size: int = 4096  # reduced so FP16 KV cache fits on 8GB GPUs
     cuda_device: int = 0
     threads: int = 8
-    max_tokens: int = 512  # increased for reasoning budget
+    max_tokens: int = 128
+    parallel_slots: int = 1  # llama.cpp -np flag (1 or 2)
     temperature: float = 0.0
     top_k: int = 20
     top_p: float = 0.6
@@ -247,6 +244,10 @@ class TranslateConfig:
     remove_fillers: bool = True
     collapse_repetitions: bool = True
     max_identical_cues: int = 2
+    # When translation is empty or rejected, fall back to showing the Japanese original.
+    suppress_empty_translation: bool = True
+    # Reject output containing Japanese script (untranslated Japanese). Set to false to allow mixed output.
+    suppress_japanese_in_english: bool = True
 
     def __post_init__(self):
         for name in ("model_path", "server_path", "glossary"):
@@ -265,6 +266,8 @@ class TranslateConfig:
             raise ValueError("translate.max_tokens must be an integer in 16..1024")
         if self.max_tokens >= self.context_size:
             raise ValueError("translate.max_tokens must leave room for input in context_size")
+        if type(self.parallel_slots) is not int or self.parallel_slots not in (1, 2):
+            raise ValueError("translate.parallel_slots must be 1 or 2")
         if type(self.top_k) is not int or self.top_k < 0:
             raise ValueError("translate.top_k must be a nonnegative integer")
         for name, low, high in (("temperature", 0, 2), ("top_p", 0, 1), ("repeat_penalty", 1, 2)):
@@ -276,7 +279,8 @@ class TranslateConfig:
         if (type(self.context_max_gap_s) not in (int, float)
                 or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
             raise ValueError("translate.context_max_gap_s must be finite and positive")
-        for name in ("context_english", "merge_fragments"):
+        for name in ("context_english", "merge_fragments", "suppress_empty_translation",
+                      "suppress_japanese_in_english"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"translate.{name} must be boolean")
         if (type(self.merge_max_gap_s) not in (int, float) or not 0 <= self.merge_max_gap_s <= 3
@@ -327,6 +331,8 @@ class MpvConfig:
     max_line_chars: int = 42  # 0 disables wrapping and splitting
     max_cue_lines: int = 2
     background_opacity: float = 0.3  # dark box behind subtitles; 0 draws outline only
+    vod_pause_threshold_s: float = 0.5  # pause when translation lead drops below this
+    vod_resume_threshold_s: float = 3.0  # resume when translation lead exceeds this (hysteresis)
 
     def __post_init__(self):
         for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):
@@ -344,6 +350,12 @@ class MpvConfig:
             raise ValueError("mpv.max_cue_lines must be in 1..4")
         if type(self.background_opacity) not in (int, float) or not 0 <= self.background_opacity <= 1:
             raise ValueError("mpv.background_opacity must be in 0..1")
+        for name in ("vod_pause_threshold_s", "vod_resume_threshold_s"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"mpv.{name} must be finite and nonnegative")
+        if self.vod_resume_threshold_s <= self.vod_pause_threshold_s:
+            raise ValueError("mpv.vod_resume_threshold_s must be greater than vod_pause_threshold_s")
         if type(self.en_size) is not int or not 8 <= self.en_size <= 96:
             raise ValueError("mpv.en_size must be in 8..96")
         if self.live_forward_cache_mib <= 0 or self.live_back_cache_mib < 0:
@@ -352,11 +364,11 @@ class MpvConfig:
 
 @dataclass
 class SafePlaybackConfig:
-    enabled: bool = False
-    max_inference_concurrency: int = 1
-    queue_size: int = 4
-    audio_chunks: int = 32
-    max_audio_lead_s: float = 20.0
+    enabled: bool = True  # enabled by default for VOD to prevent queue overflow
+    max_inference_concurrency: int = 2
+    queue_size: int = 16
+    audio_chunks: int = 48
+    max_audio_lead_s: float = 30.0
 
     def __post_init__(self):
         if type(self.enabled) is not bool:
@@ -372,7 +384,7 @@ class SafePlaybackConfig:
 @dataclass
 class DiagnosticsConfig:
     enabled: bool = True
-    sample_interval_s: float = 2.0
+    sample_interval_s: float = 4.0  # reduced frequency to lower CPU overhead
     max_bytes: int = 2_000_000
     backups: int = 3
 

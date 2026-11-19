@@ -261,7 +261,7 @@ class QtDiagnosticSettingsTests(unittest.TestCase):
         self.assertEqual(window.context_lines.minimum(), 0)
         self.assertEqual(window.context_lines.maximum(), 20)
         self.assertTrue(window.context_lines.isEnabled())
-        self.assertFalse(window.safe_playback_checkbox.isChecked())
+        self.assertTrue(window.safe_playback_checkbox.isChecked())
         self.assertTrue(window.diagnostics_checkbox.isChecked())
         self.assertFalse(window.include_windows_events.isChecked())
         self.assertIn("haas-ja-v1.0", window.asr_model.text())

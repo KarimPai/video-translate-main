@@ -457,8 +457,16 @@ class MpvOutput:
         self._shown = ""
         self._session_start = ingest.source.start_s
         self._buffer_condition = threading.Condition()
+        # Two-track watermark:
+        # _vad_progress — audio position confirmed speech-free by VAD (silence/music)
+        # _translated_until — contiguous translation coverage (speech translated OR silence confirmed)
+        self._vad_progress = ingest.source.start_s
         self._translated_until = ingest.source.start_s
         self._source_finished = False
+        # Track pending speech regions: speech that VAD processed but not yet translated
+        # Each entry is (start_s, end_s) — the watermark cannot advance past start_s
+        self._pending_speech: list[tuple[float, float]] = []
+        self._pending_generation = 0  # generation of pending speech regions
         self._job = None
         self._closed = False
         self._gui_ready_emitted = False
@@ -482,6 +490,7 @@ class MpvOutput:
         self._live_clock_discontinuity = False
         self._user_paused = False
         self._manually_paused = False
+        self._vod_auto_paused = False  # True when MPV is paused by the VOD sync gate
         if not ingest.source.live:
             ingest.enable_vod_restart()
             ingest.enable_vod_playback_pacing(
@@ -689,12 +698,84 @@ class MpvOutput:
         self._subtitle_ready.set()
 
     def advance(self, progress_s: float) -> None:
-        """Record the latest audio position safely processed for translation."""
+        """Record the latest VAD progress position.
+        
+        This advances _vad_progress (VAD-confirmed silence) but NOT _translated_until.
+        The translation watermark advances only when subtitles are published or
+        when silence is contiguous with the current watermark position.
+        """
         with self._buffer_condition:
-            self._translated_until = max(
-                self._translated_until,
-                progress_s,
-            )
+            old_vad = self._vad_progress
+            self._vad_progress = max(self._vad_progress, progress_s)
+            # If VAD advanced past confirmed silence and there's no pending speech
+            # blocking the watermark, advance the translation watermark through silence
+            self._try_advance_through_silence()
+            if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
+                log.info("translation lead ready at %.3fs", self._seek_lead_target)
+                self._seek_lead_target = None
+                self._subtitle_ready.set()
+            if self._vad_progress > old_vad:
+                self._buffer_condition.notify_all()
+    
+    def _try_advance_through_silence(self) -> None:
+        """Advance _translated_until through VAD-confirmed silence if contiguous.
+        
+        The watermark can advance through silence only if there's no pending
+        (untranslated) speech between the current watermark and VAD progress.
+        Must be called with _buffer_condition held.
+        """
+        if not self._pending_speech:
+            # No pending speech — advance through all confirmed silence
+            self._translated_until = max(self._translated_until, self._vad_progress)
+        else:
+            # Find the earliest pending speech region that blocks the watermark
+            # Sort by start time and find the first one after the current watermark
+            earliest_block = float('inf')
+            for start_s, end_s in self._pending_speech:
+                if start_s > self._translated_until:
+                    earliest_block = min(earliest_block, start_s)
+            # Advance through silence up to the earliest blocking speech
+            if earliest_block < float('inf'):
+                self._translated_until = max(self._translated_until, min(self._vad_progress, earliest_block))
+            else:
+                # All pending speech is before the watermark — shouldn't happen
+                # but handle gracefully
+                self._translated_until = max(self._translated_until, self._vad_progress)
+    
+    def record_speech(self, start_s: float, end_s: float, generation: int) -> None:
+        """Record a speech region that VAD has processed but not yet translated.
+        
+        This blocks the watermark from advancing past start_s until the speech
+        is translated (via advance_to_subtitle()).
+        """
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                # Generation changed — clear all pending speech
+                self._pending_speech.clear()
+                self._pending_generation = generation
+            self._pending_speech.append((start_s, end_s))
+    
+    def advance_to_subtitle(self, subtitle_end_s: float, generation: int) -> None:
+        """Advance the watermark to cover a published subtitle.
+        
+        When a subtitle is published, the watermark can advance to its end_s,
+        including any contiguous VAD-confirmed silence between the current
+        watermark and the subtitle.
+        """
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                self._pending_speech.clear()
+                self._pending_generation = generation
+            # Remove this speech region from pending
+            self._pending_speech = [
+                (s, e) for s, e in self._pending_speech
+                if not (abs(s - subtitle_end_s) < 1.0 or e <= subtitle_end_s + 0.5)
+            ]
+            # Advance watermark to the subtitle's end, including any contiguous silence
+            target = max(subtitle_end_s, self._vad_progress)
+            self._translated_until = max(self._translated_until, target)
+            # Try to advance further through now-unblocked silence
+            self._try_advance_through_silence()
             if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
                 log.info("translation lead ready at %.3fs", self._seek_lead_target)
                 self._seek_lead_target = None
@@ -720,13 +801,52 @@ class MpvOutput:
             cache is not None and now is not None
             and cache.covered_until(now) >= now + self.PAUSE_LEAD_SECONDS
         )
+    
+    def _vod_should_pause(self) -> bool:
+        """Check if MPV should pause due to low translation lead (VOD only).
+        
+        Returns True when the translation lead falls below the pause threshold
+        and the user has not manually paused.
+        """
+        if self.ingest.source.live:
+            return False
+        if self._source_finished:
+            return False
+        now = self._now
+        if now is None:
+            return False
+        with self._buffer_condition:
+            lead = self._translated_until - now
+        pause_threshold = getattr(self.cfg, "vod_pause_threshold_s", 2.0)
+        return lead < pause_threshold
+    
+    def _vod_should_resume(self) -> bool:
+        """Check if MPV should resume after auto-pause (VOD only).
+        
+        Returns True when the translation lead exceeds the resume threshold
+        (hysteresis prevents oscillation).
+        """
+        if self.ingest.source.live:
+            return False
+        now = self._now
+        if now is None:
+            return False
+        with self._buffer_condition:
+            lead = self._translated_until - now
+        resume_threshold = getattr(self.cfg, "vod_resume_threshold_s", 8.0)
+        return lead >= resume_threshold
 
     def reset_buffer(self, progress_s: float) -> None:
         """Reset translated coverage after a VOD seek."""
         with self._buffer_condition:
             self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
+            self._vad_progress = progress_s
             self._translated_until = progress_s
             self._source_finished = False
+            self._pending_speech.clear()
+            self._pending_generation = 0
+            # Reset pause state after seek
+            self._vod_auto_paused = False
             self._buffer_condition.notify_all()
 
     def finish(self, generation: int | None = None) -> None:
@@ -1080,6 +1200,30 @@ class MpvOutput:
             self._manually_paused = (
                 (not paused or getattr(self, "_user_paused", False)) and mpv_paused is True
             )
+
+            # Adaptive VOD sync: pause when translation lead is too low,
+            # resume when it recovers (hysteresis prevents oscillation).
+            # User manual pause/play controls remain authoritative.
+            if not paused and not self.ingest.source.live and not self._user_paused:
+                if self._vod_should_pause() and mpv_paused is not True:
+                    # Translation falling behind — auto-pause MPV
+                    if self._player_command("set_property", "pause", True):
+                        self._vod_auto_paused = True
+                        log.info(
+                            "VOD auto-pause: translation lead %.1fs < %.1fs threshold",
+                            self._translated_until - self._now if self._now else 0,
+                            getattr(self.cfg, "vod_pause_threshold_s", 2.0),
+                        )
+                elif self._vod_auto_paused and self._vod_should_resume():
+                    # Translation caught up — resume MPV
+                    if self._player_command("set_property", "pause", False):
+                        self._vod_auto_paused = False
+                        log.info(
+                            "VOD auto-resume: translation lead %.1fs >= %.1fs threshold",
+                            self._translated_until - self._now if self._now else 0,
+                            getattr(self.cfg, "vod_resume_threshold_s", 8.0),
+                        )
+
             replay, delta = self._read_player_events()
             if replay and self._now is not None and self.ipc.get("eof-reached"):
                 self._jump(-self._now)

@@ -82,6 +82,7 @@ class HaasASR:
         self._closed = False
         self._failures = 0
         self._restarts = 0
+        self.last_timing: dict | None = None  # client-side timing from last successful transcription
 
         executable = resolve_speech_executable(cfg.server_path if cfg.server_path != ".runtime/llama-b12318-cuda12/llama-server.exe" else None)
         # speech.cpp uses Vulkan for GPU, not CUDA. "gpu" maps to the first GPU device.
@@ -98,8 +99,8 @@ class HaasASR:
         )
         try:
             self.server.start()
-            # Warmup with silent audio to reserve encoder workspace
-            warmup_s = 16.0
+            # Warmup with silent audio to reserve encoder workspace (reduced for faster startup)
+            warmup_s = 8.0
             self.server.transcribe(
                 wav_bytes(np.zeros(int(16000 * warmup_s), np.float32)),
                 timeout=cfg.startup_timeout_s,
@@ -152,11 +153,18 @@ class HaasASR:
             if not self.server.alive():
                 self._restart("server exited")
             try:
-                text = self.server.transcribe(wav, timeout=timeout)
+                text, timing = self.server.transcribe_with_timing(wav, timeout=timeout)
             except (httpx.HTTPError, SpeechServerError, ValueError) as exc:
                 if self._closed:
                     return ""
                 return self._failed(exc)
+        http_s = timing.get("http_request_s", 0.0)
+        if http_s > 2.0:
+            log.warning(
+                "Haas stall (context echo): duration=%.1fs, http=%.3fs",
+                duration_s, http_s
+            )
+            update_metrics(counters={"asr_stall_count": 1})
         text = " ".join(unicodedata.normalize("NFC", text).split())
         text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
         if not text:
@@ -178,7 +186,10 @@ class HaasASR:
             raise ValueError("ASR utterance exceeds 60 seconds; check VAD segmentation")
         if not len(audio):
             return ""
+        # Measure audio preparation time separately from HTTP request
+        prep_start = time.monotonic()
         wav = wav_bytes(audio, normalize=not probe)
+        prep_time = time.monotonic() - prep_start
         started = time.monotonic()
         with self._inference_lock:
             if generation != self._generation or self._closed:
@@ -187,7 +198,7 @@ class HaasASR:
             if not self.server.alive():
                 self._restart("server exited")
             try:
-                text = self.server.transcribe(wav, timeout=timeout)
+                text, timing = self.server.transcribe_with_timing(wav, timeout=timeout)
             except (httpx.HTTPError, SpeechServerError, ValueError) as exc:
                 if self._closed:
                     return ""
@@ -205,19 +216,26 @@ class HaasASR:
                    or transcript_problem(text, duration_s)
                    or ("blocklist" if any(word in text for word in self.cfg.blocklist) else None))
 
-        if not problem and text and is_japanese_text(text):
-            key = speech_key(text)
-            with self._state_lock:
-                repeated = len(key) >= 10 and key in self._accepted_keys
-            if repeated:
-                problem = "repeated_output"
-
         if problem:
             self.last_rejection = problem
             log.debug("Discarding ASR output (%s): %s", problem, " ".join(text[:200].split()))
             return ""
         elapsed = time.monotonic() - started
-        update_metrics(stages={"asr_s": round(elapsed, 3), "asr_rtf": round(elapsed / max(duration_s, 1e-3), 3)})
+        http_s = timing.get("http_request_s", 0.0)
+        total_s = timing.get("total_s", 0.0)
+        # Store timing for pipeline to record in Timings
+        self.last_timing = timing
+        # Log timing breakdown for potential stalls (> 2s HTTP request)
+        if http_s > 2.0:
+            log.warning(
+                "Haas stall detected: duration=%.1fs, prep=%.3fs, http=%.3fs, total=%.3fs, rtf=%.2f",
+                duration_s, prep_time, http_s, total_s, total_s / max(duration_s, 1e-3)
+            )
+            update_metrics(counters={"asr_stall_count": 1})
+        update_metrics(
+            stages={"asr_s": round(elapsed, 3), "asr_rtf": round(elapsed / max(duration_s, 1e-3), 3)},
+            counters={"asr_http_total_s": round(http_s, 3)},
+        )
         return text
 
     def _failed(self, exc: Exception) -> str:

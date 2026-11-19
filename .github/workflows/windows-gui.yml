@@ -6,7 +6,7 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    branches: [feature/qwen-plamo-optimized]
+    branches: [feature/haas-gemma4-reasoning]
     paths:
       - "src/**"
       - "tests/**"
@@ -15,9 +15,6 @@ on:
       - "uv.lock"
       - "config.example.toml"
       - "glossary.toml"
-      - "Setup.bat"
-      - "Start GUI.vbs"
-      - "Start translate.bat"
       - ".github/workflows/windows-gui.yml"
 
 jobs:
@@ -306,26 +303,13 @@ jobs:
           assert hidden_console_flags() == 0
           '@ | Set-Content -LiteralPath no_console_smoke.py -Encoding utf8
           python no_console_smoke.py
-      - name: Validate VBS launcher syntax and console-free Qt bootstrap
-        shell: pwsh
-        run: |
-          cscript.exe //nologo "Start GUI.vbs" --launcher-self-test
-          if ($LASTEXITCODE -ne 0) { throw "VBS launcher syntax check failed" }
-          $env:PYTHONPATH = "src"
-          $env:QT_QPA_PLATFORM = "offscreen"
-          $env:VIDEO_TRANSLATE_PROJECT_DIR = (Get-Location).Path
-          python -m venv --system-site-packages .venv
-          cscript.exe //nologo "Start GUI.vbs" --smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "VBS to pythonw GUI bootstrap failed" }
-          $log = Get-Content "logs/gui-startup.log" -Raw
-          if (-not $log.Contains("GUI offscreen smoke test completed")) { throw "Missing GUI bootstrap ready marker" }
       - name: Build Qt frontend EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name VideoTranslate --paths src --hidden-import auto_translate.runtime_diagnostics --hidden-import auto_translate.gui src/auto_translate/gui_bootstrap.py
       - name: Include fresh-install source backend and setup in the full artifact
         shell: pwsh
         run: |
           $destination = "dist/VideoTranslate"
-          foreach ($item in @('src', 'scripts', 'web', 'pyproject.toml', 'uv.lock', 'config.example.toml', 'glossary.toml', 'Setup.bat', 'Start GUI.vbs', 'Start translate.bat', 'README.md', 'GUI_SETUP.md')) {
+          foreach ($item in @('src', 'scripts', 'web', 'pyproject.toml', 'uv.lock', 'config.example.toml', 'glossary.toml', 'README.md')) {
             Copy-Item -LiteralPath $item -Destination $destination -Recurse -Force
           }
           Copy-Item -LiteralPath '.gitignore' -Destination $destination
@@ -364,7 +348,7 @@ jobs:
       - name: Upload frontend EXE
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: VideoTranslate-PLaMo-EXE-Only
+          name: VideoTranslate-Gemma4-EXE-Only
           path: dist/VideoTranslate/VideoTranslate.exe
           compression-level: 9
           retention-days: 30
@@ -372,7 +356,7 @@ jobs:
       - name: Upload full GUI (new installs)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: VideoTranslate-PLaMo-Windows-GUI
+          name: VideoTranslate-Gemma4-Windows-GUI
           path: dist/VideoTranslate/
           retention-days: 30
           if-no-files-found: error

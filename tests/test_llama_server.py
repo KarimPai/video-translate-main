@@ -32,7 +32,7 @@ class GgufTests(unittest.TestCase):
                 require_gguf(str(path), "test")
 
     def test_missing_gguf_is_actionable(self):
-        with self.assertRaisesRegex(LlamaServerError, "Setup.bat"):
+        with self.assertRaisesRegex(LlamaServerError, "Setup-Windows.ps1"):
             require_gguf("missing-test-model.gguf", "test")
 
 

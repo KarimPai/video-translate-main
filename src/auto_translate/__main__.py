@@ -160,7 +160,7 @@ def _main(resources: ExitStack) -> None:
         from .output.mpv import find_mpv
         for tool in ("ffmpeg", "yt-dlp", "deno"):
             if not shutil.which(tool):
-                parser.error(f"{tool} missing from PATH. Run Setup.bat")
+                parser.error(f"{tool} missing from PATH. Install via scripts/Setup-Windows.ps1")
         if args.mpv or cfg.mpv.enabled:
             find_mpv(cfg.mpv.path)
 

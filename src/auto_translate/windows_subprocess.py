@@ -1,6 +1,5 @@
 """Prevent console flashes from backend helpers launched by the Qt GUI.
 
-The classic Start translate.bat retains its existing console behavior. Only
 GUI-launched sessions request CREATE_NO_WINDOW for console-mode children.
 """
 import logging

@@ -1,7 +1,7 @@
 """Windows PySide6 frontend for the existing multi-process translation pipeline.
 
 The GUI never imports or initializes CUDA/ASR models. QProcess runs the same
-Python backend used by Start translate.bat and native MPV renders into a HWND.
+Python backend and native MPV renders into a HWND.
 """
 import codecs
 import json

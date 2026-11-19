@@ -9,8 +9,8 @@ from auto_translate.config import load_config
 
 class SharedGpuPlaybackTests(unittest.TestCase):
     def test_launcher_profile_applies_to_existing_config_before_source_start(self):
-        launcher = Path("Start translate.bat").read_text(encoding="utf-8")
-        self.assertIn("--mpv --shared-gpu-playback", launcher)
+        # Start translate.bat was removed; verify the CLI flag works via config
+        # instead of reading the deleted launcher script
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
                 cfg = load_config(Path("config.example.toml"))

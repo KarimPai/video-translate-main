@@ -78,7 +78,7 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
         path = Path(executable or sys.executable).resolve()
         if path.exists():
             return path
-    raise FileNotFoundError("Python environment missing. Run Setup.bat / uv sync in this folder first.")
+    raise FileNotFoundError("Python environment missing. Run scripts/Setup-Windows.ps1 or uv sync in this folder first.")
 
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,

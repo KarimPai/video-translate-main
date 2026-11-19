@@ -24,7 +24,7 @@ MODELS = (
         filename="google_gemma-4-E4B-it-Q4_K_M.gguf",
         directory="models/gemma4",
         size=5392788480,  # actual file size: ~5.15 GB
-        sha256="",  # will be set after downloading the file
+        sha256="e54d38075373dfd089db97c3d706efa52ba687f3bda71a99b912739953b064f1",
     ),
 )
 

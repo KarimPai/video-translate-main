@@ -111,6 +111,7 @@ def looks_like_prompt_echo(text: str) -> bool:
     """Only reject unmistakable prompt/template leakage, not normal dialogue."""
     phrase = " ".join(text.casefold().split())
     markers = (
+        # Original markers
         "recently mentioned glossary names/terms:",
         "recent tentative term translations (use only if",
         "earlier japanese for scene continuity",
@@ -119,6 +120,29 @@ def looks_like_prompt_echo(text: str) -> bool:
         "japanese often omits the subject or possessor",
         "for english-only speech, laughter or game sounds, output nothing",
         "translate japanese speech to english only",
+        # System prompt echo markers
+        "you are a professional japanese-to-english subtitle translator",
+        "output exactly one english translation per utterance",
+        "never output slash-separated alternatives",
+        "never add explanatory text, translation notes",
+        "prioritize meaning and natural flow over literal",
+        "preserve japanese names, nicknames, slang",
+        # User prompt template markers
+        "reference context (not part of the speech to translate)",
+        "translate this japanese text:",
+        "name/term glossary:",
+        "translation style:",
+        # Reasoning tag leakage markers
+        "<think",
+        "<thinking",
+        "<reasoning",
+        "</think",
+        "</thinking",
+        "</reasoning",
+        # Glossary leakage markers
+        "→",  # Arrow used in glossary format: "ja → en"
+        # Instruction echo markers
+        "output only the english translation, nothing else",
     )
     return any(marker in phrase for marker in markers)
 
@@ -217,7 +241,31 @@ def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | No
         return "prompt_echo_or_loop"
     if has_special_token_flood(text):
         return "special_token_flood"
+    if has_slash_alternatives(text):
+        return "slash_alternatives"
     return None
+
+
+# Detect slash-separated alternatives like "Hello/Hi" or "good/great"
+# These indicate the model is providing multiple translation options instead of one
+_SLASH_ALT_PATTERN = re.compile(
+    r'\b\w+\s*/\s*\w+\b'
+)
+
+
+def has_slash_alternatives(text: str) -> bool:
+    """Detect slash-separated translation alternatives in output.
+    
+    Returns True if the text contains patterns like "Hello/Hi" or "good/great"
+    that indicate the model provided multiple translation options.
+    
+    Does not flag genuine slashes in content like URLs or "rock 'n' roll".
+    """
+    if not text or '/' not in text:
+        return False
+    
+    matches = _SLASH_ALT_PATTERN.findall(text)
+    return len(matches) > 0
 
 
 def sanitize_english_output(text: str, *, allow_japanese: bool = False) -> str:

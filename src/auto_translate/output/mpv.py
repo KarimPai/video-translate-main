@@ -1244,7 +1244,9 @@ class MpvOutput:
                 self._jump(delta)
             pos = self.ipc.get("time-pos")
             if not self.ingest.source.live and self._settle_seek(pos):
-                return
+                # Seek confirmed and audio restarted — reset the translation
+                # wait timeout so the video buffers briefly before resuming.
+                vod_wait_until = time.monotonic() + lead
             if self.ingest.source.live and self.ingest.video_out:
                 health = live_health.sample(pos, paused or mpv_paused is True, time.monotonic())
                 if health == "stalled":

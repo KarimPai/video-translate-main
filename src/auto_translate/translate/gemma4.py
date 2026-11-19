@@ -30,14 +30,72 @@ _SYSTEM_PROMPT = (
     "Preserve Japanese names, nicknames, slang, emotion, and profanity. "
     "Use pronouns when supported by the dialogue context. "
     "The reference context below is not part of the current speech to translate. "
+    "Output exactly one English translation per utterance. "
+    "Never output slash-separated alternatives (e.g. 'Hello/Hi'), definitions, or multiple meanings. "
+    "Never add explanatory text, translation notes, or parenthetical comments. "
     "Output only the English translation, nothing else."
 )
 
 _DIALOGUE = "直前の会話："
-_ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION)\s*[:：]\s*", re.I)
+_ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION|Translate)\s*[:：]\s*", re.I)
 _MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)\*(?=\S)(.+?)(?<=\S)\*(?!\w)")
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
+
+# Reasoning tags that can leak into the content field when llama.cpp
+# --reasoning-format deepseek is used. The model wraps internal reasoning
+# in these tags, but they may appear in message.content instead of
+# message.reasoning_content depending on the GGUF chat template.
+_REASONING_OPEN = re.compile(r"<\/?think(?:ing)?(?:\s[^>]*)?>|<\/?reasoning(?:\s[^>]*)?>")
+_REASONING_BLOCK = re.compile(
+    r"<think(?:ing)?(?:\s[^>]*)?>.*?</think(?:ing)?\s*>"
+    r"|<reasoning(?:\s[^>]*)?>.*?</reasoning\s*>",
+    re.DOTALL,
+)
+
+# Explanatory text patterns that indicate the model is providing
+# analysis or alternatives instead of a single translation.
+# Must be careful not to match normal dialogue like "This is amazing!"
+# or "I think so" — only match when followed by a colon or explanatory phrase.
+# Note: "Translation:" and "Translate:" are handled by _ROLE prefix stripping.
+_EXPLANATORY = re.compile(
+    r"^(?:"
+    r"(?:英訳|翻訳)\s*[:：]"
+    r"|(?:Note|Notes|Explanation|Explanations|Alternative|Alternatives|Meaning|Definition)\s*[:：]"
+    r"|(?:Here is|Here's)\s+(?:the\s+)?translation"
+    r"|The\s+translation(?:\s+(?:is|of))"
+    r"|This\s+means\s*[:：]"
+    r"|(?:I would translate|I believe)\s"
+    r")",
+    re.I,
+)
+
+# System prompt echo patterns — the model repeats its own instructions.
+_SYSTEM_ECHO = re.compile(
+    r"(?:"
+    r"you are a professional"
+    r"|japanese-to-english subtitle translator"
+    r"|output only the english translation"
+    r"|output exactly one english translation"
+    r"|never output slash-separated"
+    r"|never add explanatory text"
+    r"|prioritize meaning and natural flow"
+    r"|preserve japanese names"
+    r")",
+    re.I,
+)
+
+# Prompt template echo patterns — the model repeats parts of the user prompt.
+_PROMPT_ECHO = re.compile(
+    r"(?:"
+    r"reference context \(not part of the speech"
+    r"|translate this japanese text"
+    r"|name/term glossary"
+    r"|translation style\s*[:：]"
+    r"|直前の会話"
+    r")",
+    re.I,
+)
 
 
 def useful_context(text: str) -> bool:
@@ -116,12 +174,90 @@ def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> b
     return False
 
 
+def resolve_slash_alternatives(text: str) -> str:
+    """Resolve slash-separated alternatives by keeping the first option.
+    
+    Detects patterns like "Hello/Hi" or "good/great" and keeps only the first
+    alternative. Preserves genuine slashes in spoken content like "rock 'n' roll"
+    or "yes/no man" where the slash is part of the phrase structure.
+    
+    Heuristic: A slash-separated alternative is detected when both sides are
+    single words that could be translation alternatives. Multi-word alternatives
+    are less common and more likely to be genuine content.
+    """
+    # Pattern: single word / single word (most common alternative pattern)
+    # This catches "Hello/Hi", "good/great", "run/running" etc.
+    # Using word boundaries and ensuring we don't match across punctuation
+    pattern = re.compile(
+        r'\b(\w+)\s*/\s*(\w+)\b'
+    )
+    
+    result = text
+    max_iterations = 10  # Prevent infinite loops with nested alternatives
+    iteration = 0
+    while '/' in result and iteration < max_iterations:
+        iteration += 1
+        new_result = pattern.sub(r'\1', result)
+        if new_result == result:
+            break  # No more patterns found
+        result = new_result
+    
+    return result
+
+
+def _strip_reasoning_tags(text: str) -> str:
+    """Strip reasoning/thinking tags and their content from model output.
+    
+    When llama.cpp --reasoning-format deepseek is active, the GGUF chat template
+    may place reasoning content inside message.content wrapped in XML tags instead
+    of separating it into message.reasoning_content. This function removes those
+    tags and everything between them, leaving only the final translation.
+    """
+    # First remove full reasoning blocks (opening + closing tags with content)
+    result = _REASONING_BLOCK.sub("", text)
+    # Then remove any remaining orphan tags
+    result = _REASONING_OPEN.sub("", result)
+    # Clean up whitespace left behind
+    result = " ".join(part.strip() for part in result.strip().splitlines() if part.strip())
+    return result
+
+
+def _is_reasoning_leak(text: str) -> bool:
+    """Check whether the text is primarily reasoning content, not a translation."""
+    if not text:
+        return True
+    # If the text still contains reasoning tags after stripping, it's a leak
+    if _REASONING_OPEN.search(text):
+        return True
+    return False
+
+
 def clean_output(text: str) -> str:
-    """Clean translation output: remove role prefixes, markdown, orphan quotes."""
+    """Clean translation output: strip reasoning, remove role prefixes, markdown, orphan quotes, slash-separated alternatives.
+    
+    This is the primary defense against reasoning leakage, prompt echoing,
+    and explanatory text in subtitle output. It operates in stages:
+    1. Strip reasoning tags and content (deepseek format leakage)
+    2. Reject prompt echoes and system instruction repeats
+    3. Reject explanatory text patterns
+    4. Clean role prefixes, markdown, and slash alternatives
+    """
     line = " ".join(part.strip() for part in text.strip().splitlines() if part.strip())
+    if not line:
+        return ""
+    
+    # Stage 1: Strip reasoning tags and their content
+    line = _strip_reasoning_tags(line)
+    if not line:
+        return ""
+    
+    # Stage 2: Reject prompt echoes
     if looks_like_prompt_echo(line):
         return ""
-    # Reject prompt leakage
+    if _SYSTEM_ECHO.search(line):
+        return ""
+    if _PROMPT_ECHO.search(line):
+        return ""
     if any(phrase in line.casefold() for phrase in (
         "output only the translation",
         "translate only the current japanese",
@@ -129,8 +265,17 @@ def clean_output(text: str) -> str:
         "you are a professional japanese-to-english subtitle translator",
     )):
         return ""
+    
+    # Stage 3: Clean role prefixes (may reveal explanatory pattern)
     line = _ROLE.sub("", line).strip()
+    
+    # Stage 4: Reject explanatory text patterns (after role prefix removal)
+    if _EXPLANATORY.match(line):
+        return ""
+    
+    # Stage 5: Clean markdown and slash alternatives
     line = _MARKDOWN.sub(lambda match: match[1] or match[2], line)
+    line = resolve_slash_alternatives(line)
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
 
 

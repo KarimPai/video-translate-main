@@ -484,6 +484,7 @@ def run_translate(
                 continue
             tr = replace(tr, en=cleaned)
             if useful_context(tr.ja):
+                # Cached subtitles already passed validation, safe to add to history
                 history.append((tr.ja, cleaned))
             tr.timings.mt_start = time.monotonic()
             tr.timings.mt_end = tr.timings.mt_start
@@ -588,8 +589,18 @@ def run_translate(
                     )
 
             # Recognized Japanese stays useful context even when its English failed.
+            # Only add clean translations to history — contaminated translations
+            # would pollute future context. Empty English (from failures) still
+            # gets recorded so the Japanese context is preserved.
             if useful_context(tr.ja):
-                history.append((tr.ja, en))
+                if en and english_output_issue(en, allow_japanese=allow_japanese):
+                    # Translation was rejected — keep the Japanese context but
+                    # use an empty English placeholder so future prompts don't
+                    # recycle the bad translation.
+                    history.append((tr.ja, ""))
+                else:
+                    # Clean translation or empty from failure — safe for history
+                    history.append((tr.ja, en))
 
             if not en.strip() and not suppressed:
                 log.error(

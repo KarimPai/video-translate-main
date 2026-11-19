@@ -191,7 +191,7 @@ class Gemma4Translator:
         ]
         if self.cfg.reasoning_enabled:
             args.extend([
-                "--jinja-chat-format", "gemma4",
+                "--reasoning-format", "deepseek",
                 "--reasoning-budget", str(self.cfg.reasoning_budget_tokens),
             ])
         return args

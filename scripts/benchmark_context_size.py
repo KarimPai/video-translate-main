@@ -21,7 +21,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from auto_translate.config import TranslateConfig, load_config
+from auto_translate.config import Config, TranslateConfig, load_config
 from auto_translate.glossary import Glossary
 from auto_translate.stream_context import StreamContext
 from auto_translate.translate.gemma4 import Gemma4Translator, clean_output
@@ -158,13 +158,14 @@ def run_context_test(
     samples: list[tuple[str, str | None, str | None]],
     context_size: int,
     label: str,
+    config_path: Path = Path("config.toml"),
 ) -> dict:
     """Run translations with the given context size configuration."""
     log.info("=== Context Size Benchmark: %s (context=%d) ===", label, context_size)
 
-    cfg = load_config()
-    # Override context size for this test
-    cfg = replace(cfg, context_size=context_size, reasoning_enabled=False, max_tokens=128)
+    full_cfg: Config = load_config(config_path)
+    # Override context size for this test — work with the translate section
+    cfg = replace(full_cfg.translate, context_size=context_size, reasoning_enabled=False, max_tokens=128)
 
     glossary = Glossary.load(Path(cfg.glossary)) if Path(cfg.glossary).exists() else Glossary()
     stream = StreamContext()

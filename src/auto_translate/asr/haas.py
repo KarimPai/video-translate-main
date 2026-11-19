@@ -84,9 +84,10 @@ class HaasASR:
         self._restarts = 0
 
         executable = resolve_speech_executable(cfg.server_path if cfg.server_path != ".runtime/llama-b12318-cuda12/llama-server.exe" else None)
-        device = "vulkan"
+        # speech.cpp uses Vulkan for GPU, not CUDA. "gpu" maps to the first GPU device.
+        device = "cpu"
         if cfg.cuda_device is not None:
-            device = "cuda"
+            device = "gpu"
 
         self.server = SpeechCppServer(
             model_name="haas-ja-v1.0",

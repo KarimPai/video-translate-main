@@ -54,7 +54,7 @@ class SpeechCppServer:
         model_name: str,
         executable: Path,
         *,
-        device: str = "vulkan",
+        device: str = "gpu",
         threads: int = 8,
         startup_timeout_s: float = 180.0,
     ) -> None:
@@ -98,7 +98,7 @@ class SpeechCppServer:
                 "--host", "127.0.0.1",
                 "--port", str(self.port),
                 "--device", self.device,
-                "-t", str(self.threads),
+                "--threads", str(self.threads),
             ]
             log.info("Starting Haas speech-server: %s", " ".join(command[1:]))
             self.process = owned_popen(

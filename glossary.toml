@@ -78,9 +78,9 @@
 "モブ" = "mob"
 
 
-# Hololive talents
+# Hololive JP talents (short names preferred)
 "ときのそら" = "Tokino Sora"
-"ロボ子さん" = "Robocosan"
+"ロボ子さん" = "Roboco"
 "星街すいせい" = "Hoshimachi Suisei"
 "白上フブキ" = "Shirakami Fubuki"
 "夏色まつり" = "Natsuiro Matsuri"
@@ -91,54 +91,47 @@
 "戌神ころね" = "Inugami Korone"
 "不知火フレア" = "Shiranui Flare"
 "白銀ノエル" = "Shirogane Noel"
-"天音かなた" = "Amane Kanata"
 "角巻わため" = "Tsunomaki Watame"
-"角巻ワタメ" = "Tsunomaki Watame"
 "常闇トワ" = "Tokoyami Towa"
 "姫森ルーナ" = "Himemori Luna"
 "雪花ラミィ" = "Yukihana Lamy"
 "桃鈴ねね" = "Momosuzu Nene"
 "獅白ぼたん" = "Shishiro Botan"
-"獅白ボタン" = "Shishiro Botan"
-"ししろぼたん" = "Shishiro Botan"
 "尾丸ポルカ" = "Omaru Polka"
-"ラプラス・ダークネス" = "Laplus"
+"ラプラス・ダークネス" = "Laplus Darknesss"
 "鷹嶺ルイ" = "Takane Lui"
 "博衣こより" = "Hakui Koyori"
 "沙花叉クロヱ" = "Sakamata Chloe"
 "風真いろは" = "Kazama Iroha"
+"アキ・ローゼンタール" = "Aki Rosenthal"
+"赤井はあと" = "Akai Haato"
+"癒月ちょこ" = "Yuzuki Choco"
+"AZKi" = "AZKi"
+
+# Hololive English talents
 "森カリオペ" = "Mori Calliope"
 "小鳥遊キアラ" = "Takanashi Kiara"
 "一伊那尓栖" = "Ninomae Ina'nis"
 "がうるぐら" = "Gawr Gura"
 "ワトソン・アメリア" = "Watson Amelia"
 "IRyS" = "IRyS"
-"ハコス・ベールズ" = "Hakos Baelz"
 "オーロ・クロニー" = "Ouro Kronii"
+"ハコス・ベールズ" = "Hakos Baelz"
 "七詩ムメイ" = "Nanashi Mumei"
 "セレス・ファウナ" = "Ceres Fauna"
 "シオリ・ノヴェラ" = "Shiori Novella"
 "古石ビジュー" = "Koseki Bijou"
 "ビジュー" = "Bijou"
 "ビジュ" = "Bijou"
-"ビジュウ" = "Bijou"
 "ネリッサ・レイヴンクロフト" = "Nerissa Ravencroft"
-"フワモコ" = "FUWAMOCO"
-"一条莉々華" = "Ichijou Ririka"
-"儒烏風亭らでん" = "Juufuutei Raden"
-"轟はじめ" = "Todoroki Hajime"
-"先輩" = "senpai"
+"フワワ・アビスガード" = "Fuwawa Abyssgard"
+"モココ・アビスガード" = "Mococo Abyssgard"
+"エリザベス・ローズ・ブラッドフレイム" = "Elizabeth Rose Bloodflame"
+"ジジ・ムリン" = "Gigi Murin"
+"セシリア・イマーグリーン" = "Cecilia Immergreen"
+"ラオーラ・パンテーラ" = "Raora Panthera"
 
-
-# Additional hololive names and ASR spellings (official talent directory, 2026-11-07)
-"アキ・ローゼンタール" = "Aki Rosenthal"
-"赤井はあと" = "Akai Haato"
-"はあちゃま" = "Haachama"
-"はぁちゃま" = "Haachama"
-"はーちゃま" = "Haachama"
-"ハーチャマ" = "Haachama"
-"はやちゃま" = "Haachama"
-"癒月ちょこ" = "Yuzuki Choco"
+# Hololive Indonesia talents
 "アユンダ・リス" = "Ayunda Risu"
 "ムーナ・ホシノヴァ" = "Moona Hoshinova"
 "アイラニ・イオフィフティーン" = "Airani Iofifteen"
@@ -148,61 +141,43 @@
 "ベスティア・ゼータ" = "Vestia Zeta"
 "カエラ・コヴァルスキア" = "Kaela Kovalskia"
 "こぼ・かなえる" = "Kobo Kanaeru"
-"フワワ・アビスガード" = "Fuwawa Abyssgard"
-"モココ・アビスガード" = "Mococo Abyssgard"
-"エリザベス・ローズ・ブラッドフレイム" = "Elizabeth Rose Bloodflame"
-"ジジ・ムリン" = "Gigi Murin"
-"セシリア・イマーグリーン" = "Cecilia Immergreen"
-"ラオーラ・パンテーラ" = "Raora Panthera"
+
+# Hololive DEV_IS talents
 "音乃瀬奏" = "Otonose Kanade"
+"一条莉々華" = "Ichijou Ririka"
+"儒烏風亭らでん" = "Juufuutei Raden"
+"轟はじめ" = "Todoroki Hajime"
 "響咲リオナ" = "Isaki Riona"
 "虎金妃笑虎" = "Koganei Niko"
 "水宮枢" = "Mizumiya Su"
 "輪堂千速" = "Rindo Chihaya"
 "綺々羅々ヴィヴィ" = "Kikirara Vivi"
+
+# ASOBI★MAWARI-TAI!
 "熱千めら" = "Achichi Mela"
 "宙科そぴあ" = "Sorashina Sopia"
 "鈴鳴つづり" = "Suzuna Tsuzuri"
 "百灯キョーコ" = "Hyakuto Kyoko"
+
+# holoAN staff
 "井月みちる" = "Izuki Michiru"
 "花園さやか" = "Hanazono Sayaka"
 "風白ゆき" = "Kazeshiro Yuki"
+
+# Graduated talents (low priority)
 "湊あくあ" = "Minato Aqua"
 "紫咲シオン" = "Murasaki Shion"
+"天音かなた" = "Amane Kanata"
 "桐生ココ" = "Kiryu Coco"
-"がうる・ぐら" = "Gawr Gura"
 "九十九佐命" = "Tsukumo Sana"
 "火威青" = "Hiodoshi Ao"
-"春先のどか" = "Harusaki Nodoka"
-"AZKi" = "AZKi"
+
+# Units and groups
 "秘密結社holoX" = "Secret Society holoX"
 "アソビ★まわり隊！" = "ASOBI★MAWARI-TAI!"
 "リグロス" = "ReGLOSS"
 "フロウグロウ" = "FLOW GLOW"
 "友人A" = "Friend A"
-"アキローゼンタール" = "Aki Rosenthal"
-"ラプラスダークネス" = "Laplus"
-"アユンダリス" = "Ayunda Risu"
-"ムーナホシノヴァ" = "Moona Hoshinova"
-"アイラニイオフィフティーン" = "Airani Iofifteen"
-"クレイジーオリー" = "Kureiji Ollie"
-"アーニャメルフィッサ" = "Anya Melfissa"
-"パヴォリアレイネ" = "Pavolia Reine"
-"ベスティアゼータ" = "Vestia Zeta"
-"カエラコヴァルスキア" = "Kaela Kovalskia"
-"こぼかなえる" = "Kobo Kanaeru"
-"ワトソンアメリア" = "Watson Amelia"
-"オーロクロニー" = "Ouro Kronii"
-"ハコスベールズ" = "Hakos Baelz"
-"シオリノヴェラ" = "Shiori Novella"
-"ネリッサレイヴンクロフト" = "Nerissa Ravencroft"
-"フワワアビスガード" = "Fuwawa Abyssgard"
-"モココアビスガード" = "Mococo Abyssgard"
-"エリザベスローズブラッドフレイム" = "Elizabeth Rose Bloodflame"
-"ジジムリン" = "Gigi Murin"
-"セシリアイマーグリーン" = "Cecilia Immergreen"
-"ラオーラパンテーラ" = "Raora Panthera"
-"セレスファウナ" = "Ceres Fauna"
 
 # Gaming vocabulary
 "エイム" = "aim"
@@ -339,141 +314,79 @@
 "GG" = "GG"
 "EZ" = "easy"
 
-# Reviewed spoken forms. English styling follows the subtitle conventions.
-# Japanese usage: https://w.atwiki.jp/mishiro/pages/62.html
-# Lap-sama clip: https://www.youtube.com/watch?v=qrEl4NjGjQk
-# ID: https://hololive.hololivepro.com/talents/airani-iofifteen/
-# EN: https://hololive.hololivepro.com/talents/fuwawa-abyssgard/
-# Mikochi nickname Q&A: https://hololive.hololivepro.com/talents/sakuramiko/
-# Spoken short Moona/Kaela self-intros and short Mococo profile text:
-# https://hololive.hololivepro.com/en/talents/moona-hoshinova/
-# https://hololive.hololivepro.com/en/talents/kaela-kovalskia/
-# https://hololive.hololivepro.com/en/talents/mococo-abyssgard/
-# Ambiguous bare Matsuri/Miko/Botan entries below are hinted to the translator
-# only when that talent is already named in the title or recent dialogue.
+# Nicknames - only commonly used short forms and ambiguous names
 [nicknames]
-"ボタン" = "Botan"
+# Botan - ambiguous with "button"
 "ぼたん" = "Botan"
-"ボタンちゃん" = "Botan-chan"
-"ぼたんちゃん" = "Botan-chan"
-"ボタンさん" = "Botan-san"
-"ぼたんさん" = "Botan-san"
+"ボタン" = "Botan"
 "シシロン" = "Shishiron"
-"ペコラ" = "Pekora"
-"ラプ" = "Lap"
-"らぷ" = "Lap"
-"らぷ様" = "Lap-sama"
-"らぷちゃん" = "Lap-chan"
-"らぷさん" = "Lap-san"
-"ラプ様" = "Lap-sama"
-"ラプちゃん" = "Lap-chan"
-"ラプさん" = "Lap-san"
-"ラプラス" = "Laplus"
-"らぷらす" = "Laplus"
-"みこ" = "Miko"
-"ミコ" = "Miko"
-"みこちゃん" = "Miko-chan"
-"ミコちゃん" = "Miko-chan"
-"みこさん" = "Miko-san"
-"ミコさん" = "Miko-san"
-"みこち" = "Mikochi"
-"ミコチ" = "Mikochi"
-"まつり" = "Matsuri"
-"マツリ" = "Matsuri"
-"祭り" = "Matsuri"
-"まつりちゃん" = "Matsuri-chan"
-"マツリちゃん" = "Matsuri-chan"
-"祭りちゃん" = "Matsuri-chan"
-"まつりさん" = "Matsuri-san"
-"マツリさん" = "Matsuri-san"
-"祭りさん" = "Matsuri-san"
-"まつり様" = "Matsuri-sama"
-"すいちゃん" = "Sui-chan"
-# Speech recognition writes すいせい as 水星 (the planet Mercury).
-"すいせい" = "Suisei"
-"すいせいさん" = "Suisei-san"
-"すいせい先輩" = "Suisei-senpai"
-"水星" = "Suisei"
-"水星さん" = "Suisei-san"
-"水星ちゃん" = "Suisei-chan"
-"水星先輩" = "Suisei-senpai"
-"ぺこちゃん" = "Peko-chan"
-"ぺこーら" = "Pekoora"
-"フブちゃん" = "Fubu-chan"
-"ころさん" = "Koro-san"
-"おかゆん" = "Okayun"
 "ししろん" = "Shishiron"
-"わため" = "Watame"
-"ワタメ" = "Watame"
-"わためぇ" = "Watamee"
-"トワ様" = "Towa-sama"
-"かなたん" = "Kanatan"
+# Pekora
+"ぺこら" = "Pekora"
+"ペコラ" = "Pekora"
+"ぺこちゃん" = "Peko-chan"
+# Miko - ambiguous with "shrine maiden"
+"みこ" = "Miko"
+"みこち" = "Mikochi"
+# Matsuri - ambiguous with "festival"
+"まつり" = "Matsuri"
+"祭り" = "Matsuri"
+# Suisei - ASR writes すいせい as 水星
+"すいせい" = "Suisei"
+"水星" = "Suisei"
+"すいちゃん" = "Sui-chan"
+# Laplus
+"らぷ" = "Lap"
+"ラプ" = "Lap"
+"ラプラス" = "Laplus"
+# Other common nicknames
+"こより" = "Koyori"
 "ねねち" = "Nenechi"
-"ポルポル" = "Polpol"
-"こよちゃん" = "Koyo-chan"
-"ルイ姉" = "Lui-nee"
+"わため" = "Watame"
 "ルイ" = "Lui"
-"ルイちゃん" = "Lui-chan"
 "カリオペ" = "Calliope"
-"カリオペちゃん" = "Calliope-chan"
 "カリちゃん" = "Calli-chan"
-"あくたん" = "Akutan"
 "船長" = "Senchou"
 "フワワ" = "Fuwawa"
+"モココ" = "Mococo"
 "イオフィ" = "Iofi"
 "ムーナ" = "Moona"
 "カエラ" = "Kaela"
-"モココ" = "Mococo"
 
 [talent_aliases]
+# Maps nicknames to canonical talent names for context resolution
 "すいちゃん" = "星街すいせい"
 "すいせい" = "星街すいせい"
-"すいせい先輩" = "星街すいせい"
 "水星" = "星街すいせい"
-"水星先輩" = "星街すいせい"
-"みこち" = "さくらみこ"
-"みこ" = "さくらみこ"
-"ぺこちゃん" = "兎田ぺこら"
-"ぺこーら" = "兎田ぺこら"
-"ペコラ" = "兎田ぺこら"
+"みこち" = "ときのそら"
+"みこ" = "ときのそら"
 "ぺこら" = "兎田ぺこら"
+"ぺこちゃん" = "兎田ぺこら"
 "ししろん" = "獅白ぼたん"
 "ぼたん" = "獅白ぼたん"
-"フブちゃん" = "白上フブキ"
-"ころさん" = "戌神ころね"
-"おかゆん" = "猫又おかゆ"
-"わためぇ" = "角巻わため"
 "わため" = "角巻わため"
-"トワ様" = "常闇トワ"
-"かなたん" = "天音かなた"
 "ねねち" = "桃鈴ねね"
-"ポルポル" = "尾丸ポルカ"
-"こよちゃん" = "博衣こより"
 "こより" = "博衣こより"
-"ルイちゃん" = "鷹嶺ルイ"
-"ルイ姉" = "鷹嶺ルイ"
 "ルイ" = "鷹嶺ルイ"
-"カリオペちゃん" = "森カリオペ"
 "カリオペ" = "森カリオペ"
 "カリちゃん" = "森カリオペ"
-"あくたん" = "湊あくあ"
 "船長" = "宝鐘マリン"
-"らぷ様" = "ラプラス・ダークネス"
 "らぷ" = "ラプラス・ダークネス"
 "ラプラス" = "ラプラス・ダークネス"
 "まつり" = "夏色まつり"
 "祭り" = "夏色まつり"
 "フワワ" = "フワワ・アビスガード"
+"モココ" = "モココ・アビスガード"
 "イオフィ" = "アイラニ・イオフィフティーン"
 "ムーナ" = "ムーナ・ホシノヴァ"
 "カエラ" = "カエラ・コヴァルスキア"
-"モココ" = "モココ・アビスガード"
 
 # Streamer profiles, matched against the channel name and video metadata.
 # "self" lists first-person forms the streamer uses for themselves, so the
 # translator resolves dropped subjects and third-person self-reference.
 # pronoun is "she" (default) or "he".
 [talents]
+# Hololive JP
 "ときのそら" = {}
 "ロボ子さん" = {}
 "星街すいせい" = { self = ["すいちゃん"] }
@@ -488,8 +401,6 @@
 "白銀ノエル" = { self = ["団長"] }
 "宝鐘マリン" = { self = ["船長", "マリン"] }
 "兎田ぺこら" = { self = ["ぺこーら"] }
-"さくらみこ" = { self = ["みこ"] }
-"天音かなた" = {}
 "角巻わため" = { self = ["わため"] }
 "常闇トワ" = {}
 "姫森ルーナ" = { self = ["ルーナ"] }
@@ -502,34 +413,22 @@
 "博衣こより" = { self = ["こより"] }
 "沙花叉クロヱ" = { self = ["沙花叉"] }
 "風真いろは" = { self = ["風真"] }
-"湊あくあ" = { self = ["あてぃし"] }
-"紫咲シオン" = {}
-"癒月ちょこ" = {}
-"赤井はあと" = { self = ["はあちゃま"] }
 "アキ・ローゼンタール" = {}
-"桐生ココ" = {}
+"赤井はあと" = { self = ["はあちゃま"] }
+"癒月ちょこ" = {}
 "AZKi" = {}
-"一条莉々華" = {}
-"儒烏風亭らでん" = {}
-"轟はじめ" = {}
-"火威青" = {}
-"音乃瀬奏" = {}
-"響咲リオナ" = {}
-"虎金妃笑虎" = {}
-"水宮枢" = {}
-"輪堂千速" = {}
-"綺々羅々ヴィヴィ" = {}
+
+# Hololive English
 "森カリオペ" = {}
 "小鳥遊キアラ" = {}
 "一伊那尓栖" = {}
 "がうるぐら" = {}
 "ワトソン・アメリア" = {}
 "IRyS" = {}
-"ハコス・ベールズ" = {}
 "オーロ・クロニー" = {}
+"ハコス・ベールズ" = {}
 "七詩ムメイ" = {}
 "セレス・ファウナ" = {}
-"九十九佐命" = {}
 "シオリ・ノヴェラ" = {}
 "古石ビジュー" = {}
 "ネリッサ・レイヴンクロフト" = {}
@@ -539,6 +438,8 @@
 "ジジ・ムリン" = {}
 "セシリア・イマーグリーン" = {}
 "ラオーラ・パンテーラ" = {}
+
+# Hololive Indonesia
 "アユンダ・リス" = {}
 "ムーナ・ホシノヴァ" = {}
 "アイラニ・イオフィフティーン" = {}
@@ -548,6 +449,31 @@
 "ベスティア・ゼータ" = {}
 "カエラ・コヴァルスキア" = {}
 "こぼ・かなえる" = {}
+
+# Hololive DEV_IS
+"音乃瀬奏" = {}
+"一条莉々華" = {}
+"儒烏風亭らでん" = {}
+"轟はじめ" = {}
+"響咲リオナ" = {}
+"虎金妃笑虎" = {}
+"水宮枢" = {}
+"輪堂千速" = {}
+"綺々羅々ヴィヴィ" = {}
+
+# ASOBI★MAWARI-TAI!
+"熱千めら" = {}
+"宙科そぴあ" = {}
+"鈴鳴つづり" = {}
+"百灯キョーコ" = {}
+
+# Graduated talents
+"湊あくあ" = { self = ["あてぃし"] }
+"紫咲シオン" = {}
+"天音かなた" = {}
+"桐生ココ" = {}
+"九十九佐命" = {}
+"火威青" = {}
 
 # Stream topics, enabled when the title or tags contain a "match" word.
 # "asr" words bias speech recognition toward the topic's vocabulary;

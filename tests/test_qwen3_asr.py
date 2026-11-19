@@ -165,7 +165,7 @@ class QwenProtocolTests(unittest.TestCase):
         self.assertEqual(obj.server.chat.call_args.kwargs["timeout"], 15)
 
     def test_recent_transcripts_extend_system_context_until_forgotten(self):
-        obj = fake_asr(context="ぺこら 配信")
+        obj = fake_asr(context="ぺこら 配信", cfg=AsrConfig(recent_context_lines=2))
         del obj._request
         obj.server.chat.return_value = response("language Japanese<asr_text>はい")
         for text in ("一つ目です", "二つ目です", "三つ目です"):

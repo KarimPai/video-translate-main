@@ -118,7 +118,7 @@ class AsrConfig:
     server_path: str = LLAMA_SERVER_PATH
     context: str = ""
     max_context_chars: int = 2000
-    recent_context_lines: int = 2  # previous accepted transcripts added to the ASR system prompt
+    recent_context_lines: int = 0  # previous accepted transcripts added to the ASR system prompt
     context_retry_limit: int = 1
     context_size: int = 4096
     cuda_device: int = 0

@@ -23,7 +23,7 @@ class BackendConfigTests(unittest.TestCase):
         self.assertEqual(cfg.translate.context_max_gap_s, 15.0)
         self.assertFalse(cfg.translate.context_english)
         self.assertTrue(cfg.translate.merge_fragments)
-        self.assertEqual(cfg.asr.recent_context_lines, 2)
+        self.assertEqual(cfg.asr.recent_context_lines, 0)
         self.assertFalse(cfg.language_filter.enabled)
 
     def test_legacy_translation_model_path_migrates_without_resetting_preferences(self):

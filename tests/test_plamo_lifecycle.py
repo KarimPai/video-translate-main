@@ -87,8 +87,13 @@ class PlamoLifecycleTests(unittest.TestCase):
         self.assertEqual(build_context("Long title", [], 3, 4), "Long")
         obj = fake_translator(glossary=Glossary({}, nicknames={"ボタン": "Botan", "獅白ぼたん": "Shishiro Botan"}))
         obj.cfg.context_lines = 0
+        # Ambiguous nicknames like ボタン are now hinted to PLaMo even without talent context,
+        # so the model can disambiguate. The glossary entry is present.
         prompt = obj.prompt_for("ボタンが来た", [("獅白ぼたん", "Shishiro Botan")])
-        self.assertNotIn("glossary", prompt["chat_template_kwargs"])
+        self.assertIn("glossary", prompt["chat_template_kwargs"])
+        self.assertIn({"source": "ボタン", "target": "Botan"}, prompt["chat_template_kwargs"]["glossary"])
+        # Dialogue history should not appear in context when context_lines = 0.
+        self.assertNotIn("直前の会話", prompt["chat_template_kwargs"].get("context", ""))
 
     def test_initial_auto_offload_reserves_memory_instead_of_probing_all_layers(self):
         obj = fake_translator()

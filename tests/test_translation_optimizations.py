@@ -81,6 +81,16 @@ class GlossaryHintTests(unittest.TestCase):
         self.assertIn(("ボタン", "Botan"),
                       GLOSSARY.find("ボタンが来た", context="獅白ぼたん 雑談\nボタンが来た"))
 
+    def test_matsuri_name_preserved_without_talent_context(self):
+        # Matsuri (name) should be hinted to the translator even without prior context.
+        # PLaMo glossary is a hint, so the model can still choose "festival" when appropriate.
+        self.assertIn(("まつり", "Matsuri"), GLOSSARY.find("まつりが来た"))
+        self.assertIn(("まつり", "Matsuri"), GLOSSARY.find("まつり、どうしたの？"))
+        self.assertIn(("まつりちゃん", "Matsuri-chan"), GLOSSARY.find("まつりちゃんが来た"))
+        # Literal festival context should still skip the nickname.
+        self.assertNotIn(("まつり", "Matsuri"), GLOSSARY.find("祭りに行こう"))
+        self.assertNotIn(("まつり", "Matsuri"), GLOSSARY.find("まつりに行く"))
+
     def test_miko_blocked_in_shrine_context(self):
         context = "さくらみこ 配信"
         self.assertNotIn(("みこ", "Miko"), GLOSSARY.find("神社のみこがいる", context=context))

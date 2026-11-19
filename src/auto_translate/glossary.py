@@ -191,13 +191,21 @@ class Glossary:
                     en = "captain"
                 elif key == "船長" and not ("マリン" in source or self._identity(term, en) in talents):
                     continue
-                if key in AMBIGUOUS and (self._identity(term, en) not in talents
-                                         or (en == "Miko" and _SHRINE.search(source))):
-                    continue
+                # Specific context checks first: skip only when the ordinary meaning is clear.
                 if ((key == "ぼたん" and _BUTTON.search(kana_key(source)))
                         or (key in {"まつり", "祭り"} and _FESTIVAL.search(kana_key(source)))
                         or (key.startswith("水星") and _PLANET.search(source))):
                     continue
+                # Ambiguous nicknames without a specific guard still need talent context.
+                if key in AMBIGUOUS and self._identity(term, en) not in talents:
+                    if en == "Miko" and _SHRINE.search(source):
+                        continue
+                    # For matsuri/botan/mi ko with a specific guard above, the regex already
+                    # filtered the ordinary meaning; allow the nickname as a glossary hint
+                    # so the translator can disambiguate.  Miko lacks a permissive guard
+                    # (shrine context rejects it above), so it stays talent-gated.
+                    if key not in {"まつり", "祭り", "ぼたん"}:
+                        continue
                 matches = []
                 for m in re.finditer(re.escape(needle), text):
                     repeated = kana_key(source.strip("。！？!? ")) == key * 2

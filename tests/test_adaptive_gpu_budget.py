@@ -46,8 +46,8 @@ class CpuVadTests(unittest.TestCase):
         with patch("auto_translate.vad.StreamingFireRedVAD") as ctor:
             seg = Segmenter(cfg)
             ctor.assert_called_once_with(cfg.threshold, "cpu", "")
-            self.assertEqual(seg.min_silence, 55)
-            self.assertEqual(seg.pad, 40)  # 400 ms of audio at 10 ms/frame
+            self.assertEqual(seg.min_silence, 40)  # 400 ms of audio at 10 ms/frame
+            self.assertEqual(seg.pad, 30)  # 300 ms of audio at 10 ms/frame
 
     def test_cuda_vad_is_rejected_to_preserve_asr_headroom(self):
         with self.assertRaisesRegex(ValueError, "must use cpu"):

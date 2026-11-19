@@ -724,6 +724,7 @@ def run(
     last_activity = started
     last_warning = started
     last_guard_key = ""
+    last_guard_start = -float("inf")
     last_guard_end = -float("inf")
     last_guard_generation: int | None = None
     identical_count = 0
@@ -734,8 +735,19 @@ def run(
             # The ASR worker flushes its adapter before the next generation;
             # a delayed main-loop tick must never cancel a new-generation cue.
             if ingest.generation != observed_generation:
+                # A seek invalidates every in-flight utterance, subtitle and
+                # dedup window from the previous generation. Drop stale state
+                # so the new generation starts clean and old subtitles cannot
+                # bleed into the new seek position.
                 observed_generation = ingest.generation
+                last_guard_key = ""
+                last_guard_start = -float("inf")
+                last_guard_end = -float("inf")
+                last_guard_generation = None
+                identical_count = 0
+                last_subtitle_generation = None
                 record_event("inference_generation_reset", generation=observed_generation)
+                record_event("seek_reset", generation=observed_generation)
             _raise_worker_failure(failures)
             if diagnostics is not None and time.monotonic() >= next_diagnostics:
                 next_diagnostics = time.monotonic() + cfg.diagnostics.sample_interval_s
@@ -823,20 +835,28 @@ def run(
                     last_guard_key, last_guard_start, last_guard_end, identical_count = "", -float("inf"), -float("inf"), 0
                     last_guard_generation = item.generation
                 key = normalized_cue(item.en) if item.en else ""
-                # Idempotency: suppress only the exact same source interval
-                # re-delivered (e.g. retry/cache duplicate), not different
-                # genuine speech intervals that happen to share translated text.
-                if (key and len(key.split()) >= 2 and key == last_guard_key
-                        and item.start_s == last_guard_start
-                        and item.end_s == last_guard_end):
+                # Timestamp-aware dedup: overlapping chunks re-publishing the
+                # same speech are duplicates, but genuinely repeated speech in
+                # separate (non-overlapping) utterances -- e.g. "go, go, go" --
+                # must survive. Same text only counts as a repeat when the time
+                # ranges overlap; identical intervals are a subset of that.
+                overlap = bool(
+                    key and last_guard_key
+                    and key == last_guard_key
+                    and item.start_s < last_guard_end - 0.05
+                    and last_guard_start < item.end_s + 0.05,
+                )
+                if overlap:
                     identical_count += 1
                 else:
                     identical_count = 1
                 last_guard_key, last_guard_start, last_guard_end = key, item.start_s, item.end_s
                 if (key and identical_count >
                         max(1, int(cfg.translate.max_identical_cues))):
-                    log.info("Suppressed repeat subtitle: gen=%d count=%d text=%r",
-                             item.generation, identical_count, item.en[:110])
+                    log.info(
+                        "Suppressed repeat subtitle: gen=%d count=%d overlap=%s text=%r",
+                        item.generation, identical_count, overlap, item.en[:110],
+                    )
                     increment_counter("dropped")
                     continue
 
@@ -848,6 +868,18 @@ def run(
 
                 if session_cache is not None:
                     session_cache.add(item)
+
+                record_event("subtitle_published", generation=item.generation,
+                             speech_start_s=item.speech_start_s,
+                             pcm_start_s=item.start_s, speech_end_s=item.end_s,
+                             asr_completed_at=item.timings.asr_end,
+                             translation_completed_at=item.timings.mt_end,
+                             ja=item.ja[:110], en=item.en[:110])
+                log.info(
+                    "Published subtitle gen=%d %.2f-%.2fs ja=%r en=%r",
+                    item.generation, item.start_s, item.end_s,
+                    item.ja[:80], item.en[:80],
+                )
 
                 for out in outputs:
                     out.show(item)

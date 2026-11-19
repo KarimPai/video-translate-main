@@ -12,8 +12,8 @@ class VadConfigurationTests(unittest.TestCase):
         cfg = VadConfig()
         self.assertEqual(cfg.threshold, 0.24)
         self.assertEqual(cfg.neg_threshold, 0.16)
-        self.assertEqual(cfg.speech_pad_ms, 400)
-        self.assertEqual(cfg.min_silence_ms, 550)
+        self.assertEqual(cfg.speech_pad_ms, 300)
+        self.assertEqual(cfg.min_silence_ms, 400)
         self.assertEqual(cfg.min_speech_ms, 120)
         self.assertEqual(cfg.onset_ms, 20)
         self.assertEqual(cfg.short_reply_ms, 80)
@@ -49,8 +49,8 @@ class VadConfigurationTests(unittest.TestCase):
             path.write_text("[vad]\nthreshold = 0.40\n", encoding="utf-8")
             cfg = load_config(path).vad
         self.assertEqual(cfg.threshold, 0.40)
-        self.assertEqual(cfg.speech_pad_ms, 400)
-        self.assertEqual(cfg.min_silence_ms, 550)
+        self.assertEqual(cfg.speech_pad_ms, 300)
+        self.assertEqual(cfg.min_silence_ms, 400)
         self.assertEqual(cfg.min_speech_ms, 120)
         self.assertEqual(cfg.onset_ms, 20)
         self.assertEqual(cfg.max_utterance_s, 14.0)
@@ -63,7 +63,7 @@ class VadConfigurationTests(unittest.TestCase):
         self.assertIsNot(live, configured)
         self.assertEqual((vod.max_utterance_s, vod.max_split_extension_s), (14.0, 2.0))
         self.assertEqual((live.max_utterance_s, live.max_split_extension_s), (6.5, 1.0))
-        self.assertEqual((live.threshold, live.speech_pad_ms), (0.41, 400))
+        self.assertEqual((live.threshold, live.speech_pad_ms), (0.41, 300))
         self.assertEqual(configured.max_utterance_s, 14.0)
 
     def test_noise_probe_can_be_opted_in(self):

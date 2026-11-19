@@ -176,9 +176,17 @@ class LongformBoundaryTests(unittest.TestCase):
             adaptive_split=False,
         ))
         self.assertGreaterEqual(len(result), 2)
-        self.assertLess(result[1].start_s, 1.1)  # retained silent ASR context
+        # With min_silence=400ms the 450ms silence gap triggers a pause split;
+        # the split falls in the quiet gap and the next cue keeps silent ASR
+        # context before the next speech onset (1.1s). The condensed silence
+        # between segments is not re-emitted, so not all PCM is retained.
+        self.assertLessEqual(result[0].end_s, 0.8)
+        self.assertGreaterEqual(result[1].start_s, 0.9)
+        self.assertLess(result[1].start_s, 1.1)
         self.assertAlmostEqual(result[1].speech_start_s, 1.1, places=6)
-        np.testing.assert_array_equal(np.concatenate([u.audio for u in result]), pcm)
+        # All voiced speech is preserved across the split.
+        np.testing.assert_array_equal(result[0].audio[:64 * FRAME], pcm[:64 * FRAME])
+        np.testing.assert_array_equal(result[1].audio[-60 * FRAME:], pcm[110 * FRAME:])
 
     def test_pre_roll_keeps_name_audio_but_does_not_advance_speech_timestamp(self):
         pcm = np.zeros(250 * FRAME, dtype=np.float32)
@@ -189,7 +197,7 @@ class LongformBoundaryTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         cue = result[0]
         self.assertAlmostEqual(cue.speech_start_s, 1., places=6)
-        self.assertAlmostEqual(cue.start_s, .6, places=6)
+        self.assertAlmostEqual(cue.start_s, .7, places=6)
         voice = cue.audio[round((1. - cue.start_s) * SAMPLE_RATE):
                           round((1.7 - cue.start_s) * SAMPLE_RATE)]
         np.testing.assert_array_equal(voice, pcm[100 * FRAME:170 * FRAME])

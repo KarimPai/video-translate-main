@@ -68,9 +68,9 @@ class VadConfig:
     device: str = "cpu"  # keep PyTorch CUDA context off the RTX 3070 by default
     threshold: float = 0.24
     neg_threshold: float = 0.16
-    min_silence_ms: int = 550  # wait for genuine phrase-ending silence
-    speech_pad_ms: int = 400  # preserve soft/overlapped word starts and tails
-    min_speech_ms: int = 120
+    min_silence_ms: int = 400  # wait for genuine phrase-ending silence
+    speech_pad_ms: int = 300  # preserve soft/overlapped word starts and tails
+    min_speech_ms: int = 120  # short/quiet Japanese utterances via short-reply exception
     short_reply_ms: int = 80
     short_reply_probability: float = 0.85
     onset_ms: int = 20

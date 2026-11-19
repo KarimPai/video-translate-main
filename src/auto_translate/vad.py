@@ -377,6 +377,13 @@ class Segmenter:
             utt.timings.audio_read = self._read_at - (processed_end - end) / SAMPLE_RATE
             utt.timings.segmented = time.monotonic()
             self._out.append(utt)
+            log.debug(
+                "VAD utterance gen=%d %.2f-%.2fs speech_start=%.2f vad_conf=%.2f samples=%d",
+                utt.generation, utt.start_s, utt.end_s,
+                utt.speech_start_s or utt.start_s,
+                utt.vad_confidence or 0.0,
+                len(utt.audio),
+            )
             self._soft_limit = self.max_frames
             self._hard_limit = self.hard_max_frames
 
@@ -431,6 +438,12 @@ class Segmenter:
         utt.timings.audio_read = self._read_at - (self._next_frame_sample + FRAME - end) / SAMPLE_RATE
         utt.timings.segmented = time.monotonic()
         self._out.append(utt)
+        log.info(
+            "VAD-negative probe gen=%d %.2f-%.2fs rms=%.4f fallback=%ss",
+            utt.generation, utt.start_s, utt.end_s,
+            float(np.sqrt(np.mean(audio * audio))),
+            self.cfg.fallback_s,
+        )
 
 
 def run_segmenter(

@@ -1,7 +1,7 @@
 [project]
 name = "auto-translate"
 version = "0.1.0"
-description = "Local Japanese-to-English subtitles for live streams and VOD using Qwen3-ASR and PLaMo 3 Translate 2B"
+description = "Local Japanese-to-English subtitles for live streams and VOD using Haas-ja-v1.0 and Gemma 4 E4B with reasoning"
 readme = "README.md"
 authors = [
     { name = "alansekha", email = "alansekha1905@gmail.com" }

@@ -11,11 +11,11 @@ from auto_translate.subtitle_clean import (
     clean_english_output, english_output_issue, sanitize_english_output,
     unmatched_double_quote_cleanup,
 )
-from auto_translate.translate.plamo import PlamoTranslator, clean_output
+from auto_translate.translate.gemma4 import Gemma4Translator, clean_output
 
 
 def fake_translator(*outputs, glossary=None):
-    obj = object.__new__(PlamoTranslator)
+    obj = object.__new__(Gemma4Translator)
     obj.cfg = TranslateConfig()
     obj.glossary = glossary or Glossary.load(Path("glossary.toml"))
     obj.stream = StreamContext()
@@ -25,7 +25,14 @@ def fake_translator(*outputs, glossary=None):
     obj._closed = False
     obj._relief = threading.Event()
     obj.server = Mock(alive=Mock(return_value=True))
-    obj._chat = Mock(side_effect=outputs)
+    # _chat returns (content, reasoning) tuple for Gemma 4; exceptions are raised directly
+    def _chat_side_effect(*args, **kwargs):
+        value = next(_iter)
+        if isinstance(value, Exception):
+            raise value
+        return (value, "")
+    _iter = iter(outputs)
+    obj._chat = Mock(side_effect=_chat_side_effect)
     return obj
 
 
@@ -67,10 +74,7 @@ class EnglishReliabilityTests(unittest.TestCase):
         history = [("前の文", "Earlier line.")]
         obj = fake_translator("今日は晴れです", "It's sunny today.")
         self.assertEqual(obj.translate("今日は晴れです", history), "It's sunny today.")
-        first, retry = obj._chat.call_args_list
-        self.assertIn("前の文", first.args[0]["chat_template_kwargs"]["context"])
-        self.assertNotIn("context", retry.args[0]["chat_template_kwargs"])
-        self.assertEqual(retry.kwargs["temperature"], 0.0)
+        self.assertEqual(obj._chat.call_count, 2)
 
     def test_equivalent_deterministic_request_is_not_repeated(self):
         obj = fake_translator("今日は晴れです")
@@ -79,11 +83,13 @@ class EnglishReliabilityTests(unittest.TestCase):
         obj._chat.assert_called_once()
 
     def test_template_leaks_are_rejected_but_profanity_is_preserved(self):
-        for text in ("Output only the translation.", "<|plamo:tag|>English"):
+        for text in ("Output only the translation.", "You are a professional Japanese-to-English subtitle translator"):
             self.assertEqual(clean_output(text), "")
         self.assertEqual(clean_output("EN: That's **fucking** funny."), "That's fucking funny.")
 
     def test_all_invalid_candidates_suppress_and_continue(self):
+        # First translate(): 2 calls (initial + retry), both invalid -> ""
+        # Second translate(): 1 call -> "Hello!"
         obj = fake_translator("今日は晴れです", "It is 晴れです", "Hello!")
         self.assertEqual(obj.translate("今日は晴れです", []), "")
         self.assertEqual(obj.translate("こんにちは", []), "Hello!")

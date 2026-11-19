@@ -29,7 +29,7 @@ from .subtitle_clean import (
     sanitize_english_output,
 )
 from .translate.base import Translator, TranslatorUnavailable
-from .translate.plamo import useful_context
+from .translate.gemma4 import useful_context
 from .types import (
     SAMPLE_RATE,
     AudioChunk,

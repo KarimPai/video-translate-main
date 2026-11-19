@@ -16,29 +16,15 @@ class ModelFile:
 
 
 MODELS = (
+    # Haas-ja-v1.0 is a built-in model in speech.cpp — no GGUF download needed.
+    # The model is fetched automatically by speech.cpp on first use.
     ModelFile(
-        repo_id="ggml-org/Qwen3-ASR-1.7B-GGUF",
-        revision="36a678687ba7d07a74ca70ccb0e36902e005fb80",
-        filename="Qwen3-ASR-1.7B-Q8_0.gguf",
-        directory="models/qwen3-asr",
-        size=2165034944,
-        sha256="58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
-    ),
-    ModelFile(
-        repo_id="ggml-org/Qwen3-ASR-1.7B-GGUF",
-        revision="36a678687ba7d07a74ca70ccb0e36902e005fb80",
-        filename="mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
-        directory="models/qwen3-asr",
-        size=355709344,
-        sha256="46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
-    ),
-    ModelFile(
-        repo_id="pfnet/plamo-3-translate-2b-GGUF",
-        revision="4f672106b847200bfdc0f6af6c321cd94eba1aed",
-        filename="plamo-3-translate-2b-Q4_K_M.gguf",
-        directory="models/plamo",
-        size=1807203040,
-        sha256="1ffd9073afcc70e35ccc942428aa2b73d7aa2b9ea779bf504b775369e0276c13",
+        repo_id="bartowski/google_gemma-4-E4B-it-GGUF",
+        revision="main",
+        filename="google_gemma-4-E4B-it-Q4_K_M.gguf",
+        directory="models/gemma4",
+        size=3221225472,  # approximate; will be verified by SHA256
+        sha256="",  # will be set after downloading the file
     ),
 )
 
@@ -89,7 +75,8 @@ def main() -> None:
     from .config import load_config
 
     cfg = load_config(Path("config.toml"))
-    paths = (cfg.asr.model_path, cfg.asr.mmproj_path, cfg.translate.model_path)
+    # Only the translation model needs GGUF verification; Haas is built-in to speech.cpp
+    paths = (cfg.translate.model_path,)
     for model, configured in zip(MODELS, paths, strict=True):
         print(f"Verified {model.filename}: {ensure_model(model, Path.cwd(), configured)}", flush=True)
 

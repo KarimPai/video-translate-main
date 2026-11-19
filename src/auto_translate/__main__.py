@@ -49,9 +49,9 @@ def _main(resources: ExitStack) -> None:
     option.add_argument("--no-safe-playback", dest="safe_playback", action="store_false")
     parser.add_argument("--context-lines", type=int, choices=range(21), metavar="0..20",
                         help="previous dialogue lines given to the translator")
-    parser.add_argument("--asr-model", type=Path, help="Qwen3-ASR GGUF model")
-    parser.add_argument("--asr-mmproj", type=Path, help="Qwen3-ASR audio projector (mmproj) GGUF")
-    parser.add_argument("--mt-model", type=Path, help="PLaMo 3 Translate 2B GGUF model")
+    parser.add_argument("--asr-model", type=Path, help="Haas model name (default: haas-ja-v1.0)")
+    parser.add_argument("--speech-server", type=Path, help="speech.cpp executable path")
+    parser.add_argument("--mt-model", type=Path, help="Gemma 4 E4B GGUF model")
     parser.add_argument("--llama-server", type=Path, help="llama.cpp llama-server executable (CUDA)")
     parser.add_argument("--delay", type=float, metavar="SECONDS",
                         help="mpv: how far playback stays behind the pipeline")
@@ -134,9 +134,8 @@ def _main(resources: ExitStack) -> None:
     cfg = load_config(args.config)
     for option, section, field_name in (
         ("asr_model", cfg.asr, "model_path"),
-        ("asr_mmproj", cfg.asr, "mmproj_path"),
+        ("speech_server", cfg.asr, "speech_server_path"),
         ("mt_model", cfg.translate, "model_path"),
-        ("llama_server", cfg.asr, "server_path"),
         ("llama_server", cfg.translate, "server_path"),
         ("context_lines", cfg.translate, "context_lines"),
         ("safe_playback", cfg.safe_playback, "enabled"),
@@ -250,14 +249,14 @@ def _main(resources: ExitStack) -> None:
     resources.callback(asr.close)
     budget.refresh()
     record_event("asr_loaded", gpu=budget.snapshot())
-    log.info("Qwen3-ASR ready in %.1fs (timeout %.1fs); measured GPU free=%s GB",
+    log.info("Haas-ja-v1.0 ready in %.1fs (timeout %.1fs); measured GPU free=%s GB",
              time.perf_counter()-t0, decode_timeout, budget.free)
 
     t0 = time.perf_counter()
     check_running()
     translator = _load_translator(cfg, glossary, stream_context, budget, log)
     record_event("mt_loaded", gpu=budget.snapshot(), gpu_layers=translator.gpu_layers)
-    log.info("PLaMo 3 Translate 2B ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
+    log.info("Gemma 4 E4B ready at %d/%d GPU layers (%d glossary terms) in %.1fs; GPU free=%s GB",
              translator.gpu_layers, translator.layer_count, len(glossary.terms),
              time.perf_counter()-t0, budget.free)
     resources.callback(translator.close)
@@ -338,9 +337,9 @@ def _main(resources: ExitStack) -> None:
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
-    print("ASR: Qwen3-ASR-1.7B (llama.cpp CUDA) | "
+    print("ASR: Haas-ja-v1.0 (speech.cpp Vulkan) | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
-          f"MT: PLaMo 3 Translate 2B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
+          f"MT: Gemma 4 E4B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
     check_running()
     budget.start(relieve_pressure)
     try:
@@ -363,7 +362,7 @@ def _main(resources: ExitStack) -> None:
 
 
 def _load_translator(cfg, glossary, stream_context, budget, log):
-    """Start PLaMo 3 Translate 2B, then trim GPU layers until measured free memory meets the headroom target."""
+    """Start Gemma 4 E4B, then trim GPU layers until measured free memory meets the headroom target."""
     import math
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
     from .translate import create_translator
@@ -374,7 +373,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
     if auto and budget.free is not None:
         layers = 0
         if budget.free > headroom:
-            model = require_gguf(cfg.translate.model_path, "PLaMo 3 Translate 2B model")
+            model = require_gguf(cfg.translate.model_path, "Gemma 4 E4B model")
             layer_count = gguf_block_count(model) or 32
             per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
             # Full-offload probing can evict idle ASR pages under Windows WDDM.
@@ -388,7 +387,7 @@ def _load_translator(cfg, glossary, stream_context, budget, log):
             if layers == 0 or not auto:
                 raise
             layers = 16 if layers is None else layers // 2
-            log.warning("PLaMo 3 Translate 2B startup failed; retrying with %d GPU layers", layers, exc_info=True)
+            log.warning("Gemma 4 E4B startup failed; retrying with %d GPU layers", layers, exc_info=True)
     try:
         if not auto:
             budget.refresh()

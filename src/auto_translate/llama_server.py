@@ -173,6 +173,9 @@ class LlamaServer:
         message = choices[0].get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise LlamaServerError(f"{self.name} returned invalid message content")
+        # Extract reasoning_content if present (llama.cpp native reasoning support)
+        if "reasoning_content" in message:
+            payload["_reasoning_content"] = message["reasoning_content"]
         return payload
 
     def log_tail(self, size: int = 4096) -> str:

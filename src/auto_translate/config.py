@@ -111,17 +111,22 @@ LLAMA_SERVER_PATH = ".runtime/llama-b12318-cuda12/llama-server.exe"
 
 @dataclass
 class AsrConfig:
-    """Qwen3-ASR settings with optional user context and metadata-selected canonical names."""
+    """Haas-ja-v1.0 ASR settings via speech.cpp HTTP server.
 
-    model_path: str = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
-    mmproj_path: str = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-    server_path: str = LLAMA_SERVER_PATH
+    Haas is Japanese-only; no mmproj is needed. Uses speech.cpp instead of
+    llama.cpp, so server_path points to speech.exe (or is left empty to find
+    it on PATH).
+    """
+
+    model_path: str = "haas-ja-v1.0"  # built-in model name for speech.cpp
+    server_path: str = ""  # empty means find speech.exe on PATH
+    speech_server_path: str = ""  # explicit path to speech.exe if not on PATH
     context: str = ""
     max_context_chars: int = 2000
     recent_context_lines: int = 0  # previous accepted transcripts added to the ASR system prompt
     context_retry_limit: int = 1
     context_size: int = 4096
-    cuda_device: int = 0
+    cuda_device: int = 0  # 0 for CUDA device selection; Haas uses Vulkan by default
     threads: int = 8
     blocklist: list[str] = field(default_factory=list)
     response_timeout_s: float = 30.0
@@ -129,10 +134,14 @@ class AsrConfig:
     startup_timeout_s: float = 180.0
 
     def __post_init__(self):
-        for name in ("model_path", "mmproj_path", "server_path"):
+        for name in ("model_path", "server_path"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"asr.{name} must be a nonempty path")
+            if not isinstance(value, str):
+                raise ValueError(f"asr.{name} must be a string")
+        if not isinstance(self.speech_server_path, str):
+            raise ValueError("asr.speech_server_path must be a string")
+        if self.speech_server_path and not self.speech_server_path.strip():
+            raise ValueError("asr.speech_server_path must be a nonempty path or empty (for PATH lookup)")
         if not isinstance(self.context, str):
             raise ValueError("asr.context must be a string")
         if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 8000:
@@ -157,7 +166,7 @@ class AsrConfig:
 
 @dataclass
 class LanguageFilterConfig:
-    """Optional pre-ASR language gate; Qwen3-ASR already tags each utterance.
+    """Optional pre-ASR language gate; Haas is Japanese-only so the gate filters non-Japanese.
 
     Ambiguous or very short utterances stay in the original Japanese path to
     avoid losing Japanese speech during VTuber code-switching.
@@ -204,15 +213,19 @@ class GpuBudgetConfig:
 
 @dataclass
 class TranslateConfig:
-    """PLaMo 3 Translate 2B on an owned llama.cpp server (sole translation engine)."""
+    """Gemma 4 E4B on an owned llama.cpp server with reasoning enabled.
 
-    model_path: str = "models/plamo/plamo-3-translate-2b-Q4_K_M.gguf"
+    Uses internal reasoning for better translation quality while keeping only
+    the final translation output in subtitles.
+    """
+
+    model_path: str = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
     server_path: str = LLAMA_SERVER_PATH
     gpu_layers: int = -1  # -1: offload as many layers as GPU headroom allows
-    context_size: int = 2048
+    context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8
-    max_tokens: int = 192
+    max_tokens: int = 512  # increased for reasoning budget
     temperature: float = 0.0
     top_k: int = 20
     top_p: float = 0.6
@@ -449,8 +462,13 @@ def load_config(path: Path) -> Config:
     translation = data.get("translate", {})
     model_path = translation.get("model_path")
     if isinstance(model_path, str) and Path(model_path).name.casefold() == "hy-mt2-7b-q4_k_m.gguf":
-        logging.getLogger(__name__).info("Using the PLaMo default in place of the legacy translation model path")
+        logging.getLogger(__name__).info("Using the Gemma 4 default in place of the legacy translation model path")
         del translation["model_path"]
+    # Handle legacy ASR config keys
+    asr_section = data.get("asr", {})
+    if "mmproj_path" in asr_section:
+        logging.getLogger(__name__).info("Ignoring legacy asr.mmproj_path (not needed for Haas)")
+        del asr_section["mmproj_path"]
 
     return Config(
         safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),

@@ -68,7 +68,7 @@ class ExpiredLiveWorkTests(unittest.TestCase):
         primary.transcribe.assert_called_once()
         self.assertEqual(len(output_q.queue), 2)
 
-    def test_plamo_skips_expired_live_transcript(self):
+    def test_translator_skips_expired_live_transcript(self):
         translator = Mock()
         translator.memory_lines = 0
         input_q, output_q = queue.Queue(), queue.Queue()

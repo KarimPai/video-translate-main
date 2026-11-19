@@ -1,9 +1,15 @@
-"""PLaMo 3 Translate 2B served by an owned llama.cpp server."""
+"""Gemma 4 E4B translator with reasoning support.
+
+Uses internal reasoning for better translation quality while keeping only
+the final translation output in subtitles. Reasoning content is never
+displayed or stored in translation history.
+"""
 from __future__ import annotations
 
 import logging
 import re
 import threading
+import time
 from difflib import SequenceMatcher
 
 import httpx
@@ -13,7 +19,7 @@ from ..glossary import Glossary
 from ..llama_server import LlamaServer, LlamaServerError, gguf_block_count, require_gguf, resolve_executable
 from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..stream_context import StreamContext
-from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup
+from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup, looks_like_prompt_echo
 from ..windows_subprocess import check_running
 from .base import TranslatorUnavailable
 
@@ -21,28 +27,27 @@ log = logging.getLogger(__name__)
 
 MAX_TERMS = 16
 RELIEF_LAYERS = 4
-_GUIDANCE = ("Translate only the current Japanese into natural English subtitles. "
-             "Preserve spoken nicknames, intent and profanity. Use pronouns when supported by the dialogue. "
-             "The reference below is not part of the current speech. Output only the translation.")
-_TAG = re.compile(r"<\|plamo:[a-z_]+\|>", re.I)
-_MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)\*(?=\S)(.+?)(?<=\S)\*(?!\w)")
+_REASONING_LLM = 4  # extra layers for the reasoning head in Gemma 4
+
+_SYSTEM_PROMPT = (
+    "You are a professional Japanese-to-English subtitle translator. "
+    "Translate the Japanese text into natural, conversational English subtitles. "
+    "Prioritize meaning and natural flow over literal word-for-word translation. "
+    "Preserve Japanese names, nicknames, slang, emotion, and profanity. "
+    "Use pronouns when supported by the dialogue context. "
+    "The reference context below is not part of the current speech to translate. "
+    "Output only the English translation, nothing else."
+)
+
 _DIALOGUE = "直前の会話："
 _ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION)\s*[:：]\s*", re.I)
+_MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)\*(?=\S)(.+?)(?<=\S)\*(?!\w)")
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
 
 
-def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "") -> dict:
-    options = {"source_lang": "ja", "target_lang": "en"}
-    if context or style:
-        guidance = _GUIDANCE + (f" Style: {style}." if style else "")
-        options["context"] = _TAG.sub("", "\n".join(part for part in (guidance, context) if part))
-    if terms:
-        options["glossary"] = [{"source": ja, "target": en} for ja, en in terms]
-    return {"messages": [{"role": "user", "content": text}], "chat_template_kwargs": options}
-
-
 def useful_context(text: str) -> bool:
+    """Check if text contains meaningful content worth keeping in context."""
     compact = re.sub(r"[\s、。！？!?…ー〜～]+", "", text)
     return bool(compact) and compact not in {
         "はい", "うん", "ううん", "え", "ええ", "あ", "ああ", "お", "おお", "そう", "そうそう",
@@ -51,7 +56,7 @@ def useful_context(text: str) -> bool:
 
 def build_context(header: str, history: list[tuple[str, str]], lines: int, max_chars: int,
                   *, english: bool = False) -> str:
-    """Budgeted dialogue; English is opt-in because it can recycle translation errors."""
+    """Budgeted dialogue context; English is opt-in because it can recycle errors."""
     header = header[:max_chars]
     sources: list[str] = []
     used = len(header) + (len(_DIALOGUE) + 1 if header else 0)
@@ -67,7 +72,26 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     return "\n".join(part for part in (header, *sources) if part)
 
 
+def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "") -> dict:
+    """Build a chat-completion prompt for Gemma 4 translation."""
+    messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    user_content = text
+    if context or style:
+        guidance = ""
+        if context:
+            guidance = f"Reference context (not part of the speech to translate):\n{context}"
+        if style:
+            guidance += f"\nTranslation style: {style}."
+        user_content = guidance + "\n\nTranslate this Japanese text:\n" + text
+    if terms:
+        glossary_text = "\n".join(f"  {ja} → {en}" for ja, en in terms)
+        user_content = f"Name/term glossary:\n{glossary_text}\n\n" + user_content
+    messages.append({"role": "user", "content": user_content})
+    return {"messages": messages}
+
+
 def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
+    """Find names from the glossary that are missing in the translation."""
     missing = []
     for _, name in names:
         tokens = re.split(r"[- ]+", name)
@@ -78,7 +102,7 @@ def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
 
 
 def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> bool:
-    """A capitalized near-miss (e.g. "Suixian" for "Sui-chan") is a wrong name, not an omission."""
+    """A capitalized near-miss is a wrong name, not an omission."""
     known = {token.casefold() for name in present for token in re.split(r"[-‐‑ ]+", name)}
     targets = set()
     for name in missing:
@@ -87,7 +111,6 @@ def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> b
         targets.update(part for part in parts if len(part) >= 3 and part not in _HONORIFICS)
     for word in _CAPITALIZED.findall(english):
         parts = [part.casefold() for part in re.split(r"[-‐‑]", word)]
-        # An honorific marks a name for certain, but must not inflate similarity.
         honorific = len(parts) > 1 and parts[-1] in _HONORIFICS
         candidates = ({"".join(p for p in parts if p not in _HONORIFICS)} if honorific
                       else {"".join(parts), *parts})
@@ -100,11 +123,16 @@ def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> b
 
 
 def clean_output(text: str) -> str:
-    """Join lines and remove role prefixes, wrapping quotes and orphan quotes."""
+    """Clean translation output: remove role prefixes, markdown, orphan quotes."""
     line = " ".join(part.strip() for part in text.strip().splitlines() if part.strip())
-    if _TAG.search(line) or any(phrase in line.casefold() for phrase in (
-        "translate only the current japanese", "reference below is not part of the current speech",
+    if looks_like_prompt_echo(line):
+        return ""
+    # Reject prompt leakage
+    if any(phrase in line.casefold() for phrase in (
         "output only the translation",
+        "translate only the current japanese",
+        "reference below is not part of the current speech",
+        "you are a professional japanese-to-english subtitle translator",
     )):
         return ""
     line = _ROLE.sub("", line).strip()
@@ -112,7 +140,9 @@ def clean_output(text: str) -> str:
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
 
 
-class PlamoTranslator:
+class Gemma4Translator:
+    """Gemma 4 E4B translator with reasoning support."""
+
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, stream: StreamContext | None = None,
                  gpu_layers: int | None = None) -> None:
         self.cfg = cfg
@@ -121,13 +151,15 @@ class PlamoTranslator:
         self._position: float | None = None
         self._anchor: tuple[str, str] | None = None
         self._newest: tuple[str, str] | None = None
-        self.model = require_gguf(cfg.model_path, "PLaMo 3 Translate 2B model")
+        self.model = require_gguf(cfg.model_path, "Gemma 4 E4B model")
         self.layer_count = gguf_block_count(self.model) or 32
         requested = cfg.gpu_layers if gpu_layers is None else gpu_layers
         self.gpu_layers = self.layer_count if requested < 0 else min(requested, self.layer_count)
         self._relief = threading.Event()
         self._lock = threading.Lock()
         self._closed = False
+        self._failures = 0
+        self._restarts = 0
         self.server = LlamaServer("mt", resolve_executable(cfg.server_path), self._args(),
                                   startup_timeout_s=cfg.load_timeout_s)
         try:
@@ -137,41 +169,56 @@ class PlamoTranslator:
             raise
 
     def _args(self) -> list[str]:
+        """Build llama-server arguments with reasoning enabled."""
         # Offload all layers +1 so the output layer also stays on the GPU.
-        layers = self.gpu_layers + 1 if self.gpu_layers >= self.layer_count else self.gpu_layers
-        return ["-m", str(self.model), "-c", str(self.cfg.context_size), "-np", "1", "--jinja", "--no-prefill-assistant",
-                "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "-fit", "off", "-ngl", str(layers),
-                "-t", str(self.cfg.threads), "--device", f"CUDA{self.cfg.cuda_device}"]
+        # Gemma 4 needs extra layers for the reasoning head.
+        layers = self.gpu_layers + 1 + _REASONING_LLM if self.gpu_layers >= self.layer_count else self.gpu_layers
+        return [
+            "-m", str(self.model),
+            "-c", str(self.cfg.context_size),
+            "-np", "1",
+            "--jinja",
+            "--no-prefill-assistant",
+            "-fa", "on",
+            "-ctk", "q8_0",
+            "-ctv", "q8_0",
+            "-fit", "off",
+            "-ngl", str(layers),
+            "-t", str(self.cfg.threads),
+            "--device", f"CUDA{self.cfg.cuda_device}",
+            "--reasoning", "on",
+            "--reasoning-budget", str(self.cfg.max_tokens // 2),
+        ]
 
     def _start(self) -> None:
         check_running()
         if self._closed:
-            raise LlamaServerError("PLaMo 3 Translate 2B translator is closed")
+            raise LlamaServerError("Gemma 4 E4B translator is closed")
         self.server.args = self._args()
         try:
             self.server.start()
-            # Reserve dialogue-sized prefill workspace before measuring GPU headroom.
+            # Warmup with a typical dialogue-sized prompt
             chars = min(self.cfg.max_context_chars, self.cfg.context_size // 2)
             context = ("これは以前の会話です。" * (chars // 11 + 1))[:chars]
             prompt = build_prompt("こんにちは。今日はみんなでゲームをします。よろしくお願いします。",
                                   self.glossary.terms[:MAX_TERMS], context, self.cfg.style)
             self._chat(prompt, timeout=self.cfg.load_timeout_s)
             check_running()
-            # Short batches use a different CUDA workspace than dialogue prefill.
+            # Short batch warmup
             self._chat(build_prompt("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], "",
                                     self.cfg.style),
                        timeout=self.cfg.load_timeout_s)
             check_running()
         except (httpx.HTTPError, ValueError) as exc:
             check_running()
-            raise LlamaServerError(f"PLaMo 3 Translate 2B startup request failed: {exc}. {self.server.log_tail()}") from exc
+            raise LlamaServerError(f"Gemma 4 E4B startup request failed: {exc}. {self.server.log_tail()}") from exc
         self._relief.clear()
-        update_metrics(workers={"mt": f"ready (PLaMo 3 Translate 2B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
-        log.info("PLaMo 3 Translate 2B ready with %d/%d GPU layers", self.gpu_layers, self.layer_count)
+        update_metrics(workers={"mt": f"ready (Gemma 4 E4B, {self.gpu_layers}/{self.layer_count} GPU layers, reasoning on)"})
+        log.info("Gemma 4 E4B ready with %d/%d GPU layers (reasoning enabled)", self.gpu_layers, self.layer_count)
 
     def reload(self, gpu_layers: int, reason: str) -> None:
         self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
-        log.warning("Reloading PLaMo 3 Translate 2B at %d GPU layers (%s)", self.gpu_layers, reason)
+        log.warning("Reloading Gemma 4 E4B at %d GPU layers (%s)", self.gpu_layers, reason)
         record_event("mt_reload", gpu_layers=self.gpu_layers, reason=reason)
         update_metrics(workers={"mt": "reloading"})
         self._start()
@@ -183,28 +230,50 @@ class PlamoTranslator:
         self._relief.set()
         return True
 
-    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
+    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> tuple[str, str]:
+        """Send a chat request and return (content, reasoning_content).
+
+        Returns only the final answer content for subtitles; reasoning_content
+        is returned separately for diagnostics but never stored in history.
+        """
         body = {
             **prompt,
-            "stop": ["<|plamo:tag|>", "<|plamo:bos|>", "<|plamo:eos|>"],
             "temperature": self.cfg.temperature if temperature is None else temperature,
-            "top_k": self.cfg.top_k, "top_p": self.cfg.top_p,
+            "top_k": self.cfg.top_k,
+            "top_p": self.cfg.top_p,
             "repeat_penalty": self.cfg.repeat_penalty,
-            "max_tokens": self.cfg.max_tokens, "stream": False, "cache_prompt": True,
+            "max_tokens": self.cfg.max_tokens,
+            "stream": False,
+            "cache_prompt": True,
         }
         check_running()
         if self._closed:
-            return ""
+            return "", ""
         payload = self.server.chat(body, timeout=timeout)
         check_running()
         choice = payload["choices"][0]
-        return "" if choice.get("finish_reason") == "length" else choice["message"]["content"]
+        finish_reason = choice.get("finish_reason", "")
+        content = choice["message"]["content"] or ""
+        reasoning = payload.get("_reasoning_content", "") or ""
+
+        # Detect reasoning overflow: empty content with non-empty reasoning
+        if not content.strip() and reasoning.strip():
+            log.warning("Reasoning overflow: reasoning consumed all tokens. finish_reason=%s", finish_reason)
+            increment_counter("mt_reasoning_overflow")
+            return "", reasoning
+
+        # Detect truncated responses
+        if finish_reason == "length":
+            log.debug("Truncated response (max_tokens=%d)", self.cfg.max_tokens)
+            increment_counter("mt_truncated")
+
+        return content, reasoning
 
     def set_position(self, start_s: float | None) -> None:
         self._position = start_s
 
     def _window(self, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        """Grow from a fixed first line, then restart at half size, so the prefix stays cached."""
+        """Grow from a fixed first line, then restart at half size."""
         lines = self.cfg.context_lines
         usable = [pair for pair in history if useful_context(pair[0])][-lines:] if lines else []
         start = 0
@@ -230,8 +299,6 @@ class PlamoTranslator:
         names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
         found = self.glossary.find(ja, context=source_context)
         extra = [term for term in found if term not in names]
-        # Prioritize short nicknames that match the source as whole words so
-        # they are not crowded out by longer terms under the MAX_TERMS cap.
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
         rest = [t for t in extra if t not in exact]
         terms = names + exact + rest
@@ -256,8 +323,14 @@ class PlamoTranslator:
                 context = self._context(history)
                 terms, names = self._terms_for(ja, context)
                 prompt = build_prompt(ja, terms, context, self.cfg.style)
+
+                # Latency budget enforcement
+                started = time.monotonic()
+                latency_budget = self.cfg.timeout_s * 0.7  # 70% of timeout for translation
+
                 try:
-                    english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
+                    english, reasoning = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    english = clean_output(english)
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
                     if self._closed:
                         return ""
@@ -265,7 +338,23 @@ class PlamoTranslator:
                     if self.server.alive():
                         raise
                     self._recover(str(exc))
-                    english = clean_output(self._chat(prompt, timeout=self.cfg.timeout_s))
+                    english, reasoning = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    english = clean_output(english)
+
+                # Check latency budget
+                elapsed = time.monotonic() - started
+                if elapsed > latency_budget:
+                    log.warning("Translation latency %.2fs exceeded budget %.2fs", elapsed, latency_budget)
+                    increment_counter("mt_latency_exceeded")
+
+                # Handle empty output — retry with reduced context
+                if not english:
+                    fallback = build_prompt(ja, terms, "")
+                    increment_counter("mt_retries")
+                    english, _ = self._chat(fallback, timeout=self.cfg.timeout_s)
+                    english = clean_output(english)
+
+                # Check for missing names and retry if needed
                 missing = missing_names(english, names)
                 if not self._closed and (english_output_issue(english) or missing):
                     fallback = build_prompt(ja, terms, "")
@@ -274,9 +363,15 @@ class PlamoTranslator:
                         increment_counter("mt_retries")
                         if missing:
                             record_event("mt_name_retry", names=missing)
-                        candidates.append(clean_output(self._chat(fallback, timeout=self.cfg.timeout_s,
-                                                                  temperature=0.0)))
+                        candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
+                        candidates.append(clean_output(candidate))
                     english = self._best(candidates, names)
+
+                # Final validation: never return reasoning content
+                if reasoning and not english:
+                    log.warning("Empty final answer after reasoning; returning empty")
+                    return ""
+
                 return "" if self._closed else english
             except (httpx.HTTPError, LlamaServerError, ValueError):
                 if self._closed:
@@ -303,11 +398,10 @@ class PlamoTranslator:
         return text
 
     def _recover(self, reason: str) -> None:
-        # A dead server on a shared GPU is almost always an allocation failure.
         try:
             self.reload(self.gpu_layers - RELIEF_LAYERS * 2, reason)
         except LlamaServerError as exc:
-            raise TranslatorUnavailable(f"PLaMo 3 Translate 2B server could not restart: {exc}") from exc
+            raise TranslatorUnavailable(f"Gemma 4 E4B server could not restart: {exc}") from exc
 
     def interrupt(self) -> None:
         self._closed = True

@@ -264,8 +264,8 @@ class QtDiagnosticSettingsTests(unittest.TestCase):
         self.assertFalse(window.safe_playback_checkbox.isChecked())
         self.assertTrue(window.diagnostics_checkbox.isChecked())
         self.assertFalse(window.include_windows_events.isChecked())
-        self.assertIn("Qwen3-ASR-1.7B-Q8_0.gguf", window.asr_model.text())
-        self.assertIn("plamo-3-translate-2b-Q4_K_M.gguf", window.mt_model.text())
+        self.assertIn("haas-ja-v1.0", window.asr_model.text())
+        self.assertIn("google_gemma-4-E4B-it-Q4_K_M.gguf", window.mt_model.text())
         for value in (0, 20):
             window.context_lines.setValue(value)
             self.assertEqual(window.context_lines.value(), value)

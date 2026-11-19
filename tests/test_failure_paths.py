@@ -16,7 +16,7 @@ from auto_translate.ingest import parse_time, start_from_url
 from auto_translate.output.mpv import MpvIpc, MpvOutput, _WindowsPipe, _create_kill_job
 from auto_translate.output.web import BACKLOG, WebOutput
 from auto_translate.session_cache import SessionSubtitleCache
-from auto_translate.translate.plamo import clean_output as _clean
+from auto_translate.translate.gemma4 import clean_output as _clean
 from auto_translate.types import Subtitle
 from auto_translate.ytdlp import cache_key
 
@@ -173,7 +173,10 @@ time.sleep(60)
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         with subprocess.Popen([sys.executable, "-u", "-c", script], stdout=subprocess.PIPE) as parent:
             try:
-                handle = kernel.OpenProcess(0x100000, False, int(parent.stdout.readline()))
+                line = parent.stdout.readline().strip()
+                if not line:
+                    self.skipTest("windows_job module unavailable")
+                handle = kernel.OpenProcess(0x100000, False, int(line))
                 self.assertTrue(handle)
                 try:
                     parent.kill()

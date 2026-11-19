@@ -1,8 +1,10 @@
 # Relative paths are resolved from the project directory.
 [asr]
-model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
-mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+# Haas-ja-v1.0 is built into speech.cpp; model_path is the model name.
+model_path = "haas-ja-v1.0"
+# Leave empty to find speech.exe on PATH, or set explicit path.
+server_path = ""
+speech_server_path = ""
 cuda_device = 0
 threads = 8
 context = ""
@@ -57,14 +59,14 @@ max_japanese_probability = 0.12
 min_top_margin = 0.45
 
 [translate]
-model_path = "models/plamo/plamo-3-translate-2b-Q4_K_M.gguf"
+model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 # -1 selects adaptive GPU offload; 0 keeps the translation model on CPU.
 gpu_layers = -1
-context_size = 2048
+context_size = 4096
 cuda_device = 0
 threads = 8
-max_tokens = 192
+max_tokens = 512  # increased for reasoning budget
 temperature = 0.0
 top_k = 20
 top_p = 0.6

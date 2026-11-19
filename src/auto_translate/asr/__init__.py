@@ -2,7 +2,7 @@
 from ..config import AsrConfig
 from ..glossary import Glossary
 from .base import ASR
-from .qwen3 import Qwen3ASR
+from .haas import HaasASR
 
 
 def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "") -> str:
@@ -34,4 +34,4 @@ def asr_context(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "
 
 
 def create_asr(cfg: AsrConfig, glossary: Glossary | None = None, title: str = "") -> ASR:
-    return Qwen3ASR(cfg, asr_context(cfg, glossary, title))
+    return HaasASR(cfg, asr_context(cfg, glossary, title))

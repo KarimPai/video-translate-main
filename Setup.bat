@@ -2,17 +2,17 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Qwen3-ASR + PLaMo 3 - First-time Setup
+title Haas-ja-v1.0 + Gemma 4 E4B - First-time Setup
 
 echo ============================================
-echo   Qwen3-ASR + PLaMo 3 - Windows Setup
+echo   Haas-ja-v1.0 + Gemma 4 E4B - Windows Setup
 echo ============================================
 echo.
 echo This installs Windows tools, Python packages,
-echo and CUDA llama.cpp.
+echo CUDA llama.cpp, and speech.cpp.
 echo Setup reuses compatible local models when available:
-echo Qwen3-ASR-1.7B Q8_0, its Q8_0 audio projector,
-echo and PLaMo 3 Translate 2B Q4_K_M.
+echo Haas-ja-v1.0 (built into speech.cpp) and
+echo Gemma 4 E4B Q4_K_M.
 echo Downloads and installers require internet access.
 echo.
 

@@ -1,4 +1,4 @@
-# Windows 11 x64, NVIDIA CUDA; run through ../Setup.bat.
+# Windows 11 x64, NVIDIA CUDA; run through ../Setup.bat. Installs llama.cpp and speech.cpp.
 param([Parameter(Mandatory = $true)][string]$ProjectDir)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -72,7 +72,7 @@ try {
     }
     $adapterNames = @((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name))
     if (@($adapterNames | Where-Object { $_ -match 'NVIDIA' }).Count -eq 0) {
-        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Qwen3-ASR + PLaMo 3 Translate 2B.'
+        throw 'This branch requires an NVIDIA GPU with a current CUDA-capable driver for Haas-ja-v1.0 + Gemma 4 E4B.'
     }
     Write-Host 'Detected video adapters:' ($adapterNames -join '; ')
 
@@ -112,21 +112,21 @@ try {
     & nvidia-smi.exe --query-gpu=name,driver_version,memory.total,memory.free --format=csv
     if ($LASTEXITCODE -ne 0) { throw 'NVIDIA driver query failed. Repair/update the NVIDIA driver before using CUDA llama.cpp.' }
 
-    Step 'Installing pinned CUDA 12.4 llama.cpp runtime for Qwen3-ASR + PLaMo 3 Translate 2B'
+    Step 'Installing pinned CUDA 12.4 llama.cpp runtime for Gemma 4 E4B'
     $installRoot = Join-Path $ProjectDir '.runtime'
     $llamaRoot = Join-Path $installRoot 'llama-b12318-cuda12'
     $pathFile = Join-Path $cache 'llama-bin-path.txt'
     New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
     $existingServer = Get-ChildItem -LiteralPath $llamaRoot -Recurse -Filter 'llama-server.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $existingServer) {
-        $headers = @{ 'User-Agent' = 'VideoTranslate-Qwen3-ASR-PLaMo-Setup'; 'Accept' = 'application/vnd.github+json' }
+        $headers = @{ 'User-Agent' = 'VideoTranslate-Haas-Gemma4-Setup'; 'Accept' = 'application/vnd.github+json' }
         $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b12318' -Headers $headers
         $build = $release.assets | Where-Object name -eq 'llama-b12318-bin-win-cuda-12.4-x64.zip'
         $runtime = $release.assets | Where-Object name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'
         if (-not $build -or -not $runtime) {
             throw 'No matching CUDA 12.4 llama.cpp Windows release found. See https://github.com/ggml-org/llama.cpp/releases'
         }
-        $downloadDir = Join-Path $ProjectDir ('.cache\qwen3-asr-plamo-' + [guid]::NewGuid().ToString('N'))
+        $downloadDir = Join-Path $ProjectDir ('.cache\haas-gemma4-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
         try {
             $buildZip = Join-Path $downloadDir 'llama.zip'
@@ -145,19 +145,49 @@ try {
     & $existingServer.FullName --version
     if ($LASTEXITCODE -ne 0) { throw 'llama-server.exe failed to launch. Update the NVIDIA driver or check CUDA runtime DLLs.' }
 
+    Step 'Installing speech.cpp runtime for Haas-ja-v1.0'
+    $speechRoot = Join-Path $installRoot 'speech-cpp'
+    $speechPathFile = Join-Path $cache 'speech-bin-path.txt'
+    New-Item -ItemType Directory -Path $speechRoot -Force | Out-Null
+    $existingSpeech = Get-ChildItem -LiteralPath $speechRoot -Recurse -Filter 'speech.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $existingSpeech) {
+        $headers = @{ 'User-Agent' = 'VideoTranslate-Haas-Gemma4-Setup'; 'Accept' = 'application/vnd.github+json' }
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ufuji68/speech.cpp/releases/latest' -Headers $headers
+        $asset = $release.assets | Where-Object name -match 'win.*x64'
+        if (-not $asset) {
+            Write-Host 'No matching speech.cpp Windows release found. Install speech.cpp manually or ensure speech.exe is on PATH.'
+        } else {
+            Write-Host "Downloading $($asset.name)..."
+            $speechZip = Join-Path $speechRoot 'speech.zip'
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $speechZip -UseBasicParsing
+            Expand-Archive -LiteralPath $speechZip -DestinationPath $speechRoot -Force
+            Remove-Item -LiteralPath $speechZip -Force -ErrorAction SilentlyContinue
+            $existingSpeech = Get-ChildItem -LiteralPath $speechRoot -Recurse -Filter 'speech.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+    }
+    if ($existingSpeech) {
+        $speechBinDir = $existingSpeech.Directory.FullName
+        [IO.File]::WriteAllText($speechPathFile, $speechBinDir)
+        $env:Path = "$speechBinDir;$env:Path"
+        & $existingSpeech.FullName --version 2>&1 | Out-Null
+        Write-Host "speech.cpp found: $($existingSpeech.FullName)"
+    } else {
+        Write-Host 'speech.cpp not found. Ensure speech.exe is on PATH or install it manually from https://github.com/ufuji68/speech.cpp'
+    }
+
     Step 'Checking Python environment'
     Push-Location -LiteralPath $ProjectDir
     try {
         & uv run --no-sync python -c 'import numpy, fireredvad, torch, onnxruntime, PySide6, auto_translate; assert torch.version.cuda is None'
         if ($LASTEXITCODE -ne 0) { throw 'Python import check failed.' }
         & uv run --no-sync python -m auto_translate.models
-        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Qwen3-ASR + PLaMo 3 Translate 2B models. Rerun Setup to resume.' }
-        Write-Host 'Python dependencies, Qwen3-ASR Q8_0 and PLaMo 3 Translate 2B Q4_K_M model integrity checks OK'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not download/verify Gemma 4 E4B model. Rerun Setup to resume.' }
+        Write-Host 'Python dependencies and Gemma 4 E4B Q4_K_M model integrity checks OK'
     } finally { Pop-Location }
 
     Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host 'Qwen3-ASR Q8_0 and audio projector and PLaMo 3 Translate 2B Q4_K_M are ready (paths above).'
-    Write-Host 'A CUDA-capable NVIDIA driver is required. FireRedVAD runs on CPU.'
+    Write-Host 'Haas-ja-v1.0 (built into speech.cpp) and Gemma 4 E4B Q4_K_M are ready (paths above).'
+    Write-Host 'A CUDA-capable NVIDIA driver is required for Gemma. FireRedVAD runs on CPU.'
     exit 0
 } catch {
     Write-Host "`nSETUP ERROR: $($_.Exception.Message)" -ForegroundColor Red

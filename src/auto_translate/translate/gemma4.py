@@ -185,7 +185,7 @@ class Gemma4Translator:
             "-fit", "off",
             "-ngl", str(layers),
             "-t", str(self.cfg.threads),
-            "--device", f"CUDA{self.cfg.cuda_device}",
+            "--device", f"Vulkan{self.cfg.cuda_device}",
             "--reasoning", "on",
             "--reasoning-budget", str(self.cfg.max_tokens // 2),
         ]

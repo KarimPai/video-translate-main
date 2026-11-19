@@ -160,7 +160,8 @@ class Gemma4Translator:
         self._closed = False
         self._failures = 0
         self._restarts = 0
-        self.server = LlamaServer("mt", resolve_executable(cfg.server_path), self._args(),
+        self.executable = resolve_executable(cfg.server_path)
+        self.server = LlamaServer("mt", self.executable, self._args(),
                                   startup_timeout_s=cfg.load_timeout_s)
         try:
             self._start()
@@ -173,8 +174,8 @@ class Gemma4Translator:
         # Offload all layers +1 so the output layer also stays on the GPU.
         # Gemma 4 needs extra layers for the reasoning head.
         layers = self.gpu_layers + 1 + _REASONING_LLM if self.gpu_layers >= self.layer_count else self.gpu_layers
-        # Auto-detect best available GPU device: CUDA for NVIDIA (faster), Vulkan as fallback
-        device = detect_device(self.cfg.cuda_device)
+        # Auto-detect GPU device using the actual executable (CUDA build from .runtime/)
+        device = detect_device(self.executable)
         return [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),

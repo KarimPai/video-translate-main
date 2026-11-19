@@ -32,6 +32,50 @@ def resolve_executable(path: str) -> Path:
     raise LlamaServerError(f"llama-server not found: {path}. Install llama.cpp via scripts/Setup-Windows.ps1.")
 
 
+def detect_device(cuda_device: int | None = None) -> str:
+    """Detect the best available GPU device for llama-server.
+
+    Prefers CUDA for NVIDIA GPUs (better performance), falls back to Vulkan.
+    Returns a device string like "CUDA0" or "Vulkan0" suitable for --device flag.
+    """
+    import re
+
+    exe = None
+    try:
+        exe = resolve_executable("")
+    except LlamaServerError:
+        pass
+
+    if exe is None:
+        # No executable found, default to Vulkan (safest cross-platform default)
+        return "Vulkan0"
+
+    try:
+        result = subprocess.run(
+            [str(exe), "--list-devices"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=hidden_console_flags(),
+        )
+        output = result.stdout + result.stderr
+        # Parse output like:
+        #   "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 3070 ..."
+        # or "Available device: CUDA0 NVIDIA GeForce RTX 3070 ..."
+        # Match indented device names: "  Vulkan0:" or "  CUDA0:"
+        devices = re.findall(r"^\s+(\w+\d+):", output, re.MULTILINE)
+        if devices:
+            # Prefer CUDA over Vulkan for NVIDIA GPUs
+            for dev in devices:
+                if dev.startswith("CUDA"):
+                    return dev
+            # Fall back to first available GPU device
+            return devices[0]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Fallback: assume Vulkan (works with both CUDA and Vulkan builds)
+    return "Vulkan0"
+
+
 def require_gguf(path: str, label: str) -> Path:
     model = Path(path).expanduser().resolve()
     if not model.is_file():

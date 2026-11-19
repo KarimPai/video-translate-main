@@ -16,7 +16,7 @@ import httpx
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
-from ..llama_server import LlamaServer, LlamaServerError, gguf_block_count, require_gguf, resolve_executable
+from ..llama_server import LlamaServer, LlamaServerError, detect_device, gguf_block_count, require_gguf, resolve_executable
 from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..stream_context import StreamContext
 from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup, looks_like_prompt_echo
@@ -173,6 +173,8 @@ class Gemma4Translator:
         # Offload all layers +1 so the output layer also stays on the GPU.
         # Gemma 4 needs extra layers for the reasoning head.
         layers = self.gpu_layers + 1 + _REASONING_LLM if self.gpu_layers >= self.layer_count else self.gpu_layers
+        # Auto-detect best available GPU device: CUDA for NVIDIA (faster), Vulkan as fallback
+        device = detect_device(self.cfg.cuda_device)
         return [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),
@@ -185,7 +187,7 @@ class Gemma4Translator:
             "-fit", "off",
             "-ngl", str(layers),
             "-t", str(self.cfg.threads),
-            "--device", f"Vulkan{self.cfg.cuda_device}",
+            "--device", device,
             "--reasoning", "on",
             "--reasoning-budget", str(self.cfg.max_tokens // 2),
         ]

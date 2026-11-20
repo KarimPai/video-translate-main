@@ -604,17 +604,18 @@ class PlamoTranslator:
                     log.warning("Translation latency %.2fs exceeded budget %.2fs", elapsed, latency_budget)
                     increment_counter("mt_latency_exceeded")
 
-                # Retry 1: empty or invalid output — try minimal prompt
+                # Retry 1: empty or invalid output — try simplified prompt (no glossary/context)
+                # to give the model more output tokens. This catches cases where PLaMo returns
+                # empty for long/complex Japanese text even with max_tokens=512.
                 if self._is_invalid(english) and retries_left > 0 and _elapsed_ok():
                     req_key = "minimal"
                     if not _repeated(english, req_key):
                         issue = english_output_issue(english)
                         if issue:
                             record_event("mt_rejected", reason=issue, retry=True)
-                        minimal = build_plamo_prompt(ja, [], "")
                         retries_left -= 1
                         increment_counter("mt_retries")
-                        english, _ = self._chat(minimal, timeout=self.cfg.timeout_s)
+                        english, _ = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
                         _record(english, req_key)
                         english = clean_output(english)
 

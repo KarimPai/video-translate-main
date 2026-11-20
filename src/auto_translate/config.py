@@ -558,7 +558,8 @@ def _is_compatible_identity(backend_name: str, field: str, common_value: str,
 
 
 def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
-                       explicit_overrides: dict | None = None) -> dict:
+                       explicit_overrides: dict | None = None,
+                       selected_backend: str | None = None) -> dict:
     """Merge common config with backend-specific profile and explicit overrides.
 
     Precedence (highest to lowest):
@@ -572,6 +573,10 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
       value is used as the compatible default.
     - Otherwise, the field is empty — no cross-backend contamination.
     - Explicit GUI/CLI overrides always win.
+
+    When `selected_backend` is provided, model_path overrides in `explicit_overrides`
+    are scoped to that backend only, preventing --mt-model from overriding a different
+    backend's model path.
     """
     if backend_type == "asr":
         common = {f.name: getattr(cfg.asr, f.name) for f in fields(cfg.asr)}
@@ -606,8 +611,13 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
     # Layer 2: backend-specific profile overrides common
     merged.update(profile)
     # Layer 3: explicit GUI/CLI overrides (highest priority)
+    # Scope model_path to the selected backend to prevent cross-backend contamination
     if explicit_overrides:
-        merged.update(explicit_overrides)
+        scoped_overrides = dict(explicit_overrides)
+        if selected_backend is not None and backend_name != selected_backend:
+            # Remove model_path override for non-selected backends
+            scoped_overrides.pop("model_path", None)
+        merged.update(scoped_overrides)
     return merged
 
 

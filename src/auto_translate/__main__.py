@@ -285,7 +285,8 @@ def _main(resources: ExitStack) -> None:
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
-                                     explicit_overrides=asr_cli_overrides if asr_cli_overrides else None)
+                                     explicit_overrides=asr_cli_overrides if asr_cli_overrides else None,
+                                     selected_backend=asr_backend_name)
     # Derive timeout from the already-merged profile (backend-specific values
     # take precedence over common config). For live mode, use the shorter
     # live_response_timeout_s; for VOD, use response_timeout_s.
@@ -406,14 +407,16 @@ def _main(resources: ExitStack) -> None:
     # explicit CLI override > backend profile > common config.
     from .config import get_backend_config
     translate_profile = get_backend_config(cfg, "translate", cfg.models.translate_backend,
-                                           explicit_overrides=translate_cli_overrides)
+                                           explicit_overrides=translate_cli_overrides,
+                                           selected_backend=cfg.models.translate_backend)
     for key in ("context_lines", "merge_fragments", "merge_max_gap_s", "merge_max_s",
                 "live_merge_margin_s", "max_identical_cues", "timeout_s"):
         if key in translate_profile:
             setattr(cfg.translate, key, translate_profile[key])
 
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
-                                     explicit_overrides=asr_cli_overrides)
+                                     explicit_overrides=asr_cli_overrides,
+                                     selected_backend=asr_backend_name)
     for key in ("response_timeout_s", "live_response_timeout_s"):
         if key in asr_profile:
             setattr(cfg.asr, key, asr_profile[key])
@@ -447,7 +450,8 @@ def _load_translator(cfg, glossary, stream_context, budget, log, registry,
 
     translate_backend_name = cfg.models.translate_backend
     translate_profile = get_backend_config(cfg, "translate", translate_backend_name,
-                                           explicit_overrides=translate_cli_overrides)
+                                           explicit_overrides=translate_cli_overrides,
+                                           selected_backend=translate_backend_name)
 
     headroom = cfg.gpu_budget.startup_headroom_gb
     auto = translate_profile.get("gpu_layers", -1) < 0

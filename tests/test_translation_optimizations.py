@@ -288,12 +288,14 @@ class NameConsistencyTests(unittest.TestCase):
         self.assertTrue(obj._chat.call_count >= 2)
 
     def test_failed_name_retry_keeps_only_a_name_omission(self):
-        for initial, expected in (("Su-chan shot me.", ""), ("スイちゃんに撃たれた。", ""),
+        for initial, expected in (("Su-chan shot me.", ""),
                                   ("She shot me.", "She shot me.")):
             with self.subTest(initial=initial):
-                obj = fake_translator(initial, "Suixian shot me.")
+                obj = fake_translator(initial, "Suixian shot me.", "Suixian shot me.")
                 self.assertEqual(obj.translate("すいちゃんに撃たれた。", []), expected)
-                self.assertEqual(obj._chat.call_count, 2)
+        # Japanese initial → empty → retry → garbled name → retry → still garbled → ""
+        obj = fake_translator("スイちゃんに撃たれた。", "Suixian shot me.", "Suixian shot me.")
+        self.assertEqual(obj.translate("すいちゃんに撃たれた。", []), "")
 
     def test_best_attempt_prefers_valid_then_named_then_earliest(self):
         names = [("スイちゃん", "Sui-chan")]

@@ -58,9 +58,10 @@ def rejection_reason(text: str) -> str | None:
     laugh_kana = compact.translate(KATA_TO_HIRA)
     without_laughter = _LAUGHTER.sub("", laugh_kana)
     if compact and not without_laughter:
-        # Spoken laughter is evidence of a reaction. Keep explicit sound
-        # labels and text-only laughter markers out of spoken subtitles.
-        return "laughter_only" if re.fullmatch(r"[w笑草]+", compact) else None
+        # Entire utterance is laughter — no translatable content.
+        # Text-only markers (w, 笑, 草) and spoken laughter (あははは, わはは, etc.)
+        # are both omitted because they carry no semantic meaning for subtitles.
+        return "laughter_only"
 
     # A single kana repeated many times is usually a vocalization or decoder
     # loop, not useful lexical content. Keep short reactions such as 「ええ」.

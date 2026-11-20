@@ -24,15 +24,14 @@ MAX_TERMS = 16
 RELIEF_LAYERS = 4
 
 _SYSTEM_PROMPT = (
-    "You are a professional Japanese-to-English subtitle translator. "
-    "Translate the Japanese text into natural, conversational English subtitles. "
-    "Prioritize meaning and natural flow over literal word-for-word translation. "
-    "Preserve Japanese names, nicknames, slang, emotion, and profanity. "
-    "Use pronouns when supported by the dialogue context. "
-    "The reference context below is not part of the current speech to translate. "
-    "Output exactly one English translation per utterance. "
-    "Never output slash-separated alternatives (e.g. 'Hello/Hi'), definitions, or multiple meanings. "
-    "Never add explanatory text, translation notes, or parenthetical comments. "
+    "You are a Japanese-to-English subtitle translator. "
+    "Translate the Japanese text into natural English. "
+    "Preserve the speaker's meaning, emotion, profanity, and conversational tone. "
+    "Preserve Japanese names and nicknames exactly as spoken; do not expand abbreviations. "
+    "Do not invent speakers, names, actions, or details absent from the Japanese text. "
+    "Do not add explanatory notes, definitions, or parenthetical comments. "
+    "Do not output slash-separated alternatives. "
+    "When the Japanese omits a subject, do not invent one — keep the English natural without forcing a pronoun. "
     "Output only the English translation, nothing else."
 )
 
@@ -494,9 +493,9 @@ class Gemma4Translator:
         terms, _ = self._terms_for(ja, context)
         return build_prompt(ja, terms, context, self.cfg.style)
 
-    # Shared retry budget: max 2 additional inference requests per utterance.
+    # Shared retry budget: max 3 additional inference requests per utterance.
     # At most 1 truncation retry, remaining budget for output validation retries.
-    _MAX_RETRIES = 2
+    _MAX_RETRIES = 3
     _MAX_TRUNCATION_RETRIES = 1
 
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
@@ -560,22 +559,36 @@ class Gemma4Translator:
                     log.warning("Translation latency %.2fs exceeded budget %.2fs", elapsed, latency_budget)
                     increment_counter("mt_latency_exceeded")
 
-                # Handle empty output — retry with reduced context within budget
+                # Retry 1: empty output — retry with no context (context may confuse the model)
                 if not english and retries_left > 0:
                     issue = english_output_issue(english)
                     if issue:
                         record_event("mt_rejected", reason=issue, retry=True)
-                    fallback = build_prompt(ja, terms, "")
+                    # Strip all context and glossary for a clean retry
+                    minimal = build_prompt(ja, [], "")
                     retries_left -= 1
                     increment_counter("mt_retries")
-                    english, _ = self._chat(fallback, timeout=self.cfg.timeout_s)
+                    english, _ = self._chat(minimal, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
-                # Check for output issues and retry if needed within budget
+                # Retry 2: output contains untranslated Japanese — retry with minimal prompt
+                if retries_left > 0 and english:
+                    output_issue = english_output_issue(english)
+                    if output_issue == "untranslated_japanese":
+                        record_event("mt_rejected", reason=output_issue, retry=True)
+                        increment_counter("mt_rejected")
+                        minimal = build_prompt(ja, [], "")
+                        retries_left -= 1
+                        increment_counter("mt_retries")
+                        candidate, _ = self._chat(minimal, timeout=self.cfg.timeout_s, temperature=0.2)
+                        cleaned = clean_output(candidate)
+                        if cleaned and not english_output_issue(cleaned):
+                            english = cleaned
+
+                # Retry 3: missing or garbled names — retry with context-free prompt
                 output_issue = english_output_issue(english)
                 missing = missing_names(english, names)
                 if not self._closed and retries_left > 0 and (output_issue or missing):
-                    # Record rejection reason for diagnostics
                     if output_issue:
                         record_event("mt_rejected", reason=output_issue, retry=True)
                         increment_counter("mt_rejected")

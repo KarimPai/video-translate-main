@@ -33,10 +33,13 @@ def recognize(asr, *segments, **options):
 class ContextLeakTests(unittest.TestCase):
     def test_conversation_and_nicknames_use_one_decode(self):
         for text in ("銀行強盗だ！", "無線で救急隊に応援を頼んで。犯人はまだ店の中！",
-                     "やばい", "えぐい", "ラプ", "みこち", "あはは！"):
+                     "やばい", "えぐい", "ラプ", "みこち"):
             with self.subTest(text=text):
                 asr = fake_asr(text, context=CONTEXT)
                 self.assertEqual(asr.transcribe(PCM), text)
+        # Laughter-only text is now filtered at the ASR quality guard level
+        asr = fake_asr("あはは！", context=CONTEXT)
+        self.assertEqual(asr.transcribe(PCM), "")
 
     def test_spoken_list_corroborated_on_speech_can_pass(self):
         asr = fake_asr(SPILL, WORDS + "!", context=CONTEXT)

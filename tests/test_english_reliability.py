@@ -77,10 +77,12 @@ class EnglishReliabilityTests(unittest.TestCase):
         self.assertEqual(obj._chat.call_count, 2)
 
     def test_equivalent_deterministic_request_is_not_repeated(self):
-        obj = fake_translator("今日は晴れです")
+        # Japanese output → empty after clean_output → Retry 1 (minimal prompt) → still Japanese → ""
+        # Retry 2 skipped (english empty), Retry 3 skipped (fallback == prompt, temperature == 0)
+        obj = fake_translator("今日は晴れです", "今日は晴れです")
         obj.cfg.style = ""
         self.assertEqual(obj.translate("今日は晴れです", []), "")
-        obj._chat.assert_called_once()
+        self.assertEqual(obj._chat.call_count, 2)
 
     def test_template_leaks_are_rejected_but_profanity_is_preserved(self):
         for text in ("Output only the translation.", "You are a professional Japanese-to-English subtitle translator"):
@@ -88,12 +90,13 @@ class EnglishReliabilityTests(unittest.TestCase):
         self.assertEqual(clean_output("EN: That's **fucking** funny."), "That's fucking funny.")
 
     def test_all_invalid_candidates_suppress_and_continue(self):
-        # First translate(): 2 calls (initial + retry), both invalid -> ""
-        # Second translate(): 1 call -> "Hello!"
-        obj = fake_translator("今日は晴れです", "It is 晴れです", "Hello!")
+        # With 3 retries: initial + retry(empty) + retry(untranslated_jp) + retry(names)
+        # All 4 calls return invalid -> ""
+        # Fifth call (second translate()) returns valid
+        obj = fake_translator("今日は晴れです", "It is 晴れです", "晴れです", "It is 晴れです", "Hello!")
         self.assertEqual(obj.translate("今日は晴れです", []), "")
         self.assertEqual(obj.translate("こんにちは", []), "Hello!")
-        self.assertEqual(obj._chat.call_count, 3)
+        self.assertEqual(obj._chat.call_count, 5)
 
     def test_valid_output_is_not_retried(self):
         obj = fake_translator("EN: Matsuri is going.\n")

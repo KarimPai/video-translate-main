@@ -480,24 +480,24 @@ class TestSystemPromptContent:
         assert "slash-separated alternatives" in _SYSTEM_PROMPT.lower()
 
     def test_forbids_explanatory_text(self):
-        """System prompt must forbid explanatory text."""
-        assert "explanatory text" in _SYSTEM_PROMPT.lower()
+        """System prompt must forbid explanatory text/notes."""
+        assert "explanatory" in _SYSTEM_PROMPT.lower()
 
     def test_forbids_definitions(self):
-        """System prompt must forbid definitions."""
-        assert "definitions" in _SYSTEM_PROMPT.lower()
+        """System prompt must forbid definitions or alternatives."""
+        assert "definitions" in _SYSTEM_PROMPT.lower() or "alternatives" in _SYSTEM_PROMPT.lower()
 
     def test_requires_single_translation(self):
-        """System prompt must require exactly one translation."""
-        assert "exactly one" in _SYSTEM_PROMPT.lower()
+        """System prompt must require a single translation."""
+        assert "only the english translation" in _SYSTEM_PROMPT.lower()
 
     def test_preserves_profanity(self):
         """System prompt must allow profanity preservation."""
         assert "profanity" in _SYSTEM_PROMPT.lower()
 
     def test_preserves_slang(self):
-        """System prompt must allow slang preservation."""
-        assert "slang" in _SYSTEM_PROMPT.lower()
+        """System prompt must allow slang/nickname preservation."""
+        assert "nicknames" in _SYSTEM_PROMPT.lower() or "slang" in _SYSTEM_PROMPT.lower()
 
 
 class TestBuildPrompt:

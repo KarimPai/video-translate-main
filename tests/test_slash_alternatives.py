@@ -27,16 +27,16 @@ class TestSystemPrompt:
         assert "slash-separated alternatives" in _SYSTEM_PROMPT.lower() or "slash" in _SYSTEM_PROMPT.lower()
 
     def test_forbids_explanatory_text(self):
-        """System prompt must explicitly forbid explanatory text."""
-        assert "explanatory text" in _SYSTEM_PROMPT.lower() or "translation notes" in _SYSTEM_PROMPT.lower()
+        """System prompt must explicitly forbid explanatory notes."""
+        assert "explanatory" in _SYSTEM_PROMPT.lower() or "translation notes" in _SYSTEM_PROMPT.lower()
 
     def test_forbids_definitions(self):
         """System prompt must explicitly forbid definitions."""
         assert "definitions" in _SYSTEM_PROMPT.lower() or "multiple meanings" in _SYSTEM_PROMPT.lower()
 
     def test_requires_single_translation(self):
-        """System prompt must require exactly one translation."""
-        assert "exactly one" in _SYSTEM_PROMPT.lower() or "one english translation" in _SYSTEM_PROMPT.lower()
+        """System prompt must require a single translation."""
+        assert "only the english translation" in _SYSTEM_PROMPT.lower() or "one translation" in _SYSTEM_PROMPT.lower()
 
 
 class TestSlashAlternativesDetection:

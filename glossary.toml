@@ -338,7 +338,11 @@
 # Laplus
 "らぷ" = "Lap"
 "ラプ" = "Lap"
+"ラプちゃん" = "Lap-chan"
 "ラプラス" = "Laplus"
+# Akutan (ASR may transcribe as アクタン or アクター)
+"アクタン" = "Akutan"
+"アクター" = "Akutan"
 # Other common nicknames
 "こより" = "Koyori"
 "ねねち" = "Nenechi"

@@ -581,10 +581,16 @@ def run_translate(
                 if suppress_empty:
                     suppressed = True
                 else:
-                    # Fall back to Japanese original when translation is empty
-                    en = tr.ja
-                    log.debug(
-                        "Translation empty - falling back to Japanese: gen=%d source=%.2f-%.2fs ja=%r",
+                    # Translation failed — do NOT fall back to Japanese as English.
+                    # Showing Japanese in the English field is worse than no subtitle.
+                    # The config option suppress_empty_translation=false originally
+                    # intended to preserve content, but Japanese-in-English confuses
+                    # viewers and breaks the MPV output module. Instead, suppress
+                    # with a clear diagnostic so the failure is visible.
+                    suppressed = True
+                    log.info(
+                        "Translation failed - suppressing subtitle (not falling back to Japanese): "
+                        "gen=%d source=%.2f-%.2fs ja=%r",
                         tr.generation, tr.start_s, tr.end_s, tr.ja[:110],
                     )
 
@@ -629,12 +635,7 @@ def run_translate(
             )
             continue
 
-        # If we fell back to Japanese, log it
-        if en == tr.ja and tr.ja:
-            log.debug(
-                "Showing Japanese original (translation empty): %.2f-%.2s ja=%r",
-                tr.start_s, tr.end_s, tr.ja[:110],
-            )
+        # Japanese fallback is no longer used; translation failures are suppressed.
 
         out_q.put(
             Subtitle(

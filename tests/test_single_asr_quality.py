@@ -21,8 +21,10 @@ class AccuracyTests(unittest.TestCase):
 
 
     def test_short_reactions_names_and_spoken_laughter(self):
-        for spoken in ("えっ", "うん", "あはは", "フワモコ", "オパンパンカオン"):
+        for spoken in ("えっ", "うん", "フワモコ", "オパンパンカオン"):
             self.assertIsNone(rejection_reason(spoken))
+        # Pure laughter is now filtered at the ASR quality guard level
+        self.assertEqual(rejection_reason("あはは"), "laughter_only")
         self.assertIsNotNone(rejection_reason("[laughter]"))
         self.assertIsNotNone(rejection_reason("ダイジョブ" * 8))
 

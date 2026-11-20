@@ -120,7 +120,14 @@ def looks_like_prompt_echo(text: str) -> bool:
         "japanese often omits the subject or possessor",
         "for english-only speech, laughter or game sounds, output nothing",
         "translate japanese speech to english only",
-        # System prompt echo markers
+        # System prompt echo markers (updated for current prompt)
+        "you are a japanese-to-english subtitle translator",
+        "preserve japanese names and nicknames exactly as spoken",
+        "do not invent speakers, names, actions, or details",
+        "do not add explanatory notes, definitions, or parenthetical",
+        "do not output slash-separated alternatives",
+        "when the japanese omits a subject, do not invent one",
+        # Legacy prompt markers (still detect old versions)
         "you are a professional japanese-to-english subtitle translator",
         "output exactly one english translation per utterance",
         "never output slash-separated alternatives",

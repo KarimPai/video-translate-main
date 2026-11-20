@@ -226,7 +226,7 @@ class CoverageTracker:
             self._compact_completed_locked()
 
         if not self._pending and not self._completed:
-            self._translated_until = max(self._translated_until, self._vad_progress)
+            self._translated_until = max(self._translated_until, self._frontier, self._vad_progress)
             self._frontier = max(self._frontier, self._translated_until)
             return
 
@@ -238,8 +238,13 @@ class CoverageTracker:
             all_intervals.append((interval.start_s, interval.end_s, True))
         all_intervals.sort(key=lambda x: (x[0], x[1]))
 
-        # Walk from the start position forward.
-        watermark = self._start_s
+        # Start at the retained contiguous frontier, not the original seek/start
+        # position. Completed intervals before this frontier may have been
+        # compacted; restarting at _start_s loses the bridge needed to advance
+        # through newly completed speech immediately after the frontier.
+        # Late pending speech behind the frontier is handled below and can still
+        # retroactively lower the translated watermark.
+        watermark = self._frontier
         i = 0
         while i < len(all_intervals):
             start_s, end_s, is_completed = all_intervals[i]

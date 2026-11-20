@@ -538,9 +538,13 @@ class PlamoTranslator:
                 simplified_input_tokens = ja_tokens + template_overhead
                 full_input_tokens = simplified_input_tokens + glossary_tokens + context_tokens
 
+                # llama-server's -c is the total KV context shared by -np
+                # parallel slots. Budget against a single request's slot size.
+                slot_context_size = self.cfg.context_size // self.cfg.parallel_slots
+
                 def _fits_context(input_tokens: int, output_tokens: int) -> bool:
-                    # Allow 256 tokens for template estimation error / KV overhead.
-                    return input_tokens + output_tokens + 256 <= self.cfg.context_size
+                    # Allow 256 tokens for prompt/template estimation error.
+                    return input_tokens + output_tokens + 256 <= slot_context_size
 
                 if not _fits_context(simplified_input_tokens, self.cfg.max_tokens):
                     record_event("mt_rejected", reason="context_budget",
@@ -548,8 +552,8 @@ class PlamoTranslator:
                     increment_counter("mt_rejected")
                     log.warning(
                         "PLaMO utterance exceeds context even without glossary "
-                        "(estimated input=%d, max_output=%d, context=%d)",
-                        simplified_input_tokens, self.cfg.max_tokens, self.cfg.context_size,
+                        "(estimated input=%d, max_output=%d, slot_context=%d)",
+                        simplified_input_tokens, self.cfg.max_tokens, slot_context_size,
                     )
                     return ""
 

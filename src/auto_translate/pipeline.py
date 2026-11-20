@@ -232,6 +232,7 @@ def run_asr(
     stop: threading.Event | None = None,
     language_filter=None,
     gate=None,
+    record_speech_cb: Callable[[float, float, int], int | None] | None = None,
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
     import numpy as np
@@ -292,10 +293,16 @@ def run_asr(
             if cancelled(utt.generation):
                 continue
             accepted(cached.ja, utt.end_s)
-            # Strip speech_id from cached subtitles so they don't complete
-            # unrelated pending intervals from a different generation.
+            # Record this speech region as pending so the watermark knows
+            # about it. The cached subtitle must complete this exact pending
+            # entry, not some other utterance with similar timestamps.
+            cached_speech_id = None
+            if record_speech_cb is not None:
+                result = record_speech_cb(utt.start_s, utt.end_s, utt.generation)
+                if result is not None:
+                    cached_speech_id = result
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings,
-                              speech_id=None))
+                              speech_id=cached_speech_id))
             continue
         if cancelled(utt.generation):
             continue
@@ -858,6 +865,18 @@ def run(
     }
     failures: queue.Queue[tuple[str, Exception]] = queue.Queue()
 
+    # Build the record_speech callback for the contiguous watermark.
+    # Needed by both run_asr (cached subtitles) and run_translate (new translations).
+    record_speech_cb = None
+    complete_speech_cb = None
+    for out in outputs:
+        rs = getattr(out, "record_speech", None)
+        if rs is not None and record_speech_cb is None:
+            record_speech_cb = rs
+        cs = getattr(out, "complete_speech", None)
+        if cs is not None and complete_speech_cb is None:
+            complete_speech_cb = cs
+
     threads = [
         threading.Thread(
             target=_guard_stage,
@@ -888,22 +907,12 @@ def run(
                 stop,
                 language_filter,
                 gate,
+                record_speech_cb,
             ),
             name="asr",
             daemon=True,
         ),
     ]
-
-    # Build the record_speech callback for the contiguous watermark
-    record_speech_cb = None
-    complete_speech_cb = None
-    for out in outputs:
-        rs = getattr(out, "record_speech", None)
-        if rs is not None and record_speech_cb is None:
-            record_speech_cb = rs
-        cs = getattr(out, "complete_speech", None)
-        if cs is not None and complete_speech_cb is None:
-            complete_speech_cb = cs
 
     threads.append(
         threading.Thread(
@@ -1122,7 +1131,8 @@ def run(
                     # Advance the translation watermark to cover this published subtitle
                     advance_to_sub = getattr(out, "advance_to_subtitle", None)
                     if advance_to_sub is not None:
-                        advance_to_sub(item.end_s, item.generation, speech_id=item.speech_id)
+                        advance_to_sub(item.end_s, item.generation, speech_id=item.speech_id,
+                                       subtitle_start_s=item.start_s)
 
             except queue.Empty:
                 pass

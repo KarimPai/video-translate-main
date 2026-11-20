@@ -523,21 +523,33 @@ class PlamoTranslator:
                 def _elapsed_ok() -> bool:
                     return time.monotonic() - started < self._MAX_ELAPSED_S
 
-                # For long Japanese text, the full prompt (glossary + context) consumes so many
-                # input tokens that the model hits max_tokens before finishing the translation.
-                # Try the simplified prompt first to avoid wasting time on a guaranteed truncation.
-                # With max_tokens=512, the full prompt uses ~200-280 input tokens, leaving only
-                # ~230-310 tokens for output — often insufficient for long utterances.
+                # For long Japanese text, the full prompt (glossary + context) can consume
+                # so many input tokens that the model hits max_tokens before finishing.
+                # Strategy: always try the full prompt first to preserve glossary names
+                # and context. If truncation occurs, fall back to simplified (no context)
+                # and then to higher token limits. This prioritizes name accuracy over
+                # latency for the first attempt.
+                #
+                # Estimate input token budget: Japanese text is ~1.5-2x characters in tokens.
+                # Full prompt overhead (glossary + context + template) is ~100-200 tokens.
+                # With max_tokens=512, output space is ~300-400 tokens for typical input.
+                # Only skip directly to simplified if input alone would exceed the budget.
                 simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
-                long_text = len(ja) > 100
+                # Rough token estimate: Japanese characters * 1.8 + prompt overhead
+                estimated_input_tokens = int(len(ja) * 1.8) + 150
+                max_output_tokens = self.cfg.max_tokens - estimated_input_tokens
+                # If estimated output space is too small (< 80 tokens), skip full prompt
+                skip_full_prompt = max_output_tokens < 80
 
                 try:
-                    first_key = "simplified" if long_text else "full"
-                    if long_text:
-                        # Simplified prompt first — higher success rate for long utterances
+                    first_key = "simplified" if skip_full_prompt else "full"
+                    if skip_full_prompt:
+                        # Input is so large that even simplified prompt may truncate.
+                        # Try simplified first to at least get some output.
                         english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
                         record_event("mt_request", strategy="simplified_first", input_tokens=len(ja))
                     else:
+                        # Full prompt with glossary and context — preserves name accuracy
                         english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
 
                     # Always record the first attempt's output so truncation retries
@@ -548,7 +560,7 @@ class PlamoTranslator:
                         retries_left -= 1
                         truncation_retries += 1
                         retry_key = "retry"
-                        if long_text:
+                        if skip_full_prompt:
                             # Already tried simplified — retry with full prompt (glossary/context)
                             # which may produce a different, complete result with more context
                             record_event("mt_truncation_retry", strategy="full_prompt_after_simplified")
@@ -578,7 +590,10 @@ class PlamoTranslator:
                                 truncation_retries += 1
                                 record_event("mt_truncation_retry", strategy="increased_tokens", max_tokens=retry_tokens)
                                 increment_counter("mt_retries")
-                                retry_prompt = prompt if long_text else simplified_prompt
+                                # Use full prompt (with glossary) for higher-token retry when
+                                # the first attempt was full prompt. Use simplified when the
+                                # first attempt was already simplified (input too large).
+                                retry_prompt = prompt if not skip_full_prompt else simplified_prompt
                                 english, finish_reason = self._chat(
                                     retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
                                 )

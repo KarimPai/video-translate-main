@@ -751,7 +751,8 @@ class MpvOutput:
             self._speech_id_map[sid] = (start_s, end_s)
             return sid
 
-    def advance_to_subtitle(self, subtitle_end_s: float, generation: int, speech_id: int | None = None) -> None:
+    def advance_to_subtitle(self, subtitle_end_s: float, generation: int, speech_id: int | None = None,
+                             subtitle_start_s: float | None = None) -> None:
         """Advance the watermark to cover a published subtitle.
 
         When a subtitle is published, the watermark can advance to its end_s,
@@ -771,11 +772,21 @@ class MpvOutput:
             if speech_id is not None:
                 completed = self._coverage.complete_speech(speech_id)
                 self._speech_id_map.pop(speech_id, None)
-            else:
-                # Fallback: match by interval timestamps
+            elif subtitle_start_s is not None:
+                # Fallback: match by actual subtitle interval timestamps.
+                # Using the real start/end is much safer than guessing
+                # `subtitle_end_s - 2.0`.
                 completed = self._coverage.complete_by_interval(
-                    subtitle_end_s - 2.0, subtitle_end_s, tolerance=0.5
+                    subtitle_start_s, subtitle_end_s, tolerance=0.5
                 )
+            else:
+                # No speech_id and no start_s available — do NOT guess.
+                # Completing the wrong pending entry would corrupt coverage.
+                log.debug(
+                    "advance_to_subtitle: no speech_id or start_s, skipping completion at end_s=%.3f",
+                    subtitle_end_s,
+                )
+                completed = False
             if not completed:
                 log.debug(
                     "advance_to_subtitle: no matching pending speech at end_s=%.3f",

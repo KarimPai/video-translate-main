@@ -46,6 +46,9 @@ class CoverageTracker:
         self._completed: dict[int, SpeechInterval] = {}
         self._next_id = 1
         self._generation = 0
+        # Compaction counter: compact every N calls to amortize cost
+        self._advance_count = 0
+        self._COMPACT_INTERVAL = 100  # compact every 100 advances
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,6 +139,7 @@ class CoverageTracker:
             self._pending.clear()
             self._completed.clear()
             self._next_id = 1
+            self._advance_count = 0
             # Do NOT reset _generation here — caller sets it via set_generation()
 
     def set_generation(self, generation: int) -> None:
@@ -197,7 +201,16 @@ class CoverageTracker:
         This is a full recomputation, not an incremental advance, so it
         correctly handles late-registered speech that retroactively blocks
         the watermark.
+
+        Automatic compaction: every _COMPACT_INTERVAL calls, compact completed
+        intervals behind the watermark to bound memory during long streams.
         """
+        # Automatic compaction: amortize cost by running periodically
+        self._advance_count += 1
+        if self._advance_count >= self._COMPACT_INTERVAL:
+            self._advance_count = 0
+            self._compact_completed_locked()
+
         if not self._pending and not self._completed:
             self._translated_until = max(self._translated_until, self._vad_progress)
             return
@@ -269,6 +282,21 @@ class CoverageTracker:
         # Use the recomputed watermark directly — it may be lower than the
         # previous value if pending speech was registered late (retroactive block).
         self._translated_until = watermark
+
+    def _compact_completed_locked(self) -> None:
+        """Remove completed intervals already behind the watermark (lock held).
+
+        Safe because completed intervals behind the watermark can never affect
+        future watermark computation — the watermark has already passed them.
+        Pending intervals are always retained.
+        """
+        cutoff = self._translated_until
+        to_remove = [
+            sid for sid, iv in self._completed.items()
+            if iv.end_s <= cutoff + 1e-9
+        ]
+        for sid in to_remove:
+            del self._completed[sid]
 
     def mark_source_finished(self) -> None:
         """Mark that the source has finished (EOF).

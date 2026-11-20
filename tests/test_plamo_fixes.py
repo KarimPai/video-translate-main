@@ -739,7 +739,13 @@ class TestCoverageTracker:
         assert ct.pending_count() == 1
 
     def test_stress_many_utterances(self):
-        """Stress test: thousands of utterances should not grow unbounded."""
+        """Stress test: thousands of utterances should not grow unbounded.
+
+        Automatic compaction runs every 100 _advance_through_silence calls,
+        so after 1000 record+complete cycles, most completed intervals are
+        already compacted. The test verifies that memory stays bounded and
+        the watermark remains correct.
+        """
         ct = self._make()
         ct.advance_vad(10000.0)
         # Record and complete 1000 utterances
@@ -752,14 +758,103 @@ class TestCoverageTracker:
         for sid in sids:
             ct.complete_speech(sid)
         assert ct.translated_until == 10000.0
-        # Before compact: 1000 completed intervals
+        # Automatic compaction runs every 100 advances, so most completed
+        # intervals should already be removed. At most a few remain.
         with ct._lock:
-            assert len(ct._completed) == 1000
+            # Should be far fewer than 1000 due to automatic compaction
+            assert len(ct._completed) < 100
+        # Manual compact should remove the rest
         ct.compact_completed()
         with ct._lock:
             assert len(ct._completed) == 0
         # Watermark should still be correct
         assert ct.translated_until == 10000.0
+
+    def test_stress_10000_utterances_bounded(self):
+        """10,000 utterances: completed intervals must stay bounded."""
+        ct = self._make()
+        ct.advance_vad(100000.0)
+        sids = []
+        for i in range(10000):
+            start = i * 10.0 + 1.0
+            end = start + 2.0
+            sid = ct.record_speech(start, end)
+            sids.append(sid)
+        for sid in sids:
+            ct.complete_speech(sid)
+        assert ct.translated_until == 100000.0
+        # With automatic compaction every 100 advances, completed intervals
+        # should be bounded to a small number
+        with ct._lock:
+            assert len(ct._completed) < 50
+        ct.compact_completed()
+        with ct._lock:
+            assert len(ct._completed) == 0
+        assert ct.translated_until == 100000.0
+
+    def test_automatic_compaction_preserves_coverage(self):
+        """Automatic compaction must not change the watermark."""
+        ct = self._make()
+        ct.advance_vad(500.0)
+        sids = []
+        for i in range(200):
+            start = i * 2.0 + 0.5
+            end = start + 1.0
+            sid = ct.record_speech(start, end)
+            sids.append(sid)
+            ct.complete_speech(sid)
+        watermark_after = ct.translated_until
+        # Watermark should be at VAD progress (all completed)
+        assert watermark_after == 500.0
+        # Add more speech after compaction has run — advance VAD first
+        # so the gap is confirmed
+        ct.advance_vad(510.0)
+        sid = ct.record_speech(501.0, 503.0)
+        ct.complete_speech(sid)
+        assert ct.translated_until == 510.0
+
+    def test_cached_subtitle_does_not_complete_wrong_pending(self):
+        """Cached subtitle with speech_id=None and no start_s must not complete
+        an unrelated pending entry."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        # Register a pending speech at 10-12s
+        sid = ct.record_speech(10.0, 12.0)
+        # advance_to_subtitle with no speech_id and no start_s should not
+        # complete the pending entry (this is the mpv.py behavior when
+        # subtitle_start_s is not provided)
+        # In CoverageTracker terms: complete_by_interval should not match
+        # when the guessed interval is wrong
+        matched = ct.complete_by_interval(50.0, 52.0, tolerance=0.5)
+        assert matched is False
+        # The pending entry should still be there
+        assert ct.pending_count() == 1
+        # Complete with correct ID
+        ct.complete_speech(sid)
+        assert ct.pending_count() == 0
+
+    def test_cached_subtitle_with_correct_interval(self):
+        """Cached subtitle with correct start_s should match the right pending."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        sid = ct.record_speech(10.0, 12.0)
+        # Match by actual interval (as pipeline now does with subtitle_start_s)
+        matched = ct.complete_by_interval(10.0, 12.0, tolerance=0.5)
+        assert matched is True
+        assert ct.pending_count() == 0
+
+    def test_overlapping_pending_no_false_match(self):
+        """Two overlapping pending intervals: completing one should not complete both."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        sid1 = ct.record_speech(10.0, 12.0)
+        sid2 = ct.record_speech(11.0, 13.0)  # overlaps with sid1
+        # Complete sid1 by ID
+        ct.complete_speech(sid1)
+        assert ct.pending_count() == 1
+        # sid2 should still be pending
+        intervals = ct.pending_intervals()
+        assert (11.0, 13.0) in intervals
 
 
 # ---------------------------------------------------------------------------

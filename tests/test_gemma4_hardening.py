@@ -1,4 +1,4 @@
-"""Tests for Gemma 4 compatibility hardening: special token detection, diagnostics, and reasoning safety."""
+"""Tests for Gemma 4 compatibility hardening: special token detection and output validation."""
 from __future__ import annotations
 
 import pytest
@@ -131,16 +131,8 @@ class TestEnglishOutputIssueWithSpecialTokens:
         assert result == text
 
 
-class TestReasoningContentSafety:
-    """Task 1: Verify reasoning content never leaks into subtitle output."""
-
-    def test_reasoning_tags_not_in_output(self):
-        """Thinking/reasoning tags should be treated as special tokens if repeated."""
-        # If the model leaks thinking tags, they should be caught
-        text = "</think> </think> </think> normal text"
-        # These aren't in our special token list, but generation loop check may catch them
-        # The key point: our clean_output in gemma4.py only uses message.content
-        pass
+class TestOutputValidation:
+    """Verify output validation catches invalid translations."""
 
     def test_empty_content_is_rejected(self):
         """Empty content should be rejected by output validation."""

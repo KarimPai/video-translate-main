@@ -219,14 +219,9 @@ class LlamaServer:
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise LlamaServerError(f"{self.name} returned invalid message")
-        # When reasoning mode is active, content may be empty or missing
-        # while reasoning_content holds the model's internal reasoning.
-        # Accept the response as long as message is a dict; the caller
-        # (Gemma4Translator) is responsible for extracting only content.
         content = message.get("content")
-        reasoning = message.get("reasoning_content") or message.get("reasoning")
-        if content is None and reasoning is None:
-            raise LlamaServerError(f"{self.name} returned empty message (no content or reasoning)")
+        if content is None:
+            raise LlamaServerError(f"{self.name} returned empty message (no content)")
         return payload
 
     def log_tail(self, size: int = 4096) -> str:

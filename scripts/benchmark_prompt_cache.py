@@ -131,7 +131,7 @@ def make_translator(cache_prompt: bool, config_path: Path = Path("config.toml"))
     with per-request diagnostics dicts.
     """
     full_cfg: Config = load_config(config_path)
-    cfg = replace(full_cfg.translate, reasoning_enabled=False, max_tokens=128)
+    cfg = replace(full_cfg.translate, max_tokens=128)
     glossary = Glossary.load(Path(cfg.glossary)) if Path(cfg.glossary).exists() else Glossary()
     stream = StreamContext()
     translator = Gemma4Translator(cfg, glossary, stream=stream)
@@ -141,10 +141,7 @@ def make_translator(cache_prompt: bool, config_path: Path = Path("config.toml"))
 
     # Monkey-patch _chat to override cache_prompt and collect metrics
     def patched_chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
-        if self.cfg.reasoning_enabled:
-            max_tokens = self.cfg.max_tokens + self.cfg.reasoning_budget_tokens
-        else:
-            max_tokens = self.cfg.max_tokens
+        max_tokens = self.cfg.max_tokens
         from auto_translate.llama_server import check_running
         from auto_translate.runtime_diagnostics import increment_counter, record_event
         import time as _time
@@ -175,15 +172,12 @@ def make_translator(cache_prompt: bool, config_path: Path = Path("config.toml"))
         usage = payload.get("usage")
         input_tokens = 0
         output_tokens = 0
-        reasoning_tokens = 0
         prompt_eval_time = 0.0
         generation_time = 0.0
-        cache_hits = 0
 
         if isinstance(usage, dict):
             input_tokens = usage.get("prompt_tokens", 0) or 0
             output_tokens = usage.get("completion_tokens", 0) or 0
-            reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
             prompt_eval_time = usage.get("prompt_eval_time", 0.0) or 0.0
             generation_time = usage.get("generation_time", 0.0) or 0.0
             cache_hits = usage.get("cache_hits", 0) or 0
@@ -202,7 +196,6 @@ def make_translator(cache_prompt: bool, config_path: Path = Path("config.toml"))
             "mt_request",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
             finish_reason=finish_reason,
             request_time_s=round(request_time, 3),
             prompt_eval_time_s=round(prompt_eval_time, 4) if prompt_eval_time else None,
@@ -210,7 +203,6 @@ def make_translator(cache_prompt: bool, config_path: Path = Path("config.toml"))
             cache_hits=cache_hits,
             cache_enabled=cache_prompt,
             max_tokens=max_tokens,
-            reasoning_enabled=self.cfg.reasoning_enabled,
             has_content=bool(content.strip()),
         )
 

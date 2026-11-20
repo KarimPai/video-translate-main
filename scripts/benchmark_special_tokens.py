@@ -9,14 +9,12 @@ against real model output by sending:
    - Repetitive input that may confuse the model
    - Input with special characters and control sequences
    - Very long input that may cause truncation artifacts
-3. Both reasoning ON and OFF modes
-4. High temperature to increase stochasticity and potential for malformed output
+3. High temperature to increase stochasticity and potential for malformed output
 
 Measures:
 - False positive rate (normal utterances incorrectly rejected)
 - Detection rate (adversarial inputs correctly caught)
 - Per-input rejection reasons
-- Reasoning mode impact on special token generation
 
 Usage:
     python -m scripts.benchmark_special_tokens [--config config.toml] [--output results.json]
@@ -99,7 +97,7 @@ ADVERSARIAL_INPUTS = [
     # Very long input
     ("very_long", "今日は天気がいいですね。" * 50),
 
-    # Input that might trigger reasoning artifacts
+    # Input that might trigger artifacts
     ("question_only", "？？？？？？？？？？"),
     ("exclamation_only", "！！！！！！！！！！"),
     ("kaomoji", "(´・ω・`) (´・ω・`) (´・ω・`)"),
@@ -356,100 +354,57 @@ def main():
     config_path = Path(args.config)
     full_cfg: Config = load_config(config_path)
 
-    # Run with reasoning OFF (default)
-    cfg_off = replace(full_cfg.translate, reasoning_enabled=False, max_tokens=128)
-    glossary = Glossary.load(Path(cfg_off.glossary)) if Path(cfg_off.glossary).exists() else Glossary()
+    # Create translator with default settings
+    cfg = replace(full_cfg.translate, max_tokens=128)
+    glossary = Glossary.load(Path(cfg.glossary)) if Path(cfg.glossary).exists() else Glossary()
     stream = StreamContext()
-    translator_off = Gemma4Translator(cfg_off, glossary, stream=stream)
-
-    # Run with reasoning ON
-    cfg_on = replace(full_cfg.translate, reasoning_enabled=True, max_tokens=384)
-    glossary_on = Glossary.load(Path(cfg_on.glossary)) if Path(cfg_on.glossary).exists() else Glossary()
-    stream_on = StreamContext()
-    translator_on = Gemma4Translator(cfg_on, glossary_on, stream=stream_on)
+    translator = Gemma4Translator(cfg, glossary, stream=stream)
 
     all_results = {}
 
-    # --- Reasoning OFF tests ---
-    log.info("========== REASONING OFF ==========")
+    # --- Normal tests ---
+    log.info("========== Normal Utterances ==========")
 
-    all_results["reasoning_off_normal"] = run_normal_test(
-        NORMAL_UTTERANCES, translator_off, "reasoning_off_normal"
+    all_results["normal"] = run_normal_test(
+        NORMAL_UTTERANCES, translator, "normal"
     )
-    all_results["reasoning_off_adversarial"] = run_adversarial_test(
-        ADVERSARIAL_INPUTS, translator_off, "reasoning_off_adversarial"
+    all_results["adversarial"] = run_adversarial_test(
+        ADVERSARIAL_INPUTS, translator, "adversarial"
     )
-    all_results["reasoning_off_stress"] = run_repetition_stress_test(
-        NORMAL_UTTERANCES, translator_off, "reasoning_off_stress", num_repeats=3
-    )
-
-    translator_off.close()
-
-    # --- Reasoning ON tests ---
-    log.info("========== REASONING ON ==========")
-
-    all_results["reasoning_on_normal"] = run_normal_test(
-        NORMAL_UTTERANCES, translator_on, "reasoning_on_normal"
-    )
-    all_results["reasoning_on_adversarial"] = run_adversarial_test(
-        ADVERSARIAL_INPUTS, translator_on, "reasoning_on_adversarial"
-    )
-    all_results["reasoning_on_stress"] = run_repetition_stress_test(
-        NORMAL_UTTERANCES, translator_on, "reasoning_on_stress", num_repeats=3
+    all_results["stress"] = run_repetition_stress_test(
+        NORMAL_UTTERANCES, translator, "stress", num_repeats=3
     )
 
-    translator_on.close()
+    translator.close()
 
     # --- Summary report ---
     report = {
         "summary": {
-            "reasoning_off": {
-                "normal_success_rate": round(
-                    all_results["reasoning_off_normal"]["successful"]
-                    / max(all_results["reasoning_off_normal"]["total"], 1) * 100, 1
-                ),
-                "normal_false_positive_rate": all_results["reasoning_off_normal"]["false_positive_rate"],
-                "adversarial_crashes": all_results["reasoning_off_adversarial"]["crashes"],
-                "adversarial_special_tokens": all_results["reasoning_off_adversarial"]["special_token_detected"],
-                "stress_special_tokens": all_results["reasoning_off_stress"]["special_token_detected"],
-                "stress_degradation": all_results["reasoning_off_stress"]["degradation_rate"],
-            },
-            "reasoning_on": {
-                "normal_success_rate": round(
-                    all_results["reasoning_on_normal"]["successful"]
-                    / max(all_results["reasoning_on_normal"]["total"], 1) * 100, 1
-                ),
-                "normal_false_positive_rate": all_results["reasoning_on_normal"]["false_positive_rate"],
-                "adversarial_crashes": all_results["reasoning_on_adversarial"]["crashes"],
-                "adversarial_special_tokens": all_results["reasoning_on_adversarial"]["special_token_detected"],
-                "stress_special_tokens": all_results["reasoning_on_stress"]["special_token_detected"],
-                "stress_degradation": all_results["reasoning_on_stress"]["degradation_rate"],
-            },
+            "normal_success_rate": round(
+                all_results["normal"]["successful"]
+                / max(all_results["normal"]["total"], 1) * 100, 1
+            ),
+            "normal_false_positive_rate": all_results["normal"]["false_positive_rate"],
+            "adversarial_crashes": all_results["adversarial"]["crashes"],
+            "adversarial_special_tokens": all_results["adversarial"]["special_token_detected"],
+            "stress_special_tokens": all_results["stress"]["special_token_detected"],
+            "stress_degradation": all_results["stress"]["degradation_rate"],
         },
         "conclusion": "",
     }
 
     # Determine conclusion
-    off = report["summary"]["reasoning_off"]
-    on_ = report["summary"]["reasoning_on"]
+    summary = report["summary"]
 
     issues = []
-    if off["adversarial_crashes"] > 0:
-        issues.append(f"Reasoning OFF: {off['adversarial_crashes']} crashes on adversarial input")
-    if on_["adversarial_crashes"] > 0:
-        issues.append(f"Reasoning ON: {on_['adversarial_crashes']} crashes on adversarial input")
-    if off["normal_false_positive_rate"] > 0:
-        issues.append(f"Reasoning OFF: {off['normal_false_positive_rate']}% false positive rate on normal input")
-    if on_["normal_false_positive_rate"] > 0:
-        issues.append(f"Reasoning ON: {on_['normal_false_positive_rate']}% false positive rate on normal input")
-    if off["adversarial_special_tokens"] > 0:
-        issues.append(f"Reasoning OFF: {off['adversarial_special_tokens']} special tokens detected in adversarial test")
-    if on_["adversarial_special_tokens"] > 0:
-        issues.append(f"Reasoning ON: {on_['adversarial_special_tokens']} special tokens detected in adversarial test")
-    if off["stress_degradation"] > 0:
-        issues.append(f"Reasoning OFF: {off['stress_degradation']}% degradation in stress test")
-    if on_["stress_degradation"] > 0:
-        issues.append(f"Reasoning ON: {on_['stress_degradation']}% degradation in stress test")
+    if summary["adversarial_crashes"] > 0:
+        issues.append(f"{summary['adversarial_crashes']} crashes on adversarial input")
+    if summary["normal_false_positive_rate"] > 0:
+        issues.append(f"{summary['normal_false_positive_rate']}% false positive rate on normal input")
+    if summary["adversarial_special_tokens"] > 0:
+        issues.append(f"{summary['adversarial_special_tokens']} special tokens detected in adversarial test")
+    if summary["stress_degradation"] > 0:
+        issues.append(f"{summary['stress_degradation']}% degradation in stress test")
 
     if issues:
         report["conclusion"] = "Issues found: " + "; ".join(issues)
@@ -474,16 +429,13 @@ def main():
     print("\n" + "=" * 70)
     print("SPECIAL TOKEN DETECTION BENCHMARK SUMMARY")
     print("=" * 70)
-
-    for mode_name, mode_data in report["summary"].items():
-        print(f"\n{mode_name.upper()}:")
-        print(f"  Normal success rate: {mode_data['normal_success_rate']}%")
-        print(f"  Normal false positive rate: {mode_data['normal_false_positive_rate']}%")
-        print(f"  Adversarial crashes: {mode_data['adversarial_crashes']}")
-        print(f"  Adversarial special tokens: {mode_data['adversarial_special_tokens']}")
-        print(f"  Stress special tokens: {mode_data['stress_special_tokens']}")
-        print(f"  Stress degradation: {mode_data['stress_degradation']}%")
-
+    summary = report["summary"]
+    print(f"  Normal success rate: {summary['normal_success_rate']}%")
+    print(f"  Normal false positive rate: {summary['normal_false_positive_rate']}%")
+    print(f"  Adversarial crashes: {summary['adversarial_crashes']}")
+    print(f"  Adversarial special tokens: {summary['adversarial_special_tokens']}")
+    print(f"  Stress special tokens: {summary['stress_special_tokens']}")
+    print(f"  Stress degradation: {summary['stress_degradation']}%")
     print(f"\nConclusion: {report['conclusion']}")
     print("=" * 70)
 

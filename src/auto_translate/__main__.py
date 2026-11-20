@@ -337,10 +337,9 @@ def _main(resources: ExitStack) -> None:
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):
         relieve_pressure()
-    reasoning_str = "reasoning ON" if cfg.translate.reasoning_enabled else "reasoning OFF"
     print("ASR: Haas-ja-v1.0 (speech.cpp Vulkan) | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
-          f"MT: Gemma 4 E4B, {translator.gpu_layers}/{translator.layer_count} GPU layers, {reasoning_str}", flush=True)
+          f"MT: Gemma 4 E4B, {translator.gpu_layers}/{translator.layer_count} GPU layers", flush=True)
     check_running()
     budget.start(relieve_pressure)
     try:

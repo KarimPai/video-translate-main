@@ -4,16 +4,15 @@
 
 ### 1.1. `<unused49>` Token Floods (Confirmed Bug)
 - **Source**: https://github.com/ggml-org/llama.cpp/discussions/21338
-- **Status**: Confirmed in Gemma 4 26B-A4B with reasoning mode ON
+- **Status**: Confirmed in Gemma 4 26B-A4B
 - **Symptom**: Model outputs `<unused49>` tokens indefinitely, filling entire max_tokens budget
 - **Impact on our build**: Our build (b12318) is well after the fix (b8664+). The `--jinja` flag we use should prevent this, but added detection as safeguard.
 - **Mitigation**: Added `has_special_token_flood()` detection in `subtitle_clean.py`
 
-### 1.2. Reasoning Mode Breaking After Gemma 4-12B Support
+### 1.2. Reasoning Mode Issues (Resolved)
 - **Source**: https://github.com/ggml-org/llama.cpp/issues/24170
-- **Status**: Fixed in newer builds
-- **Symptom**: `--reasoning on` stops working, reasoning stage missing
-- **Impact on our build**: Our build (b12318) includes the fix. We use `--jinja-chat-format gemma4` for proper template handling.
+- **Status**: Reasoning mode has been completely removed from the project
+- **Decision**: Thinking/reasoning mode was disabled and all related code removed for simplicity and reliability
 
 ### 1.3. Flash Attention Crashes with Hybrid Attention Models
 - **Source**: https://github.com/ggml-org/llama.cpp/issues/21336
@@ -74,24 +73,21 @@
 
 ## 4. Tasks Already Completed (Previous Session)
 
-- ✅ Reasoning mode with strict content-only subtitle output
-- ✅ `reasoning_enabled` and `reasoning_budget_tokens` config
-- ✅ `_args()` conditional reasoning flags
-- ✅ `max_tokens + reasoning_budget_tokens` when reasoning ON
-- ✅ `llama_server.py` reasoning-mode response validation
-- ✅ Reasoning token usage tracking
-- ✅ Non-reasoning mode as default fallback
+- ✅ Special token flood detection
+- ✅ Prompt-cache correctness tests
+- ✅ Inference diagnostics and finish_reason tracking
+- ✅ Rejection reason tracking
 - ✅ FP16 KV cache preservation
-- ✅ Benchmark script for reasoning ON vs OFF
-- ✅ 19 reasoning mode unit tests
+- ✅ Reasoning mode removed (thinking/reasoning disabled and code cleaned up)
 
 ## 5. Tasks Completed This Session
 
-### Task 1 — Strict separation of reasoning and translation ✅
+### Task 1 — Output validation and content safety ✅
 - Verified `gemma4.py` uses only `message.content`
-- Verified `llama_server.py` accepts reasoning-mode responses correctly
+- Verified `llama_server.py` validates response content correctly
 - Added finish_reason tracking and diagnostics
 - Added rejection reason recording
+- Reasoning mode completely removed: no `--reasoning` flags, no reasoning token budget
 
 ### Task 2 — Context-size accuracy benchmark ✅
 - Created `scripts/benchmark_context_size.py` with 28 context-sensitive Japanese utterances
@@ -100,8 +96,8 @@
 - **Note**: Benchmark requires running llama-server; not executed in this session
 
 ### Task 3 — Prompt-cache correctness tests ✅
-- Created `tests/test_prompt_cache.py` with 9 tests
-- Covers: cache_prompt flag verification, repeated requests, changing history, long sessions, reasoning mode, cache contamination
+- Created `tests/test_prompt_cache.py` with 8 tests
+- Covers: cache_prompt flag verification, repeated requests, changing history, long sessions, cache contamination
 - **Result**: Prompt caching works correctly with our implementation
 
 ### Task 4 — Special token flood detection ✅
@@ -111,7 +107,7 @@
 - 15 unit tests, all passing
 
 ### Task 5 — Inference diagnostics ✅
-- Per-request metrics: input/output/reasoning tokens, finish_reason, timing, cache status
+- Per-request metrics: input/output tokens, finish_reason, timing, cache status
 - Rejection reason tracking
 - Retry count tracking
 - Distinguishes model failure from validation rejection

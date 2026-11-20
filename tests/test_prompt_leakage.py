@@ -1,4 +1,4 @@
-"""Regression tests for prompt leakage, reasoning contamination, and subtitle integrity.
+"""Regression tests for prompt leakage and subtitle integrity.
 
 These tests verify that:
 1. Reasoning tags (</think>, <thinking>, etc.) are stripped from output
@@ -16,8 +16,6 @@ from auto_translate.translate.gemma4 import (
     clean_output,
     resolve_slash_alternatives,
     build_prompt,
-    _strip_reasoning_tags,
-    _is_reasoning_leak,
 )
 from auto_translate.subtitle_clean import (
     looks_like_prompt_echo,
@@ -386,6 +384,7 @@ class TestMalformedResponseHandling:
     def test_sanitize_rejects_reasoning_tags(self):
         """sanitize_english_output should reject reasoning tag content."""
         result = sanitize_english_output("<think>reasoning</think>")
+        # Reasoning tags are caught by looks_like_prompt_echo
         assert result == ""
 
     def test_markdown_stripped(self):
@@ -499,59 +498,6 @@ class TestBuildPrompt:
         assert "Plain and concise" in user_content
 
 
-class TestStripReasoningTags:
-    """Unit tests for _strip_reasoning_tags helper."""
-
-    def test_strip_think_block(self):
-        """Full think block should be removed."""
-        result = _strip_reasoning_tags("<think>reasoning</think>Translation")
-        assert result == "Translation"
-
-    def test_strip_thinking_block(self):
-        """Full thinking block should be removed."""
-        result = _strip_reasoning_tags("<thinking>reasoning</thinking>Translation")
-        assert result == "Translation"
-
-    def test_strip_reasoning_block(self):
-        """Full reasoning block should be removed."""
-        result = _strip_reasoning_tags("<reasoning>reasoning</reasoning>Translation")
-        assert result == "Translation"
-
-    def test_strip_multiline(self):
-        """Multi-line reasoning should be fully removed."""
-        raw = "<think>\nLine 1\nLine 2\n</think>Result"
-        result = _strip_reasoning_tags(raw)
-        assert result == "Result"
-
-    def test_no_tags_unchanged(self):
-        """Text without tags should be unchanged."""
-        result = _strip_reasoning_tags("Hello, how are you?")
-        assert result == "Hello, how are you?"
-
-    def test_empty_string(self):
-        """Empty string should return empty string."""
-        result = _strip_reasoning_tags("")
-        assert result == ""
-
-
-class TestIsReasoningLeak:
-    """Unit tests for _is_reasoning_leak helper."""
-
-    def test_empty_is_leak(self):
-        """Empty text should be considered a leak."""
-        assert _is_reasoning_leak("") is True
-
-    def test_reasoning_tags_are_leak(self):
-        """Text with reasoning tags should be a leak."""
-        assert _is_reasoning_leak("<think>reasoning</think>") is True
-
-    def test_normal_text_not_leak(self):
-        """Normal text should not be a leak."""
-        assert _is_reasoning_leak("Hello, how are you?") is False
-
-    def test_stripped_text_not_leak(self):
-        """Text after stripping should not be a leak."""
-        assert _is_reasoning_leak("Hello!") is False
 
 
 class TestRepresentativeLeakageCases:

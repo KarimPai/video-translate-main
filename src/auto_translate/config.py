@@ -222,14 +222,6 @@ class TranslateConfig:
     cuda_device: int = 0
     threads: int = 8
     max_tokens: int = 128
-    # Experimental Gemma 4 reasoning (thinking) mode.
-    # When enabled, the model produces internal reasoning tokens before the
-    # final translation.  Only message.content becomes the subtitle;
-    # reasoning_content is never used for the final translation.
-    reasoning_enabled: bool = False
-    # Maximum reasoning (thinking) tokens before the model produces output.
-    # The total output budget is max_tokens + reasoning_budget_tokens.
-    reasoning_budget_tokens: int = 96
     parallel_slots: int = 1  # llama.cpp -np flag (1 or 2)
     temperature: float = 0.0
     top_k: int = 20
@@ -277,16 +269,6 @@ class TranslateConfig:
             raise ValueError("translate.max_tokens must be an integer in 16..1024")
         if self.max_tokens >= self.context_size:
             raise ValueError("translate.max_tokens must leave room for input in context_size")
-        if type(self.reasoning_enabled) is not bool:
-            raise ValueError("translate.reasoning_enabled must be boolean")
-        if type(self.reasoning_budget_tokens) is not int or not 0 <= self.reasoning_budget_tokens <= 1024:
-            raise ValueError("translate.reasoning_budget_tokens must be an integer in 0..1024")
-        if self.reasoning_enabled and self.reasoning_budget_tokens == 0:
-            raise ValueError("translate.reasoning_budget_tokens must be positive when reasoning is enabled")
-        if self.reasoning_enabled:
-            total = self.max_tokens + self.reasoning_budget_tokens
-            if total >= self.context_size:
-                raise ValueError("translate.max_tokens + reasoning_budget_tokens must leave room for input in context_size")
         if type(self.parallel_slots) is not int or self.parallel_slots not in (1, 2):
             raise ValueError("translate.parallel_slots must be 1 or 2")
         if type(self.top_k) is not int or self.top_k < 0:
@@ -301,7 +283,7 @@ class TranslateConfig:
                 or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
             raise ValueError("translate.context_max_gap_s must be finite and positive")
         for name in ("context_english", "merge_fragments", "suppress_empty_translation",
-                      "suppress_japanese_in_english", "reasoning_enabled"):
+                      "suppress_japanese_in_english"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"translate.{name} must be boolean")
         if (type(self.merge_max_gap_s) not in (int, float) or not 0 <= self.merge_max_gap_s <= 3

@@ -165,7 +165,7 @@ def run_context_test(
 
     full_cfg: Config = load_config(config_path)
     # Override context size for this test — work with the translate section
-    cfg = replace(full_cfg.translate, context_size=context_size, reasoning_enabled=False, max_tokens=128)
+    cfg = replace(full_cfg.translate, context_size=context_size, max_tokens=128)
 
     glossary = Glossary.load(Path(cfg.glossary)) if Path(cfg.glossary).exists() else Glossary()
     stream = StreamContext()

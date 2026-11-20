@@ -42,11 +42,10 @@ _MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)\*(?=\S)(.+?)(?<=\S)\
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
 
-# Reasoning tags that can leak into the content field when llama.cpp
-# --reasoning-format deepseek is used. The model wraps internal reasoning
-# in these tags, but they may appear in message.content instead of
-# message.reasoning_content depending on the GGUF chat template.
-_REASONING_OPEN = re.compile(r"<\/?think(?:ing)?(?:\s[^>]*)?>|<\/?reasoning(?:\s[^>]*)?>")
+# Reasoning tags that can leak into the content field when the model
+# emits internal reasoning markers. These may appear in message.content
+# depending on the GGUF chat template, even when reasoning mode is off.
+_REASONING_OPEN = re.compile(r"<\/?(?:think(?:ing)?|reasoning)(?:\s[^>]*)?>")
 _REASONING_BLOCK = re.compile(
     r"<think(?:ing)?(?:\s[^>]*)?>.*?</think(?:ing)?\s*>"
     r"|<reasoning(?:\s[^>]*)?>.*?</reasoning\s*>",
@@ -208,10 +207,9 @@ def resolve_slash_alternatives(text: str) -> str:
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning/thinking tags and their content from model output.
     
-    When llama.cpp --reasoning-format deepseek is active, the GGUF chat template
-    may place reasoning content inside message.content wrapped in XML tags instead
-    of separating it into message.reasoning_content. This function removes those
-    tags and everything between them, leaving only the final translation.
+    The model may emit reasoning markers in output even when reasoning mode
+    is disabled. This function removes those tags and everything between them,
+    leaving only the final translation.
     """
     # First remove full reasoning blocks (opening + closing tags with content)
     result = _REASONING_BLOCK.sub("", text)
@@ -222,22 +220,12 @@ def _strip_reasoning_tags(text: str) -> str:
     return result
 
 
-def _is_reasoning_leak(text: str) -> bool:
-    """Check whether the text is primarily reasoning content, not a translation."""
-    if not text:
-        return True
-    # If the text still contains reasoning tags after stripping, it's a leak
-    if _REASONING_OPEN.search(text):
-        return True
-    return False
-
-
 def clean_output(text: str) -> str:
-    """Clean translation output: strip reasoning, remove role prefixes, markdown, orphan quotes, slash-separated alternatives.
+    """Clean translation output: strip reasoning tags, remove role prefixes, markdown, orphan quotes, slash-separated alternatives.
     
     This is the primary defense against reasoning leakage, prompt echoing,
     and explanatory text in subtitle output. It operates in stages:
-    1. Strip reasoning tags and content (deepseek format leakage)
+    1. Strip reasoning tags and content
     2. Reject prompt echoes and system instruction repeats
     3. Reject explanatory text patterns
     4. Clean role prefixes, markdown, and slash alternatives
@@ -266,14 +254,14 @@ def clean_output(text: str) -> str:
     )):
         return ""
     
-    # Stage 3: Clean role prefixes (may reveal explanatory pattern)
+    # Stage 2: Clean role prefixes (may reveal explanatory pattern)
     line = _ROLE.sub("", line).strip()
     
-    # Stage 4: Reject explanatory text patterns (after role prefix removal)
+    # Stage 3: Reject explanatory text patterns (after role prefix removal)
     if _EXPLANATORY.match(line):
         return ""
     
-    # Stage 5: Clean markdown and slash alternatives
+    # Stage 4: Clean markdown and slash alternatives
     line = _MARKDOWN.sub(lambda match: match[1] or match[2], line)
     line = resolve_slash_alternatives(line)
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
@@ -309,37 +297,24 @@ class Gemma4Translator:
             raise
 
     def _args(self) -> list[str]:
-        """Build llama-server arguments for translation.
-
-        When reasoning is enabled, uses llama.cpp reasoning mode with
-        enable_thinking in the Jinja chat template and a configurable
-        reasoning token budget.  FP16 KV cache is always preserved.
-        """
+        """Build llama-server arguments for translation."""
         if self.gpu_layers >= self.layer_count:
             layers = 999
         else:
             layers = self.gpu_layers + 1
         device = detect_device(self.executable)
-        reasoning = "on" if self.cfg.reasoning_enabled else "off"
-        args = [
+        return [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),
             "-np", str(self.cfg.parallel_slots),
             "--jinja",
             "--no-prefill-assistant",
-            "--reasoning", reasoning,
             "-fa", "on",
             "-fit", "off",
             "-ngl", str(layers),
             "-t", str(self.cfg.threads),
             "--device", device,
         ]
-        if self.cfg.reasoning_enabled:
-            args.extend([
-                "--reasoning-format", "deepseek",
-                "--reasoning-budget", str(self.cfg.reasoning_budget_tokens),
-            ])
-        return args
 
 
     def _start(self) -> None:
@@ -383,29 +358,14 @@ class Gemma4Translator:
         return True
 
     def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
-        """Send a chat request and return ONLY the translation content.
-
-        When reasoning mode is active, the model produces internal reasoning
-        tokens (reasoning_content) before the final translation (content).
-        Only message.content becomes the subtitle; reasoning_content is NEVER
-        used for the final translation, even when content is empty.
-
-        Per-request diagnostics are recorded for inference monitoring:
-        input/output/reasoning token counts, finish_reason, timing, cache status.
-        """
-        # When reasoning is on, increase max_tokens to allow room for
-        # both reasoning tokens and the final translation output.
-        if self.cfg.reasoning_enabled:
-            max_tokens = self.cfg.max_tokens + self.cfg.reasoning_budget_tokens
-        else:
-            max_tokens = self.cfg.max_tokens
+        """Send a chat request and return the translation content."""
         body = {
             **prompt,
             "temperature": self.cfg.temperature if temperature is None else temperature,
             "top_k": self.cfg.top_k,
             "top_p": self.cfg.top_p,
             "repeat_penalty": self.cfg.repeat_penalty,
-            "max_tokens": max_tokens,
+            "max_tokens": self.cfg.max_tokens,
             "stream": False,
             "cache_prompt": True,
         }
@@ -420,16 +380,12 @@ class Gemma4Translator:
 
         choice = payload["choices"][0]
         message = choice["message"]
-        # CRITICAL: Only message.content becomes the subtitle.
-        # reasoning_content is internal model reasoning — never use it as
-        # the final translation, even when content is empty.
         content = message.get("content") or ""
 
         # Extract usage statistics from the API response
         usage = payload.get("usage")
         input_tokens = 0
         output_tokens = 0
-        reasoning_tokens = 0
         prompt_eval_time = 0.0
         generation_time = 0.0
         cache_hits = 0
@@ -437,32 +393,18 @@ class Gemma4Translator:
         if isinstance(usage, dict):
             input_tokens = usage.get("prompt_tokens", 0) or 0
             output_tokens = usage.get("completion_tokens", 0) or 0
-            reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
-            # Some llama.cpp builds expose timing in usage
             prompt_eval_time = usage.get("prompt_eval_time", 0.0) or 0.0
             generation_time = usage.get("generation_time", 0.0) or 0.0
             cache_hits = usage.get("cache_hits", 0) or 0
 
-        # Also track reasoning content from message for word-based count
-        if self.cfg.reasoning_enabled:
-            reasoning_content = message.get("reasoning_content") or message.get("reasoning") or ""
-            if reasoning_content and not reasoning_tokens:
-                # Fallback: word-based count when API doesn't provide token count
-                reasoning_tokens = len(reasoning_content.split())
-                increment_counter("mt_reasoning_tokens", reasoning_tokens)
-                log.debug("Reasoning tokens: %d (budget=%d)", reasoning_tokens, self.cfg.reasoning_budget_tokens)
-            elif reasoning_tokens:
-                increment_counter("mt_reasoning_tokens_api", reasoning_tokens)
-
         # Detect and track finish_reason
         finish_reason = choice.get("finish_reason", "")
         if finish_reason == "length":
-            log.debug("Truncated response (max_tokens=%d)", max_tokens)
+            log.debug("Truncated response (max_tokens=%d)", self.cfg.max_tokens)
             increment_counter("mt_truncated")
         elif finish_reason == "stop":
             increment_counter("mt_finish_stop")
         elif finish_reason:
-            # Track unexpected finish reasons for diagnostics
             log.debug("Unexpected finish_reason: %s", finish_reason)
             increment_counter("mt_finish_other")
         else:
@@ -473,15 +415,13 @@ class Gemma4Translator:
             "mt_request",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
             finish_reason=finish_reason,
             request_time_s=round(request_time, 3),
             prompt_eval_time_s=round(prompt_eval_time, 4) if prompt_eval_time else None,
             generation_time_s=round(generation_time, 4) if generation_time else None,
             cache_hits=cache_hits,
             cache_enabled=True,
-            max_tokens=max_tokens,
-            reasoning_enabled=self.cfg.reasoning_enabled,
+            max_tokens=self.cfg.max_tokens,
             has_content=bool(content.strip()),
         )
 

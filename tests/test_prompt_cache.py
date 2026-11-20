@@ -30,7 +30,6 @@ class TestPromptCacheCorrectness:
         cfg = TranslateConfig()
         cfg.model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
         cfg.server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
-        cfg.reasoning_enabled = False
         cfg.max_tokens = 128
         cfg.context_size = 4096
 
@@ -139,41 +138,6 @@ class TestPromptCacheCorrectness:
         # All results should match expected
         for (ja, result), (_, expected) in zip(results, utterances):
             assert result == expected, f"Expected '{expected}' for '{ja}', got '{result}'"
-
-    def test_cache_with_reasoning_enabled(self, translator):
-        """Cache should work correctly when reasoning is enabled."""
-        translator.cfg.reasoning_enabled = True
-        translator.cfg.reasoning_budget_tokens = 96
-
-        prompt = build_prompt("こんにちは", [], "")
-
-        mock_payload = {
-            "choices": [
-                {
-                    "message": {
-                        "content": "Hello",
-                        "reasoning_content": "This is a greeting in Japanese",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 50,
-                "completion_tokens": 10,
-                "reasoning_tokens": 8,
-                "cache_hits": 40,
-            },
-        }
-        translator.server.chat.return_value = mock_payload
-
-        result = translator._chat(prompt, timeout=5.0)
-
-        # Should still only return content, not reasoning
-        assert result == "Hello"
-        # Cache should still be enabled
-        call_args = translator.server.chat.call_args
-        body = call_args[0][0] if call_args else {}
-        assert body.get("cache_prompt") is True
 
     def test_no_cache_contamination_across_different_prompts(self, translator):
         """Different prompts should not be contaminated by cache."""

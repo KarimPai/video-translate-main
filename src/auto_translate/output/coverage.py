@@ -195,21 +195,18 @@ class CoverageTracker:
 
         Must be called with self._lock held.
 
-        Algorithm — full recomputation from the start position:
-        1. Collect all intervals (pending + completed), sorted by start time.
-        2. Walk from the start position forward contiguously:
-           - Completed intervals: advance past their end.
-           - Pending intervals: stop at their start (can't advance further).
-           - Gaps between intervals: advance through VAD-confirmed silence.
-        3. The watermark is the furthest contiguous position reached.
+        Algorithm — incremental recomputation from verified coverage:
+        1. Collect pending and completed intervals sorted by start time.
+        2. Walk forward from _frontier, which represents verified contiguous
+           coverage even when earlier completed intervals were compacted.
+           - Completed intervals can extend the frontier.
+           - Pending intervals stop advancement at their start.
+           - Gaps can be crossed only using VAD-confirmed silence.
+        3. Retroactively block at the earliest pending start before _frontier.
 
-        Critical: never advance through an unconfirmed gap. If VAD has not
-        confirmed the silence between the watermark and the next interval,
-        stop — do not skip ahead to a completed interval beyond the gap.
-
-        This is a full recomputation, not an incremental advance, so it
-        correctly handles late-registered speech that retroactively blocks
-        the watermark.
+        Never advance through an unconfirmed gap or a pending speech interval.
+        A retroactive pending interval may lower translated_until, but it does
+        not erase the previously verified frontier.
 
         Compaction safety: after compaction removes completed intervals, the
         _frontier preserves the highest contiguous coverage achieved. The
@@ -304,13 +301,10 @@ class CoverageTracker:
         # must respect it. Otherwise, the frontier prevents compaction from erasing
         # previously achieved coverage.
         #
-        # Critical: when late pending speech is registered behind the frontier,
-        # the walk from _start_s may not reach the pending speech because the
-        # completed intervals that bridged the gap were compacted. In this case,
-        # the frontier represents verified contiguous coverage, so the watermark
-        # should be min(frontier, earliest_pending_start) — not min(walk_result,
-        # earliest_pending_start) which would incorrectly drop the watermark to
-        # the VAD progress instead of the pending speech start.
+        # Critical: earlier completed intervals may have been compacted, so
+        # late pending speech behind _frontier must be handled separately. The
+        # walk starts at _frontier and may extend it, but the public watermark
+        # must remain blocked at the earliest retroactive pending speech start.
         earliest_pending = min(
             (iv.start_s for iv in self._pending.values()), default=float('inf')
         )

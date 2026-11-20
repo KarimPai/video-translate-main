@@ -205,33 +205,40 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     return "\n".join(part for part in (header, *sources) if part)
 
 
-def build_plamo_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "") -> dict:
+def build_plamo_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "", *, simplified: bool = False) -> dict:
     """Build a chat-completion prompt for PLaMo 3 Translate.
 
-    PLaMo uses a specialized chat template with target_lang kwargs.
+    PLaMo uses a specialized chat template with target_lang and source_lang kwargs.
     No system prompt is needed — the model is translation-specialized.
     The user message contains the text to translate, with optional context and glossary.
-    """
-    user_content = text
-    if context or style or terms:
-        parts = []
-        if terms:
-            glossary_text = "\n".join(f"  {ja} → {en}" for ja, en in terms)
-            parts.append(f"Name/term glossary:\n{glossary_text}")
-        if context:
-            parts.append(f"Reference context (not part of the speech to translate):\n{context}")
-        if style:
-            parts.append(f"Translation style: {style}.")
-        if parts:
-            parts.append("")  # blank line separator
-            parts.append("Translate this Japanese text to English:")
-        parts.append(text)
-        user_content = "\n".join(parts)
     
-    # PLaMo uses chat_template_kwargs for target language
+    When `simplified=True`, omit glossary/context/style to reduce input tokens
+    for truncation recovery retries.
+    """
+    if simplified:
+        # Minimal prompt: Japanese text only, no glossary/context/style
+        user_content = text
+    else:
+        user_content = text
+        if context or style or terms:
+            parts = []
+            if terms:
+                glossary_text = "\n".join(f"  {ja} → {en}" for ja, en in terms)
+                parts.append(f"Name/term glossary:\n{glossary_text}")
+            if context:
+                parts.append(f"Reference context (not part of the speech to translate):\n{context}")
+            if style:
+                parts.append(f"Translation style: {style}.")
+            if parts:
+                parts.append("")  # blank line separator
+                parts.append("Translate this Japanese text to English:")
+            parts.append(text)
+            user_content = "\n".join(parts)
+    
+    # PLaMo uses chat_template_kwargs for both source and target language
     return {
         "messages": [{"role": "user", "content": user_content}],
-        "chat_template_kwargs": {"target_lang": "en"},
+        "chat_template_kwargs": {"source_lang": "ja", "target_lang": "en"},
     }
 
 
@@ -405,14 +412,15 @@ class PlamoTranslator:
 
         finish_reason = choice.get("finish_reason", "")
         if finish_reason == "length":
-            log.debug("Truncated response (max_tokens=%d)", actual_max)
+            log.warning("Truncated response (max_tokens=%d, output_tokens=%d)", actual_max, output_tokens)
             increment_counter("mt_truncated")
         elif finish_reason == "stop":
             increment_counter("mt_finish_stop")
         elif finish_reason:
-            log.debug("Unexpected finish_reason: %s", finish_reason)
+            log.info("Unexpected finish_reason: %s (max_tokens=%d, output_tokens=%d)", finish_reason, actual_max, output_tokens)
             increment_counter("mt_finish_other")
         else:
+            log.debug("No finish_reason returned (max_tokens=%d, output_tokens=%d)", actual_max, output_tokens)
             increment_counter("mt_finish_none")
 
         record_event(
@@ -501,18 +509,31 @@ class PlamoTranslator:
                     english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
 
                     if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
+                        # First retry: try a simplified prompt (no glossary/context) to reduce input tokens
+                        # This is more likely to complete within the same token limit
                         retries_left -= 1
                         truncation_retries += 1
-                        retry_tokens = min(self.cfg.max_tokens * 2, 256)
-                        record_event("mt_truncation_retry", max_tokens=retry_tokens)
+                        simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
+                        record_event("mt_truncation_retry", strategy="simplified_prompt")
                         increment_counter("mt_retries")
-                        english, finish_reason = self._chat(
-                            prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
-                        )
+                        english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
+                        
                         if finish_reason == "length":
-                            record_event("mt_truncation_failed", max_tokens=retry_tokens)
-                            increment_counter("mt_rejected")
-                            return ""
+                            # Second retry: increase token limit if simplified prompt was also truncated
+                            if retries_left > 0:
+                                retries_left -= 1
+                                truncation_retries += 1
+                                retry_tokens = max(self.cfg.max_tokens * 2, 512)
+                                record_event("mt_truncation_retry", strategy="increased_tokens", max_tokens=retry_tokens)
+                                increment_counter("mt_retries")
+                                english, finish_reason = self._chat(
+                                    simplified_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                                )
+                            
+                            if finish_reason == "length":
+                                record_event("mt_truncation_failed", max_tokens=retry_tokens)
+                                increment_counter("mt_rejected")
+                                return ""
 
                     english = clean_output(english)
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:

@@ -397,6 +397,7 @@ def run_translate(
     merge: tuple[float, float] | None = None,
     live_merge_margin_s: float = 1.5,
     record_speech_cb: Callable[[float, float, int], None] | None = None,
+    complete_speech_cb: Callable[[float, float, int], None] | None = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress.
 
@@ -641,6 +642,9 @@ def run_translate(
                 "Japanese ASR recognized speech: %r",
                 tr.start_s, tr.end_s, reason_str, tr.ja[:110],
             )
+            # Clear pending speech so the watermark can advance past the suppressed region
+            if complete_speech_cb is not None:
+                complete_speech_cb(tr.start_s, tr.end_s, tr.generation)
             continue
 
         # Japanese fallback is no longer used; translation failures are suppressed.
@@ -862,11 +866,14 @@ def run(
 
     # Build the record_speech callback for the contiguous watermark
     record_speech_cb = None
+    complete_speech_cb = None
     for out in outputs:
         rs = getattr(out, "record_speech", None)
-        if rs is not None:
+        if rs is not None and record_speech_cb is None:
             record_speech_cb = rs
-            break
+        cs = getattr(out, "complete_speech", None)
+        if cs is not None and complete_speech_cb is None:
+            complete_speech_cb = cs
 
     threads.append(
         threading.Thread(
@@ -888,6 +895,7 @@ def run(
                  and (not ingest.source.live or playback_position is not None) else None),
                 cfg.translate.live_merge_margin_s,
                 record_speech_cb,
+                complete_speech_cb,
             ),
             name="translate",
             daemon=True,

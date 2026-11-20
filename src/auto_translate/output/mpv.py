@@ -801,6 +801,34 @@ class MpvOutput:
                 self._subtitle_ready.set()
             self._buffer_condition.notify_all()
 
+    def complete_speech(self, start_s: float, end_s: float, generation: int) -> None:
+        """Clear pending speech and advance the watermark for a suppressed translation.
+        
+        When a translation is suppressed (empty output, prompt echo, untranslated Japanese),
+        no subtitle is published, but the pending speech entry must still be cleared so
+        the watermark can advance. This prevents VOD playback from stalling.
+        """
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                self._pending_speech.clear()
+                self._pending_generation = generation
+                return
+            # Remove the matching pending speech entry
+            self._pending_speech = [
+                (s, e) for s, e in self._pending_speech
+                if not (abs(s - start_s) < 1.0 and abs(e - end_s) < 1.0)
+            ]
+            # Advance watermark past the suppressed region
+            target = max(end_s, self._vad_progress)
+            self._translated_until = max(self._translated_until, target)
+            # Try to advance further through now-unblocked silence
+            self._try_advance_through_silence()
+            if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
+                log.info("translation lead ready at %.3fs (after suppressed translation)", self._seek_lead_target)
+                self._seek_lead_target = None
+                self._subtitle_ready.set()
+            self._buffer_condition.notify_all()
+
     def playback_position(self):
         """Last sampled position in the subtitle source timeline."""
         return self._now

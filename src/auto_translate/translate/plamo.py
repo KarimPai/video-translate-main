@@ -523,37 +523,59 @@ class PlamoTranslator:
                 def _elapsed_ok() -> bool:
                     return time.monotonic() - started < self._MAX_ELAPSED_S
 
-                try:
-                    english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
-                    _record(english, "full")
+                # For long Japanese text, the full prompt (glossary + context) consumes so many
+                # input tokens that the model hits max_tokens before finishing the translation.
+                # Try the simplified prompt first to avoid wasting time on a guaranteed truncation.
+                # With max_tokens=512, the full prompt uses ~200-280 input tokens, leaving only
+                # ~230-310 tokens for output — often insufficient for long utterances.
+                simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
+                long_text = len(ja) > 100
 
-                    if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES and _elapsed_ok():
-                        # First retry: simplified prompt (no glossary/context) to reduce input tokens
-                        retries_left -= 1
-                        truncation_retries += 1
-                        simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
-                        record_event("mt_truncation_retry", strategy="simplified_prompt")
-                        increment_counter("mt_retries")
+                try:
+                    if long_text:
+                        # Simplified prompt first — higher success rate for long utterances
                         english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
                         _record(english, "simplified")
+                        record_event("mt_request", strategy="simplified_first", input_tokens=len(ja))
+                    else:
+                        english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
+                        _record(english, "full")
+
+                    if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES and _elapsed_ok():
+                        retries_left -= 1
+                        truncation_retries += 1
+                        if long_text:
+                            # Already tried simplified — retry with full prompt (glossary/context)
+                            # which may produce a different, complete result with more context
+                            record_event("mt_truncation_retry", strategy="full_prompt_after_simplified")
+                            increment_counter("mt_retries")
+                            english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
+                            _record(english, "full_retry")
+                        else:
+                            # First attempt was full prompt — retry with simplified to reduce input tokens
+                            record_event("mt_truncation_retry", strategy="simplified_prompt")
+                            increment_counter("mt_retries")
+                            english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
+                            _record(english, "simplified")
 
                         if finish_reason == "length":
-                            if _repeated(english, "simplified"):
+                            if _repeated(english, "full_retry" if long_text else "simplified"):
                                 # Deterministic repeat — more tokens won't help; stop truncation recovery.
                                 record_event("mt_truncation_failed", max_tokens=self.cfg.max_tokens)
                                 increment_counter("mt_rejected")
                                 return ""
-                            # Second retry: increase token limit if simplified prompt was also truncated
+                            # Second retry: increase token limit
                             if retries_left > 0 and _elapsed_ok():
                                 retries_left -= 1
                                 truncation_retries += 1
                                 retry_tokens = max(self.cfg.max_tokens * 2, 512)
                                 record_event("mt_truncation_retry", strategy="increased_tokens", max_tokens=retry_tokens)
                                 increment_counter("mt_retries")
+                                retry_prompt = prompt if long_text else simplified_prompt
                                 english, finish_reason = self._chat(
-                                    simplified_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                                    retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
                                 )
-                                _record(english, "simplified_high_tokens")
+                                _record(english, "high_tokens")
 
                             if finish_reason == "length":
                                 record_event("mt_truncation_failed", max_tokens=retry_tokens)

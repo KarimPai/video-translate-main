@@ -55,35 +55,44 @@ class TestPlamoPromptFormat:
         assert text in content
 
     def test_prompt_with_glossary(self):
-        """Glossary terms should be included in the prompt."""
+        """Glossary terms are passed via chat_template_kwargs, not user text."""
         terms = [("ミク", "Miku"), ("ボカロ", "Vocaloid")]
         result = build_plamo_prompt("ミクが歌う", terms, "")
         content = result["messages"][0]["content"]
-        assert "ミク" in content
-        assert "Miku" in content
+        # Japanese speech stays as the user message
+        assert content == "ミクが歌う"
+        kwargs = result.get("chat_template_kwargs", {})
+        glossary = kwargs.get("glossary", [])
+        assert ("ミク", "Miku") in [(g["source"], g["target"]) for g in glossary]
+        assert ("ボカロ", "Vocaloid") in [(g["source"], g["target"]) for g in glossary]
 
     def test_prompt_with_context(self):
-        """Context should be included in the prompt."""
+        """Context is passed via chat_template_kwargs, not user text."""
         context = "直前の会話：ゲームを始めましょう"
         result = build_plamo_prompt("はい、始めましょう", [], context)
         content = result["messages"][0]["content"]
-        assert "ゲームを始めましょう" in content
+        assert content == "はい、始めましょう"
+        kwargs = result.get("chat_template_kwargs", {})
+        assert kwargs.get("context") == context
 
     def test_prompt_with_style(self):
-        """Style should be included in the prompt."""
-        result = build_plamo_prompt("こんにちは", [], "", style="casual")
+        """Style is not embedded in the user text (not a PLaMo chat_template kwarg)."""
+        result = build_plamo_prompt("こんにちは", [], "")
         content = result["messages"][0]["content"]
-        assert "casual" in content.lower()
+        assert "casual" not in content
+        assert "style" not in content.lower()
 
     def test_simplified_prompt_omits_glossary(self):
-        """Simplified prompt should omit glossary, context, and style."""
+        """Simplified prompt omits glossary and context entirely."""
         terms = [("ミク", "Miku")]
         context = "直前の会話：ゲームを始めましょう"
-        result = build_plamo_prompt("ミクが歌う", terms, context, style="casual", simplified=True)
+        result = build_plamo_prompt("ミクが歌う", terms, context, simplified=True)
         content = result["messages"][0]["content"]
         assert content == "ミクが歌う"
         assert "Miku" not in content
-        assert "casual" not in content
+        kwargs = result.get("chat_template_kwargs", {})
+        assert "glossary" not in kwargs
+        assert "context" not in kwargs
 
     def test_simplified_prompt_still_has_langs(self):
         """Simplified prompt must still have source_lang and target_lang."""
@@ -97,6 +106,20 @@ class TestPlamoPromptFormat:
         result = build_plamo_prompt("", [], "")
         assert "messages" in result
         assert "chat_template_kwargs" in result
+
+    def test_prompt_glossary_dict_format(self):
+        """Glossary entries use source/target dicts (official template format)."""
+        terms = [("ミク", "Miku")]
+        result = build_plamo_prompt("ミクが歌う", terms, "")
+        glossary = result["chat_template_kwargs"].get("glossary", [])
+        assert glossary == [{"source": "ミク", "target": "Miku"}]
+
+    def test_prompt_kwargs_always_has_langs(self):
+        """source_lang and target_lang are always present, even with glossary/context."""
+        result = build_plamo_prompt("こんにちは", [("ミク", "Miku")], "直前の会話：テスト")
+        kwargs = result.get("chat_template_kwargs", {})
+        assert kwargs.get("source_lang") == "ja"
+        assert kwargs.get("target_lang") == "en"
 
 
 # ---------------------------------------------------------------------------
@@ -335,11 +358,12 @@ class TestGlossaryHandling:
     """Verify glossary terms are handled correctly."""
 
     def test_glossary_in_normal_prompt(self):
-        """Glossary terms should appear in normal prompts."""
+        """Glossary terms are passed via chat_template_kwargs in normal prompts."""
         terms = [("ミク", "Miku"), ("ボカロ", "Vocaloid")]
         result = build_plamo_prompt("ミクが歌う", terms, "")
-        content = result["messages"][0]["content"]
-        assert "glossary" in content.lower() or "Miku" in content
+        kwargs = result.get("chat_template_kwargs", {})
+        glossary = kwargs.get("glossary", [])
+        assert ("ミク", "Miku") in [(g["source"], g["target"]) for g in glossary]
 
     def test_glossary_not_in_simplified_prompt(self):
         """Glossary should be omitted in simplified prompts."""

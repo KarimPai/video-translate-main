@@ -101,12 +101,16 @@ def test_plamo_prompt_building():
 
 
 def test_plamo_prompt_with_glossary():
-    """PLaMo prompt includes glossary terms."""
+    """PLaMo prompt passes glossary via chat_template_kwargs, not user text."""
     from auto_translate.translate.plamo import build_plamo_prompt
 
-    prompt = build_plamo_prompt("game", [("Kira", "Kira")], "Previous: welcome", "Plain")
+    prompt = build_plamo_prompt("game", [("Kira", "Kira")], "Previous: welcome")
     content = prompt["messages"][0]["content"]
-    assert "Kira" in content
+    # Japanese speech stays as the user message
+    assert content == "game"
+    # Glossary is passed through chat_template_kwargs (official template)
+    glossary = prompt["chat_template_kwargs"].get("glossary")
+    assert glossary == [{"source": "Kira", "target": "Kira"}]
 
 
 def test_gemma4_output_cleaning():

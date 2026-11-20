@@ -205,40 +205,30 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     return "\n".join(part for part in (header, *sources) if part)
 
 
-def build_plamo_prompt(text: str, terms: list[tuple[str, str]], context: str, style: str = "", *, simplified: bool = False) -> dict:
+def build_plamo_prompt(text: str, terms: list[tuple[str, str]], context: str, *, simplified: bool = False) -> dict:
     """Build a chat-completion prompt for PLaMo 3 Translate.
 
-    PLaMo uses a specialized chat template with target_lang and source_lang kwargs.
-    No system prompt is needed — the model is translation-specialized.
-    The user message contains the text to translate, with optional context and glossary.
-    
-    When `simplified=True`, omit glossary/context/style to reduce input tokens
+    PLaMo uses the official chat template: Japanese speech is the user message
+    and source_lang/target_lang (plus optional context/glossary) are passed via
+    chat_template_kwargs, never embedded in the user text. This keeps the source
+    separate from instructions (no prompt leakage into subtitles) and reduces
+    input tokens for faster prefill.
+
+    When `simplified=True`, omit glossary/context to reduce input tokens
     for truncation recovery retries.
     """
+    kwargs: dict[str, object] = {"source_lang": "ja", "target_lang": "en"}
     if simplified:
-        # Minimal prompt: Japanese text only, no glossary/context/style
         user_content = text
     else:
         user_content = text
-        if context or style or terms:
-            parts = []
-            if terms:
-                glossary_text = "\n".join(f"  {ja} → {en}" for ja, en in terms)
-                parts.append(f"Name/term glossary:\n{glossary_text}")
-            if context:
-                parts.append(f"Reference context (not part of the speech to translate):\n{context}")
-            if style:
-                parts.append(f"Translation style: {style}.")
-            if parts:
-                parts.append("")  # blank line separator
-                parts.append("Translate this Japanese text to English:")
-            parts.append(text)
-            user_content = "\n".join(parts)
-    
-    # PLaMo uses chat_template_kwargs for both source and target language
+        if context:
+            kwargs["context"] = context
+        if terms:
+            kwargs["glossary"] = [{"source": ja, "target": en} for ja, en in terms]
     return {
         "messages": [{"role": "user", "content": user_content}],
-        "chat_template_kwargs": {"source_lang": "ja", "target_lang": "en"},
+        "chat_template_kwargs": kwargs,
     }
 
 
@@ -338,11 +328,10 @@ class PlamoTranslator:
         try:
             self.server.start()
             # Warmup with a simple translation
-            prompt = build_plamo_prompt("こんにちは。今日はみんなでゲームをします。よろしくお願いします。", [], "", self.cfg.style)
+            prompt = build_plamo_prompt("こんにちは。今日はみんなでゲームをします。よろしくお願いします。", [], "")
             self._chat(prompt, timeout=self.cfg.load_timeout_s)
             check_running()
-            self._chat(build_plamo_prompt("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], "",
-                                          self.cfg.style),
+            self._chat(build_plamo_prompt("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], ""),
                        timeout=self.cfg.load_timeout_s)
             check_running()
         except (httpx.HTTPError, ValueError) as exc:
@@ -477,7 +466,7 @@ class PlamoTranslator:
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> dict:
         context = self._context(history)
         terms, _ = self._terms_for(ja, context)
-        return build_plamo_prompt(ja, terms, context, self.cfg.style)
+        return build_plamo_prompt(ja, terms, context)
 
     _MAX_RETRIES = 3
     _MAX_TRUNCATION_RETRIES = 1
@@ -497,28 +486,42 @@ class PlamoTranslator:
                     self._recover("server exited")
                 context = self._context(history)
                 terms, names = self._terms_for(ja, context)
-                prompt = build_plamo_prompt(ja, terms, context, self.cfg.style)
+                prompt = build_plamo_prompt(ja, terms, context)
 
                 started = time.monotonic()
                 latency_budget = self.cfg.timeout_s * 0.7
 
                 retries_left = self._MAX_RETRIES
                 truncation_retries = 0
+                previous_outputs: list[str] = []
+
+                def _repeated(output: str) -> bool:
+                    """True if this invalid output matches a prior attempt — skip redundant deterministic retries."""
+                    issue = english_output_issue(output)
+                    if issue is None and output.strip():
+                        return False
+                    return output in previous_outputs
 
                 try:
                     english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    previous_outputs.append(english)
 
                     if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
-                        # First retry: try a simplified prompt (no glossary/context) to reduce input tokens
-                        # This is more likely to complete within the same token limit
+                        # First retry: simplified prompt (no glossary/context) to reduce input tokens
                         retries_left -= 1
                         truncation_retries += 1
                         simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
                         record_event("mt_truncation_retry", strategy="simplified_prompt")
                         increment_counter("mt_retries")
                         english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
-                        
+                        previous_outputs.append(english)
+
                         if finish_reason == "length":
+                            if _repeated(english):
+                                # Deterministic repeat — more tokens won't help; stop truncation recovery.
+                                record_event("mt_truncation_failed", max_tokens=self.cfg.max_tokens)
+                                increment_counter("mt_rejected")
+                                return ""
                             # Second retry: increase token limit if simplified prompt was also truncated
                             if retries_left > 0:
                                 retries_left -= 1
@@ -529,7 +532,8 @@ class PlamoTranslator:
                                 english, finish_reason = self._chat(
                                     simplified_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
                                 )
-                            
+                                previous_outputs.append(english)
+
                             if finish_reason == "length":
                                 record_event("mt_truncation_failed", max_tokens=retry_tokens)
                                 increment_counter("mt_rejected")
@@ -544,7 +548,7 @@ class PlamoTranslator:
                         raise
                     self._recover(str(exc))
                     # Rebuild prompt after recovery — server state may have changed
-                    prompt = build_plamo_prompt(ja, terms, context, self.cfg.style)
+                    prompt = build_plamo_prompt(ja, terms, context)
                     if retries_left > 0:
                         retries_left -= 1
                         increment_counter("mt_retries")
@@ -557,7 +561,7 @@ class PlamoTranslator:
                     increment_counter("mt_latency_exceeded")
 
                 # Retry 1: empty output
-                if not english and retries_left > 0:
+                if not english and retries_left > 0 and not _repeated(english):
                     issue = english_output_issue(english)
                     if issue:
                         record_event("mt_rejected", reason=issue, retry=True)
@@ -565,10 +569,11 @@ class PlamoTranslator:
                     retries_left -= 1
                     increment_counter("mt_retries")
                     english, _ = self._chat(minimal, timeout=self.cfg.timeout_s)
+                    previous_outputs.append(english)
                     english = clean_output(english)
 
                 # Retry 2: untranslated Japanese
-                if retries_left > 0 and english:
+                if retries_left > 0 and english and not _repeated(english):
                     output_issue = english_output_issue(english)
                     if output_issue == "untranslated_japanese":
                         record_event("mt_rejected", reason=output_issue, retry=True)
@@ -577,6 +582,7 @@ class PlamoTranslator:
                         retries_left -= 1
                         increment_counter("mt_retries")
                         candidate, _ = self._chat(minimal, timeout=self.cfg.timeout_s, temperature=0.2)
+                        previous_outputs.append(candidate)
                         cleaned = clean_output(candidate)
                         if cleaned and not english_output_issue(cleaned):
                             english = cleaned
@@ -584,7 +590,7 @@ class PlamoTranslator:
                 # Retry 3: missing or garbled names
                 output_issue = english_output_issue(english)
                 missing = missing_names(english, names)
-                if not self._closed and retries_left > 0 and (output_issue or missing):
+                if not self._closed and retries_left > 0 and (output_issue or missing) and not _repeated(english):
                     if output_issue:
                         record_event("mt_rejected", reason=output_issue, retry=True)
                         increment_counter("mt_rejected")
@@ -596,6 +602,7 @@ class PlamoTranslator:
                         if missing:
                             record_event("mt_name_retry", names=missing)
                         candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
+                        previous_outputs.append(candidate)
                         candidates.append(clean_output(candidate))
                     english = self._best(candidates, names)
 

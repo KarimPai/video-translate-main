@@ -1549,7 +1549,10 @@ def test_registry_factory_qwen3_raises_on_empty_mmproj():
 
 
 def test_registry_factory_whisper_does_not_inherit_haas():
-    """Whisper factory must not inherit Haas's model path."""
+    """Whisper factory must not inherit Haas's model path.
+
+    Mock WhisperASR to prevent loading a real Whisper model into GPU memory.
+    """
     from auto_translate.config import Config, get_backend_config
     from auto_translate.registry import get_default_registry
 
@@ -1559,21 +1562,25 @@ def test_registry_factory_whisper_does_not_inherit_haas():
     assert merged.get("model_path", "") == "", \
         "Whisper should not inherit Haas's model_path"
 
-    # Factory should not raise AttributeError on .model_path.default
+    # Mock WhisperASR to prevent loading a real model into GPU memory.
+    # With an empty model_path and no cached model, WhisperASR raises WhisperError.
     registry = get_default_registry()
-    # Whisper will raise WhisperError (no model available), not AttributeError
-    with pytest.raises(Exception) as exc_info:
-        registry.create_asr("whisper", merged, context="")
-    # The error should be about missing Whisper model, not a dataclass issue
-    assert "AttributeError" not in type(exc_info.value).__name__
+    with mock.patch("auto_translate.asr.whisper_turbo.WhisperASR") as mock_whisper:
+        mock_whisper.side_effect = WhisperError("no Whisper model available")
+        with pytest.raises(WhisperError, match="no Whisper model available"):
+            registry.create_asr("whisper", merged, context="")
+        # Verify WhisperASR was invoked (factory reached the constructor)
+        mock_whisper.assert_called_once()
+        # Verify the passed config has empty model_path, not Haas's
+        call_cfg = mock_whisper.call_args[0][0]
+        assert call_cfg.model_path == ""
 
 
 def test_registry_factory_haas_retains_default():
     """Haas factory should use default model when config dict has no model_path.
 
     The factory must not raise AttributeError accessing .model_path.default.
-    Since Haas may succeed loading the model, we verify the config dict passed
-    to the factory contains the correct model_path.
+    Mock HaasASR to prevent starting a real speech.cpp server process.
     """
     from auto_translate.config import Config, get_backend_config
     from auto_translate.registry import get_default_registry
@@ -1583,25 +1590,29 @@ def test_registry_factory_haas_retains_default():
     merged = get_backend_config(cfg, "asr", "haas")
     assert merged.get("model_path") == "haas-ja-v1.0"
 
-    # The factory should process the config dict without AttributeError.
-    # Haas may or may not raise depending on whether the model is installed,
-    # but it must not raise AttributeError on .model_path.default
+    # Mock HaasASR to prevent starting a real server subprocess
     registry = get_default_registry()
-    try:
-        registry.create_asr("haas", merged, context="")
-    except AttributeError:
-        raise AssertionError(
-            "Haas factory raised AttributeError — likely accessing "
-            "AsrConfig.model_path.default on a string field"
-        )
-    # Model not found or other expected error is acceptable here; we only
-    # care that AttributeError is not raised.
+    with mock.patch("auto_translate.asr.haas.HaasASR") as mock_haas:
+        mock_haas.return_value = mock.MagicMock()
+        try:
+            registry.create_asr("haas", merged, context="")
+        except AttributeError:
+            raise AssertionError(
+                "Haas factory raised AttributeError — likely accessing "
+                "AsrConfig.model_path.default on a string field"
+            )
+        # Verify HaasASR was actually invoked (factory reached the constructor)
+        mock_haas.assert_called_once()
+        # Verify the passed config has the correct model_path
+        call_cfg = mock_haas.call_args[0][0]
+        assert call_cfg.model_path == "haas-ja-v1.0"
 
 
 def test_registry_factory_gemma4_retains_default():
     """Gemma4 factory should use default model when config dict has no model_path.
 
     The factory must not raise AttributeError accessing .model_path.default.
+    Mock Gemma4Translator to prevent starting a real llama-server subprocess.
     """
     from auto_translate.config import Config, get_backend_config
     from auto_translate.registry import get_default_registry
@@ -1611,16 +1622,22 @@ def test_registry_factory_gemma4_retains_default():
     merged = get_backend_config(cfg, "translate", "gemma4")
     assert merged.get("model_path") == "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
 
+    # Mock Gemma4Translator to prevent starting a real llama-server subprocess
     registry = get_default_registry()
-    try:
-        registry.create_translate("gemma4", merged)
-    except AttributeError:
-        raise AssertionError(
-            "Gemma4 factory raised AttributeError — likely accessing "
-            "TranslateConfig.model_path.default on a string field"
-        )
-    # Model not found or other expected error is acceptable here; we only
-    # care that AttributeError is not raised.
+    with mock.patch("auto_translate.translate.gemma4.Gemma4Translator") as mock_gemma:
+        mock_gemma.return_value = mock.MagicMock()
+        try:
+            registry.create_translate("gemma4", merged)
+        except AttributeError:
+            raise AssertionError(
+                "Gemma4 factory raised AttributeError — likely accessing "
+                "TranslateConfig.model_path.default on a string field"
+            )
+        # Verify Gemma4Translator was actually invoked (factory reached the constructor)
+        mock_gemma.assert_called_once()
+        # Verify the passed config has the correct model_path
+        call_cfg = mock_gemma.call_args[0][0]
+        assert call_cfg.model_path == "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
 
 
 def test_server_path_shared_across_backends():
@@ -1671,20 +1688,35 @@ def test_whisper_resolves_forward_slash_local_path():
 
 
 def test_whisper_rejects_nonexistent_forward_slash_path():
-    """Explicit forward-slash path that doesn't exist locally should raise."""
+    """Explicit forward-slash path that doesn't exist locally should raise.
+
+    The path 'models/whisper-large-v3-turbo' contains '/' and no ':', so it's
+    classified as a potential HF repo ID. Since it doesn't exist locally and
+    isn't cached, the explicit path should raise a clear cache-missing error.
+    """
     from auto_translate.asr.whisper_turbo import WhisperASR, WhisperError
     from auto_translate.config import AsrConfig
 
-    # A forward-slash path that doesn't exist and looks like it could be
-    # either a local path or an HF repo ID
+    # A forward-slash path that doesn't exist and looks like an HF repo ID
+    # (contains '/' and no ':'). Since it's explicit and not cached, it
+    # should raise a clear error about the missing cache.
     cfg = AsrConfig(model_path="models/whisper-large-v3-turbo", cuda_device=-1)
-    with mock.patch.object(WhisperASR, "_find_cached_model", return_value=None):
-        try:
-            WhisperASR._resolve_model_path(cfg, is_explicit=True)
-            raise AssertionError("expected WhisperError")
-        except WhisperError as exc:
-            # Should mention cache or path, not silently fall through
-            assert "cache" in str(exc).lower() or "not present" in str(exc).lower()
+    with mock.patch.object(WhisperASR, "_find_cached_model", return_value=None), \
+            pytest.raises(WhisperError, match="not present in the local cache"):
+        WhisperASR._resolve_model_path(cfg, is_explicit=True)
+
+
+def test_whisper_rejects_nonexistent_local_path():
+    """Explicit local path without slashes that doesn't exist should raise."""
+    from auto_translate.asr.whisper_turbo import WhisperASR, WhisperError
+    from auto_translate.config import AsrConfig
+
+    # A path without '/' is unambiguously a local path, not an HF repo ID.
+    # Since it doesn't exist and is explicit, it should raise a clear error.
+    cfg = AsrConfig(model_path="nonexistent_whisper_model", cuda_device=-1)
+    with mock.patch.object(WhisperASR, "_find_cached_model", return_value=None), \
+            pytest.raises(WhisperError, match="does not exist"):
+        WhisperASR._resolve_model_path(cfg, is_explicit=True)
 
 
 def test_whisper_absolute_windows_path():
@@ -1769,11 +1801,14 @@ def test_backend_profile_runtime_only_no_model_inheritance():
 
 
 # ---------------------------------------------------------------------------
-# P2 — GUI stale override cleanup
+# P2 — GUI stale override cleanup with actual dropdown switching
 # ---------------------------------------------------------------------------
 
 def test_gui_clearing_asr_model_clears_override():
-    """Clearing the ASR model path field should remove the stored override."""
+    """Clearing the ASR model path field should remove the stored override.
+
+    Uses actual combo box switching to exercise the real signal path.
+    """
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtWidgets import QApplication
@@ -1784,28 +1819,36 @@ def test_gui_clearing_asr_model_clears_override():
 
     cfg = Config()
     cfg.asr.model_path = "haas-ja-v1.0"
-    # VideoTranslateWindow takes a Path, not Config. _cfg is set later.
     window = VideoTranslateWindow(Path("."))
     window._cfg = cfg
 
-    # Simulate setting a custom path and storing it as an override
-    window._asr_model_overrides["haas"] = "C:/custom/haas-model"
-    window.asr_model.setText("C:/custom/haas-model")
+    # Use the actual current backend from the combo box
+    current_backend = window.asr_backend.currentData()
+    window._last_asr_backend = current_backend
 
-    # Simulate clearing the field by switching backends
-    window._last_asr_backend = "haas"
+    # Set a custom override for the current backend
+    window._asr_model_overrides[str(current_backend)] = "C:/custom/model"
+    window.asr_model.setText("C:/custom/model")
+
+    # Clear the field and switch away to trigger the save/clear logic
     window.asr_model.setText("")
-    window._on_asr_backend_changed(0)
+    switch_to_index = 1 if window.asr_backend.count() > 1 else 0
+    if switch_to_index == window.asr_backend.currentIndex():
+        switch_to_index = 0
+    window.asr_backend.setCurrentIndex(switch_to_index)
 
-    # The override should be cleared
-    assert "haas" not in window._asr_model_overrides, \
+    # The override should be cleared because the field was empty
+    assert str(current_backend) not in window._asr_model_overrides, \
         "Clearing the field should remove the stale override"
 
     window.close()
 
 
 def test_gui_clearing_mt_model_clears_override():
-    """Clearing the MT model path field should remove the stored override."""
+    """Clearing the MT model path field should remove the stored override.
+
+    Uses actual combo box switching to exercise the real signal path.
+    """
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtWidgets import QApplication
@@ -1819,24 +1862,33 @@ def test_gui_clearing_mt_model_clears_override():
     window = VideoTranslateWindow(Path("."))
     window._cfg = cfg
 
-    # Simulate setting a custom path and storing it as an override
-    window._mt_model_overrides["gemma4"] = "C:/custom/gemma-model"
-    window.mt_model.setText("C:/custom/gemma-model")
+    # Use the actual current backend from the combo box
+    current_backend = window.mt_backend.currentData()
+    window._last_mt_backend = current_backend
 
-    # Simulate clearing the field by switching backends
-    window._last_mt_backend = "gemma4"
+    # Set a custom override for the current backend
+    window._mt_model_overrides[str(current_backend)] = "C:/custom/model"
+    window.mt_model.setText("C:/custom/model")
+
+    # Clear the field and switch away to trigger the save/clear logic
     window.mt_model.setText("")
-    window._on_mt_backend_changed(0)
+    switch_to_index = 1 if window.mt_backend.count() > 1 else 0
+    if switch_to_index == window.mt_backend.currentIndex():
+        switch_to_index = 0
+    window.mt_backend.setCurrentIndex(switch_to_index)
 
-    # The override should be cleared
-    assert "gemma4" not in window._mt_model_overrides, \
+    # The override should be cleared because the field was empty
+    assert str(current_backend) not in window._mt_model_overrides, \
         "Clearing the field should remove the stale override"
 
     window.close()
 
 
 def test_gui_restoring_default_clears_override():
-    """Restoring the default model path should clear the stored override."""
+    """Restoring the default model path should clear the stored override.
+
+    Uses actual combo box switching to exercise the real signal path.
+    """
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtWidgets import QApplication
@@ -1850,18 +1902,126 @@ def test_gui_restoring_default_clears_override():
     window = VideoTranslateWindow(Path("."))
     window._cfg = cfg
 
+    # Ensure _last_asr_backend matches the current combo box selection
+    current_backend = window.asr_backend.currentData()
+    window._last_asr_backend = current_backend
+
+    # Set a custom override for the current backend
+    window._asr_model_overrides[str(current_backend)] = "C:/custom/model"
+    window.asr_model.setText("C:/custom/model")
+
+    # Restore the default by resolving the current backend's identity
+    from auto_translate.config import resolve_model_identity
+    identity = resolve_model_identity(cfg, "asr", current_backend)
+    default_path = identity.get("model_path", "")
+    window.asr_model.setText(default_path)
+
+    # Switch away to trigger the save/clear logic
+    switch_to_index = 1 if window.asr_backend.count() > 1 else 0
+    if switch_to_index == window.asr_backend.currentIndex():
+        switch_to_index = 0
+    window.asr_backend.setCurrentIndex(switch_to_index)
+
+    # The override should be cleared because the field matches the default
+    assert str(current_backend) not in window._asr_model_overrides, \
+        f"Restoring the default should remove the override for {current_backend}"
+
+    window.close()
+
+
+def test_gui_dropdown_switching_preserves_custom_override():
+    """Switching backends via combo box should preserve custom model overrides.
+
+    Verifies that switching away and back restores the custom path.
+    """
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    from auto_translate.config import Config
+    from auto_translate.gui import VideoTranslateWindow
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    window = VideoTranslateWindow(Path("."))
+    window._cfg = cfg
+
+    # Use the actual current backend from the combo box
+    current_backend = window.asr_backend.currentData()
+    current_index = window.asr_backend.currentIndex()
+    window._last_asr_backend = current_backend
+
+    # Set a custom override for the current backend
+    window._asr_model_overrides[str(current_backend)] = "C:/custom/model"
+    window.asr_model.setText("C:/custom/model")
+
+    # Switch to a different backend (triggers save of the current backend's custom path)
+    switch_to_index = 1 if window.asr_backend.count() > 1 else 0
+    if switch_to_index == current_index:
+        switch_to_index = 0
+    window.asr_backend.setCurrentIndex(switch_to_index)
+
+    # The custom path should be stored as an override
+    assert str(current_backend) in window._asr_model_overrides, \
+        "Custom path should be stored when switching away"
+    assert window._asr_model_overrides[str(current_backend)] == "C:/custom/model"
+
+    # Switch back — the custom path should be restored
+    window.asr_backend.setCurrentIndex(current_index)
+    assert window.asr_model.text() == "C:/custom/model", \
+        "Custom path should be restored when switching back"
+
+    window.close()
+
+
+def test_gui_cli_args_respect_override():
+    """build_backend_command should include --asr-model when override is set.
+
+    Verifies the GUI override flows through to CLI argument generation.
+    """
+    import os
+    import tempfile
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    from auto_translate.config import Config
+    from auto_translate.gui import VideoTranslateWindow
+    from auto_translate.gui_runner import build_backend_command
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    window = VideoTranslateWindow(Path("."))
+    window._cfg = cfg
+
     # Set a custom override
     window._asr_model_overrides["haas"] = "C:/custom/haas-model"
     window.asr_model.setText("C:/custom/haas-model")
 
-    # Restore the default
-    window._last_asr_backend = "haas"
-    window.asr_model.setText("haas-ja-v1.0")
-    window._on_asr_backend_changed(0)
+    # Simulate the GUI building a backend command with the override
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "pyproject.toml").write_text("")
+        (root / "src" / "auto_translate" / "__main__.py").parent.mkdir(parents=True)
+        (root / "src" / "auto_translate" / "__main__.py").write_text("")
 
-    # The override should be cleared because the field matches the default
-    assert "haas" not in window._asr_model_overrides, \
-        "Restoring the default should remove the override"
+        # With override, --asr-model should be present
+        _, args = build_backend_command(
+            root, "https://www.youtube.com/watch?v=abc123", 720, 1,
+            asr_model="C:/custom/haas-model", mt_model=None,
+            asr_backend="haas", translate_backend="gemma4",
+        )
+        assert "--asr-model" in args
+        assert "C:/custom/haas-model" in args
+
+        # Without override, --asr-model should NOT be present
+        _, args_default = build_backend_command(
+            root, "https://www.youtube.com/watch?v=abc123", 720, 1,
+            asr_model=None, mt_model=None,
+            asr_backend="haas", translate_backend="gemma4",
+        )
+        assert "--asr-model" not in args_default
 
     window.close()
 

@@ -1376,26 +1376,128 @@ class TestPlamoTokenBudgeting:
         # 9050 > 7424, so skip_full_prompt=True
         ja = "あ" * 5000
         PlamoTranslator.translate.__get__(translator, type(translator))(ja, [])
-        # Should succeed (simplified prompt first)
-        assert call_index[0] >= 1
+        # Even the simplified input exceeds context. Reject safely rather
+        # than sending a request that llama.cpp cannot fit.
+        assert call_index[0] == 0
 
     def test_glossary_and_context_accounted_in_budget(self):
-        """Glossary terms and context should be included in the token estimate."""
+        """In-budget requests must actually send context and glossary."""
         translator, call_index = self._make_translator(context_size=8192, max_tokens=512)
         from auto_translate.translate.plamo import PlamoTranslator
-        # Set up glossary terms and context
-        translator._terms_for = mock.MagicMock(
-            return_value=([("田中", "Tanaka"), ("鈴木", "Suzuki"), ("高橋", "Takahashi")], [])
-        )
-        translator._context = mock.MagicMock(
-            return_value="直前の会話：こんにちは（英訳：Hello）"
-        )
-        ja = "今日は" * 50  # 200 chars
-        PlamoTranslator.translate.__get__(translator, type(translator))(ja, [])
-        # Should succeed on first attempt with full prompt
-        # The estimate: ja=360 + glossary=21 + context=~90 + overhead=50 = ~521
-        # 521 < 7424, so full prompt is used
-        assert call_index[0] == 1
+        terms = [("田中", "Tanaka"), ("鈴木", "Suzuki"), ("高橋", "Takahashi")]
+        context = "直前の会話：こんにちは（英訳：Hello）"
+        translator._terms_for = mock.MagicMock(return_value=(terms, []))
+        translator._context = mock.MagicMock(return_value=context)
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append((prompt, kwargs))
+            return "Valid translation", "stop"
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("今日は" * 50, [])
+        assert result == "Valid translation"
+        assert call_index[0] == 0  # Custom capture replaces the default mock.
+        assert len(requests) == 1
+        params = requests[0][0]["chat_template_kwargs"]
+        assert params["context"] == context
+        assert params["glossary"] == [
+            {"source": source, "target": target} for source, target in terms
+        ]
+
+    def test_oversized_full_prompt_uses_simplified_only(self):
+        """Too much context must not be passed to llama.cpp even on first attempt."""
+        translator, _ = self._make_translator(context_size=2048, max_tokens=256)
+        from auto_translate.translate.plamo import PlamoTranslator
+        translator._context = mock.MagicMock(return_value="あ" * 1000)
+        translator._terms_for = mock.MagicMock(return_value=([("田中", "Tanaka")], []))
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append(prompt)
+            return "Valid translation", "stop"
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは" * 20, [])
+        assert result == "Valid translation"
+        assert len(requests) == 1
+        assert requests[0]["chat_template_kwargs"] == {
+            "source_lang": "ja", "target_lang": "en"
+        }
+
+    def test_oversized_glossary_is_counted_by_spelling_length(self):
+        """Long glossary entries cannot be counted as a fixed seven tokens."""
+        translator, _ = self._make_translator(context_size=2048, max_tokens=256)
+        from auto_translate.translate.plamo import PlamoTranslator
+        translator._terms_for = mock.MagicMock(return_value=([("名前" * 300, "LongName" * 300)], []))
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append(prompt)
+            return "Valid translation", "stop"
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは" * 10, [])
+        assert result == "Valid translation"
+        assert len(requests) == 1
+        assert "glossary" not in requests[0]["chat_template_kwargs"]
+
+    def test_simplified_truncation_never_retries_oversized_full_prompt(self):
+        """A truncated simplified request may only retry with a fitting budget."""
+        translator, _ = self._make_translator(context_size=2048, max_tokens=256)
+        from auto_translate.translate.plamo import PlamoTranslator
+        translator._context = mock.MagicMock(return_value="あ" * 1000)
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append((prompt, kwargs.get("max_tokens")))
+            return ("Partial translation", "length") if len(requests) == 1 else ("Complete translation", "stop")
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは" * 20, [])
+        assert result == "Complete translation"
+        assert len(requests) == 2
+        assert requests[0][1] is None
+        assert requests[1][1] == 512
+        assert all("context" not in prompt["chat_template_kwargs"] for prompt, _ in requests)
+
+    def test_unfittable_high_token_retry_is_not_sent(self):
+        """A retry must not reserve more output tokens than the context can hold."""
+        translator, _ = self._make_translator(context_size=1024, max_tokens=128)
+        from auto_translate.translate.plamo import PlamoTranslator
+        translator._context = mock.MagicMock(return_value="あ" * 300)
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append((prompt, kwargs.get("max_tokens")))
+            return "Partial translation", "length"
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("あ" * 260, [])
+        assert result == ""
+        assert len(requests) == 1
+        assert requests[0][1] is None
+        assert "context" not in requests[0][0]["chat_template_kwargs"]
+
+    def test_high_token_retry_falls_back_to_fitting_simplified_prompt(self):
+        """When full fits at 128 output but not 512, the high retry must simplify."""
+        translator, _ = self._make_translator(context_size=1024, max_tokens=128)
+        from auto_translate.translate.plamo import PlamoTranslator
+        translator._context = mock.MagicMock(return_value="あ" * 150)
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append((prompt, kwargs.get("max_tokens")))
+            return ("Partial translation", "length") if len(requests) < 3 else ("Complete translation", "stop")
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("あ" * 50, [])
+        assert result == "Complete translation"
+        assert len(requests) == 3
+        assert "context" in requests[0][0]["chat_template_kwargs"]
+        assert "context" not in requests[1][0]["chat_template_kwargs"]
+        assert "context" not in requests[2][0]["chat_template_kwargs"]
+        assert requests[2][1] == 512
 
     def test_old_bug_would_skip_full_prompt_for_200_chars(self):
         """Verify the old bug: max_tokens=512 as budget would skip full prompt for 200 chars.

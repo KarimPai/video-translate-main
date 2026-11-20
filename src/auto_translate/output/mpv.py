@@ -774,12 +774,24 @@ class MpvOutput:
                 self._pending_generation = generation
             self._pending_speech.append((start_s, end_s))
     
+    def _find_earliest_pending_after(self, after: float) -> float:
+        """Find the earliest pending speech start after the given position.
+        
+        Returns float('inf') if no pending speech blocks advancement.
+        Must be called with _buffer_condition held.
+        """
+        earliest = float('inf')
+        for start_s, _end_s in self._pending_speech:
+            if start_s > after and start_s < earliest:
+                earliest = start_s
+        return earliest
+
     def advance_to_subtitle(self, subtitle_end_s: float, generation: int) -> None:
         """Advance the watermark to cover a published subtitle.
         
         When a subtitle is published, the watermark can advance to its end_s,
         including any contiguous VAD-confirmed silence between the current
-        watermark and the subtitle.
+        watermark and the subtitle. Will NOT skip over other pending speech.
         """
         with self._buffer_condition:
             if generation != self._pending_generation:
@@ -790,10 +802,10 @@ class MpvOutput:
                 (s, e) for s, e in self._pending_speech
                 if not (abs(s - subtitle_end_s) < 1.0 or e <= subtitle_end_s + 0.5)
             ]
-            # Advance watermark to the subtitle's end, including any contiguous silence
-            target = max(subtitle_end_s, self._vad_progress)
-            self._translated_until = max(self._translated_until, target)
-            # Try to advance further through now-unblocked silence
+            # Advance watermark to the subtitle's end, but NOT past other pending speech.
+            # First, advance to the subtitle end itself.
+            self._translated_until = max(self._translated_until, subtitle_end_s)
+            # Then try to advance further through now-unblocked silence
             self._try_advance_through_silence()
             if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
                 log.info("translation lead ready at %.3fs", self._seek_lead_target)
@@ -807,21 +819,24 @@ class MpvOutput:
         When a translation is suppressed (empty output, prompt echo, untranslated Japanese),
         no subtitle is published, but the pending speech entry must still be cleared so
         the watermark can advance. This prevents VOD playback from stalling.
+        
+        Will NOT advance the watermark past other pending (untranslated) speech regions.
+        Only the suppressed region's own entry is cleared.
         """
         with self._buffer_condition:
             if generation != self._pending_generation:
                 self._pending_speech.clear()
                 self._pending_generation = generation
                 return
-            # Remove the matching pending speech entry
+            # Remove ONLY the matching pending speech entry — don't clear others
             self._pending_speech = [
                 (s, e) for s, e in self._pending_speech
                 if not (abs(s - start_s) < 1.0 and abs(e - end_s) < 1.0)
             ]
-            # Advance watermark past the suppressed region
-            target = max(end_s, self._vad_progress)
-            self._translated_until = max(self._translated_until, target)
-            # Try to advance further through now-unblocked silence
+            # Advance watermark past the suppressed region, but NOT past other pending speech.
+            # First, advance to the end of this specific region.
+            self._translated_until = max(self._translated_until, end_s)
+            # Then try to advance further through now-unblocked silence
             self._try_advance_through_silence()
             if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
                 log.info("translation lead ready at %.3fs (after suppressed translation)", self._seek_lead_target)

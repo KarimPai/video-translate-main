@@ -33,7 +33,7 @@ class SessionRecoveryTests(unittest.TestCase):
     def test_server_outage_surfaces_despite_audio_progress(self):
         translator = fake_translator()
         self.addCleanup(translator.close)
-        translator._chat = Mock(side_effect=LlamaServerError("down"))
+        translator._chat = Mock(side_effect=lambda *a, **k: (_ for _ in ()).throw(LlamaServerError("down")))
         translator.reload = Mock()
         inputs = queue.Queue()
         for i in range(3):

@@ -25,12 +25,12 @@ def fake_translator(*outputs, glossary=None):
     obj._closed = False
     obj._relief = threading.Event()
     obj.server = Mock(alive=Mock(return_value=True))
-    # _chat returns the translation content string
+    # _chat returns (content, finish_reason) tuple
     def _chat_side_effect(*args, **kwargs):
         value = next(_iter)
         if isinstance(value, Exception):
             raise value
-        return value
+        return (value, "stop")
     _iter = iter(outputs)
     obj._chat = Mock(side_effect=_chat_side_effect)
     return obj

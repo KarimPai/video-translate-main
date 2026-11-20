@@ -34,12 +34,43 @@ class Gemma4LifecycleTests(unittest.TestCase):
         self.assertEqual(obj3._chat.call_count, 3)
         obj3.reload.assert_called_once_with(24, "closed")
 
+    def test_truncated_response_retries_with_doubled_tokens(self):
+        """Truncated response (finish_reason='length') triggers one retry with doubled max_tokens."""
+        obj = fake_translator()
+        call_count = 0
+        def chat_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ("Hello wo", "length")  # truncated
+            return ("Hello world!", "stop")  # complete on retry
+        obj._chat = Mock(side_effect=chat_side_effect)
+        result = obj.translate("こんにちは", [])
+        self.assertEqual(result, "Hello world!")
+        self.assertEqual(obj._chat.call_count, 2)
+        # Second call should have doubled max_tokens
+        second_call = obj._chat.call_args_list[1]
+        self.assertEqual(second_call.kwargs.get("max_tokens"), 256)
+
+    def test_double_truncation_rejects_output(self):
+        """If retry is also truncated, output is rejected."""
+        obj = fake_translator()
+        call_count = 0
+        def chat_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ("Hello wo", "length")  # always truncated
+        obj._chat = Mock(side_effect=chat_side_effect)
+        result = obj.translate("こんにちは", [])
+        self.assertEqual(result, "")
+        self.assertEqual(obj._chat.call_count, 2)
+
     def test_interrupt_prevents_retries_or_recovery(self):
         obj = fake_translator()
         def finish(*args, **kwargs):
             obj.interrupt()
             raise httpx.ReadError("closed")
-        obj._chat.side_effect = finish
+        obj._chat = Mock(side_effect=finish)
         obj.reload = Mock()
         self.assertEqual(obj.translate("こんにちは", []), "")
         obj._chat.assert_called_once()

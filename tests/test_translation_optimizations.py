@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from auto_translate.config import TranslateConfig
 from auto_translate.glossary import Glossary
@@ -328,8 +329,8 @@ class NameConsistencyTests(unittest.TestCase):
         obj = fake_translator()
         def complete(*args, **kwargs):
             obj.interrupt()
-            return "Suixian."
-        obj._chat.side_effect = complete
+            return ("Suixian.", "stop")
+        obj._chat = Mock(side_effect=complete)
         self.assertEqual(obj.translate("スイちゃん", []), "")
         obj._chat.assert_called_once()
 

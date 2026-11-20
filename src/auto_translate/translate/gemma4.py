@@ -45,10 +45,23 @@ _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
 # Reasoning tags that can leak into the content field when the model
 # emits internal reasoning markers. These may appear in message.content
 # depending on the GGUF chat template, even when reasoning mode is off.
-_REASONING_OPEN = re.compile(r"<\/?(?:think(?:ing)?|reasoning)(?:\s[^>]*)?>")
+#
+# Verified against the installed Gemma 4 GGUF chat template:
+# - XML-style tags: <think>, </think>, <thinking>, </thinking>, <reasoning>, </reasoning>
+# - Self-closing:  (no closing tag, content follows until end or next marker)
+# - Native Gemma 4 tokens: <|think|> (opens thinking channel), <|end_of_think|> (closes it)
+# - Native channel wrapper: <|channel>thought\n...\n<channel|>
+_REASONING_OPEN = re.compile(
+    r"<\/?(?:think(?:ing)?|reasoning)(?:\s[^>]*)?>"
+    r"|<\|think\|>"
+    r"|<\|end_of_think\|>"
+    r"|<\|channel>thought",
+)
 _REASONING_BLOCK = re.compile(
     r"<think(?:ing)?(?:\s[^>]*)?>.*?</think(?:ing)?\s*>"
-    r"|<reasoning(?:\s[^>]*)?>.*?</reasoning\s*>",
+    r"|<reasoning(?:\s[^>]*)?>.*?</reasoning\s*>"
+    r"|<\|think\|>.*?<\|end_of_think\|>"
+    r"|<\|channel>thought\s.*?\s<channel\|>",
     re.DOTALL,
 )
 
@@ -174,34 +187,27 @@ def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> b
 
 
 def resolve_slash_alternatives(text: str) -> str:
-    """Resolve slash-separated alternatives by keeping the first option.
+    """Preserve all slash-separated content without modification.
     
-    Detects patterns like "Hello/Hi" or "good/great" and keeps only the first
-    alternative. Preserves genuine slashes in spoken content like "rock 'n' roll"
-    or "yes/no man" where the slash is part of the phrase structure.
+    Previously this function would blindly keep the first word in patterns like
+    "Hello/Hi" or "yes/no", corrupting meaningful content. The new approach
+    preserves all slashes because word similarity and heuristics are insufficient
+    to determine whether a slash represents genuine speech or translation alternatives.
     
-    Heuristic: A slash-separated alternative is detected when both sides are
-    single words that could be translation alternatives. Multi-word alternatives
-    are less common and more likely to be genuine content.
+    Ambiguous patterns are always preserved:
+    - "yes/no" stays "yes/no"
+    - "on/off" stays "on/off"
+    - "24/7" stays "24/7"
+    - "input/output" stays "input/output"
+    - "Hello/Hi" stays "Hello/Hi" (ambiguous, not resolved)
+    - URLs, dates, fractions are all preserved
+    
+    Never silently change meaning by choosing one side over the other.
     """
-    # Pattern: single word / single word (most common alternative pattern)
-    # This catches "Hello/Hi", "good/great", "run/running" etc.
-    # Using word boundaries and ensuring we don't match across punctuation
-    pattern = re.compile(
-        r'\b(\w+)\s*/\s*(\w+)\b'
-    )
-    
-    result = text
-    max_iterations = 10  # Prevent infinite loops with nested alternatives
-    iteration = 0
-    while '/' in result and iteration < max_iterations:
-        iteration += 1
-        new_result = pattern.sub(r'\1', result)
-        if new_result == result:
-            break  # No more patterns found
-        result = new_result
-    
-    return result
+    # Conservative approach: preserve all slashes unchanged.
+    # If the model outputs slash-separated alternatives, that is a prompt
+    # issue, not a cleanup issue. Better to preserve than to delete meaning.
+    return text
 
 
 def _strip_reasoning_tags(text: str) -> str:
@@ -221,24 +227,28 @@ def _strip_reasoning_tags(text: str) -> str:
 
 
 def clean_output(text: str) -> str:
-    """Clean translation output: strip reasoning tags, remove role prefixes, markdown, orphan quotes, slash-separated alternatives.
-    
+    """Clean translation output: strip reasoning tags, remove role prefixes, markdown, orphan quotes.
+
     This is the primary defense against reasoning leakage, prompt echoing,
     and explanatory text in subtitle output. It operates in stages:
     1. Strip reasoning tags and content
     2. Reject prompt echoes and system instruction repeats
     3. Reject explanatory text patterns
-    4. Clean role prefixes, markdown, and slash alternatives
+    4. Clean role prefixes and markdown
+
+    Note: slash-separated content (e.g. "yes/no", "24/7") is now preserved
+    as valid spoken content. The resolve_slash_alternatives() call remains
+    for API compatibility but is a no-op.
     """
     line = " ".join(part.strip() for part in text.strip().splitlines() if part.strip())
     if not line:
         return ""
-    
+
     # Stage 1: Strip reasoning tags and their content
     line = _strip_reasoning_tags(line)
     if not line:
         return ""
-    
+
     # Stage 2: Reject prompt echoes
     if looks_like_prompt_echo(line):
         return ""
@@ -253,17 +263,17 @@ def clean_output(text: str) -> str:
         "you are a professional japanese-to-english subtitle translator",
     )):
         return ""
-    
+
     # Stage 2: Clean role prefixes (may reveal explanatory pattern)
     line = _ROLE.sub("", line).strip()
-    
+
     # Stage 3: Reject explanatory text patterns (after role prefix removal)
     if _EXPLANATORY.match(line):
         return ""
-    
-    # Stage 4: Clean markdown and slash alternatives
+
+    # Stage 4: Clean markdown; preserve all slash-separated content
     line = _MARKDOWN.sub(lambda match: match[1] or match[2], line)
-    line = resolve_slash_alternatives(line)
+    line = resolve_slash_alternatives(line)  # no-op: preserves all slashes
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
 
 
@@ -314,6 +324,11 @@ class Gemma4Translator:
             "-ngl", str(layers),
             "-t", str(self.cfg.threads),
             "--device", device,
+            # Explicitly disable reasoning mode. The GGUF chat template supports
+            # enable_thinking, so llama.cpp auto-detects and enables reasoning
+            # by default (--reasoning auto). Force it off to prevent the model
+            # from generating reasoning_content and thought-channel markers.
+            "--reasoning", "off",
         ]
 
 
@@ -357,21 +372,27 @@ class Gemma4Translator:
         self._relief.set()
         return True
 
-    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None) -> str:
-        """Send a chat request and return the translation content."""
+    def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None,
+              max_tokens: int | None = None) -> tuple[str, str]:
+        """Send a chat request and return (content, finish_reason).
+
+        Returns a tuple of (content, finish_reason) so the caller can detect
+        truncation and decide whether to retry.
+        """
+        actual_max = max_tokens if max_tokens is not None else self.cfg.max_tokens
         body = {
             **prompt,
             "temperature": self.cfg.temperature if temperature is None else temperature,
             "top_k": self.cfg.top_k,
             "top_p": self.cfg.top_p,
             "repeat_penalty": self.cfg.repeat_penalty,
-            "max_tokens": self.cfg.max_tokens,
+            "max_tokens": actual_max,
             "stream": False,
             "cache_prompt": True,
         }
         check_running()
         if self._closed:
-            return ""
+            return "", ""
 
         started = time.monotonic()
         payload = self.server.chat(body, timeout=timeout)
@@ -381,6 +402,12 @@ class Gemma4Translator:
         choice = payload["choices"][0]
         message = choice["message"]
         content = message.get("content") or ""
+
+        # Check for reasoning_content field — should be empty when reasoning is disabled
+        reasoning_content = message.get("reasoning_content")
+        if reasoning_content:
+            log.warning("reasoning_content field present (should be empty): %s", reasoning_content[:100])
+            record_event("mt_reasoning_content", length=len(reasoning_content))
 
         # Extract usage statistics from the API response
         usage = payload.get("usage")
@@ -400,7 +427,7 @@ class Gemma4Translator:
         # Detect and track finish_reason
         finish_reason = choice.get("finish_reason", "")
         if finish_reason == "length":
-            log.debug("Truncated response (max_tokens=%d)", self.cfg.max_tokens)
+            log.debug("Truncated response (max_tokens=%d)", actual_max)
             increment_counter("mt_truncated")
         elif finish_reason == "stop":
             increment_counter("mt_finish_stop")
@@ -421,11 +448,11 @@ class Gemma4Translator:
             generation_time_s=round(generation_time, 4) if generation_time else None,
             cache_hits=cache_hits,
             cache_enabled=True,
-            max_tokens=self.cfg.max_tokens,
+            max_tokens=actual_max,
             has_content=bool(content.strip()),
         )
 
-        return content
+        return content, finish_reason
 
     def set_position(self, start_s: float | None) -> None:
         self._position = start_s
@@ -467,6 +494,11 @@ class Gemma4Translator:
         terms, _ = self._terms_for(ja, context)
         return build_prompt(ja, terms, context, self.cfg.style)
 
+    # Shared retry budget: max 2 additional inference requests per utterance.
+    # At most 1 truncation retry, remaining budget for output validation retries.
+    _MAX_RETRIES = 2
+    _MAX_TRUNCATION_RETRIES = 1
+
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         with self._lock:
             if self._closed:
@@ -485,10 +517,29 @@ class Gemma4Translator:
                 # Latency budget enforcement
                 started = time.monotonic()
                 latency_budget = self.cfg.timeout_s * 0.7  # 70% of timeout for translation
-                retry_count = 0
+
+                # Shared retry budget across all retry types
+                retries_left = self._MAX_RETRIES
+                truncation_retries = 0
 
                 try:
-                    english = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
+
+                    # Truncation retry within shared budget
+                    if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
+                        retries_left -= 1
+                        truncation_retries += 1
+                        retry_tokens = min(self.cfg.max_tokens * 2, 256)
+                        record_event("mt_truncation_retry", max_tokens=retry_tokens)
+                        increment_counter("mt_retries")
+                        english, finish_reason = self._chat(
+                            prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                        )
+                        if finish_reason == "length":
+                            record_event("mt_truncation_failed", max_tokens=retry_tokens)
+                            increment_counter("mt_rejected")
+                            return ""
+
                     english = clean_output(english)
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
                     if self._closed:
@@ -497,7 +548,10 @@ class Gemma4Translator:
                     if self.server.alive():
                         raise
                     self._recover(str(exc))
-                    english = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    if retries_left > 0:
+                        retries_left -= 1
+                        increment_counter("mt_retries")
+                    english, _ = self._chat(prompt, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
                 # Check latency budget
@@ -506,21 +560,21 @@ class Gemma4Translator:
                     log.warning("Translation latency %.2fs exceeded budget %.2fs", elapsed, latency_budget)
                     increment_counter("mt_latency_exceeded")
 
-                # Handle empty output — retry with reduced context
-                if not english:
+                # Handle empty output — retry with reduced context within budget
+                if not english and retries_left > 0:
                     issue = english_output_issue(english)
                     if issue:
                         record_event("mt_rejected", reason=issue, retry=True)
                     fallback = build_prompt(ja, terms, "")
+                    retries_left -= 1
                     increment_counter("mt_retries")
-                    retry_count += 1
-                    english = self._chat(fallback, timeout=self.cfg.timeout_s)
+                    english, _ = self._chat(fallback, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
-                # Check for output issues and retry if needed
+                # Check for output issues and retry if needed within budget
                 output_issue = english_output_issue(english)
                 missing = missing_names(english, names)
-                if not self._closed and (output_issue or missing):
+                if not self._closed and retries_left > 0 and (output_issue or missing):
                     # Record rejection reason for diagnostics
                     if output_issue:
                         record_event("mt_rejected", reason=output_issue, retry=True)
@@ -528,15 +582,16 @@ class Gemma4Translator:
                     fallback = build_prompt(ja, terms, "")
                     candidates = [english]
                     if fallback != prompt or self.cfg.temperature != 0:
+                        retries_left -= 1
                         increment_counter("mt_retries")
-                        retry_count += 1
                         if missing:
                             record_event("mt_name_retry", names=missing)
-                        candidate = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
+                        candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
                         candidates.append(clean_output(candidate))
                     english = self._best(candidates, names)
 
                 # Record final translation diagnostics
+                retry_count = self._MAX_RETRIES - retries_left
                 record_event(
                     "mt_result",
                     has_output=bool(english),

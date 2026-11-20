@@ -54,13 +54,13 @@ class TestPromptCacheCorrectness:
         }
         translator.server.chat.return_value = mock_payload
 
-        result = translator._chat(prompt, timeout=5.0)
+        content, finish_reason = translator._chat(prompt, timeout=5.0)
 
         # Verify the call was made with cache_prompt=True
         call_args = translator.server.chat.call_args
         body = call_args[0][0] if call_args else {}
         assert body.get("cache_prompt") is True, "cache_prompt should be True"
-        assert result == "Hello"
+        assert content == "Hello"
 
     def test_repeated_identical_request_uses_cache(self, translator):
         """Repeated identical requests should benefit from cache."""
@@ -79,13 +79,13 @@ class TestPromptCacheCorrectness:
 
         translator.server.chat.side_effect = [mock_payload_1, mock_payload_2]
 
-        result_1 = translator._chat(prompt, timeout=5.0)
-        result_2 = translator._chat(prompt, timeout=5.0)
+        content_1, _ = translator._chat(prompt, timeout=5.0)
+        content_2, _ = translator._chat(prompt, timeout=5.0)
 
-        assert result_1 == "Hello"
-        assert result_2 == "Hello"
+        assert content_1 == "Hello"
+        assert content_2 == "Hello"
         # Both should produce identical output
-        assert result_1 == result_2
+        assert content_1 == content_2
 
     def test_changing_history_produces_different_result(self, translator):
         """Changing dialogue history should produce different translations."""
@@ -107,8 +107,8 @@ class TestPromptCacheCorrectness:
         prompt_1 = translator.prompt_for("こんにちは", history_1)
         prompt_2 = translator.prompt_for("こんにちは", history_2)
 
-        result_1 = translator._chat(prompt_1, timeout=5.0)
-        result_2 = translator._chat(prompt_2, timeout=5.0)
+        content_1, _ = translator._chat(prompt_1, timeout=5.0)
+        content_2, _ = translator._chat(prompt_2, timeout=5.0)
 
         # Prompts should be different due to different history
         assert prompt_1 != prompt_2, "Different history should produce different prompts"
@@ -132,12 +132,12 @@ class TestPromptCacheCorrectness:
             translator.server.chat.return_value = mock_payload
 
             prompt = translator.prompt_for(ja, [])
-            result = translator._chat(prompt, timeout=5.0)
-            results.append((ja, result))
+            content, _ = translator._chat(prompt, timeout=5.0)
+            results.append((ja, content))
 
         # All results should match expected
-        for (ja, result), (_, expected) in zip(results, utterances):
-            assert result == expected, f"Expected '{expected}' for '{ja}', got '{result}'"
+        for (ja, content), (_, expected) in zip(results, utterances):
+            assert content == expected, f"Expected '{expected}' for '{ja}', got '{content}'"
 
     def test_no_cache_contamination_across_different_prompts(self, translator):
         """Different prompts should not be contaminated by cache."""
@@ -155,9 +155,9 @@ class TestPromptCacheCorrectness:
             translator.server.chat.return_value = mock_payload
 
             prompt = translator.prompt_for(ja, [])
-            result = translator._chat(prompt, timeout=5.0)
+            content, _ = translator._chat(prompt, timeout=5.0)
 
-            assert result == expected_en, f"Cache contamination: expected '{expected_en}', got '{result}'"
+            assert content == expected_en, f"Cache contamination: expected '{expected_en}', got '{content}'"
 
 
 class TestPromptCacheEdgeCases:
@@ -215,8 +215,8 @@ class TestPromptCacheEdgeCases:
         }
         translator.server.chat.return_value = mock_payload
 
-        result = translator._chat(prompt, timeout=5.0)
-        assert result == ""  # Empty content is returned as-is; clean_output handles rejection
+        content, _ = translator._chat(prompt, timeout=5.0)
+        assert content == ""  # Empty content is returned as-is; clean_output handles rejection
 
     def test_truncated_response_with_cache(self):
         """Truncated response should be tracked but still returned."""
@@ -241,6 +241,7 @@ class TestPromptCacheEdgeCases:
         }
         translator.server.chat.return_value = mock_payload
 
-        result = translator._chat(prompt, timeout=5.0)
+        content, finish_reason = translator._chat(prompt, timeout=5.0)
         # Truncated content is still returned; downstream handles it
-        assert result == "Hello wo"
+        assert content == "Hello wo"
+        assert finish_reason == "length"

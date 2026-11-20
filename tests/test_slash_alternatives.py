@@ -1,10 +1,10 @@
-"""Regression tests for slash-separated alternatives and explanatory text fix.
+"""Regression tests for slash-separated alternatives preservation.
 
 These tests verify that:
 1. The system prompt explicitly forbids alternatives and explanations
-2. Slash-separated alternatives are detected and resolved
+2. Slash-separated content is preserved, never deleted
 3. Explanatory text is handled correctly
-4. Genuine slashes in content are preserved
+4. `english_output_issue()` does not reject valid slash content
 """
 import pytest
 from auto_translate.translate.gemma4 import (
@@ -40,18 +40,18 @@ class TestSystemPrompt:
 
 
 class TestSlashAlternativesDetection:
-    """Test has_slash_alternatives detection."""
+    """Test has_slash_alternatives detection (diagnostic only)."""
 
     def test_simple_alternative(self):
-        """Detect simple slash-separated alternatives."""
+        """Detect simple slash-separated patterns."""
         assert has_slash_alternatives("Hello/Hi") is True
 
     def test_alternative_with_spaces(self):
-        """Detect alternatives with spaces around slash."""
+        """Detect patterns with spaces around slash."""
         assert has_slash_alternatives("Hello / Hi") is True
 
     def test_multi_word_alternative(self):
-        """Detect multi-word alternatives."""
+        """Detect multi-word patterns."""
         assert has_slash_alternatives("good morning / hello") is True
 
     def test_no_alternative(self):
@@ -68,7 +68,6 @@ class TestSlashAlternativesDetection:
 
     def test_url_preserved(self):
         """URLs with slashes should not be flagged as alternatives."""
-        # URLs typically have longer paths, not short word alternatives
         assert has_slash_alternatives("Check out https://example.com") is False
 
     def test_multiple_alternatives(self):
@@ -77,32 +76,32 @@ class TestSlashAlternativesDetection:
 
 
 class TestResolveSlashAlternatives:
-    """Test resolve_slash_alternatives function."""
+    """Test resolve_slash_alternatives function — now preserves all slashes."""
 
-    def test_simple_alternative_resolved(self):
-        """Simple alternative should keep first option."""
+    def test_simple_alternative_preserved(self):
+        """Simple alternative should be preserved, not resolved."""
         result = resolve_slash_alternatives("Hello/Hi")
-        assert result == "Hello"
+        assert result == "Hello/Hi"
 
-    def test_alternative_with_spaces(self):
-        """Alternative with spaces should keep first option."""
+    def test_alternative_with_spaces_preserved(self):
+        """Alternative with spaces should be preserved."""
         result = resolve_slash_alternatives("Hello / Hi")
-        assert result == "Hello"
+        assert result == "Hello / Hi"
 
-    def test_multi_word_alternative(self):
-        """Multi-word alternative should keep first option."""
+    def test_multi_word_alternative_preserved(self):
+        """Multi-word alternative should be preserved."""
         result = resolve_slash_alternatives("good morning / hello")
-        assert result == "good morning"
+        assert result == "good morning / hello"
 
-    def test_alternative_in_sentence(self):
-        """Alternative within a sentence should be resolved."""
+    def test_alternative_in_sentence_preserved(self):
+        """Alternative within a sentence should be preserved."""
         result = resolve_slash_alternatives("Say Hello/Hi to them")
-        assert result == "Say Hello to them"
+        assert result == "Say Hello/Hi to them"
 
-    def test_multiple_alternatives(self):
-        """Multiple alternatives should all be resolved."""
+    def test_multiple_alternatives_preserved(self):
+        """Multiple alternatives should all be preserved."""
         result = resolve_slash_alternatives("Hello/Hi, good/great job")
-        assert result == "Hello, good job"
+        assert result == "Hello/Hi, good/great job"
 
     def test_no_alternative_unchanged(self):
         """Text without alternatives should be unchanged."""
@@ -114,44 +113,103 @@ class TestResolveSlashAlternatives:
         result = resolve_slash_alternatives("")
         assert result == ""
 
-    def test_genuine_slash_preserved(self):
-        """Genuine slashes in content should be preserved when not alternatives."""
-        # "yes/no man" where "yes/no" is part of the phrase, not an alternative
-        # This is tricky - the heuristic may still resolve it, which is acceptable
-        # as it's ambiguous whether it's an alternative or genuine content
-
-    def test_nested_alternatives(self):
-        """Nested or chained alternatives should be resolved."""
+    def test_nested_alternatives_preserved(self):
+        """Nested or chained alternatives should be preserved."""
         result = resolve_slash_alternatives("a/b/c")
-        assert result == "a"
+        assert result == "a/b/c"
+
+    def test_yes_no_preserved(self):
+        """'yes/no' must be preserved — never corrupted to 'yes'."""
+        result = resolve_slash_alternatives("yes/no")
+        assert result == "yes/no"
+
+    def test_on_off_preserved(self):
+        """'on/off' must be preserved — never corrupted to 'on'."""
+        result = resolve_slash_alternatives("on/off")
+        assert result == "on/off"
+
+    def test_and_or_preserved(self):
+        """'and/or' must be preserved."""
+        result = resolve_slash_alternatives("and/or")
+        assert result == "and/or"
+
+    def test_input_output_preserved(self):
+        """'input/output' must be preserved."""
+        result = resolve_slash_alternatives("input/output")
+        assert result == "input/output"
+
+    def test_24_7_preserved(self):
+        """'24/7' must be preserved."""
+        result = resolve_slash_alternatives("24/7")
+        assert result == "24/7"
+
+    def test_url_preserved(self):
+        """URLs must be preserved."""
+        result = resolve_slash_alternatives("Check out https://example.com")
+        assert result == "Check out https://example.com"
+
+    def test_date_preserved(self):
+        """Dates must be preserved."""
+        result = resolve_slash_alternatives("The date is 12/25/2024")
+        assert result == "The date is 12/25/2024"
+
+    def test_fraction_preserved(self):
+        """Fractions must be preserved."""
+        result = resolve_slash_alternatives("I ate 1/2 of the pizza")
+        assert result == "I ate 1/2 of the pizza"
 
 
 class TestCleanOutputIntegration:
-    """Test that clean_output properly handles slash alternatives."""
+    """Test that clean_output properly preserves slash content."""
 
-    def test_alternative_in_clean_output(self):
-        """clean_output should resolve slash alternatives."""
+    def test_alternative_in_clean_output_preserved(self):
+        """clean_output should preserve slash alternatives."""
         result = clean_output("Hello/Hi")
-        assert result == "Hello"
+        assert result == "Hello/Hi"
 
     def test_alternative_with_markdown(self):
-        """clean_output should handle alternatives and markdown."""
+        """clean_output should handle markdown but preserve slashes."""
         result = clean_output("**Hello/Hi**")
-        assert result == "Hello"
+        assert result == "Hello/Hi"
 
     def test_normal_translation(self):
         """Normal translation should pass through unchanged."""
         result = clean_output("Hello, how are you?")
         assert result == "Hello, how are you?"
 
+    def test_yes_no_in_clean_output(self):
+        """'yes/no' must survive clean_output unchanged."""
+        result = clean_output("Is it yes/no?")
+        assert result == "Is it yes/no?"
+
+    def test_24_7_in_clean_output(self):
+        """'24/7' must survive clean_output unchanged."""
+        result = clean_output("We work 24/7")
+        assert result == "We work 24/7"
+
 
 class TestEnglishOutputIssue:
-    """Test that english_output_issue detects slash alternatives."""
+    """Test that english_output_issue does NOT reject slash content."""
 
-    def test_slash_alternative_issue(self):
-        """Slash alternatives should be detected as an issue."""
+    def test_slash_content_no_issue(self):
+        """Slash-separated content should NOT be detected as an issue."""
         issue = english_output_issue("Hello/Hi")
-        assert issue == "slash_alternatives"
+        assert issue is None
+
+    def test_yes_no_no_issue(self):
+        """'yes/no' should not be flagged as an issue."""
+        issue = english_output_issue("Is it yes/no?")
+        assert issue is None
+
+    def test_24_7_no_issue(self):
+        """'24/7' should not be flagged as an issue."""
+        issue = english_output_issue("We work 24/7")
+        assert issue is None
+
+    def test_input_output_no_issue(self):
+        """'input/output' should not be flagged as an issue."""
+        issue = english_output_issue("Check the input/output")
+        assert issue is None
 
     def test_normal_text_no_issue(self):
         """Normal text should not have an issue."""
@@ -182,38 +240,46 @@ class TestBuildPrompt:
 
 
 class TestRepresentativeProblemCases:
-    """Test cases representing the problematic patterns described in the issue."""
+    """Test cases representing the problematic patterns — all now preserved."""
 
-    def test_greeting_alternative(self):
-        """Model outputs 'Hello/Hi' instead of one greeting."""
+    def test_greeting_preserved(self):
+        """'Hello/Hi' is preserved, not resolved to 'Hello'."""
         assert has_slash_alternatives("Hello/Hi") is True
-        assert resolve_slash_alternatives("Hello/Hi") == "Hello"
+        assert resolve_slash_alternatives("Hello/Hi") == "Hello/Hi"
 
-    def test_adjective_alternative(self):
-        """Model outputs 'good/great' instead of one adjective."""
+    def test_adjective_preserved(self):
+        """'good/great' is preserved, not resolved to 'good'."""
         assert has_slash_alternatives("That was good/great") is True
-        assert resolve_slash_alternatives("That was good/great") == "That was good"
+        assert resolve_slash_alternatives("That was good/great") == "That was good/great"
 
-    def test_verb_alternative(self):
-        """Model outputs 'run/running' instead of one verb form."""
+    def test_verb_preserved(self):
+        """'run/running' is preserved, not resolved to 'run'."""
         assert has_slash_alternatives("Start run/running now") is True
-        assert resolve_slash_alternatives("Start run/running now") == "Start run now"
+        assert resolve_slash_alternatives("Start run/running now") == "Start run/running now"
 
-    def test_phrase_alternative(self):
-        """Model outputs phrase alternatives."""
+    def test_phrase_preserved(self):
+        """Phrase alternatives are preserved."""
         assert has_slash_alternatives("Good morning / Hello") is True
-        assert resolve_slash_alternatives("Good morning / Hello") == "Good morning"
+        assert resolve_slash_alternatives("Good morning / Hello") == "Good morning / Hello"
 
     def test_explanatory_text_not_alternative(self):
         """Explanatory text in parentheses is not a slash alternative."""
-        # This would be caught by other validation, not slash alternatives
         text = "Hello (this is a greeting)"
         assert has_slash_alternatives(text) is False
 
-    def test_complex_alternative_sentence(self):
-        """Complex sentence with alternatives."""
+    def test_complex_alternative_preserved(self):
+        """Complex sentence with alternatives is preserved."""
         text = "I'm going to the store/market to buy some food"
         assert has_slash_alternatives(text) is True
         result = resolve_slash_alternatives(text)
-        assert "store" in result
-        assert "market" not in result
+        assert result == text  # fully preserved
+
+    def test_slash_not_rejected_by_output_issue(self):
+        """Slash content must not be rejected by english_output_issue."""
+        issue = english_output_issue("Hello/Hi")
+        assert issue is None, "Slash content should not be rejected"
+
+    def test_yes_no_not_rejected(self):
+        """'yes/no' must not be rejected by english_output_issue."""
+        issue = english_output_issue("Is it yes/no?")
+        assert issue is None, "'yes/no' should not be rejected"

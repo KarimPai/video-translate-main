@@ -241,29 +241,31 @@ def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | No
         return "prompt_echo_or_loop"
     if has_special_token_flood(text):
         return "special_token_flood"
-    if has_slash_alternatives(text):
-        return "slash_alternatives"
+    # Slash-separated content is no longer rejected: ambiguous slashes like
+    # "yes/no", "24/7", "input/output" are valid spoken content. Preserving
+    # them is better than silently deleting meaning.
     return None
 
 
-# Detect slash-separated alternatives like "Hello/Hi" or "good/great"
-# These indicate the model is providing multiple translation options instead of one
+# Diagnostic-only pattern for slash-separated content.
+# This is no longer used to reject output — ambiguous slashes like "yes/no",
+# "24/7", "input/output" are valid spoken content. The function remains
+# available for logging/diagnostics only.
 _SLASH_ALT_PATTERN = re.compile(
     r'\b\w+\s*/\s*\w+\b'
 )
 
 
 def has_slash_alternatives(text: str) -> bool:
-    """Detect slash-separated translation alternatives in output.
-    
-    Returns True if the text contains patterns like "Hello/Hi" or "good/great"
-    that indicate the model provided multiple translation options.
-    
-    Does not flag genuine slashes in content like URLs or "rock 'n' roll".
+    """Detect slash-separated patterns in output (diagnostic only).
+
+    Returns True if the text contains patterns like "Hello/Hi" or "yes/no".
+    This is a diagnostic helper only — it no longer causes output rejection.
+    Ambiguous slashes are valid content and should be preserved.
     """
     if not text or '/' not in text:
         return False
-    
+
     matches = _SLASH_ALT_PATTERN.findall(text)
     return len(matches) > 0
 

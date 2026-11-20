@@ -118,17 +118,75 @@
 - CUDA build less affected than Vulkan
 - **Decision**: Keep `-fa on` enabled. Monitor for crashes.
 
+## 5.1 — Real Inference Testing ✅
+
+### Critical Finding: llama.cpp `--reasoning auto` Enabled Reasoning
+
+The GGUF chat template for Gemma 4 E4B includes `enable_thinking` support. llama.cpp's `--reasoning` flag defaults to `auto`, which auto-detects reasoning support from the template and enables it. This caused the model to generate full thinking processes in the `reasoning_content` field, even though we never passed `--reasoning` flags.
+
+**Fix**: Added `--reasoning off` to llama-server args in `gemma4.py` to explicitly disable reasoning mode.
+
+### GGUF Chat Template Analysis
+
+Inspected the actual installed GGUF file (`google_gemma-4-E4B-it-Q4_K_M.gguf`):
+- `enable_thinking` defaults to `false` in the Jinja template
+- Native markers: `<|think|>`, `<|end_of_think|>`, `<|channel>thought...<channel|>`
+- `strip_thinking()` macro removes reasoning content from output
+- `reasoning_content` field populated by llama.cpp, not the template
+
+### Real Inference Results (Gemma 4 E4B, RTX 3070 8GB, CUDA)
+
+**Environment:**
+- Model: `google_gemma-4-E4B-it-Q4_K_M.gguf` (5.4 GB, Q4_K_M)
+- GPU: NVIDIA RTX 3070 8GB, all 42 layers on GPU
+- CPU: Intel Core i7-9700K, 4 threads for translation
+- llama.cpp: b12318, CUDA 12 build
+- Context: 4096, Max tokens: 128, Temperature: 0.0
+
+**Translation Tests (20 utterances):**
+- All 20/20 translations produced valid English output
+- No reasoning content leakage
+- No Japanese script in output
+- Short phrases preserved: "Really?", "Wait!", "Amazing!"
+- Profanity preserved: "Oh crap!" (やばい！)
+- Nicknames preserved: "Asuka-chan, hello."
+- Average latency: 0.12s, Min: 0.06s, Max: 0.28s
+
+**Prompt Cache Stability:**
+- 3/3 repeated prompts produced identical output
+- Cache consistency confirmed
+
+**Reasoning Disabled Verification:**
+- No `reasoning_content` warnings with `--reasoning off`
+- Server args confirmed: `--reasoning off` present
+- No reasoning flags in output
+
+**Clean Output Functions:**
+- Slash preservation: 7/7 patterns preserved (yes/no, on/off, 24/7, etc.)
+- Reasoning tag stripping: 5/5 patterns handled correctly
+- Prompt echo rejection: 4/4 patterns correctly identified
+
 ## 6. Test Results
 
-- **Total tests**: 251 (up from 216)
-- **New tests**: 35 (26 hardening + 9 prompt cache)
+### Unit Tests (Mocked)
+- **Total tests**: 643 (212 subtests)
 - **All passing**: Yes
-- **Test time**: 10.12 seconds
+- **Test time**: ~31 seconds
+
+### Real Inference Tests
+- **Script**: `tests/test_real_inference.py`
+- **Translations**: 20/20 passed
+- **Cache stability**: 3/3 consistent
+- **Clean output**: 23/23 passed
+- **Server diagnostics**: All passed
+- **No reasoning leakage**: Confirmed
 
 ## 7. Recommendations
 
-1. **Keep 4096 context** — Run `benchmark_context_size.py` to verify no measurable improvement at 8192
-2. **Keep `-fa on`** — Our build and context size are safe; monitor for crashes
-3. **Keep `cache_prompt=True`** — Tests confirm correct behavior
-4. **Monitor `mt_rejected` counter** — High values indicate model generation issues
-5. **Monitor `mt_finish_other` counter** — Unexpected finish reasons may indicate model problems
+1. **Keep `--reasoning off`** — Required to prevent auto-detected reasoning mode
+2. **Keep 4096 context** — Run `benchmark_context_size.py` to verify no measurable improvement at 8192
+3. **Keep `-fa on`** — Our build and context size are safe; monitor for crashes
+4. **Keep `cache_prompt=True`** — Real inference confirms correct behavior
+5. **Monitor `mt_rejected` counter** — High values indicate model generation issues
+6. **Monitor `mt_finish_other` counter** — Unexpected finish reasons may indicate model problems
+7. **Run `test_real_inference.py` periodically** — Verify model behavior after updates

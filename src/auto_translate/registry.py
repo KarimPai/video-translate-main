@@ -304,12 +304,12 @@ def _haas_asr_factory(config: Any, **kwargs: Any) -> Any:
     from .config import AsrConfig
     if isinstance(config, dict):
         config = dict(config)
-        # Haas is the default ASR backend — if model_path is missing, the
-        # dataclass default "haas-ja-v1.0" is compatible. But if it was
-        # explicitly cleared (empty string), keep it empty so the backend
-        # constructor raises a clear missing-model error.
+        # Haas is the default ASR backend — if model_path is missing, use the
+        # compatible default "haas-ja-v1.0". But if it was explicitly cleared
+        # (empty string), keep it empty so the backend constructor raises a
+        # clear missing-model error.
         if "model_path" not in config:
-            config["model_path"] = AsrConfig.model_path.default
+            config["model_path"] = "haas-ja-v1.0"
         config = AsrConfig(**config)
     context = kwargs.pop("context", "")
     # Support both positional and keyword args for context
@@ -324,7 +324,7 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Qwen3-ASR.
 
     Qwen3-ASR must never inherit Haas's model path from dataclass defaults.
-    If model_path is missing, the backend constructor will raise a clear error.
+    Raises clear errors if model_path or mmproj_path are missing.
     """
     from .asr.qwen3_asr import Qwen3ASR
     from .config import AsrConfig
@@ -338,6 +338,19 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
         if "mmproj_path" not in config:
             config["mmproj_path"] = ""
         config = AsrConfig(**config)
+    # Validate Qwen3-ASR required fields before attempting to load
+    if not config.model_path or not config.model_path.strip():
+        raise ValueError(
+            "Qwen3-ASR backend selected but no Qwen3-ASR model is configured. "
+            "Set asr.model_path to a Qwen3-ASR GGUF model file, "
+            "or configure [asr.qwen3-asr] model_path in config.toml."
+        )
+    if not config.mmproj_path or not config.mmproj_path.strip():
+        raise ValueError(
+            "Qwen3-ASR backend selected but no audio projector (mmproj) is configured. "
+            "Set asr.mmproj_path to a Qwen3-ASR mmproj GGUF file, "
+            "or configure [asr.qwen3-asr] mmproj_path in config.toml."
+        )
     context = kwargs.pop("context", "")
     return Qwen3ASR(config, context=context)
 
@@ -379,9 +392,9 @@ def _gemma4_translate_factory(config: Any, **kwargs: Any) -> Any:
     if isinstance(config, dict):
         config = dict(config)
         # Gemma4 is the default translation backend — if model_path is missing,
-        # the dataclass default is compatible. But if explicitly cleared, keep it.
+        # use the compatible default. But if explicitly cleared, keep it empty.
         if "model_path" not in config:
-            config["model_path"] = TranslateConfig.model_path.default
+            config["model_path"] = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
         config = TranslateConfig(**config)
     glossary = kwargs.get("glossary", Glossary({}))
     stream = kwargs.get("stream", StreamContext())
@@ -393,6 +406,7 @@ def _plamo_translate_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for PLaMo 3 Translate translation.
 
     PLaMo must never inherit Gemma4's model path from dataclass defaults.
+    Raises a clear error if no PLaMo model is configured.
     """
     from .config import TranslateConfig
     from .glossary import Glossary
@@ -404,6 +418,13 @@ def _plamo_translate_factory(config: Any, **kwargs: Any) -> Any:
         if "model_path" not in config:
             config["model_path"] = ""
         config = TranslateConfig(**config)
+    # Validate PLaMo model is configured before attempting to load it
+    if not config.model_path or not config.model_path.strip():
+        raise ValueError(
+            "PLaMo translation backend selected but no PLaMo model is configured. "
+            "Set translate.model_path to a PLaMo 3 Translate GGUF model file, "
+            "or configure [translate.plamo] model_path in config.toml."
+        )
     glossary = kwargs.get("glossary", Glossary({}))
     stream = kwargs.get("stream", StreamContext())
     gpu_layers = kwargs.get("gpu_layers", None)
@@ -414,6 +435,7 @@ def _hymt_translate_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Hy-MT2 7B translation.
 
     Hy-MT2 must never inherit Gemma4's model path from dataclass defaults.
+    Raises a clear error if no Hy-MT2 model is configured.
     """
     from .config import TranslateConfig
     from .glossary import Glossary
@@ -425,6 +447,13 @@ def _hymt_translate_factory(config: Any, **kwargs: Any) -> Any:
         if "model_path" not in config:
             config["model_path"] = ""
         config = TranslateConfig(**config)
+    # Validate Hy-MT2 model is configured before attempting to load it
+    if not config.model_path or not config.model_path.strip():
+        raise ValueError(
+            "Hy-MT2 translation backend selected but no Hy-MT2 model is configured. "
+            "Set translate.model_path to a Hy-MT2 7B GGUF model file, "
+            "or configure [translate.hymt] model_path in config.toml."
+        )
     glossary = kwargs.get("glossary", Glossary({}))
     stream = kwargs.get("stream", StreamContext())
     gpu_layers = kwargs.get("gpu_layers", None)

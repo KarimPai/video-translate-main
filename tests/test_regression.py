@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
@@ -1477,35 +1478,31 @@ def test_backend_startup_receives_correct_model_identity():
 
 # ---------------------------------------------------------------------------
 # P0 — Registry factory prevents dataclass default fallback
+# These tests invoke the actual factory, not just get_backend_config().
+# They would have caught the AsrConfig.model_path.default AttributeError.
 # ---------------------------------------------------------------------------
 
-def test_registry_plamo_does_not_inherit_gemma_model():
-    """PLaMo factory must not inherit Gemma4's model path from dataclass defaults."""
+def test_registry_factory_plamo_raises_on_empty_model():
+    """PLaMo factory must raise ValueError when no model is configured."""
     from auto_translate.config import Config, get_backend_config
     from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.translate.model_path = "C:/models/gemma4/model.gguf"
-    # No PLaMo profile — model_path should be empty
     merged = get_backend_config(cfg, "translate", "plamo")
     assert merged.get("model_path", "") == "", \
         "PLaMo should not inherit Gemma4's model_path"
 
-    # Verify the factory receives empty model_path
+    # Invoke the actual factory — it must raise ValueError, not AttributeError
     registry = get_default_registry()
-    entry = registry.get_entry("translate", "plamo")
-    assert entry is not None
-
-    # The factory should construct TranslateConfig with model_path=""
-    # We can't actually load the model, but we can verify the config dict
-    # passed to the factory has empty model_path
-    config_dict = dict(merged)
-    assert config_dict.get("model_path", "") == ""
+    with pytest.raises(ValueError, match="PLaMo.*model.*configured"):
+        registry.create_translate("plamo", merged)
 
 
-def test_registry_hymt_does_not_inherit_gemma_model():
-    """Hy-MT2 factory must not inherit Gemma4's model path from dataclass defaults."""
+def test_registry_factory_hymt_raises_on_empty_model():
+    """Hy-MT2 factory must raise ValueError when no model is configured."""
     from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.translate.model_path = "C:/models/gemma4/model.gguf"
@@ -1513,23 +1510,48 @@ def test_registry_hymt_does_not_inherit_gemma_model():
     assert merged.get("model_path", "") == "", \
         "Hy-MT2 should not inherit Gemma4's model_path"
 
+    registry = get_default_registry()
+    with pytest.raises(ValueError, match="Hy-MT2.*model.*configured"):
+        registry.create_translate("hymt", merged)
 
-def test_registry_qwen3_does_not_inherit_haas_model():
-    """Qwen3-ASR factory must not inherit Haas's model path from dataclass defaults."""
+
+def test_registry_factory_qwen3_raises_on_empty_model():
+    """Qwen3-ASR factory must raise ValueError when no model is configured."""
     from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.asr.model_path = "haas-ja-v1.0"
     merged = get_backend_config(cfg, "asr", "qwen3-asr")
     assert merged.get("model_path", "") == "", \
         "Qwen3-ASR should not inherit Haas's model_path"
-    assert merged.get("mmproj_path", "") == "", \
-        "Qwen3-ASR should not inherit Haas's mmproj_path"
+
+    registry = get_default_registry()
+    with pytest.raises(ValueError, match="Qwen3-ASR.*model.*configured"):
+        registry.create_asr("qwen3-asr", merged, context="")
 
 
-def test_registry_whisper_does_not_inherit_haas_model():
-    """Whisper factory must not inherit Haas's model path from dataclass defaults."""
+def test_registry_factory_qwen3_raises_on_empty_mmproj():
+    """Qwen3-ASR factory must raise ValueError when mmproj is missing."""
     from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    cfg.asr_profiles["qwen3-asr"] = {"model_path": "C:/models/qwen3/model.gguf"}
+    merged = get_backend_config(cfg, "asr", "qwen3-asr")
+    assert merged.get("model_path") == "C:/models/qwen3/model.gguf"
+    assert merged.get("mmproj_path", "") == ""
+
+    registry = get_default_registry()
+    with pytest.raises(ValueError, match="Qwen3-ASR.*mmproj.*configured"):
+        registry.create_asr("qwen3-asr", merged, context="")
+
+
+def test_registry_factory_whisper_does_not_inherit_haas():
+    """Whisper factory must not inherit Haas's model path."""
+    from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.asr.model_path = "haas-ja-v1.0"
@@ -1537,27 +1559,68 @@ def test_registry_whisper_does_not_inherit_haas_model():
     assert merged.get("model_path", "") == "", \
         "Whisper should not inherit Haas's model_path"
 
+    # Factory should not raise AttributeError on .model_path.default
+    registry = get_default_registry()
+    # Whisper will raise WhisperError (no model available), not AttributeError
+    with pytest.raises(Exception) as exc_info:
+        registry.create_asr("whisper", merged, context="")
+    # The error should be about missing Whisper model, not a dataclass issue
+    assert "AttributeError" not in type(exc_info.value).__name__
 
-def test_registry_haas_retains_default_model():
-    """Haas (default ASR) should retain its configured model path."""
+
+def test_registry_factory_haas_retains_default():
+    """Haas factory should use default model when config dict has no model_path.
+
+    The factory must not raise AttributeError accessing .model_path.default.
+    Since Haas may succeed loading the model, we verify the config dict passed
+    to the factory contains the correct model_path.
+    """
     from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.asr.model_path = "haas-ja-v1.0"
     merged = get_backend_config(cfg, "asr", "haas")
-    assert merged.get("model_path") == "haas-ja-v1.0", \
-        "Haas should retain its configured model_path"
+    assert merged.get("model_path") == "haas-ja-v1.0"
+
+    # The factory should process the config dict without AttributeError.
+    # Haas may or may not raise depending on whether the model is installed,
+    # but it must not raise AttributeError on .model_path.default
+    registry = get_default_registry()
+    try:
+        registry.create_asr("haas", merged, context="")
+    except AttributeError:
+        raise AssertionError(
+            "Haas factory raised AttributeError — likely accessing "
+            "AsrConfig.model_path.default on a string field"
+        )
+    # Model not found or other expected error is acceptable here; we only
+    # care that AttributeError is not raised.
 
 
-def test_registry_gemma4_retains_default_model():
-    """Gemma4 (default translation) should retain its configured model path."""
+def test_registry_factory_gemma4_retains_default():
+    """Gemma4 factory should use default model when config dict has no model_path.
+
+    The factory must not raise AttributeError accessing .model_path.default.
+    """
     from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.translate.model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
     merged = get_backend_config(cfg, "translate", "gemma4")
-    assert merged.get("model_path") == "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf", \
-        "Gemma4 should retain its configured model_path"
+    assert merged.get("model_path") == "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
+
+    registry = get_default_registry()
+    try:
+        registry.create_translate("gemma4", merged)
+    except AttributeError:
+        raise AssertionError(
+            "Gemma4 factory raised AttributeError — likely accessing "
+            "TranslateConfig.model_path.default on a string field"
+        )
+    # Model not found or other expected error is acceptable here; we only
+    # care that AttributeError is not raised.
 
 
 def test_server_path_shared_across_backends():
@@ -1579,6 +1642,68 @@ def test_translate_config_allows_empty_model_path():
     # This should not raise — empty model_path is valid for non-default backends
     cfg = TranslateConfig(model_path="", server_path=".runtime/llama-server.exe")
     assert cfg.model_path == ""
+
+
+# ---------------------------------------------------------------------------
+# P1 — Whisper Windows path handling
+# ---------------------------------------------------------------------------
+
+def test_whisper_resolves_forward_slash_local_path():
+    """Whisper should resolve forward-slash Windows paths as local directories."""
+    import tempfile
+
+    from auto_translate.asr.whisper_turbo import WhisperASR
+    from auto_translate.config import AsrConfig
+
+    with tempfile.TemporaryDirectory() as td:
+        # Create a complete Whisper model directory
+        model_dir = Path(td) / "models" / "whisper-large-v3-turbo"
+        model_dir.mkdir(parents=True)
+        (model_dir / "model.bin").write_bytes(b"")
+        (model_dir / "config.json").write_bytes(b"{}")
+        (model_dir / "tokenizer.json").write_bytes(b"{}")
+
+        # Use forward-slash path (Windows-style relative path)
+        # The path should be resolved as a local directory, not an HF repo ID
+        cfg = AsrConfig(model_path=str(model_dir), cuda_device=-1)
+        resolved = WhisperASR._resolve_model_path(cfg, is_explicit=True)
+        assert resolved == str(model_dir.resolve())
+
+
+def test_whisper_rejects_nonexistent_forward_slash_path():
+    """Explicit forward-slash path that doesn't exist locally should raise."""
+    from auto_translate.asr.whisper_turbo import WhisperASR, WhisperError
+    from auto_translate.config import AsrConfig
+
+    # A forward-slash path that doesn't exist and looks like it could be
+    # either a local path or an HF repo ID
+    cfg = AsrConfig(model_path="models/whisper-large-v3-turbo", cuda_device=-1)
+    with mock.patch.object(WhisperASR, "_find_cached_model", return_value=None):
+        try:
+            WhisperASR._resolve_model_path(cfg, is_explicit=True)
+            raise AssertionError("expected WhisperError")
+        except WhisperError as exc:
+            # Should mention cache or path, not silently fall through
+            assert "cache" in str(exc).lower() or "not present" in str(exc).lower()
+
+
+def test_whisper_absolute_windows_path():
+    """Whisper should handle absolute Windows paths with backslashes."""
+    import tempfile
+
+    from auto_translate.asr.whisper_turbo import WhisperASR
+    from auto_translate.config import AsrConfig
+
+    with tempfile.TemporaryDirectory() as td:
+        model_dir = Path(td) / "whisper"
+        model_dir.mkdir()
+        (model_dir / "model.bin").write_bytes(b"")
+        (model_dir / "config.json").write_bytes(b"{}")
+        (model_dir / "vocabulary.json").write_bytes(b"{}")
+
+        cfg = AsrConfig(model_path=str(model_dir), cuda_device=-1)
+        resolved = WhisperASR._resolve_model_path(cfg, is_explicit=True)
+        assert resolved == str(model_dir.resolve())
 
 
 def test_whisper_explicit_hf_repo_id_cached():
@@ -1641,6 +1766,104 @@ def test_backend_profile_runtime_only_no_model_inheritance():
         "PLaMo with runtime-only profile should not inherit Gemma4's model"
     assert merged["temperature"] == 0.1
     assert merged["context_lines"] == 4
+
+
+# ---------------------------------------------------------------------------
+# P2 — GUI stale override cleanup
+# ---------------------------------------------------------------------------
+
+def test_gui_clearing_asr_model_clears_override():
+    """Clearing the ASR model path field should remove the stored override."""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    from auto_translate.config import Config
+    from auto_translate.gui import VideoTranslateWindow
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    # VideoTranslateWindow takes a Path, not Config. _cfg is set later.
+    window = VideoTranslateWindow(Path("."))
+    window._cfg = cfg
+
+    # Simulate setting a custom path and storing it as an override
+    window._asr_model_overrides["haas"] = "C:/custom/haas-model"
+    window.asr_model.setText("C:/custom/haas-model")
+
+    # Simulate clearing the field by switching backends
+    window._last_asr_backend = "haas"
+    window.asr_model.setText("")
+    window._on_asr_backend_changed(0)
+
+    # The override should be cleared
+    assert "haas" not in window._asr_model_overrides, \
+        "Clearing the field should remove the stale override"
+
+    window.close()
+
+
+def test_gui_clearing_mt_model_clears_override():
+    """Clearing the MT model path field should remove the stored override."""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    from auto_translate.config import Config
+    from auto_translate.gui import VideoTranslateWindow
+
+    cfg = Config()
+    cfg.translate.model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
+    window = VideoTranslateWindow(Path("."))
+    window._cfg = cfg
+
+    # Simulate setting a custom path and storing it as an override
+    window._mt_model_overrides["gemma4"] = "C:/custom/gemma-model"
+    window.mt_model.setText("C:/custom/gemma-model")
+
+    # Simulate clearing the field by switching backends
+    window._last_mt_backend = "gemma4"
+    window.mt_model.setText("")
+    window._on_mt_backend_changed(0)
+
+    # The override should be cleared
+    assert "gemma4" not in window._mt_model_overrides, \
+        "Clearing the field should remove the stale override"
+
+    window.close()
+
+
+def test_gui_restoring_default_clears_override():
+    """Restoring the default model path should clear the stored override."""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    from auto_translate.config import Config
+    from auto_translate.gui import VideoTranslateWindow
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    window = VideoTranslateWindow(Path("."))
+    window._cfg = cfg
+
+    # Set a custom override
+    window._asr_model_overrides["haas"] = "C:/custom/haas-model"
+    window.asr_model.setText("C:/custom/haas-model")
+
+    # Restore the default
+    window._last_asr_backend = "haas"
+    window.asr_model.setText("haas-ja-v1.0")
+    window._on_asr_backend_changed(0)
+
+    # The override should be cleared because the field matches the default
+    assert "haas" not in window._asr_model_overrides, \
+        "Restoring the default should remove the override"
+
+    window.close()
 
 
 if __name__ == "__main__":

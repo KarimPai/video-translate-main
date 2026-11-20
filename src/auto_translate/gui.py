@@ -503,14 +503,13 @@ class VideoTranslateWindow(QMainWindow):
         old_backend = self._last_asr_backend
         if old_backend is not None:
             current_text = self.asr_model.text().strip()
-            if current_text:
-                old_identity = resolve_model_identity(self._cfg, "asr", old_backend)
-                old_default = old_identity.get("model_path", "")
-                if current_text != old_default:
-                    self._asr_model_overrides[str(old_backend)] = current_text
-                else:
-                    # User restored the default — clear any stale override
-                    self._asr_model_overrides.pop(str(old_backend), None)
+            old_identity = resolve_model_identity(self._cfg, "asr", old_backend)
+            old_default = old_identity.get("model_path", "")
+            if current_text and current_text != old_default:
+                self._asr_model_overrides[str(old_backend)] = current_text
+            else:
+                # User cleared the field or restored the default — remove stale override
+                self._asr_model_overrides.pop(str(old_backend), None)
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):
@@ -538,14 +537,13 @@ class VideoTranslateWindow(QMainWindow):
         old_backend = self._last_mt_backend
         if old_backend is not None:
             current_text = self.mt_model.text().strip()
-            if current_text:
-                old_identity = resolve_model_identity(self._cfg, "translate", old_backend)
-                old_default = old_identity.get("model_path", "")
-                if current_text != old_default:
-                    self._mt_model_overrides[str(old_backend)] = current_text
-                else:
-                    # User restored the default — clear any stale override
-                    self._mt_model_overrides.pop(str(old_backend), None)
+            old_identity = resolve_model_identity(self._cfg, "translate", old_backend)
+            old_default = old_identity.get("model_path", "")
+            if current_text and current_text != old_default:
+                self._mt_model_overrides[str(old_backend)] = current_text
+            else:
+                # User cleared the field or restored the default — remove stale override
+                self._mt_model_overrides.pop(str(old_backend), None)
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):

@@ -134,48 +134,53 @@ class WhisperASR:
         model_path = (cfg.model_path or "").strip()
 
         if model_path:
-            # Check if this looks like an HF repo ID (contains a slash and no path separators)
-            looks_like_repo_id = "/" in model_path and "\\" not in model_path and ":" not in model_path
-
-            if not looks_like_repo_id:
-                # Treat as a local path
-                candidate = Path(model_path).expanduser()
-                if candidate.exists():
-                    if cls._looks_like_whisper_model(candidate):
-                        return str(candidate.resolve())
-                    # Configured path exists but is not a Whisper model.
-                    if is_explicit:
-                        raise WhisperError(
-                            f"Explicitly configured model path is not a valid Whisper model: "
-                            f"{candidate}. Expected a CTranslate2 Whisper directory "
-                            f"containing model.bin, config.json, etc."
-                        )
-                    # Inherited path (e.g., Haas default) — fall through to cache search.
-                    log.warning(
-                        "Configured ASR model path is not a Whisper model: %s — "
-                        "falling back to Hugging Face cache search",
-                        candidate,
-                    )
-                else:
-                    # Path doesn't exist as a local directory.
-                    if is_explicit:
-                        raise WhisperError(
-                            f"Explicitly configured model path does not exist: {candidate}"
-                        )
-                    # Inherited non-existent path — fall through to cache search.
-            else:
-                # Looks like an HF repo ID — check if it's cached
+            # Always check local directory first, regardless of path format.
+            # This handles Windows paths with forward slashes (models/whisper-large-v3-turbo),
+            # absolute paths, relative paths, and paths with ~ expansion.
+            candidate = Path(model_path).expanduser()
+            if candidate.is_dir():
+                if cls._looks_like_whisper_model(candidate):
+                    return str(candidate.resolve())
+                # Directory exists but is not a Whisper model.
                 if is_explicit:
-                    # Explicit HF repo ID — check cache directly
-                    cached = cls._find_cached_model(model_path)
-                    if cached is not None:
-                        return str(cached)
                     raise WhisperError(
-                        f"Explicitly configured Hugging Face repository '{model_path}' "
-                        f"is not present in the local cache. Cache it manually first; "
-                        f"auto-download is disabled."
+                        f"Explicitly configured model path is not a valid Whisper model: "
+                        f"{candidate}. Expected a CTranslate2 Whisper directory "
+                        f"containing model.bin, config.json, etc."
                     )
-                # Non-explicit repo ID (inherited) — fall through to cache search below
+                # Inherited path (e.g., Haas default) — fall through to cache search.
+                log.warning(
+                    "Configured ASR model path is not a Whisper model: %s — "
+                    "falling back to Hugging Face cache search",
+                    candidate,
+                )
+            else:
+                # Path doesn't exist as a local directory.
+                # Check if this looks like an HF repo ID: contains a slash but is not
+                # a Windows absolute path (no drive letter like C:) and doesn't use
+                # backslashes. However, since we already checked the local path above,
+                # any remaining path with forward slashes that doesn't exist locally
+                # is treated as a potential HF repo ID.
+                looks_like_repo_id = "/" in model_path and ":" not in model_path
+
+                if looks_like_repo_id:
+                    # Potential HF repo ID — check if it's cached
+                    if is_explicit:
+                        cached = cls._find_cached_model(model_path)
+                        if cached is not None:
+                            return str(cached)
+                        raise WhisperError(
+                            f"Explicitly configured Hugging Face repository '{model_path}' "
+                            f"is not present in the local cache. Cache it manually first; "
+                            f"auto-download is disabled."
+                        )
+                    # Non-explicit repo ID (inherited) — fall through to cache search below
+                elif is_explicit:
+                    # Explicit local path that doesn't exist and doesn't look like a repo ID
+                    raise WhisperError(
+                        f"Explicitly configured model path does not exist: {candidate}"
+                    )
+                    # Inherited non-existent path — fall through to cache search.
 
         # Search for cached Whisper model in Hugging Face cache.
         # Try the configured path as a repo id first, then the default model.

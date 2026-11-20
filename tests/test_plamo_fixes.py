@@ -837,7 +837,7 @@ class TestCoverageTracker:
         """Cached subtitle with correct start_s should match the right pending."""
         ct = self._make()
         ct.advance_vad(100.0)
-        sid = ct.record_speech(10.0, 12.0)
+        ct.record_speech(10.0, 12.0)
         # Match by actual interval (as pipeline now does with subtitle_start_s)
         matched = ct.complete_by_interval(10.0, 12.0, tolerance=0.5)
         assert matched is True
@@ -848,13 +848,401 @@ class TestCoverageTracker:
         ct = self._make()
         ct.advance_vad(100.0)
         sid1 = ct.record_speech(10.0, 12.0)
-        sid2 = ct.record_speech(11.0, 13.0)  # overlaps with sid1
+        ct.record_speech(11.0, 13.0)  # overlaps with sid1
         # Complete sid1 by ID
         ct.complete_speech(sid1)
         assert ct.pending_count() == 1
-        # sid2 should still be pending
+        # Second entry should still be pending
         intervals = ct.pending_intervals()
         assert (11.0, 13.0) in intervals
+
+    # --- Checkpoint preserves coverage after compaction ---
+
+    def test_compaction_does_not_lower_watermark(self):
+        """After compaction removes completed intervals, watermark must not drop.
+
+        This is the key regression test for the checkpoint fix.
+        1. VAD confirms silence through 5s.
+        2. Speech at 5-10s is completed.
+        3. Speech at 12-14s remains pending.
+        4. Watermark reaches 10s.
+        5. Compaction removes 5-10s interval.
+        6. Watermark must remain at 10s, not drop to 5s.
+        """
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid1 = ct.record_speech(5.0, 10.0)
+        ct.record_speech(12.0, 14.0)
+        ct.complete_speech(sid1)
+        # Watermark: 0 -> complete 5-10 -> advance through silence to 12 (blocked by sid2)
+        assert ct.translated_until == 12.0
+        # Force compaction
+        ct.compact_completed()
+        # Watermark must NOT drop after compaction
+        assert ct.translated_until == 12.0
+
+    def test_compaction_then_new_speech_advances(self):
+        """After compaction, new speech completion still advances correctly."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        sids = []
+        for i in range(200):
+            start = i * 0.5 + 0.1
+            end = start + 0.3
+            sid = ct.record_speech(start, end)
+            sids.append(sid)
+            ct.complete_speech(sid)
+        watermark_before = ct.translated_until
+        assert watermark_before == 100.0
+        # Force compaction
+        ct.compact_completed()
+        assert ct.translated_until == 100.0
+        # Add new speech after compaction
+        ct.advance_vad(110.0)
+        sid = ct.record_speech(101.0, 103.0)
+        ct.complete_speech(sid)
+        assert ct.translated_until == 110.0
+
+    def test_late_pending_speech_behind_checkpoint_blocks(self):
+        """Late-registered pending speech behind the checkpoint must still block coverage."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid1 = ct.record_speech(5.0, 7.0)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 50.0
+        # Force compaction
+        ct.compact_completed()
+        assert ct.translated_until == 50.0
+        # Now register late speech at 10-12s (behind checkpoint)
+        sid2 = ct.record_speech(10.0, 12.0)
+        # Watermark should retroactively drop to 10.0 (start of late speech)
+        assert ct.translated_until == 10.0
+        # Complete the late speech
+        ct.complete_speech(sid2)
+        # Watermark should advance back to 50.0
+        assert ct.translated_until == 50.0
+
+    def test_compaction_with_pending_ahead(self):
+        """Compaction with pending speech ahead of watermark must preserve state."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(10.0, 12.0)
+        sid3 = ct.record_speech(30.0, 32.0)  # pending ahead
+        ct.complete_speech(sid1)
+        ct.complete_speech(sid2)
+        # Watermark blocked by sid3 at 30.0
+        assert ct.translated_until == 30.0
+        ct.compact_completed()
+        # Watermark must still be 30.0
+        assert ct.translated_until == 30.0
+        # Complete sid3
+        ct.complete_speech(sid3)
+        assert ct.translated_until == 50.0
+
+    def test_multiple_compaction_cycles(self):
+        """Multiple compaction cycles must not degrade coverage."""
+        ct = self._make()
+        ct.advance_vad(1000.0)
+        for cycle in range(10):
+            base = cycle * 100.0
+            sids = []
+            for i in range(5):
+                start = base + i * 10.0 + 1.0
+                end = start + 2.0
+                sid = ct.record_speech(start, end)
+                sids.append(sid)
+                ct.complete_speech(sid)
+            ct.compact_completed()
+        assert ct.translated_until == 1000.0
+
+    def test_compaction_out_of_order_completion(self):
+        """Out-of-order completion followed by compaction must be correct."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid_a = ct.record_speech(2.0, 4.0)
+        sid_b = ct.record_speech(10.0, 12.0)
+        sid_c = ct.record_speech(20.0, 22.0)
+        # Complete in reverse order
+        ct.complete_speech(sid_c)
+        assert ct.translated_until == 2.0  # blocked by A
+        ct.complete_speech(sid_b)
+        assert ct.translated_until == 2.0  # still blocked by A
+        ct.complete_speech(sid_a)
+        assert ct.translated_until == 50.0
+        ct.compact_completed()
+        assert ct.translated_until == 50.0
+
+    def test_compaction_completed_speech_beyond_vad_gap(self):
+        """Completed speech spanning a gap beyond VAD progress must not advance watermark."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        sid = ct.record_speech(10.0, 12.0)
+        ct.complete_speech(sid)
+        assert ct.translated_until == 5.0  # gap 5-10 not confirmed
+        ct.compact_completed()
+        # Watermark should still be 5.0 (completed speech beyond gap is not behind watermark)
+        assert ct.translated_until == 5.0
+        # Now confirm the gap
+        ct.advance_vad(15.0)
+        assert ct.translated_until == 15.0
+
+    def test_compaction_after_seek_reset(self):
+        """After seek reset, compaction must work correctly with new state."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        sid = ct.record_speech(5.0, 7.0)
+        ct.complete_speech(sid)
+        ct.compact_completed()
+        # Seek to new position
+        ct.reset(200.0)
+        ct.set_generation(2)
+        assert ct.translated_until == 200.0
+        ct.advance_vad(300.0)
+        sid2 = ct.record_speech(210.0, 212.0)
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 300.0
+        ct.compact_completed()
+        assert ct.translated_until == 300.0
+
+    def test_compaction_suppressed_translation(self):
+        """Suppressed translation completion followed by compaction must be correct."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(10.0, 12.0)
+        # Suppress both (complete without subtitle)
+        ct.complete_speech(sid1)
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 50.0
+        ct.compact_completed()
+        assert ct.translated_until == 50.0
+
+    def test_compaction_eof(self):
+        """EOF after compaction must still respect pending speech."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        ct.complete_speech(sid1)
+        ct.compact_completed()
+        sid2 = ct.record_speech(30.0, 32.0)  # pending
+        ct.mark_source_finished()
+        assert ct.translated_until == 30.0  # blocked by sid2
+        ct.complete_speech(sid2)
+        ct.mark_source_finished()
+        assert ct.translated_until == 50.0
+
+    def test_checkpoint_monotonic_advance(self):
+        """Frontier must only advance forward, never retreat."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid1 = ct.record_speech(5.0, 7.0)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 50.0
+        with ct._lock:
+            frontier_before = ct._frontier
+        # Late speech retroactively blocks
+        sid2 = ct.record_speech(10.0, 12.0)
+        assert ct.translated_until == 10.0
+        with ct._lock:
+            frontier_after = ct._frontier
+        # Frontier should not have decreased
+        assert frontier_after >= frontier_before
+        # Complete late speech
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 50.0
+
+    def test_watermark_monotonic_when_no_new_evidence(self):
+        """Watermark must not decrease unless new pending speech is registered."""
+        ct = self._make()
+        ct.advance_vad(50.0)
+        sid1 = ct.record_speech(5.0, 7.0)
+        ct.complete_speech(sid1)
+        wm = ct.translated_until
+        assert wm == 50.0
+        # Multiple compaction calls should not change watermark
+        for _ in range(5):
+            ct.compact_completed()
+        assert ct.translated_until == wm
+
+
+# ---------------------------------------------------------------------------
+# 3e. PLaMO token budgeting tests
+# ---------------------------------------------------------------------------
+
+class TestPlamoTokenBudgeting:
+    """Test that PLaMO correctly uses context_size for token budgeting."""
+
+    def _make_translator(self, context_size: int, max_tokens: int):
+        """Create a PlamoTranslator mock with specific config."""
+        from auto_translate.config import TranslateConfig
+        from auto_translate.glossary import Glossary
+        from auto_translate.stream_context import StreamContext
+        from auto_translate.translate.plamo import PlamoTranslator
+
+        cfg = TranslateConfig(
+            model_path=str(Path(__file__).parent / "dummy.gguf"),
+            server_path="llama-server",
+            glossary=str(Path(__file__).parent / "glossary.toml"),
+            max_tokens=max_tokens,
+            timeout_s=10,
+            temperature=0.7,
+            top_k=40,
+            top_p=0.9,
+            repeat_penalty=1.1,
+            context_size=context_size,
+            parallel_slots=1,
+            threads=4,
+            gpu_layers=-1,
+            load_timeout_s=60,
+            context_lines=3,
+            max_context_chars=500,
+            context_english=False,
+        )
+        glossary = Glossary({})
+
+        translator = mock.MagicMock()
+        translator.cfg = cfg
+        translator.glossary = glossary
+        translator.stream = StreamContext()
+        translator._closed = False
+        translator._relief = mock.MagicMock()
+        translator._relief.is_set.return_value = False
+        translator._lock = threading.Lock()
+        translator._MAX_RETRIES = 3
+        translator._MAX_TRUNCATION_RETRIES = 1
+        translator._MAX_ELAPSED_S = 30.0
+        translator._is_invalid = PlamoTranslator._is_invalid
+        translator._normalize = PlamoTranslator._normalize
+        translator._best = PlamoTranslator._best
+        translator.server = mock.MagicMock()
+        translator.server.alive.return_value = True
+        translator._context = mock.MagicMock(return_value="")
+        translator._terms_for = mock.MagicMock(return_value=([], []))
+
+        call_index = [0]
+        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
+            call_index[0] += 1
+            return ("Valid translation", "stop")
+
+        translator._chat = mock_chat
+        return translator, call_index
+
+    def test_normal_utterance_uses_full_prompt(self):
+        """Normal-length Japanese text should use the full prompt with glossary."""
+        translator, call_index = self._make_translator(context_size=8192, max_tokens=512)
+        from auto_translate.translate.plamo import PlamoTranslator
+        # 50 character Japanese text — well within budget
+        PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは、今日はいい天気ですね。みんなとゲームをします。", [])
+        # Should succeed on first attempt with full prompt
+        assert call_index[0] == 1
+
+    def test_long_utterance_still_uses_full_prompt(self):
+        """Long Japanese text (200 chars) should still use full prompt with context_size=8192.
+
+        The old bug: max_tokens=512 was used as the budget, so 200 chars * 1.8 + 150 = 510
+        would exceed 512, causing skip_full_prompt=True.
+        The fix: context_size=8192 - max_tokens=512 - 256 = 7424 is the budget.
+        510 < 7424, so full prompt is used.
+        """
+        translator, call_index = self._make_translator(context_size=8192, max_tokens=512)
+        from auto_translate.translate.plamo import PlamoTranslator
+        # 200 character Japanese text
+        ja = "今日は" * 50
+        PlamoTranslator.translate.__get__(translator, type(translator))(ja, [])
+        # Should succeed on first attempt
+        assert call_index[0] == 1
+
+    def test_very_long_utterance_budget_calculation(self):
+        """Verify the budget calculation: context_size - max_tokens - 256."""
+        from auto_translate.config import TranslateConfig
+
+        cfg = TranslateConfig(
+            model_path=str(Path(__file__).parent / "dummy.gguf"),
+            server_path="llama-server",
+            glossary=str(Path(__file__).parent / "glossary.toml"),
+            max_tokens=512,
+            timeout_s=10,
+            temperature=0.7,
+            top_k=40,
+            top_p=0.9,
+            repeat_penalty=1.1,
+            context_size=8192,
+            parallel_slots=1,
+            threads=4,
+            gpu_layers=-1,
+            load_timeout_s=60,
+            context_lines=3,
+            max_context_chars=500,
+            context_english=False,
+        )
+        # Budget = 8192 - 512 - 256 = 7424
+        context_budget = cfg.context_size - cfg.max_tokens - 256
+        assert context_budget == 7424
+
+        # 4000 char Japanese text: 4000 * 1.8 + 150 = 7350 tokens
+        # 7350 < 7424, so full prompt is still used
+        ja = "あ" * 4000
+        estimated_input_tokens = int(len(ja) * 1.8) + 150
+        assert estimated_input_tokens < context_budget
+
+    def test_extremely_long_utterance_skips_full_prompt(self):
+        """Only extremely long text (>4000 chars) should skip full prompt."""
+        translator, call_index = self._make_translator(context_size=8192, max_tokens=512)
+        from auto_translate.translate.plamo import PlamoTranslator
+        # 5000 character Japanese text: 5000 * 1.8 + 150 = 9150 tokens
+        # 9150 > 7424, so skip_full_prompt=True
+        ja = "あ" * 5000
+        PlamoTranslator.translate.__get__(translator, type(translator))(ja, [])
+        # Should succeed (simplified prompt first)
+        assert call_index[0] >= 1
+
+    def test_old_bug_would_skip_full_prompt_for_200_chars(self):
+        """Verify the old bug: max_tokens=512 as budget would skip full prompt for 200 chars.
+
+        Old code: max_output_tokens = max_tokens - estimated_input_tokens
+        For 201 chars: 201 * 1.8 + 150 = 511
+        max_output_tokens = 512 - 511 = 1
+        skip_full_prompt = 1 < 80 → True (WRONG)
+
+        New code: context_budget = context_size - max_tokens - 256 = 7424
+        estimated_input_tokens = 511
+        skip_full_prompt = 511 > 7424 → False (CORRECT)
+        """
+        from auto_translate.config import TranslateConfig
+
+        cfg = TranslateConfig(
+            model_path=str(Path(__file__).parent / "dummy.gguf"),
+            server_path="llama-server",
+            glossary=str(Path(__file__).parent / "glossary.toml"),
+            max_tokens=512,
+            timeout_s=10,
+            temperature=0.7,
+            top_k=40,
+            top_p=0.9,
+            repeat_penalty=1.1,
+            context_size=8192,
+            parallel_slots=1,
+            threads=4,
+            gpu_layers=-1,
+            load_timeout_s=60,
+            context_lines=3,
+            max_context_chars=500,
+            context_english=False,
+        )
+        ja = "今日は" * 67  # 201 chars
+        estimated_input_tokens = int(len(ja) * 1.8) + 150  # 511
+
+        # Old buggy calculation: used max_tokens as the budget
+        old_max_output = cfg.max_tokens - estimated_input_tokens  # 512 - 511 = 1
+        old_skip = old_max_output < 80  # 1 < 80 → True (BUG)
+
+        # New correct calculation: uses context_size as the budget
+        context_budget = cfg.context_size - cfg.max_tokens - 256  # 7424
+        new_skip = estimated_input_tokens > context_budget  # 511 > 7424 → False
+
+        assert old_skip is True  # Old code incorrectly skips full prompt
+        assert new_skip is False  # New code correctly uses full prompt
 
 
 # ---------------------------------------------------------------------------

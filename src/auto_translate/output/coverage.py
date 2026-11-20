@@ -49,6 +49,13 @@ class CoverageTracker:
         # Compaction counter: compact every N calls to amortize cost
         self._advance_count = 0
         self._COMPACT_INTERVAL = 100  # compact every 100 advances
+        # Frontier: the furthest contiguous coverage achieved through completed
+        # intervals and VAD-confirmed silence. After compaction removes completed
+        # intervals, recomputation uses this frontier as the starting point so
+        # previously covered territory is not lost. Unlike a simple checkpoint,
+        # the frontier does NOT prevent late-registered pending speech from
+        # retroactively blocking — pending speech is always checked first.
+        self._frontier = start_s
 
     # ------------------------------------------------------------------
     # Public API
@@ -140,6 +147,7 @@ class CoverageTracker:
             self._completed.clear()
             self._next_id = 1
             self._advance_count = 0
+            self._frontier = progress_s
             # Do NOT reset _generation here — caller sets it via set_generation()
 
     def set_generation(self, generation: int) -> None:
@@ -202,6 +210,11 @@ class CoverageTracker:
         correctly handles late-registered speech that retroactively blocks
         the watermark.
 
+        Compaction safety: after compaction removes completed intervals, the
+        _frontier preserves the highest contiguous coverage achieved. The
+        recomputed watermark is clamped to never drop below the frontier
+        unless a pending interval genuinely blocks behind it.
+
         Automatic compaction: every _COMPACT_INTERVAL calls, compact completed
         intervals behind the watermark to bound memory during long streams.
         """
@@ -213,6 +226,7 @@ class CoverageTracker:
 
         if not self._pending and not self._completed:
             self._translated_until = max(self._translated_until, self._vad_progress)
+            self._frontier = max(self._frontier, self._translated_until)
             return
 
         # Collect all intervals sorted by start time
@@ -223,7 +237,7 @@ class CoverageTracker:
             all_intervals.append((interval.start_s, interval.end_s, True))
         all_intervals.sort(key=lambda x: (x[0], x[1]))
 
-        # Walk from the start position forward
+        # Walk from the start position forward.
         watermark = self._start_s
         i = 0
         while i < len(all_intervals):
@@ -279,9 +293,24 @@ class CoverageTracker:
             if all_pending_behind:
                 watermark = max(watermark, self._vad_progress)
 
-        # Use the recomputed watermark directly — it may be lower than the
-        # previous value if pending speech was registered late (retroactive block).
-        self._translated_until = watermark
+        # Check for pending speech behind the frontier that should retroactively
+        # block. If any pending interval starts behind the frontier, the watermark
+        # must respect it. Otherwise, the frontier prevents compaction from erasing
+        # previously achieved coverage.
+        earliest_pending = min(
+            (iv.start_s for iv in self._pending.values()), default=float('inf')
+        )
+
+        if earliest_pending < float('inf') and earliest_pending < self._frontier:
+            # Pending speech behind the frontier — retroactively block
+            self._translated_until = min(watermark, earliest_pending)
+        else:
+            # No pending speech behind the frontier — use the frontier to
+            # prevent compaction from erasing coverage
+            self._translated_until = max(watermark, self._frontier)
+
+        # Update frontier: only advance forward, never retreat.
+        self._frontier = max(self._frontier, self._translated_until)
 
     def _compact_completed_locked(self) -> None:
         """Remove completed intervals already behind the watermark (lock held).

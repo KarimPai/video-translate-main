@@ -530,16 +530,22 @@ class PlamoTranslator:
                 # and then to higher token limits. This prioritizes name accuracy over
                 # latency for the first attempt.
                 #
-                # Estimate input token budget: Japanese text is ~1.5-2x characters in tokens.
-                # Full prompt overhead (glossary + context + template) is ~100-200 tokens.
-                # With max_tokens=512, output space is ~300-400 tokens for typical input.
-                # Only skip directly to simplified if input alone would exceed the budget.
+                # Token budget: cfg.max_tokens limits GENERATED OUTPUT tokens, not total
+                # context. The actual context capacity is cfg.context_size (e.g. 8192).
+                # Input tokens + output tokens must fit within context_size.
+                # Reserved output tokens = max_tokens (e.g. 512). Safety margin = 256.
+                # Usable input budget = context_size - max_tokens - safety_margin.
+                # For context_size=8192, max_tokens=512: budget = 7424 input tokens.
+                # Japanese text: ~1.5-2x characters in tokens. Full prompt overhead:
+                # ~100-200 tokens (glossary + context + template).
+                # Only skip the full prompt if input alone would exceed the context budget.
                 simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
-                # Rough token estimate: Japanese characters * 1.8 + prompt overhead
                 estimated_input_tokens = int(len(ja) * 1.8) + 150
-                max_output_tokens = self.cfg.max_tokens - estimated_input_tokens
-                # If estimated output space is too small (< 80 tokens), skip full prompt
-                skip_full_prompt = max_output_tokens < 80
+                context_budget = self.cfg.context_size - self.cfg.max_tokens - 256
+                # Only skip full prompt if input alone exceeds the context budget.
+                # With context_size=8192, this means input > ~7424 tokens, which is
+                # extremely rare (4000+ Japanese characters). Most utterances fit.
+                skip_full_prompt = estimated_input_tokens > context_budget
 
                 try:
                     first_key = "simplified" if skip_full_prompt else "full"

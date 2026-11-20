@@ -42,8 +42,8 @@ class Gemma4LifecycleTests(unittest.TestCase):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return ("Hello wo", "length")  # truncated
-            return ("Hello world!", "stop")  # complete on retry
+                return ("Hello wo", "length", 0, 0, 0)  # truncated
+            return ("Hello world!", "stop", 0, 0, 0)  # complete on retry
         obj._chat = Mock(side_effect=chat_side_effect)
         result = obj.translate("こんにちは", [])
         self.assertEqual(result, "Hello world!")
@@ -59,7 +59,7 @@ class Gemma4LifecycleTests(unittest.TestCase):
         def chat_side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            return ("Hello wo", "length")  # always truncated
+            return ("Hello wo", "length", 0, 0, 0)  # always truncated
         obj._chat = Mock(side_effect=chat_side_effect)
         result = obj.translate("こんにちは", [])
         self.assertEqual(result, "")

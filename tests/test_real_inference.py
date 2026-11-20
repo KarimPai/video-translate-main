@@ -30,7 +30,9 @@ from auto_translate.translate.gemma4 import (
     clean_output,
     build_prompt,
     resolve_slash_alternatives,
+    _REASONING_OPEN,
 )
+from auto_translate.subtitle_clean import english_output_issue, looks_like_prompt_echo
 from auto_translate.llama_server import LlamaServerError
 
 # Representative Japanese utterances for testing
@@ -160,15 +162,52 @@ def test_clean_output_functions() -> list[str]:
     return failures
 
 
+def _check_structural(result: str, ja: str) -> list[str]:
+    """Validate structural properties of a translation result.
+    
+    Returns a list of failure reasons (empty if structurally valid).
+    This is separate from semantic evaluation.
+    """
+    issues = []
+    
+    # Nonempty check
+    if not result.strip():
+        issues.append("empty_output")
+        return issues  # no further checks on empty output
+    
+    # Japanese script check
+    has_japanese = any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff'
+                       for c in result)
+    if has_japanese:
+        issues.append("untranslated_japanese")
+    
+    # Reasoning marker check
+    if _REASONING_OPEN.search(result):
+        issues.append("reasoning_markers")
+    
+    # Prompt echo check
+    if looks_like_prompt_echo(result):
+        issues.append("prompt_echo")
+    
+    # Output issue check
+    issue = english_output_issue(result)
+    if issue:
+        issues.append(f"output_issue:{issue}")
+    
+    return issues
+
+
 def test_real_inference(translator: Gemma4Translator) -> list[str]:
     """Run real inference tests with the actual Gemma 4 model."""
     print_header("Real Inference Tests (Gemma 4 E4B)")
     failures = []
     results = []
     
-    # Test 1: Basic translations
-    print("\n  --- Basic Translations ---")
+    # Test 1: Basic translations with structural validation
+    print("\n  --- Basic Translations (Structural Validation) ---")
     latencies = []
+    structural_pass = 0
+    structural_fail = 0
     for ja, expected_hint in TEST_UTTERANCES:
         start = time.monotonic()
         try:
@@ -176,28 +215,27 @@ def test_real_inference(translator: Gemma4Translator) -> list[str]:
             elapsed = time.monotonic() - start
             latencies.append(elapsed)
             
-            # Check that result is non-empty and in English
-            has_content = bool(result.strip())
-            has_japanese = any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' 
-                             for c in result)
-            
-            if has_content and not has_japanese:
-                print_test(f"Japanese utterance", True, f"'{safe_str(result)}' ({elapsed:.2f}s)")
+            # Structural validation
+            struct_issues = _check_structural(result, ja)
+            if not struct_issues:
+                structural_pass += 1
+                print_test(f"'{ja[:20]}...' → '{expected_hint}'", True,
+                           f"'{safe_str(result)}' ({elapsed:.2f}s)")
             else:
-                detail = f"'{safe_str(result)}' ({elapsed:.2f}s)"
-                if not has_content:
-                    detail += " [EMPTY]"
-                if has_japanese:
-                    detail += " [HAS JAPANESE]"
-                print_test(f"Japanese utterance", False, detail)
-                failures.append(f"Translation: {detail}")
+                structural_fail += 1
+                detail = f"'{safe_str(result)}' ({elapsed:.2f}s) [{', '.join(struct_issues)}]"
+                print_test(f"'{ja[:20]}...' → '{expected_hint}'", False, detail)
+                failures.append(f"Structural: '{ja}' → {struct_issues}: '{result}'")
             
             results.append((ja, result, elapsed))
         except Exception as e:
             elapsed = time.monotonic() - start
-            print_test(f"Japanese utterance", False, f"Exception: {safe_str(str(e))}")
-            failures.append(f"Translation: {e}")
+            structural_fail += 1
+            print_test(f"'{ja[:20]}...'", False, f"Exception: {safe_str(str(e))}")
+            failures.append(f"Translation exception: {e}")
             results.append((ja, str(e), elapsed))
+    
+    print(f"\n  Structural: {structural_pass} passed, {structural_fail} failed")
     
     # Report latency stats
     if latencies:
@@ -216,7 +254,9 @@ def test_real_inference(translator: Gemma4Translator) -> list[str]:
         result = translator.translate(cache_test_ja, [])
         elapsed = time.monotonic() - start
         cache_results.append((result, elapsed))
-        print_test(f"Repeat {i+1}", True, f"'{result}' ({elapsed:.2f}s)")
+        struct_issues = _check_structural(result, cache_test_ja)
+        status = "OK" if not struct_issues else f"[{' '.join(struct_issues)}]"
+        print_test(f"Repeat {i+1}", not struct_issues, f"'{result}' ({elapsed:.2f}s) {status}")
     
     # Check consistency
     if len(set(r[0] for r in cache_results)) == 1:
@@ -238,17 +278,24 @@ def test_real_inference(translator: Gemma4Translator) -> list[str]:
     for ctx in contexts:
         result = translator.translate(context_test_ja, ctx)
         context_results.append(result)
+        struct_issues = _check_structural(result, context_test_ja)
         ctx_desc = "no context" if not ctx else f"context: {ctx[0][0]}"
-        print_test(f"'{context_test_ja}' with {ctx_desc}", bool(result), f"'{result}'")
+        status = "OK" if not struct_issues else f"[{' '.join(struct_issues)}]"
+        print_test(f"'{context_test_ja}' with {ctx_desc}", not struct_issues, f"'{result}' {status}")
     
-    # Test 4: Truncation test (force small max_tokens)
+    # Test 4: Truncation handling
     print("\n  --- Truncation Handling ---")
     long_ja = "今日はとてもいい天気ですね。みんなと公園でピクニックをする予定ですが、雨が降るかもしれないので傘を持っていくべきかもしれません。それに食べ物も準備する必要があります。"
     try:
         result = translator.translate(long_ja, [])
-        print_test("Long utterance", bool(result), f"'{result[:80]}...'")
+        struct_issues = _check_structural(result, long_ja)
+        if not struct_issues:
+            print_test("Long utterance", True, f"'{result[:80]}...'")
+        else:
+            print_test("Long utterance", False, f"'{result[:80]}...' [{', '.join(struct_issues)}]")
+            failures.append(f"Long utterance structural: {struct_issues}")
         if not result:
-            failures.append(f"Long utterance returned empty")
+            failures.append("Long utterance returned empty")
     except Exception as e:
         print_test("Long utterance", False, f"Exception: {e}")
         failures.append(f"Long utterance: {e}")
@@ -263,6 +310,16 @@ def test_real_inference(translator: Gemma4Translator) -> list[str]:
                f"Args include: {' '.join(a for a in args if 'reason' in a.lower())}")
     if has_reasoning_on:
         failures.append("Reasoning enabled in server args")
+    
+    # Verify no reasoning markers in any result
+    reasoning_leakage = 0
+    for ja, result, _ in results:
+        if result and _REASONING_OPEN.search(result):
+            reasoning_leakage += 1
+    print_test("No reasoning leakage in results", reasoning_leakage == 0,
+               f"{reasoning_leakage} out of {len(results)} results had reasoning markers")
+    if reasoning_leakage > 0:
+        failures.append(f"Reasoning leakage in {reasoning_leakage} results")
     
     # Check GGUF chat template
     print("\n  --- GGUF Chat Template Check ---")
@@ -364,8 +421,13 @@ def main() -> int:
             
     except LlamaServerError as e:
         print(f"\n  [SKIP] Could not start llama-server: {e}")
-        print("  Real inference tests skipped.")
+        print("  Real inference tests skipped — model or GPU unavailable.")
+        print("  This is expected in CI or when the model is not installed.")
         return 0  # Skip is not a failure
+    except FileNotFoundError as e:
+        print(f"\n  [SKIP] Required file not found: {e}")
+        print("  Real inference tests skipped — install the model and llama-server.")
+        return 0
     except Exception as e:
         print(f"\n  [ERROR] Unexpected error: {e}")
         import traceback

@@ -329,7 +329,7 @@ class NameConsistencyTests(unittest.TestCase):
         obj = fake_translator()
         def complete(*args, **kwargs):
             obj.interrupt()
-            return ("Suixian.", "stop")
+            return ("Suixian.", "stop", 0, 0, 0)
         obj._chat = Mock(side_effect=complete)
         self.assertEqual(obj.translate("スイちゃん", []), "")
         obj._chat.assert_called_once()

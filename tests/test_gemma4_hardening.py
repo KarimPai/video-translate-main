@@ -8,6 +8,13 @@ from auto_translate.subtitle_clean import (
     sanitize_english_output,
     clean_english_output,
 )
+from auto_translate.translate.gemma4 import (
+    _strip_reasoning_tags,
+    clean_output,
+    ChatStatus,
+    _ChatResult,
+    Gemma4Translator,
+)
 
 
 class TestSpecialTokenFlood:
@@ -155,3 +162,287 @@ class TestOutputValidation:
         text = "recently mentioned glossary names/terms: test"
         issue = english_output_issue(text)
         assert issue == "prompt_echo_or_loop"
+
+
+class TestStripReasoningTags:
+    """Regression tests for reasoning tag handling in _strip_reasoning_tags()."""
+
+    def test_no_tags_unchanged(self):
+        """Normal English text without reasoning tags should pass through."""
+        assert _strip_reasoning_tags("Hello, how are you?") == "Hello, how are you?"
+        assert _strip_reasoning_tags("Let's go over there!") == "Let's go over there!"
+
+    def test_complete_xml_think_block_removed(self):
+        """Complete <think>...</think> blocks should be removed."""
+        result = _strip_reasoning_tags("<think>This is reasoning</think>Hello world")
+        assert result == "Hello world"
+
+    def test_complete_thinking_block_removed(self):
+        """Complete <thinking>...</thinking> blocks should be removed."""
+        result = _strip_reasoning_tags("<thinking>Analysis here</thinking>Good morning!")
+        assert result == "Good morning!"
+
+    def test_complete_reasoning_block_removed(self):
+        """Complete <reasoning>...</reasoning> blocks should be removed."""
+        result = _strip_reasoning_tags("<reasoning>Why I chose this</reasoning>Thank you.")
+        assert result == "Thank you."
+
+    def test_native_gemma_think_tokens_removed(self):
+        """Native Gemma 4 <|think|>...<|end_of_think|> should be removed."""
+        result = _strip_reasoning_tags("<|think|>Internal analysis<|end_of_think|>Nice to meet you!")
+        assert result == "Nice to meet you!"
+
+    def test_native_channel_thought_removed(self):
+        """Native <|channel>thought...<channel|> should be removed."""
+        result = _strip_reasoning_tags("<|channel>thought\nLet me think\n<channel|>Hello there!")
+        assert result == "Hello there!"
+
+    def test_orphan_think_tag_rejected(self):
+        """Orphan <|think|> without closing should reject (return empty)."""
+        result = _strip_reasoning_tags("<|think|>This is reasoning text that should not appear")
+        assert result == ""
+
+    def test_orphan_channel_thought_rejected(self):
+        """Orphan <|channel>thought without closing should reject."""
+        result = _strip_reasoning_tags("<|channel>thought\nAnalysis text\nMore analysis")
+        assert result == ""
+
+    def test_orphan_xml_think_tag_rejected(self):
+        """Orphan <thinking> without closing should reject."""
+        result = _strip_reasoning_tags("<thinking>Reasoning without close tag")
+        assert result == ""
+
+    def test_orphan_reasoning_tag_rejected(self):
+        """Orphan <reasoning> without closing should reject."""
+        result = _strip_reasoning_tags("<reasoning>Unclosed reasoning block")
+        assert result == ""
+
+    def test_complete_block_then_valid_content(self):
+        """Complete block followed by valid content should keep the content."""
+        text = "<think>reasoning</think>Everyone, thanks for the super chats!"
+        result = _strip_reasoning_tags(text)
+        assert result == "Everyone, thanks for the super chats!"
+
+    def test_valid_content_then_complete_block(self):
+        """Valid content followed by complete block should keep the content."""
+        text = "Good morning! <think>leftover reasoning</think>"
+        result = _strip_reasoning_tags(text)
+        assert result == "Good morning!"
+
+    def test_multiple_complete_blocks(self):
+        """Multiple complete reasoning blocks should all be removed."""
+        text = "<think>block1</think>Hello <think>block2</think>world"
+        result = _strip_reasoning_tags(text)
+        assert result == "Hello world"
+
+    def test_mixed_complete_and_orphan_rejected(self):
+        """Complete block plus orphan marker should reject."""
+        text = "<think>complete</think>Hello <|think|>orphan reasoning"
+        result = _strip_reasoning_tags(text)
+        assert result == ""
+
+    def test_ordinary_word_think_preserved(self):
+        """Ordinary word 'think' should not be treated as a control token."""
+        result = _strip_reasoning_tags("I think so, let's go!")
+        assert result == "I think so, let's go!"
+
+    def test_ordinary_word_reasoning_preserved(self):
+        """Ordinary word 'reasoning' should not be treated as a control token."""
+        result = _strip_reasoning_tags("The reasoning behind this is clear.")
+        assert result == "The reasoning behind this is clear."
+
+    def test_multiline_complete_block(self):
+        """Multiline reasoning blocks should be properly removed."""
+        text = "<think>\nLine 1\nLine 2\n</think>Translation here"
+        result = _strip_reasoning_tags(text)
+        assert result == "Translation here"
+
+    def test_empty_string(self):
+        """Empty string should return empty string."""
+        assert _strip_reasoning_tags("") == ""
+
+    def test_whitespace_only(self):
+        """Whitespace-only input should return empty string."""
+        assert _strip_reasoning_tags("   \n  ") == ""
+
+
+class TestCleanOutputReasoning:
+    """Integration tests for clean_output() with reasoning tags."""
+
+    def test_clean_rejects_orphan_think(self):
+        """clean_output should reject responses with orphan think tags."""
+        result = clean_output("<|think|>This is internal analysis")
+        assert result == ""
+
+    def test_clean_removes_complete_block(self):
+        """clean_output should remove complete reasoning blocks."""
+        result = clean_output("<think>reasoning</think>Hello world")
+        assert result == "Hello world"
+
+    def test_clean_preserves_normal_text(self):
+        """clean_output should preserve normal English text."""
+        result = clean_output("Hello, how are you today?")
+        assert result == "Hello, how are you today?"
+
+    def test_clean_rejects_system_echo(self):
+        """clean_output should reject system prompt echoes."""
+        result = clean_output("You are a professional Japanese-to-English subtitle translator.")
+        assert result == ""
+
+    def test_clean_preserves_slash_content(self):
+        """clean_output should preserve slash-separated content."""
+        result = clean_output("yes/no decision")
+        assert result == "yes/no decision"
+
+    def test_clean_preserves_ordinary_think(self):
+        """clean_output should not reject text containing 'think' as a word."""
+        result = clean_output("I think we should go now.")
+        assert result == "I think we should go now."
+
+
+class TestHasUnclosedReasoning:
+    """Tests for Gemma4Translator._has_unclosed_reasoning() static method."""
+
+    def test_no_reasoning_markers(self):
+        """Normal text should not be detected as having unclosed reasoning."""
+        assert not Gemma4Translator._has_unclosed_reasoning("Hello world")
+        assert not Gemma4Translator._has_unclosed_reasoning("I think so")
+
+    def test_complete_think_block_not_unclosed(self):
+        """Complete <|think|>...<|end_of_think|> should not be flagged."""
+        text = "<|think|>analysis<|end_of_think|>Hello"
+        assert not Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_orphan_think_detected(self):
+        """Orphan <|think|> should be detected."""
+        text = "<|think|>analysis without close"
+        assert Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_orphan_channel_thought_detected(self):
+        """Orphan <|channel>thought should be detected."""
+        text = "<|channel>thought\nanalysis"
+        assert Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_complete_channel_not_unclosed(self):
+        """Complete channel block should not be flagged."""
+        text = "<|channel>thought\nanalysis\n<channel|>Hello"
+        assert not Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_orphan_xml_thinking_detected(self):
+        """Orphan <thinking> should be detected."""
+        text = "<thinking>unclosed"
+        assert Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_orphan_reasoning_detected(self):
+        """Orphan <reasoning> should be detected."""
+        text = "<reasoning>unclosed"
+        assert Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_multiple_opens_one_close_detected(self):
+        """Multiple opens with one close should be detected as unclosed."""
+        text = "<|think|>first<|think|>second<|end_of_think|>"
+        assert Gemma4Translator._has_unclosed_reasoning(text)
+
+    def test_empty_string_not_unclosed(self):
+        """Empty string should not be flagged."""
+        assert not Gemma4Translator._has_unclosed_reasoning("")
+
+
+class TestChatResult:
+    """Tests for _ChatResult dataclass and ChatStatus enum."""
+
+    def test_chat_result_creation(self):
+        """_ChatResult should be created with all fields."""
+        result = _ChatResult(
+            content="Hello",
+            status=ChatStatus.success,
+            finish_reason="stop",
+            input_tokens=10,
+            output_tokens=5
+        )
+        assert result.content == "Hello"
+        assert result.status == ChatStatus.success
+        assert result.finish_reason == "stop"
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+        assert result.reasoning_content_length == 0
+
+    def test_chat_status_values(self):
+        """ChatStatus enum should have all expected values."""
+        assert ChatStatus.success.value
+        assert ChatStatus.truncated.value
+        assert ChatStatus.reasoning_anomaly.value
+        assert ChatStatus.malformed.value
+        assert ChatStatus.transport_error.value
+
+    def test_chat_result_defaults(self):
+        """_ChatResult should have sensible defaults."""
+        result = _ChatResult(content="", status=ChatStatus.transport_error)
+        assert result.content == ""
+        assert result.status == ChatStatus.transport_error
+        assert result.finish_reason == ""
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.reasoning_content_length == 0
+
+
+class TestTokenBudget:
+    """Tests for prompt-aware token budget calculation."""
+
+    def test_compute_retry_tokens_never_reduces(self):
+        """_compute_retry_tokens should never return less than original."""
+        # We can't easily instantiate Gemma4Translator for unit tests,
+        # but we can verify the logic with a mock approach
+        from auto_translate.config import TranslateConfig
+        from auto_translate.glossary import Glossary
+        from auto_translate.stream_context import StreamContext
+
+        # This test verifies the concept: retry_tokens >= original_max_tokens
+        # The actual method requires a full translator instance, so we test
+        # the formula directly
+        cfg = TranslateConfig()
+        original = cfg.max_tokens  # 128
+        doubled = cfg.max_tokens * 2  # 256
+        context_size = cfg.context_size  # 4096
+
+        # With a short prompt, usable_output should be large
+        prompt_tokens = 50  # short prompt
+        reserve = 128
+        usable_output = context_size - prompt_tokens - reserve  # 3918
+
+        # retry_tokens = max(original, min(usable_output, doubled))
+        retry_tokens = max(original, min(usable_output, doubled))
+        assert retry_tokens >= original, "Retry tokens should never be less than original"
+        assert retry_tokens == 256  # min(3918, 256) = 256, max(128, 256) = 256
+
+    def test_compute_retry_tokens_respects_context(self):
+        """Token budget should respect context size limits."""
+        from auto_translate.config import TranslateConfig
+        cfg = TranslateConfig()
+        original = cfg.max_tokens
+        doubled = cfg.max_tokens * 2
+        context_size = cfg.context_size
+
+        # With a very long prompt, usable_output should be small
+        prompt_tokens = context_size - 200  # very long prompt
+        reserve = 128
+        usable_output = context_size - prompt_tokens - reserve  # 72
+
+        # retry_tokens = max(original, min(usable_output, doubled))
+        retry_tokens = max(original, min(usable_output, doubled))
+        # usable_output (72) < original (128), so max(128, 72) = 128
+        assert retry_tokens == original  # no increase possible
+
+    def test_compute_retry_tokens_large_max_tokens(self):
+        """With max_tokens > 256, budget should not cap at 256."""
+        # Simulate max_tokens = 512
+        original = 512
+        doubled = original * 2  # 1024
+        context_size = 4096
+        prompt_tokens = 100
+        reserve = 128
+        usable_output = context_size - prompt_tokens - reserve  # 3868
+
+        retry_tokens = max(original, min(usable_output, doubled))
+        assert retry_tokens == 1024  # min(3868, 1024) = 1024, max(512, 1024) = 1024
+        assert retry_tokens > 256  # should not cap at 256

@@ -5,7 +5,9 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
 from difflib import SequenceMatcher
+from enum import Enum, auto
 
 import httpx
 
@@ -17,6 +19,37 @@ from ..stream_context import StreamContext
 from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup, looks_like_prompt_echo
 from ..windows_subprocess import check_running
 from .base import TranslatorUnavailable
+
+
+class ChatStatus(Enum):
+    """Result status for validated chat responses.
+    
+    Separates invalid model output (truncated, reasoning_anomaly, malformed)
+    from transport failures (transport_error) so retry logic can distinguish
+    between "retry with more tokens" and "recover the server".
+    """
+    success = auto()
+    truncated = auto()
+    reasoning_anomaly = auto()
+    malformed = auto()
+    transport_error = auto()
+
+
+@dataclass
+class _ChatResult:
+    """Structured result from a validated chat request.
+    
+    Replaces the opaque (content, finish_reason) tuple with explicit status
+    so every retry path can handle truncation, reasoning anomalies, malformed
+    responses, and transport errors correctly.
+    """
+    content: str
+    status: ChatStatus
+    finish_reason: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_content_length: int = 0
+    error_message: str = ""
 
 log = logging.getLogger(__name__)
 
@@ -214,13 +247,27 @@ def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning/thinking tags and their content from model output.
     
     The model may emit reasoning markers in output even when reasoning mode
-    is disabled. This function removes those tags and everything between them,
-    leaving only the final translation.
+    is disabled. This function removes complete, well-formed reasoning blocks
+    and checks for remaining orphan markers.
+    
+    Returns the cleaned text if only complete blocks are found.
+    Returns empty string if orphan markers remain after block removal,
+    indicating the response structure is too ambiguous to safely extract
+    the translation.
+    
+    Note: Pre-validation in _validated_chat() rejects clearly malformed
+    responses (unclosed delimiters) before this function is called.
+    This function handles the case where complete blocks are mixed with
+    valid content.
     """
     # First remove full reasoning blocks (opening + closing tags with content)
     result = _REASONING_BLOCK.sub("", text)
-    # Then remove any remaining orphan tags
-    result = _REASONING_OPEN.sub("", result)
+    
+    # After block removal, check if any reasoning open markers remain
+    # If so, the response structure is ambiguous — reject entirely
+    if _REASONING_OPEN.search(result):
+        return ""
+    
     # Clean up whitespace left behind
     result = " ".join(part.strip() for part in result.strip().splitlines() if part.strip())
     return result
@@ -405,9 +452,10 @@ class Gemma4Translator:
 
         # Check for reasoning_content field — should be empty when reasoning is disabled
         reasoning_content = message.get("reasoning_content")
+        reasoning_content_len = len(reasoning_content) if reasoning_content else 0
         if reasoning_content:
             log.warning("reasoning_content field present (should be empty): %s", reasoning_content[:100])
-            record_event("mt_reasoning_content", length=len(reasoning_content))
+            record_event("mt_reasoning_content", length=reasoning_content_len)
 
         # Extract usage statistics from the API response
         usage = payload.get("usage")
@@ -452,7 +500,154 @@ class Gemma4Translator:
             has_content=bool(content.strip()),
         )
 
-        return content, finish_reason
+        return content, finish_reason, reasoning_content_len, input_tokens, output_tokens
+
+    @staticmethod
+    def _has_unclosed_reasoning(text: str) -> bool:
+        """Check if raw response contains unclosed reasoning delimiters.
+        
+        Returns True if the text has an opening reasoning marker without a
+        matching closing marker, indicating malformed output that should be
+        rejected entirely rather than cleaned.
+        """
+        # Check for orphan <|think|> without <|end_of_think|>
+        think_opens = len(re.findall(r"<\|think\|>", text))
+        think_closes = len(re.findall(r"<\|end_of_think\|>", text))
+        if think_opens > think_closes:
+            return True
+
+        # Check for orphan <|channel>thought without <channel|> closing
+        channel_opens = len(re.findall(r"<\|channel>thought", text))
+        channel_closes = len(re.findall(r"<channel\|>", text))
+        if channel_opens > channel_closes:
+            return True
+
+        # Check for orphan XML-style <think> or <thinking> without closing
+        xml_think_opens = len(re.findall(r"<think(?:ing)?(?:\s[^>]*)?>", text))
+        xml_think_closes = len(re.findall(r"</think(?:ing)?\s*>", text))
+        if xml_think_opens > xml_think_closes:
+            return True
+
+        # Check for orphan <reasoning> without </reasoning>
+        reasoning_opens = len(re.findall(r"<reasoning(?:\s[^>]*)?>", text))
+        reasoning_closes = len(re.findall(r"</reasoning\s*>", text))
+        if reasoning_opens > reasoning_closes:
+            return True
+
+        return False
+
+    def _validated_chat(self, prompt: dict, *, timeout: float, temperature: float | None = None,
+                        max_tokens: int | None = None) -> _ChatResult:
+        """Send a chat request with full validation of the response.
+        
+        Wraps _chat() to enforce consistent status handling:
+        - Nonempty reasoning_content → reasoning_anomaly
+        - Unclosed reasoning delimiters → malformed
+        - finish_reason == "length" → truncated
+        - Transport errors → transport_error
+        - Valid response → success
+        
+        Returns _ChatResult with explicit status instead of opaque tuple.
+        """
+        try:
+            content, finish_reason, reasoning_content_len, input_tokens, output_tokens = self._chat(
+                prompt, timeout=timeout, temperature=temperature, max_tokens=max_tokens
+            )
+        except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
+            return _ChatResult(content="", status=ChatStatus.transport_error, error_message=str(exc))
+
+        # Reasoning content anomaly — model emitted reasoning despite --reasoning off
+        if reasoning_content_len > 0:
+            log.warning(
+                "Protocol anomaly: reasoning_content present (length=%d) with reasoning disabled",
+                reasoning_content_len
+            )
+            record_event("mt_reasoning_anomaly", length=reasoning_content_len)
+            increment_counter("mt_reasoning_anomaly")
+            return _ChatResult(
+                content=content, status=ChatStatus.reasoning_anomaly,
+                finish_reason=finish_reason, input_tokens=input_tokens,
+                output_tokens=output_tokens, reasoning_content_length=reasoning_content_len
+            )
+
+        # Pre-validation: reject malformed reasoning before any cleaning
+        if self._has_unclosed_reasoning(content):
+            log.warning("Malformed response: unclosed reasoning delimiters detected")
+            record_event("mt_malformed_reasoning")
+            increment_counter("mt_malformed")
+            return _ChatResult(
+                content=content, status=ChatStatus.malformed,
+                finish_reason=finish_reason, input_tokens=input_tokens,
+                output_tokens=output_tokens
+            )
+
+        # Truncation detection
+        if finish_reason == "length":
+            return _ChatResult(
+                content=content, status=ChatStatus.truncated,
+                finish_reason=finish_reason, input_tokens=input_tokens,
+                output_tokens=output_tokens
+            )
+
+        return _ChatResult(
+            content=content, status=ChatStatus.success,
+            finish_reason=finish_reason, input_tokens=input_tokens,
+            output_tokens=output_tokens
+        )
+
+    def _compute_retry_tokens(self, prompt: dict, original_max_tokens: int) -> int:
+        """Compute a prompt-aware retry token budget.
+        
+        Estimates prompt token count from the formatted prompt length and
+        calculates usable output capacity. Returns a value strictly greater
+        than original_max_tokens if a larger budget is feasible, otherwise
+        returns original_max_tokens (caller should not retry).
+        """
+        # Estimate prompt token count from the messages in the prompt dict
+        # Rough estimate: ~3-4 chars per token for mixed Japanese/English
+        prompt_text = ""
+        for msg in prompt.get("messages", []):
+            prompt_text += msg.get("content", "") + " "
+        
+        prompt_tokens = max(len(prompt_text) // 3, 1)
+        reserve = 128  # safety margin for system prompt overhead and special tokens
+        usable_output = self.cfg.context_size - prompt_tokens - reserve
+        
+        # Cap at 2x configured max_tokens, but never reduce below original
+        doubled = self.cfg.max_tokens * 2
+        retry_tokens = max(original_max_tokens, min(usable_output, doubled))
+        
+        # Ensure we don't exceed context size
+        retry_tokens = min(retry_tokens, self.cfg.context_size - prompt_tokens - reserve)
+        
+        return retry_tokens
+
+    def _final_validate(self, english: str) -> bool:
+        """Unconditional final validation before returning any translation.
+        
+        Runs independent of retry budget: a depleted retry budget prevents
+        further inference, not validation. Returns True if the output is valid.
+        """
+        if not english:
+            return False
+        
+        # Check for output issues
+        issue = english_output_issue(english)
+        if issue:
+            record_event("mt_final_validation_failed", reason=issue)
+            return False
+        
+        # Check for remaining reasoning markers after cleaning
+        if _REASONING_OPEN.search(english):
+            record_event("mt_final_validation_failed", reason="reasoning_markers")
+            return False
+        
+        # Check for prompt echo
+        if looks_like_prompt_echo(english):
+            record_event("mt_final_validation_failed", reason="prompt_echo")
+            return False
+        
+        return True
 
     def set_position(self, start_s: float | None) -> None:
         self._position = start_s
@@ -514,7 +709,8 @@ class Gemma4Translator:
                 terms, names = self._terms_for(ja, context)
                 prompt = build_prompt(ja, terms, context, self.cfg.style)
 
-                # Latency budget enforcement
+                # Operation-level deadline: all retries must complete within this window
+                deadline = time.monotonic() + self.cfg.timeout_s
                 started = time.monotonic()
                 latency_budget = self.cfg.timeout_s * 0.7  # 70% of timeout for translation
 
@@ -522,37 +718,87 @@ class Gemma4Translator:
                 retries_left = self._MAX_RETRIES
                 truncation_retries = 0
 
-                try:
-                    english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
+                # Initial inference request
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    increment_counter("mt_rejected")
+                    return ""
 
-                    # Truncation retry within shared budget
-                    if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
-                        retries_left -= 1
-                        truncation_retries += 1
-                        retry_tokens = min(self.cfg.max_tokens * 2, 256)
-                        record_event("mt_truncation_retry", max_tokens=retry_tokens)
-                        increment_counter("mt_retries")
-                        english, finish_reason = self._chat(
-                            prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
-                        )
-                        if finish_reason == "length":
-                            record_event("mt_truncation_failed", max_tokens=retry_tokens)
-                            increment_counter("mt_rejected")
-                            return ""
+                result = self._validated_chat(prompt, timeout=min(remaining, self.cfg.timeout_s))
 
-                    english = clean_output(english)
-                except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
+                if result.status == ChatStatus.transport_error:
                     if self._closed:
                         return ""
                     check_running()
                     if self.server.alive():
-                        raise
-                    self._recover(str(exc))
+                        # Server is alive but transport failed — re-raise as a
+                        # generic exception so the pipeline's consecutive failure
+                        # counter (three consecutive cues) works correctly.
+                        raise ValueError(result.error_message or "transport error")
+                    self._recover(result.error_message or "transport error")
                     if retries_left > 0:
                         retries_left -= 1
                         increment_counter("mt_retries")
-                    english, _ = self._chat(prompt, timeout=self.cfg.timeout_s)
-                    english = clean_output(english)
+                    # Retry after recovery with deadline check
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return ""
+                    result = self._validated_chat(prompt, timeout=min(remaining, self.cfg.timeout_s))
+                    if result.status == ChatStatus.transport_error:
+                        raise TranslatorUnavailable("Server recovery failed")
+                    if result.status in (ChatStatus.truncated, ChatStatus.reasoning_anomaly, ChatStatus.malformed):
+                        record_event("mt_rejected", reason=result.status.name)
+                        increment_counter("mt_rejected")
+                        return ""
+                    english = clean_output(result.content)
+
+                elif result.status == ChatStatus.truncated:
+                    # Truncation retry with prompt-aware token budget
+                    if retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
+                        retries_left -= 1
+                        truncation_retries += 1
+                        retry_tokens = self._compute_retry_tokens(prompt, self.cfg.max_tokens)
+                        if retry_tokens > self.cfg.max_tokens:
+                            record_event("mt_truncation_retry", max_tokens=retry_tokens)
+                            increment_counter("mt_retries")
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                record_event("mt_truncation_failed", reason="deadline")
+                                increment_counter("mt_rejected")
+                                return ""
+                            result2 = self._validated_chat(
+                                prompt, timeout=min(remaining, self.cfg.timeout_s),
+                                max_tokens=retry_tokens
+                            )
+                            if result2.status == ChatStatus.truncated:
+                                record_event("mt_truncation_failed", max_tokens=retry_tokens)
+                                increment_counter("mt_rejected")
+                                return ""
+                            if result2.status in (ChatStatus.reasoning_anomaly, ChatStatus.malformed):
+                                record_event("mt_rejected", reason=result2.status.name)
+                                increment_counter("mt_rejected")
+                                return ""
+                            if result2.status == ChatStatus.transport_error:
+                                raise TranslatorUnavailable("Transport error during truncation retry")
+                            english = clean_output(result2.content)
+                        else:
+                            # No larger token budget available — reject truncated output
+                            record_event("mt_truncation_failed", reason="no_larger_budget")
+                            increment_counter("mt_rejected")
+                            return ""
+                    else:
+                        record_event("mt_truncation_failed", reason="no_retry_budget")
+                        increment_counter("mt_rejected")
+                        return ""
+
+                elif result.status in (ChatStatus.reasoning_anomaly, ChatStatus.malformed):
+                    record_event("mt_rejected", reason=result.status.name)
+                    increment_counter("mt_rejected")
+                    return ""
+
+                else:
+                    # Success path
+                    english = clean_output(result.content)
 
                 # Check latency budget
                 elapsed = time.monotonic() - started
@@ -568,8 +814,19 @@ class Gemma4Translator:
                     fallback = build_prompt(ja, terms, "")
                     retries_left -= 1
                     increment_counter("mt_retries")
-                    english, _ = self._chat(fallback, timeout=self.cfg.timeout_s)
-                    english = clean_output(english)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        pass  # skip retry, deadline exceeded
+                    else:
+                        result = self._validated_chat(fallback, timeout=min(remaining, self.cfg.timeout_s))
+                        if result.status == ChatStatus.success:
+                            english = clean_output(result.content)
+                        elif result.status == ChatStatus.truncated:
+                            record_event("mt_rejected", reason="truncated_on_empty_retry")
+                            english = ""
+                        else:
+                            record_event("mt_rejected", reason=result.status.name)
+                            english = ""
 
                 # Check for output issues and retry if needed within budget
                 output_issue = english_output_issue(english)
@@ -586,8 +843,17 @@ class Gemma4Translator:
                         increment_counter("mt_retries")
                         if missing:
                             record_event("mt_name_retry", names=missing)
-                        candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
-                        candidates.append(clean_output(candidate))
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            pass  # skip retry, deadline exceeded
+                        else:
+                            result = self._validated_chat(
+                                fallback, timeout=min(remaining, self.cfg.timeout_s), temperature=0.0
+                            )
+                            if result.status == ChatStatus.success:
+                                candidates.append(clean_output(result.content))
+                            else:
+                                record_event("mt_rejected", reason=result.status.name)
                     english = self._best(candidates, names)
 
                 # Record final translation diagnostics
@@ -598,6 +864,10 @@ class Gemma4Translator:
                     retry_count=retry_count,
                     elapsed_s=round(time.monotonic() - started, 3),
                 )
+
+                # Final validation — unconditional, independent of retry budget
+                if not self._final_validate(english):
+                    english = ""
 
                 return "" if self._closed else english
             except (httpx.HTTPError, LlamaServerError, ValueError):

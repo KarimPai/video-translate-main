@@ -55,16 +55,25 @@ class TestReasoningTagStripping:
         assert "reasoning" not in result.lower()
 
     def test_orphan_think_tag(self):
-        """Orphan opening tag without closing should be removed."""
+        """Orphan opening tag without closing should reject the entire output.
+        
+        Pre-validation rejects unclosed reasoning delimiters before any cleaning,
+        so orphan tags cause the response to be rejected entirely rather than
+        stripping the tag and leaving reasoning text as a subtitle.
+        """
         raw = "<think>Hello, how are you?"
         result = clean_output(raw)
-        assert result == "Hello, how are you?"
+        assert result == ""
 
     def test_orphan_close_tag(self):
-        """Orphan closing tag should be removed."""
+        """Orphan closing tag should reject the entire output.
+        
+        An orphan </think> without a matching opening tag indicates malformed
+        response structure and should be rejected.
+        """
         raw = "</think>Hello, how are you?"
         result = clean_output(raw)
-        assert result == "Hello, how are you?"
+        assert result == ""
 
     def test_only_reasoning_content(self):
         """If output is only reasoning with no translation, return empty."""
@@ -117,12 +126,13 @@ class TestReasoningTagStripping:
         assert result == "What's up, guys? Let's get this party started!"
 
     def test_gemma4_think_token_stripped(self):
-        """Gemma 4 native <|think|> token should be stripped (orphan tag)."""
-        # <|think|> without closing tag is stripped by _REASONING_OPEN
-        # leaving the remaining text. This is acceptable behavior.
+        """Gemma 4 native <|think|> token without closing should reject the output.
+        
+        Orphan <|think|> without <|end_of_think|> is rejected entirely by
+        pre-validation — the remaining text may be reasoning, not translation.
+        """
         result = clean_output("<|think|>\nLet me think about this.\nHello")
-        assert "<|think|>" not in result
-        assert "Hello" in result
+        assert result == ""
 
     def test_gemma4_channel_thought_stripped(self):
         """Gemma 4 native <|channel>thought wrapper should be stripped."""

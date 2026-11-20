@@ -449,12 +449,20 @@ class VideoTranslateWindow(QMainWindow):
                     break
             else:
                 self.mt_backend.setCurrentIndex(0)
-            # Model path overrides (optional)
-            self.asr_model.setText(cfg.asr.model_path)
-            self.mt_model.setText(cfg.translate.model_path)
+            # Model path overrides: use backend-specific profile paths when available
+            from auto_translate.config import get_backend_config
+            asr_profile = get_backend_config(cfg, "asr", asr_backend_name)
+            mt_profile = get_backend_config(cfg, "translate", mt_backend_name)
+            self.asr_model.setText(asr_profile.get("model_path", cfg.asr.model_path))
+            self.mt_model.setText(mt_profile.get("model_path", cfg.translate.model_path))
             self.context_lines.setValue(cfg.translate.context_lines)
             self.safe_playback_checkbox.setChecked(cfg.safe_playback.enabled)
             self.diagnostics_checkbox.setChecked(cfg.diagnostics.enabled)
+            # Store config reference for backend switch handler
+            self._cfg = cfg
+            # Connect backend dropdown changes to update model paths
+            self.asr_backend.currentIndexChanged.connect(self._on_asr_backend_changed)
+            self.mt_backend.currentIndexChanged.connect(self._on_mt_backend_changed)
         except Exception:
             log.exception("Could not load GUI feature settings; using defaults")
             # Ensure dropdowns are populated even if config loading fails
@@ -474,6 +482,24 @@ class VideoTranslateWindow(QMainWindow):
                     self.mt_backend.addItem(label, name)
             except Exception:
                 log.exception("Failed to populate backend dropdowns")
+
+    def _on_asr_backend_changed(self, index: int) -> None:
+        """Update ASR model path when backend selection changes."""
+        backend_name = self.asr_backend.itemData(index)
+        if backend_name and hasattr(self, "_cfg"):
+            from auto_translate.config import get_backend_config
+            profile = get_backend_config(self._cfg, "asr", backend_name)
+            model_path = profile.get("model_path", self._cfg.asr.model_path)
+            self.asr_model.setText(model_path)
+
+    def _on_mt_backend_changed(self, index: int) -> None:
+        """Update translation model path when backend selection changes."""
+        backend_name = self.mt_backend.itemData(index)
+        if backend_name and hasattr(self, "_cfg"):
+            from auto_translate.config import get_backend_config
+            profile = get_backend_config(self._cfg, "translate", backend_name)
+            model_path = profile.get("model_path", self._cfg.translate.model_path)
+            self.mt_model.setText(model_path)
 
     def _update_diagnostics(self, event):
         for name, value in diagnostic_rows(event).items():

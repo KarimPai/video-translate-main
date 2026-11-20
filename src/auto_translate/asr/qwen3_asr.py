@@ -42,6 +42,9 @@ _QWEN3_SYSTEM = (
     "spoken. Do not add commentary, translations, or descriptions."
 )
 
+# Default llama-server path for Qwen3-ASR
+LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
+
 
 class Qwen3ASRError(RuntimeError):
     """The Qwen3-ASR server failed repeatedly; transcription cannot continue."""
@@ -310,7 +313,7 @@ class Qwen3ASR:
         self.server.start()
         self._warmup()
         self._failures = 0
-
-
-# Default llama-server path for Qwen3-ASR
-LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
+        # Clear stale state to prevent context echo detection issues after restart
+        with self._state_lock:
+            self._accepted_keys.clear()
+            self._recent.clear()

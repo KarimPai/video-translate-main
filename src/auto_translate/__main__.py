@@ -236,8 +236,6 @@ def _main(resources: ExitStack) -> None:
         )
 
     # Video metadata biases ASR spellings and gives translation scene context.
-    from dataclasses import replace
-
     from .config import vad_for_source
 
     # Load models before starting ingest: ASR first (fixed size), then size
@@ -270,15 +268,17 @@ def _main(resources: ExitStack) -> None:
                  "、".join(stream_context.cast) or "-")
     decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
                       if source.live else cfg.asr.response_timeout_s)
-    timed_cfg = replace(cfg.asr, response_timeout_s=decode_timeout)
     t0 = time.perf_counter()
     check_running()
 
-    # Create ASR backend via registry
+    # Create ASR backend via registry with backend-specific profile
+    from .config import get_backend_config
     from .registry import get_default_registry
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
-    asr = registry.create_backend("asr", asr_backend_name, timed_cfg,
+    asr_profile = get_backend_config(cfg, "asr", asr_backend_name)
+    asr_profile["response_timeout_s"] = decode_timeout
+    asr = registry.create_backend("asr", asr_backend_name, asr_profile,
                                   context=stream_context.recognition_text())
     resources.callback(asr.close)
     budget.refresh()
@@ -335,8 +335,14 @@ def _main(resources: ExitStack) -> None:
     language_filter = None
     if cfg.language_filter.enabled:
         try:
-            from .language_filter import LanguageFilter
+            from .text_filter import LanguageFilter
             language_filter = LanguageFilter(cfg.language_filter)
+        except ImportError:
+            log.warning(
+                "Spoken-language filter module not available; continuing without "
+                "English/Indonesian filtering. Install a language detection backend "
+                "to enable this feature."
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "Spoken-language filter unavailable; continuing without "
@@ -394,23 +400,27 @@ def _main(resources: ExitStack) -> None:
 
 def _load_translator(cfg, glossary, stream_context, budget, log, registry):
     """Start translation backend, adapting GPU layers for llama.cpp-based models."""
+    from .config import get_backend_config
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
 
+    translate_backend_name = cfg.models.translate_backend
+    translate_profile = get_backend_config(cfg, "translate", translate_backend_name)
+
     headroom = cfg.gpu_budget.startup_headroom_gb
-    auto = cfg.translate.gpu_layers < 0
-    layers = None if auto else cfg.translate.gpu_layers
+    auto = translate_profile.get("gpu_layers", -1) < 0
+    layers = None if auto else translate_profile.get("gpu_layers", -1)
     if auto and budget.free is not None:
         layers = 0
         if budget.free > headroom:
-            model = require_gguf(cfg.translate.model_path, "Translation model")
+            model = require_gguf(translate_profile.get("model_path", cfg.translate.model_path), "Translation model")
             layer_count = gguf_block_count(model) or 32
             per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
             available = budget.free - headroom - .25
             layers = max(0, min(layer_count, math.floor(available / per_layer_gb)))
     while True:
         try:
-            translator = registry.create_backend("translate", cfg.models.translate_backend,
-                                                 cfg.translate, glossary=glossary, stream=stream_context,
+            translator = registry.create_backend("translate", translate_backend_name,
+                                                 translate_profile, glossary=glossary, stream=stream_context,
                                                  gpu_layers=layers)
             break
         except LlamaServerError:

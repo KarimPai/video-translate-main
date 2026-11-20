@@ -635,6 +635,16 @@ class MpvOutput:
         """Expose manual VOD pause to the pipeline watchdog."""
         return self._manually_paused
 
+    def resume_from_auto_pause(self) -> None:
+        """Break VOD auto-pause deadlock by resuming MPV playback.
+
+        Called by the pipeline recovery watchdog when no subtitle has been
+        published for 15+ seconds with pending work and auto-pause active.
+        """
+        if self._vod_auto_paused and self._player_command("set_property", "pause", False):
+            self._vod_auto_paused = False
+            log.info("Resumed from auto-pause via recovery request")
+
     def show(self, sub: Subtitle) -> None:
         if sub.end_s < self._session_start:
             return

@@ -15,6 +15,7 @@ import threading
 import time
 import unicodedata
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 
@@ -55,15 +56,21 @@ class WhisperASR:
         self._failures = 0
         self.last_timing: dict | None = None
 
-        # Determine device and compute type
-        device = "cpu"
-        compute_type = "int8"
-        if cfg.cuda_device is not None:
-            device = "cuda"
-            compute_type = "float16"
+        # Determine device and compute type: cuda_device=0 means GPU, >0 means specific GPU index.
+        # Only use CPU if cuda_device is explicitly negative (profile override).
+        device = "cuda"
+        compute_type = "float16"
+        if cfg.cuda_device < 0:
+            device = "cpu"
+            compute_type = "int8"
 
-        # Model path: use configured path or default Hugging Face model
-        model_path = cfg.model_path or _WHISPER_MODEL
+        # Model path: use configured path or default Hugging Face model.
+        # The common AsrConfig default is "haas-ja-v1.0" which is wrong for Whisper,
+        # so only use cfg.model_path if it looks like a Whisper model path.
+        if cfg.model_path and ("whisper" in cfg.model_path.lower() or Path(cfg.model_path).exists()):
+            model_path = cfg.model_path
+        else:
+            model_path = _WHISPER_MODEL
 
         # Load the model — this may download from Hugging Face on first use
         try:

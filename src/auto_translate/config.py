@@ -503,12 +503,6 @@ def load_config(path: Path) -> Config:
         if key not in {f.name for f in fields(TranslateConfig)}:
             translate_profiles[key] = translate_section.pop(key)
 
-    # Handle legacy translation model path
-    translation = data.get("translate", {})
-    model_path = translation.get("model_path")
-    if isinstance(model_path, str) and Path(model_path).name.casefold() == "hy-mt2-7b-q4_k_m.gguf":
-        logger.info("Using the Gemma 4 default in place of the legacy translation model path")
-        del translation["model_path"]
 
     return Config(
         models=ModelsConfig(**data.get("models", {})),

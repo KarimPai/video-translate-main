@@ -523,100 +523,109 @@ class PlamoTranslator:
                 def _elapsed_ok() -> bool:
                     return time.monotonic() - started < self._MAX_ELAPSED_S
 
-                # For long Japanese text, the full prompt (glossary + context) can consume
-                # so many input tokens that the model hits max_tokens before finishing.
-                # Strategy: always try the full prompt first to preserve glossary names
-                # and context. If truncation occurs, fall back to simplified (no context)
-                # and then to higher token limits. This prioritizes name accuracy over
-                # latency for the first attempt.
-                #
-                # Token budget: cfg.max_tokens limits GENERATED OUTPUT tokens, not total
-                # context. The actual context capacity is cfg.context_size (e.g. 8192).
-                # Input tokens + output tokens must fit within context_size.
-                # Reserved output tokens = max_tokens (e.g. 512). Safety margin = 256.
-                # Usable input budget = context_size - max_tokens - safety_margin.
-                # For context_size=8192, max_tokens=512: budget = 7424 input tokens.
-                # Estimate the full prompt's input tokens:
-                #   - Japanese text: ~1.5-2x characters in tokens
-                #   - Glossary terms: ~5-8 tokens per term (source + target + JSON overhead)
-                #   - Context (conversation history): ~1.5-2x characters in tokens
-                #   - Chat template overhead: ~30-50 tokens (system, role, kwargs)
-                # Only skip the full prompt if the estimated total exceeds the context budget.
+                # Budget against the model's *input + output* context, not
+                # max_tokens alone. Estimates are conservative; every retry
+                # must independently fit its own requested output budget.
                 simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
-                # Estimate full prompt token count including glossary and context
                 ja_tokens = int(len(ja) * 1.8)
-                glossary_tokens = len(terms) * 7  # ~7 tokens per glossary entry
+                # Include each source/target spelling, not a fixed cost per term.
+                glossary_tokens = sum(
+                    7 + int((len(source) + len(target)) * 1.8)
+                    for source, target in terms
+                )
                 context_tokens = int(len(context) * 1.8) if context else 0
-                template_overhead = 50  # chat template, role markers, kwargs
-                estimated_input_tokens = ja_tokens + glossary_tokens + context_tokens + template_overhead
-                context_budget = self.cfg.context_size - self.cfg.max_tokens - 256
-                # Only skip full prompt if estimated total exceeds the context budget.
-                # With context_size=8192, this means total > ~7424 tokens, which is
-                # extremely rare. Most utterances with glossary and context fit easily.
-                skip_full_prompt = estimated_input_tokens > context_budget
+                template_overhead = 50
+                simplified_input_tokens = ja_tokens + template_overhead
+                full_input_tokens = simplified_input_tokens + glossary_tokens + context_tokens
+
+                def _fits_context(input_tokens: int, output_tokens: int) -> bool:
+                    # Allow 256 tokens for template estimation error / KV overhead.
+                    return input_tokens + output_tokens + 256 <= self.cfg.context_size
+
+                if not _fits_context(simplified_input_tokens, self.cfg.max_tokens):
+                    record_event("mt_rejected", reason="context_budget",
+                                 estimated_input_tokens=simplified_input_tokens)
+                    increment_counter("mt_rejected")
+                    log.warning(
+                        "PLaMO utterance exceeds context even without glossary "
+                        "(estimated input=%d, max_output=%d, context=%d)",
+                        simplified_input_tokens, self.cfg.max_tokens, self.cfg.context_size,
+                    )
+                    return ""
+
+                skip_full_prompt = not _fits_context(full_input_tokens, self.cfg.max_tokens)
 
                 try:
                     first_key = "simplified" if skip_full_prompt else "full"
+                    first_prompt = simplified_prompt if skip_full_prompt else prompt
+                    english, finish_reason = self._chat(first_prompt, timeout=self.cfg.timeout_s)
                     if skip_full_prompt:
-                        # Input is so large that even simplified prompt may truncate.
-                        # Try simplified first to at least get some output.
-                        english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
-                        record_event("mt_request", strategy="simplified_first", input_tokens=len(ja))
-                    else:
-                        # Full prompt with glossary and context — preserves name accuracy
-                        english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
-
-                    # Always record the first attempt's output so truncation retries
-                    # can detect deterministic repetition against it.
+                        record_event("mt_request", strategy="simplified_first",
+                                     estimated_input_tokens=full_input_tokens)
                     _record(english, first_key)
 
-                    if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES and _elapsed_ok():
-                        retries_left -= 1
-                        truncation_retries += 1
-                        retry_key = "retry"
+                    if (finish_reason == "length" and retries_left > 0
+                            and truncation_retries < self._MAX_TRUNCATION_RETRIES
+                            and _elapsed_ok()):
+                        retry_tokens = max(self.cfg.max_tokens * 2, 512)
                         if skip_full_prompt:
-                            # Already tried simplified — retry with full prompt (glossary/context)
-                            # which may produce a different, complete result with more context
-                            record_event("mt_truncation_retry", strategy="full_prompt_after_simplified")
-                            increment_counter("mt_retries")
-                            english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
-                        else:
-                            # First attempt was full prompt — retry with simplified to reduce input tokens
-                            record_event("mt_truncation_retry", strategy="simplified_prompt")
-                            increment_counter("mt_retries")
-                            english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
-
-                        if finish_reason == "length":
-                            # Check for deterministic repetition BEFORE recording the retry output.
-                            # Use the retry's own key so we compare against the same request,
-                            # not the first attempt's key (different prompts can produce the
-                            # same truncated output without meaning higher tokens are futile).
-                            if _repeated(english, retry_key):
-                                record_event("mt_truncation_failed", max_tokens=self.cfg.max_tokens)
+                            # Never retry the full prompt: we already know it
+                            # exceeds the context budget. Increase the output
+                            # allowance on the simplified prompt only if it fits.
+                            if not _fits_context(simplified_input_tokens, retry_tokens):
+                                record_event("mt_truncation_failed", reason="context_budget",
+                                             max_tokens=retry_tokens)
                                 increment_counter("mt_rejected")
                                 return ""
-                            # Record the retry output so subsequent retries can detect repetition
-                            _record(english, retry_key)
-                            # Second retry: increase token limit
-                            retry_tokens = max(self.cfg.max_tokens * 2, 512)
-                            if retries_left > 0 and _elapsed_ok():
+                            retries_left -= 1
+                            truncation_retries += 1
+                            increment_counter("mt_retries")
+                            record_event("mt_truncation_retry",
+                                         strategy="simplified_increased_tokens",
+                                         max_tokens=retry_tokens)
+                            english, finish_reason = self._chat(
+                                simplified_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                            )
+                            _record(english, "simplified_high_tokens")
+                        else:
+                            # First prefer stripping context to free input space
+                            # without increasing the output allowance.
+                            retries_left -= 1
+                            truncation_retries += 1
+                            increment_counter("mt_retries")
+                            record_event("mt_truncation_retry", strategy="simplified_prompt")
+                            english, finish_reason = self._chat(
+                                simplified_prompt, timeout=self.cfg.timeout_s
+                            )
+                            _record(english, "simplified_retry")
+
+                            if finish_reason == "length" and retries_left > 0 and _elapsed_ok():
+                                # Prefer the full prompt for names when a larger
+                                # generation budget still fits, otherwise simplify.
+                                if _fits_context(full_input_tokens, retry_tokens):
+                                    retry_prompt = prompt
+                                    strategy = "full_increased_tokens"
+                                elif _fits_context(simplified_input_tokens, retry_tokens):
+                                    retry_prompt = simplified_prompt
+                                    strategy = "simplified_increased_tokens"
+                                else:
+                                    record_event("mt_truncation_failed", reason="context_budget",
+                                                 max_tokens=retry_tokens)
+                                    increment_counter("mt_rejected")
+                                    return ""
                                 retries_left -= 1
-                                truncation_retries += 1
-                                record_event("mt_truncation_retry", strategy="increased_tokens", max_tokens=retry_tokens)
                                 increment_counter("mt_retries")
-                                # Use full prompt (with glossary) for higher-token retry when
-                                # the first attempt was full prompt. Use simplified when the
-                                # first attempt was already simplified (input too large).
-                                retry_prompt = prompt if not skip_full_prompt else simplified_prompt
+                                record_event("mt_truncation_retry",
+                                             strategy=strategy, max_tokens=retry_tokens)
                                 english, finish_reason = self._chat(
                                     retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
                                 )
                                 _record(english, "high_tokens")
 
-                            if finish_reason == "length":
-                                record_event("mt_truncation_failed", max_tokens=retry_tokens)
-                                increment_counter("mt_rejected")
-                                return ""
+                    if finish_reason == "length":
+                        record_event("mt_truncation_failed", max_tokens=self.cfg.max_tokens)
+                        increment_counter("mt_rejected")
+                        return ""
 
                     english = clean_output(english)
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
@@ -631,7 +640,9 @@ class PlamoTranslator:
                     if retries_left > 0:
                         retries_left -= 1
                         increment_counter("mt_retries")
-                    english, _ = self._chat(prompt, timeout=self.cfg.timeout_s)
+                    # Recovery must preserve the original context-budget decision.
+                    recovery_prompt = simplified_prompt if skip_full_prompt else prompt
+                    english, _ = self._chat(recovery_prompt, timeout=self.cfg.timeout_s)
                     _record(english, "recovery")
                     english = clean_output(english)
 
@@ -682,8 +693,13 @@ class PlamoTranslator:
                             record_event("mt_rejected", reason=output_issue, retry=True)
                             increment_counter("mt_rejected")
                         fallback = build_plamo_prompt(ja, terms, "")
+                        fallback_input_tokens = simplified_input_tokens + glossary_tokens
+                        # A glossary-only retry must fit, even when the original
+                        # full prompt was too large. Otherwise preserve the best
+                        # existing result rather than making a doomed request.
+                        fallback_fits = _fits_context(fallback_input_tokens, self.cfg.max_tokens)
                         candidates = [english]
-                        if fallback != prompt or self.cfg.temperature != 0:
+                        if fallback_fits and (fallback != prompt or self.cfg.temperature != 0):
                             retries_left -= 1
                             increment_counter("mt_retries")
                             if missing:

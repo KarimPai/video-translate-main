@@ -879,9 +879,11 @@ class TestCoverageTracker:
         assert ct.translated_until == 12.0
         # Force compaction
         ct.compact_completed()
-        # Trigger recomputation: VAD advance forces _advance_through_silence_locked()
+        # Recompute with NO additional VAD evidence: compaction must preserve coverage.
+        ct.advance_vad(20.0)
+        assert ct.translated_until == 12.0
+        # Subsequent VAD progress must still respect the pending speech at 12s.
         ct.advance_vad(25.0)
-        # Watermark must NOT drop after compaction + recomputation
         assert ct.translated_until == 12.0
 
     def test_compaction_then_new_speech_advances(self):
@@ -1014,6 +1016,76 @@ class TestCoverageTracker:
         ct.complete_speech(sid3)
         assert ct.translated_until == 10.0
 
+    def test_completed_speech_extends_compacted_frontier_without_new_vad(self):
+        """After 5-10 is compacted, completing adjacent 10-15 must reach 15."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        first = ct.record_speech(5.0, 10.0)
+        assert ct.complete_speech(first)
+        assert ct.translated_until == 10.0
+        ct.compact_completed()
+        second = ct.record_speech(10.0, 15.0)
+        assert ct.translated_until == 10.0
+        assert ct.complete_speech(second)
+        assert ct.translated_until == 15.0
+        ct.compact_completed()
+        ct.advance_vad(5.0)  # Recompute without new VAD.
+        assert ct.translated_until == 15.0
+
+    def test_compacted_frontier_does_not_skip_unconfirmed_gap(self):
+        """A completed 12-15 interval cannot skip unconfirmed 10-12."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        first = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(first)
+        ct.compact_completed()
+        second = ct.record_speech(12.0, 15.0)
+        ct.complete_speech(second)
+        assert ct.translated_until == 10.0
+        # VAD now confirms the gap, allowing contiguous coverage to advance.
+        ct.advance_vad(12.0)
+        assert ct.translated_until == 15.0
+
+    def test_pending_at_compacted_frontier_blocks_completed_overlap(self):
+        """A pending 11-12 interval stops completed 10-15 at 11."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        first = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(first)
+        ct.compact_completed()
+        pending = ct.record_speech(11.0, 12.0)
+        completed = ct.record_speech(10.0, 15.0)
+        ct.complete_speech(completed)
+        assert ct.translated_until == 11.0
+        ct.complete_speech(pending)
+        assert ct.translated_until == 15.0
+
+    def test_late_pending_still_blocks_frontier_extension(self):
+        """Late pending speech retroactively blocks new completed speech."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        first = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(first)
+        ct.compact_completed()
+        late = ct.record_speech(9.0, 11.0)
+        future = ct.record_speech(11.0, 15.0)
+        ct.complete_speech(future)
+        assert ct.translated_until == 9.0
+        ct.complete_speech(late)
+        assert ct.translated_until == 15.0
+
+    def test_compacted_frontier_extends_after_nonzero_seek(self):
+        """Coverage can extend after reset at a nonzero seek offset."""
+        ct = self._make()
+        ct.reset(100.0)
+        ct.advance_vad(105.0)
+        first = ct.record_speech(105.0, 110.0)
+        ct.complete_speech(first)
+        ct.compact_completed()
+        next_speech = ct.record_speech(110.0, 115.0)
+        ct.complete_speech(next_speech)
+        assert ct.translated_until == 115.0
+
     def test_compaction_with_pending_ahead(self):
         """Compaction with pending speech ahead of watermark must preserve state."""
         ct = self._make()
@@ -1063,7 +1135,8 @@ class TestCoverageTracker:
         ct.complete_speech(sid_a)
         assert ct.translated_until == 50.0
         ct.compact_completed()
-        # Trigger recomputation to verify compaction didn't erase coverage
+        ct.advance_vad(50.0)  # Same progress: no new coverage evidence.
+        assert ct.translated_until == 50.0
         ct.advance_vad(60.0)
         assert ct.translated_until == 60.0
 
@@ -1110,7 +1183,8 @@ class TestCoverageTracker:
         ct.complete_speech(sid2)
         assert ct.translated_until == 50.0
         ct.compact_completed()
-        # Trigger recomputation to verify compaction didn't erase coverage
+        ct.advance_vad(50.0)
+        assert ct.translated_until == 50.0
         ct.advance_vad(60.0)
         assert ct.translated_until == 60.0
 
@@ -1159,7 +1233,9 @@ class TestCoverageTracker:
         # Multiple compaction calls followed by recomputation should not change watermark
         for _ in range(5):
             ct.compact_completed()
-        # Trigger recomputation to verify watermark is still correct
+        # Recompute without new evidence: must preserve the old watermark.
+        ct.advance_vad(50.0)
+        assert ct.translated_until == wm
         ct.advance_vad(60.0)
         assert ct.translated_until == 60.0
 

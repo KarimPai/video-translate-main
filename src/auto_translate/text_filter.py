@@ -126,8 +126,9 @@ class LanguageFilter:
     Uses Unicode character analysis to distinguish Japanese dialogue from
     English or Indonesian speech. Does not require external models.
 
-    When the user enables language filtering but the ASR output contains
-    sufficient Japanese script, the subtitle passes. Otherwise it is dropped.
+    Conservative by default: any text containing Japanese characters is kept
+    to avoid discarding valid Japanese dialogue with Latin-script names,
+    game titles, or mixed-language content. The filter is disabled by default.
     """
 
     def __init__(self, cfg) -> None:
@@ -142,15 +143,24 @@ class LanguageFilter:
         """Return True if the utterance should be kept (is Japanese dialogue).
 
         Short utterances below min_duration_s are always kept to avoid
-        dropping brief Japanese reactions. Longer utterances are classified
-        by their Japanese character ratio.
+        dropping brief Japanese reactions.
+
+        For longer utterances, any text containing Japanese characters is kept
+        to preserve mixed-language dialogue (e.g., "Jason said こんにちは").
+        Only pure Latin-script text without Japanese characters is dropped.
         """
         # Short utterances: keep them (likely genuine reactions)
         if duration_s < self.min_duration_s:
             return True
 
+        # Conservative: keep any text containing Japanese characters.
+        # This preserves mixed-language dialogue like "Jason said こんにちは"
+        # or "GTAのゲームプレイ" while still dropping pure English/Indonesian.
+        if _JAPANESE.search(text):
+            return True
+
+        # No Japanese characters at all — drop non-Japanese speech.
         ratio = _japanese_ratio(text)
-        # Keep if Japanese ratio is above threshold; drop non-Japanese speech.
         return ratio >= (1.0 - self.max_japanese_probability)
 
     def filter(self, text: str, duration_s: float = 0.0) -> str | None:

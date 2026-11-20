@@ -169,6 +169,8 @@ class VideoTranslateWindow(QMainWindow):
         self._export_thread = None
         self._asr_model_overrides: dict[str, str] = {}
         self._mt_model_overrides: dict[str, str] = {}
+        self._last_asr_backend: str | None = None
+        self._last_mt_backend: str | None = None
         self.setWindowTitle("Video Translate")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
@@ -462,6 +464,9 @@ class VideoTranslateWindow(QMainWindow):
             self.diagnostics_checkbox.setChecked(cfg.diagnostics.enabled)
             # Store config reference for backend switch handler
             self._cfg = cfg
+            # Initialize tracked backends so the first switch saves the previous path
+            self._last_asr_backend = asr_backend_name
+            self._last_mt_backend = mt_backend_name
             # Connect backend dropdown changes to update model paths
             self.asr_backend.currentIndexChanged.connect(self._on_asr_backend_changed)
             self.mt_backend.currentIndexChanged.connect(self._on_mt_backend_changed)
@@ -491,9 +496,15 @@ class VideoTranslateWindow(QMainWindow):
         Stores the current backend's model path before switching, then loads
         the new backend's profile path. Distinguishes defaults from user
         overrides so only explicit overrides are forwarded to the backend.
+
+        Uses _last_asr_backend to track the previous backend explicitly,
+        since currentData() returns the NEW selection after the signal fires.
         """
-        # Save the current backend's model path before switching
-        old_backend = self.asr_backend.currentData()
+        # The new backend is already selected; get it from itemData(index)
+        new_backend = self.asr_backend.itemData(index)
+
+        # Save the PREVIOUS backend's model path before switching
+        old_backend = self._last_asr_backend
         if old_backend is not None:
             current_text = self.asr_model.text().strip()
             if current_text:
@@ -503,15 +514,17 @@ class VideoTranslateWindow(QMainWindow):
                     self._asr_model_overrides[str(old_backend)] = current_text
 
         # Load the new backend's model path
-        backend_name = self.asr_backend.itemData(index)
-        if backend_name and hasattr(self, "_cfg"):
-            profile = get_backend_config(self._cfg, "asr", backend_name)
+        if new_backend is not None and hasattr(self, "_cfg"):
+            profile = get_backend_config(self._cfg, "asr", new_backend)
             model_path = profile.get("model_path", self._cfg.asr.model_path)
             # Use stored override if available, otherwise use default
-            stored = self._asr_model_overrides.get(str(backend_name))
+            stored = self._asr_model_overrides.get(str(new_backend))
             if stored:
                 model_path = stored
             self.asr_model.setText(model_path)
+
+        # Update tracked backend for next switch
+        self._last_asr_backend = new_backend
 
     def _on_mt_backend_changed(self, index: int) -> None:
         """Update translation model path when backend selection changes.
@@ -519,9 +532,15 @@ class VideoTranslateWindow(QMainWindow):
         Stores the current backend's model path before switching, then loads
         the new backend's profile path. Distinguishes defaults from user
         overrides so only explicit overrides are forwarded to the backend.
+
+        Uses _last_mt_backend to track the previous backend explicitly,
+        since currentData() returns the NEW selection after the signal fires.
         """
-        # Save the current backend's model path before switching
-        old_backend = self.mt_backend.currentData()
+        # The new backend is already selected; get it from itemData(index)
+        new_backend = self.mt_backend.itemData(index)
+
+        # Save the PREVIOUS backend's model path before switching
+        old_backend = self._last_mt_backend
         if old_backend is not None:
             current_text = self.mt_model.text().strip()
             if current_text:
@@ -531,15 +550,17 @@ class VideoTranslateWindow(QMainWindow):
                     self._mt_model_overrides[str(old_backend)] = current_text
 
         # Load the new backend's model path
-        backend_name = self.mt_backend.itemData(index)
-        if backend_name and hasattr(self, "_cfg"):
-            profile = get_backend_config(self._cfg, "translate", backend_name)
+        if new_backend is not None and hasattr(self, "_cfg"):
+            profile = get_backend_config(self._cfg, "translate", new_backend)
             model_path = profile.get("model_path", self._cfg.translate.model_path)
             # Use stored override if available, otherwise use default
-            stored = self._mt_model_overrides.get(str(backend_name))
+            stored = self._mt_model_overrides.get(str(new_backend))
             if stored:
                 model_path = stored
             self.mt_model.setText(model_path)
+
+        # Update tracked backend for next switch
+        self._last_mt_backend = new_backend
 
     def _get_asr_model_override(self) -> str | None:
         """Return the ASR model path only if it differs from the backend default."""

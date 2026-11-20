@@ -127,8 +127,27 @@ def test_language_filter_text_classification():
     # Latin-script English / Indonesian are dropped.
     assert lf.filter("Hello, how are you doing today?", duration_s=3.0) is None
     assert lf.filter("Apa kabar kamu hari ini?", duration_s=3.0) is None
-    # Latin-heavy code-switching falls below the Japanese-script threshold.
+    # Latin-heavy code-switching without Japanese characters is dropped.
     assert lf.filter("Today is good weather desu", duration_s=3.0) is None
+
+
+def test_language_filter_mixed_japanese_english():
+    """Mixed Japanese/English text is kept to preserve legitimate dialogue."""
+    lf = LanguageFilter(LanguageFilterConfig(enabled=True, min_duration_s=2.5))
+    # Names with Japanese — keep
+    assert lf.filter("Jason said こんにちは", duration_s=3.0) is not None
+    assert lf.filter("Luciaが言った", duration_s=3.0) is not None
+    # Game titles with Japanese — keep
+    assert lf.filter("GTAのゲームプレイ", duration_s=3.0) is not None
+    # VTuber names with Japanese — keep
+    assert lf.filter("Kizuna AIのライブ", duration_s=3.0) is not None
+    # Short Japanese responses — keep
+    assert lf.filter("はい", duration_s=3.0) is not None
+    assert lf.filter("うん", duration_s=3.0) is not None
+    # Pure English — drop
+    assert lf.filter("Hello, how are you doing today?", duration_s=3.0) is None
+    # Pure Indonesian — drop
+    assert lf.filter("Apa kabar kamu hari ini?", duration_s=3.0) is None
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +425,49 @@ def test_whisper_missing_optional_dependency():
     raise AssertionError("expected WhisperError when faster-whisper missing")
 
 
+def test_whisper_recovery_timeout_enforcement():
+    """Whisper recover_context_echo enforces the supplied timeout budget."""
+    inst = object.__new__(WhisperASR)
+    inst.cfg = AsrConfig(response_timeout_s=30.0)
+    inst._closed = False
+    inst._generation = 0
+    inst._state_lock = threading.Lock()
+    inst._inference_lock = threading.Lock()
+    inst.last_rejection = None
+    inst.last_raw_transcript = ""
+    from collections import deque
+    inst._recent = deque(maxlen=4)
+    inst._accepted_keys = deque(maxlen=32)
+
+    # Budget expired: must not start recovery
+    assert inst.recover_context_echo(np.zeros(1600, dtype=np.float32), timeout=0.0) == ""
+
+    # Closed state: must not start recovery
+    inst._closed = True
+    assert inst.recover_context_echo(np.zeros(1600, dtype=np.float32), timeout=10.0) == ""
+    inst._closed = False
+
+    # Successful recovery with timeout
+    call_count = [0]
+    def fake_impl(audio, probe=False, no_context=False):
+        call_count[0] += 1
+        return "こんにちは"
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl):
+        result = inst.recover_context_echo(np.zeros(1600, dtype=np.float32), timeout=10.0)
+    assert result == "こんにちは"
+    assert call_count[0] == 1
+
+    # Cancellation during recovery
+    def fake_cancel_impl(audio, probe=False, no_context=False):
+        inst.cancel_pending()
+        return "text"
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_cancel_impl):
+        result = inst.recover_context_echo(np.zeros(1600, dtype=np.float32), timeout=10.0)
+    assert result == ""
+
+
 # ---------------------------------------------------------------------------
 # P1 — configuration precedence and backend validation
 # ---------------------------------------------------------------------------
@@ -607,6 +669,55 @@ def test_llama_server_watcher_lifecycle():
         assert server._watcher_generation == 1
         assert server._cancel_thread is None
         server._closed = True  # keep closed so start() doesn't create a watcher
+
+
+def test_gui_backend_switching_preserves_paths():
+    """GUI backend switching preserves per-backend model paths correctly."""
+    import tempfile
+
+    # Create a config with backend-specific profiles
+    toml = """
+[models]
+asr_backend = "haas"
+translate_backend = "gemma4"
+
+[asr]
+model_path = "C:/models/haas/model.gguf"
+
+[asr.qwen3-asr]
+model_path = "C:/models/qwen3-asr/model.gguf"
+mmproj_path = "C:/models/qwen3-asr/mmproj.gguf"
+
+[translate]
+model_path = "C:/models/gemma4/model.gguf"
+
+[translate.plamo]
+model_path = "C:/models/plamo/model.gguf"
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(toml)
+        f.flush()
+        cfg = load_config(Path(f.name))
+
+    # Verify backend profiles are loaded correctly
+    asr_profile = get_backend_config(cfg, "asr", "haas")
+    assert asr_profile["model_path"] == "C:/models/haas/model.gguf"
+
+    qwen3_profile = get_backend_config(cfg, "asr", "qwen3-asr")
+    assert qwen3_profile["model_path"] == "C:/models/qwen3-asr/model.gguf"
+    assert qwen3_profile["mmproj_path"] == "C:/models/qwen3-asr/mmproj.gguf"
+
+    mt_profile = get_backend_config(cfg, "translate", "gemma4")
+    assert mt_profile["model_path"] == "C:/models/gemma4/model.gguf"
+
+    plamo_profile = get_backend_config(cfg, "translate", "plamo")
+    assert plamo_profile["model_path"] == "C:/models/plamo/model.gguf"
+
+    # Verify that switching backends doesn't contaminate model paths
+    # Haas profile should NOT have mmproj_path from Qwen3-ASR
+    assert "mmproj_path" not in asr_profile or not asr_profile.get("mmproj_path")
+    # Qwen3-ASR should NOT have Haas's model path
+    assert qwen3_profile["model_path"] != asr_profile["model_path"]
 
 
 # ---------------------------------------------------------------------------

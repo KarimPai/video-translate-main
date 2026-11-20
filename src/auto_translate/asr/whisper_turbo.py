@@ -263,16 +263,30 @@ class WhisperASR:
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
                              vad_confidence: float | None = None,
                              timeout: float = 0.0) -> str:
-        """Retry transcription without context to recover from echo."""
+        """Retry transcription without context to recover from echo.
+
+        Enforces the supplied remaining timeout budget. If the budget has
+        expired, returns early without starting inference.
+        """
+        if timeout <= 0:
+            return ""
         with self._state_lock:
+            if self._closed:
+                return ""
+            gen = self._generation
             self.last_raw_transcript = ""
             self.last_rejection = None
         if not len(audio):
             return ""
+        deadline = time.monotonic() + timeout
         try:
             text = self._transcribe_impl(audio, probe, no_context=True)
         except Exception as exc:  # noqa: BLE001
             log.warning("Whisper context echo recovery failed: %s", exc)
+            return ""
+        if time.monotonic() >= deadline:
+            return ""
+        if gen != self._generation or self._closed:
             return ""
         text = " ".join(unicodedata.normalize("NFC", text).split())
         text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))

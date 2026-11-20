@@ -1,0 +1,163 @@
+# Relative paths are resolved from the project directory.
+[models]
+asr_backend = "qwen3-asr"
+translate_backend = "plamo"
+vad_backend = "firered"
+
+[asr]
+threads = 4
+context_size = 4096
+startup_timeout_s = 180
+response_timeout_s = 30
+live_response_timeout_s = 15
+
+[asr.qwen3-asr]
+model_path = "C:/Games/video-translate-universal/models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
+mmproj_path = "C:/Games/video-translate-universal/models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+threads = 4
+cuda_device = 0
+
+[gpu_budget]
+# RTX 3070 8GB: Plenty of VRAM headroom (~3.3 GB free after full GPU offload).
+# Minimal headroom — no need for conservative safety margins.
+startup_headroom_gb = 0.25
+low_free_gb = 0.25
+emergency_free_gb = 0.25
+sample_interval_s = 3.0
+
+[vad]
+device = "cpu"
+threshold = 0.24
+neg_threshold = 0.16
+min_silence_ms = 400
+speech_pad_ms = 300
+min_speech_ms = 120
+short_reply_ms = 80
+short_reply_probability = 0.85
+onset_ms = 20
+prob_smooth_frames = 3
+max_utterance_s = 14.0
+max_split_extension_s = 2.0
+live_max_utterance_s = 7.0
+live_max_split_extension_s = 1.0
+adaptive_split = true
+adaptive_split_s = 5.0
+live_adaptive_split_s = 4.0
+adaptive_pause_ms = 180
+split_pause_min_ms = 120
+split_context_ms = 160
+fallback_s = 0.0
+
+[language_filter]
+# Haas ASR already identifies language; this optional CPU gate is normally off.
+enabled = false
+min_duration_s = 2.5
+max_window_s = 5.0
+drop_probability = 0.80
+max_japanese_probability = 0.12
+min_top_margin = 0.45
+
+[translate]
+model_path = "C:/Games/video-translate-universal/models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+# Force all 42 layers onto GPU: model is 5.41 GB, RTX 3070 has 3.4 GB free after ASR load.
+gpu_layers = 42
+# Reduced to 4096 so FP16 KV cache fits on RTX 3070 8GB (Q8_0 cache caused empty output)
+context_size = 4096
+cuda_device = 0
+# i7-9700K: 8 physical cores, no hyperthreading. Split with ASR: ASR=4, MT=4.
+threads = 4
+max_tokens = 128
+parallel_slots = 1  # llama.cpp -np flag (1 or 2)
+temperature = 0.0
+top_k = 20
+top_p = 0.6
+repeat_penalty = 1.05
+context_lines = 6
+# Includes the labelled stream title, channel, host, cast and current chapter.
+max_context_chars = 600
+context_max_gap_s = 15.0
+# Showing earlier English can improve consistency but can also repeat mistakes.
+context_english = false
+style = "Plain and concise"
+# Join a cue without sentence-final punctuation with the next close cue.
+# Live (with MPV) holds a fragment only until playback is within
+# live_merge_margin_s of its onset, so sentences are not cut mid-way.
+merge_fragments = true
+merge_max_gap_s = 0.6
+merge_max_s = 16.0
+live_merge_margin_s = 1.5
+timeout_s = 30
+load_timeout_s = 300
+glossary = "glossary.toml"
+remove_fillers = true
+collapse_repetitions = true
+max_identical_cues = 2
+# When translation fails, suppress the subtitle rather than showing Japanese as English.
+suppress_empty_translation = true
+# Reject output containing Japanese script (untranslated Japanese).
+suppress_japanese_in_english = true
+# VOD mode: release held fragments after this many seconds (prevents deadlock).
+vod_merge_timeout_s = 5.0
+
+[translate.hymt]
+model_path = "C:/Games/video-translate-universal/models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+gpu_layers = 50
+context_size = 4096
+cuda_device = 0
+threads = 4
+
+[translate.plamo]
+model_path = "C:/Games/video-translate-universal/models/plamo3/plamo-3-translate-2b-Q4_K_M.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+gpu_layers = -1
+context_size = 8192
+max_tokens = 512
+load_timeout_s = 180
+cuda_device = 0
+threads = 4
+
+[mpv]
+hwdec = "auto-safe"
+live_forward_cache_mib = 1024
+live_back_cache_mib = 1024
+# Readability: keep cues up long enough to read (characters per second, capped),
+# wrap at max_line_chars into balanced lines, and split longer cues into
+# chunks of at most max_cue_lines that follow the speech.
+# en_size is relative to a 720-pixel-high screen, so it scales with the window.
+en_size = 32
+min_subtitle_duration_s = 1.5
+reading_cps = 15
+max_subtitle_duration_s = 7.0
+max_line_chars = 42
+max_cue_lines = 2
+# Wrapped rows across stacked cues.
+max_subtitle_rows = 4
+# Dark box behind the outlined text, 0..1 (0 = outline only).
+background_opacity = 0.3
+# Adaptive VOD sync: pause when translation lead drops below threshold,
+# resume when it exceeds the higher threshold (hysteresis prevents oscillation).
+vod_pause_threshold_s = 0.5
+vod_resume_threshold_s = 3.0
+
+[holodex]
+# Optional: a Holodex API key (holodex.net > Account Settings) adds the
+# video's tagged collab cast, so the right names are hinted to the translator.
+# The HOLODEX_API_KEY environment variable also works.
+api_key = ""
+timeout_s = 5.0
+
+[safe_playback]
+enabled = true
+max_inference_concurrency = 2
+queue_size = 16
+audio_chunks = 48
+max_audio_lead_s = 30.0
+
+[diagnostics]
+enabled = true
+sample_interval_s = 4.0
+max_bytes = 2000000
+backups = 3

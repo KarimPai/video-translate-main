@@ -275,25 +275,30 @@ def _main(resources: ExitStack) -> None:
     if stream_context.host or stream_context.cast:
         log.info("Stream context: host=%s cast=%s", stream_context.host or "-",
                  "、".join(stream_context.cast) or "-")
-    decode_timeout = (min(cfg.asr.response_timeout_s, cfg.asr.live_response_timeout_s)
-                      if source.live else cfg.asr.response_timeout_s)
     t0 = time.perf_counter()
     check_running()
 
-    # Create ASR backend via registry with backend-specific profile
+    # Create ASR backend via registry with backend-specific profile first,
+    # then derive timeout from the effective merged profile.
     from .config import get_backend_config
     from .registry import get_default_registry
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
                                      explicit_overrides=asr_cli_overrides if asr_cli_overrides else None)
-    asr_profile.setdefault("response_timeout_s", decode_timeout)
+    # Derive timeout from the already-merged profile (backend-specific values
+    # take precedence over common config). For live mode, use the shorter
+    # live_response_timeout_s; for VOD, use response_timeout_s.
+    response_timeout = asr_profile.get("response_timeout_s", cfg.asr.response_timeout_s)
+    live_timeout = asr_profile.get("live_response_timeout_s", cfg.asr.live_response_timeout_s)
+    decode_timeout = min(response_timeout, live_timeout) if source.live else response_timeout
+    asr_profile["response_timeout_s"] = decode_timeout
     asr = registry.create_backend("asr", asr_backend_name, asr_profile,
                                   context=stream_context.recognition_text())
     resources.callback(asr.close)
     budget.refresh()
     record_event("asr_loaded", backend=asr_backend_name, gpu=budget.snapshot())
-    log.info("ASR %s ready in %.1fs (timeout %.1fs); measured GPU free=%s GB",
+    log.info("ASR %s ready in %.1fs (effective timeout %.1fs); measured GPU free=%s GB",
              asr_backend_name, time.perf_counter()-t0, decode_timeout, budget.free)
 
     t0 = time.perf_counter()

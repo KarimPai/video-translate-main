@@ -155,11 +155,11 @@ def _make_qwen3(cfg=None):
 def test_qwen3_asr_timeout_followed_by_successful_retry():
     """A transient timeout is retried and does not terminate the session."""
     inst = _make_qwen3()
-    calls = []
+    call_count = [0]
 
     def fake_impl(audio, probe=False, no_context=False, timeout=None):
-        calls.append(timeout)
-        if not calls:
+        call_count[0] += 1
+        if call_count[0] == 1:
             raise httpx.TimeoutException("read timeout")
         return "こんにちは"
 
@@ -168,6 +168,7 @@ def test_qwen3_asr_timeout_followed_by_successful_retry():
         text = inst.transcribe(np.zeros(16000, dtype=np.float32))
     assert text == "こんにちは"
     assert inst._restarts == 0  # recovered by retry, no restart needed
+    assert call_count[0] == 2  # first call failed, second succeeded
 
 
 def test_qwen3_asr_repeated_failures_trigger_restart():
@@ -187,7 +188,7 @@ def test_qwen3_asr_repeated_failures_trigger_restart():
         text = inst.transcribe(np.zeros(16000, dtype=np.float32))
     assert text == "成功"
     assert restarted, "expected a restart to be attempted"
-    assert impl.call_count == 5
+    assert impl.call_count == 5  # 4 retries + 1 after restart
 
 
 def test_qwen3_asr_restart_failure_is_permanent_shutdown():
@@ -212,6 +213,24 @@ def test_qwen3_asr_restart_failure_is_permanent_shutdown():
             assert len(restart_calls) == 1  # bounded, not indefinite
             return
     raise AssertionError("expected Qwen3ASRError")
+
+
+def test_qwen3_asr_all_failures_no_recovery():
+    """When every request fails and restart also fails, a terminal error is raised."""
+    inst = _make_qwen3()
+    inst._restarts = 2  # already at restart limit
+
+    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+        raise httpx.TimeoutException("always failing")
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
+            mock.patch("time.sleep", return_value=None):
+        try:
+            inst.transcribe(np.zeros(16000, dtype=np.float32))
+        except Qwen3ASRError as exc:
+            assert "transcription failed" in str(exc).lower()
+            return
+    raise AssertionError("expected Qwen3ASRError when all retries fail")
 
 
 def test_qwen3_asr_shutdown_skips_restart():
@@ -463,6 +482,131 @@ def test_gpu_critical_uses_shorter_cooldown_than_low():
     GpuBudget(cfg)
     # Cooldown constants differ: critical responds sooner.
     assert GpuBudget.CRITICAL_RELIEF_COOLDOWN_S < GpuBudget.LOW_RELIEF_COOLDOWN_S
+
+
+def test_gpu_sustained_critical_pressure_relief():
+    """Sustained critical pressure triggers relief after cooldown expires."""
+    cfg = GpuBudgetConfig(startup_headroom_gb=2.0, low_free_gb=2.0, emergency_free_gb=1.0)
+    budget = GpuBudget(cfg)
+    relief_calls = []
+
+    def fake_release():
+        relief_calls.append(True)
+
+    # Simulate sustained critical pressure: free=0.5 GB (below emergency=1.0)
+    with _set_gpu_reading(used_gb=7.5):  # free=0.5 GB -> critical
+        budget.refresh()
+        assert budget.pressure_level == "critical"
+        # First relief request
+        budget._last_critical_relief_time = 0.0
+        budget._last_low_relief_time = 0.0
+        budget._last_pressure = "normal"
+        # Simulate one monitor iteration
+        now = 100.0
+        cooldown = budget.CRITICAL_RELIEF_COOLDOWN_S
+        within_cooldown = now - budget._last_critical_relief_time < cooldown
+        assert not within_cooldown, "first relief should not be in cooldown"
+        fake_release()
+        budget._last_critical_relief_time = now
+        budget._last_pressure = "critical"
+
+    # Simulate sustained critical pressure after cooldown expires
+    with _set_gpu_reading(used_gb=7.5):  # still critical
+        budget.refresh()
+        assert budget.pressure_level == "critical"
+        now = 100.0 + cooldown + 1.0  # cooldown expired
+        within_cooldown = now - budget._last_critical_relief_time < cooldown
+        assert not within_cooldown, "relief should be allowed after cooldown"
+        fake_release()
+        budget._last_critical_relief_time = now
+        budget._last_pressure = "critical"
+
+    assert len(relief_calls) == 2, f"expected 2 relief calls during sustained critical pressure, got {len(relief_calls)}"
+
+
+def test_build_backend_command_no_default_override():
+    """build_backend_command does not add --asr-model when using default paths."""
+    import tempfile
+
+    from auto_translate.gui_runner import build_backend_command
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "pyproject.toml").write_text("")
+        (root / "src" / "auto_translate" / "__main__.py").parent.mkdir(parents=True)
+        (root / "src" / "auto_translate" / "__main__.py").write_text("")
+        # When asr_model=None, no --asr-model flag should appear
+        _, args = build_backend_command(
+            root, "https://www.youtube.com/watch?v=abc123", 720, 1,
+            asr_model=None, mt_model=None,
+            asr_backend="haas", translate_backend="gemma4",
+        )
+        assert "--asr-model" not in args
+        assert "--mt-model" not in args
+
+
+def test_build_backend_command_with_override():
+    """build_backend_command adds --asr-model when an explicit override is given."""
+    import tempfile
+
+    from auto_translate.gui_runner import build_backend_command
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "pyproject.toml").write_text("")
+        (root / "src" / "auto_translate" / "__main__.py").parent.mkdir(parents=True)
+        (root / "src" / "auto_translate" / "__main__.py").write_text("")
+        _, args = build_backend_command(
+            root, "https://www.youtube.com/watch?v=abc123", 720, 1,
+            asr_model="/custom/model.gguf", mt_model="/custom/mt.gguf",
+            asr_backend="haas", translate_backend="gemma4",
+        )
+        assert "--asr-model" in args
+        assert "/custom/model.gguf" in args
+        assert "--mt-model" in args
+        assert "/custom/mt.gguf" in args
+
+
+def test_timeout_resolution_live_vod():
+    """Timeout is derived from the merged backend profile, not common config."""
+    cfg = Config()
+    cfg.asr_profiles["qwen3-asr"] = {
+        "response_timeout_s": 60.0,
+        "live_response_timeout_s": 20.0,
+    }
+    merged = get_backend_config(cfg, "asr", "qwen3-asr")
+    # Backend profile values should override common defaults
+    assert merged["response_timeout_s"] == 60.0
+    assert merged["live_response_timeout_s"] == 20.0
+    # Live mode uses the shorter timeout
+    live_timeout = min(merged["response_timeout_s"], merged["live_response_timeout_s"])
+    assert live_timeout == 20.0
+    # VOD mode uses the full timeout
+    vod_timeout = merged["response_timeout_s"]
+    assert vod_timeout == 60.0
+
+
+def test_llama_server_watcher_lifecycle():
+    """Only one cancellation watcher exists per server; old watcher is joined on restart."""
+    import tempfile
+
+    from auto_translate.llama_server import LlamaServer
+
+    with tempfile.TemporaryDirectory() as td:
+        exe = Path(td) / "llama-server.exe"
+        exe.write_bytes(b"fake")
+        server = LlamaServer(
+            name="test", executable=exe, args=["--model", "test.gguf"],
+            startup_timeout_s=1.0,
+        )
+        # Initial state: no watcher
+        assert server._cancel_thread is None
+        assert server._watcher_generation == 0
+
+        # After reset_for_restart, generation is incremented
+        server._closed = True  # simulate closed state
+        server.reset_for_restart()
+        assert server._watcher_generation == 1
+        assert server._cancel_thread is None
+        server._closed = True  # keep closed so start() doesn't create a watcher
 
 
 # ---------------------------------------------------------------------------

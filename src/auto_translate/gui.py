@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from auto_translate.config import load_config
+from auto_translate.config import get_backend_config, load_config
 from auto_translate.gui_control import GUI_SHUTDOWN_MS, parse_event
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS,
@@ -167,6 +167,8 @@ class VideoTranslateWindow(QMainWindow):
         self._player_cursor_pos = None
         self._player_activity_at = 0.0
         self._export_thread = None
+        self._asr_model_overrides: dict[str, str] = {}
+        self._mt_model_overrides: dict[str, str] = {}
         self.setWindowTitle("Video Translate")
         self.setMinimumSize(750, 520)
         self.resize(1120, 790)
@@ -484,22 +486,89 @@ class VideoTranslateWindow(QMainWindow):
                 log.exception("Failed to populate backend dropdowns")
 
     def _on_asr_backend_changed(self, index: int) -> None:
-        """Update ASR model path when backend selection changes."""
+        """Update ASR model path when backend selection changes.
+
+        Stores the current backend's model path before switching, then loads
+        the new backend's profile path. Distinguishes defaults from user
+        overrides so only explicit overrides are forwarded to the backend.
+        """
+        # Save the current backend's model path before switching
+        old_backend = self.asr_backend.currentData()
+        if old_backend is not None:
+            current_text = self.asr_model.text().strip()
+            if current_text:
+                old_profile = get_backend_config(self._cfg, "asr", old_backend)
+                old_default = old_profile.get("model_path", self._cfg.asr.model_path)
+                if current_text != old_default:
+                    self._asr_model_overrides[str(old_backend)] = current_text
+
+        # Load the new backend's model path
         backend_name = self.asr_backend.itemData(index)
         if backend_name and hasattr(self, "_cfg"):
-            from auto_translate.config import get_backend_config
             profile = get_backend_config(self._cfg, "asr", backend_name)
             model_path = profile.get("model_path", self._cfg.asr.model_path)
+            # Use stored override if available, otherwise use default
+            stored = self._asr_model_overrides.get(str(backend_name))
+            if stored:
+                model_path = stored
             self.asr_model.setText(model_path)
 
     def _on_mt_backend_changed(self, index: int) -> None:
-        """Update translation model path when backend selection changes."""
+        """Update translation model path when backend selection changes.
+
+        Stores the current backend's model path before switching, then loads
+        the new backend's profile path. Distinguishes defaults from user
+        overrides so only explicit overrides are forwarded to the backend.
+        """
+        # Save the current backend's model path before switching
+        old_backend = self.mt_backend.currentData()
+        if old_backend is not None:
+            current_text = self.mt_model.text().strip()
+            if current_text:
+                old_profile = get_backend_config(self._cfg, "translate", old_backend)
+                old_default = old_profile.get("model_path", self._cfg.translate.model_path)
+                if current_text != old_default:
+                    self._mt_model_overrides[str(old_backend)] = current_text
+
+        # Load the new backend's model path
         backend_name = self.mt_backend.itemData(index)
         if backend_name and hasattr(self, "_cfg"):
-            from auto_translate.config import get_backend_config
             profile = get_backend_config(self._cfg, "translate", backend_name)
             model_path = profile.get("model_path", self._cfg.translate.model_path)
+            # Use stored override if available, otherwise use default
+            stored = self._mt_model_overrides.get(str(backend_name))
+            if stored:
+                model_path = stored
             self.mt_model.setText(model_path)
+
+    def _get_asr_model_override(self) -> str | None:
+        """Return the ASR model path only if it differs from the backend default."""
+        backend_name = self.asr_backend.currentData()
+        if not backend_name or not hasattr(self, "_cfg"):
+            return None
+        current_text = self.asr_model.text().strip()
+        if not current_text:
+            return None
+        profile = get_backend_config(self._cfg, "asr", backend_name)
+        default_path = profile.get("model_path", self._cfg.asr.model_path)
+        if current_text == default_path:
+            return None  # using default, no override needed
+        return current_text
+
+    def _get_mt_model_override(self) -> str | None:
+        """Return the MT model path only if it differs from the backend default."""
+        backend_name = self.mt_backend.currentData()
+        if not backend_name or not hasattr(self, "_cfg"):
+            return None
+        current_text = self.mt_model.text().strip()
+        if not current_text:
+            return None
+        profile = get_backend_config(self._cfg, "translate", backend_name)
+        default_path = profile.get("model_path", self._cfg.translate.model_path)
+        if current_text == default_path:
+            return None  # using default, no override needed
+        return current_text
+
 
     def _update_diagnostics(self, event):
         for name, value in diagnostic_rows(event).items():
@@ -682,8 +751,8 @@ class VideoTranslateWindow(QMainWindow):
             command, args = build_backend_command(
                 self.root, url, int(self.quality.currentData()), hwnd,
                 frozen=getattr(sys, "frozen", False),
-                asr_model=self.asr_model.text().strip() or None,
-                mt_model=self.mt_model.text().strip() or None,
+                asr_model=self._get_asr_model_override(),
+                mt_model=self._get_mt_model_override(),
                 asr_backend=self.asr_backend.currentData(),
                 translate_backend=self.mt_backend.currentData(),
                 context_lines=self.context_lines.value(),

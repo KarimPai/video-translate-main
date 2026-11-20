@@ -162,6 +162,7 @@ class LlamaServer:
         self._closed = False
         self._shutdown = threading.Event()
         self._cancel_thread = None
+        self._watcher_generation = 0
         self.client = httpx.Client(trust_env=False)
         self.log_path = Path("logs") / f"{name}-server.log"
 
@@ -169,8 +170,11 @@ class LlamaServer:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def _watch_cancellation(self) -> None:
+    def _watch_cancellation(self, generation: int) -> None:
         while not self._shutdown.wait(0.1):
+            if self._watcher_generation != generation:
+                # Superseded by a newer watcher; exit cleanly.
+                return
             if stopping.is_set():
                 self.close()
                 return
@@ -191,10 +195,19 @@ class LlamaServer:
                                        stdout=self._log_stream, stderr=subprocess.STDOUT,
                                        creationflags=hidden_console_flags())
             process = self.process
-            if self._cancel_thread is None:
-                self._cancel_thread = threading.Thread(target=self._watch_cancellation,
-                                                       name=f"{self.name}-cancel", daemon=True)
-                self._cancel_thread.start()
+            # Join any old watcher before creating a new one
+            if self._cancel_thread is not None and self._cancel_thread.is_alive():
+                self._shutdown.set()
+                self._cancel_thread.join(timeout=2)
+                self._cancel_thread = None
+                self._shutdown.clear()
+            self._watcher_generation += 1
+            self._cancel_thread = threading.Thread(
+                target=self._watch_cancellation,
+                args=(self._watcher_generation,),
+                name=f"{self.name}-cancel", daemon=True,
+            )
+            self._cancel_thread.start()
         deadline = time.monotonic() + self.startup_timeout_s
         while time.monotonic() < deadline:
             check_running()
@@ -267,12 +280,15 @@ class LlamaServer:
                 self.client.close()
                 return
             self._stop_process()
-            # Wake the previous cancellation watcher and let start() create
-            # a fresh one (it only spawns when _cancel_thread is None).
+            # Wake the previous cancellation watcher and wait for it to exit
             self._shutdown.set()
+            if self._cancel_thread is not None and self._cancel_thread.is_alive():
+                self._cancel_thread.join(timeout=2)
             self._cancel_thread = None
             self._closed = False
             self._shutdown.clear()
+            # Increment generation so the new watcher knows it is the current one
+            self._watcher_generation += 1
             # Close and recreate the HTTP client to release sockets.
             self.client.close()
             self.client = httpx.Client(trust_env=False)

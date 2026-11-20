@@ -150,11 +150,16 @@ class WhisperASR:
 
     @classmethod
     def _looks_like_whisper_model(cls, path: Path) -> bool:
-        """Heuristic: accept only directories that contain Whisper model files."""
+        """Accept only directories that contain CTranslate2 Whisper model files.
+
+        Requires at least one file from _CT2_MODEL_FILES (model.bin, config.json,
+        tokenizer.json, vocabulary.json). A directory name containing "whisper"
+        is not sufficient — the files must actually be present.
+        """
         if not path.is_dir():
             return False
         names = {child.name.lower() for child in path.iterdir()}
-        return bool(names & _CT2_MODEL_FILES) or "whisper" in path.name.lower()
+        return bool(names & _CT2_MODEL_FILES)
 
     # ------------------------------------------------------------------ #
     # ASRBackend protocol
@@ -305,21 +310,21 @@ class WhisperASR:
                 language="ja",
                 task="transcribe",
                 beam_size=_DEFAULT_BEAM_SIZE,
-            patience=1.0,
-            length_penalty=1.0,
-            temperature=0.0 if not probe else 0.3,
-            repetition_penalty=1.0,
-            no_repeat_ngram_size=0,
-            log_prob_threshold=-1.0,
-            no_speech_threshold=0.6,
-            compression_ratio_threshold=2.4,
-            suppress_tokens=[-1],
-            word_timestamps=False,
-            condition_on_previous_text=False,
-            vad_filter=False,
-            without_timestamps=False,
-            initial_prompt=initial_prompt,
-        )
+                patience=1.0,
+                length_penalty=1.0,
+                temperature=0.0 if not probe else 0.3,
+                repetition_penalty=1.0,
+                no_repeat_ngram_size=0,
+                log_prob_threshold=-1.0,
+                no_speech_threshold=0.6,
+                compression_ratio_threshold=2.4,
+                suppress_tokens=[-1],
+                word_timestamps=False,
+                condition_on_previous_text=False,
+                vad_filter=False,
+                without_timestamps=False,
+                initial_prompt=initial_prompt,
+            )
 
         # Collect segments, filtering out no-speech
         phrases = []

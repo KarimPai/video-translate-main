@@ -130,6 +130,9 @@ class Qwen3ASR:
         of times before a server restart is attempted. Permanent failures and
         exhausted retries raise a clear terminal Qwen3ASRError so a single
         transient error cannot terminate the whole session.
+
+        Uses a single monotonic deadline per utterance so the total time never
+        exceeds the configured budget, even with retries.
         """
         gen = self._generation
         duration_s = len(audio) / 16000
@@ -140,13 +143,21 @@ class Qwen3ASR:
         restart_limit = 2
         backoff_s = 0.5
 
+        # Single monotonic deadline per utterance
+        budget = self.cfg.response_timeout_s
+        deadline = time.monotonic() + budget
+
         with self._inference_lock:
             text: str | None = None
             last_exc: Exception | None = None
             attempts = 0
             while attempts <= max_retries:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last_exc = TimeoutError("utterance budget exceeded")
+                    break
                 try:
-                    text = self._transcribe_impl(audio, probe)
+                    text = self._transcribe_impl(audio, probe, timeout=remaining)
                     self._failures = 0
                     break
                 except httpx.TimeoutException as exc:
@@ -155,7 +166,9 @@ class Qwen3ASR:
                     attempts += 1
                     log.warning("Qwen3-ASR timeout (attempt %d/%d)", attempts, max_retries + 1)
                     if attempts <= max_retries:
-                        time.sleep(backoff_s * attempts)
+                        sleep_time = min(backoff_s * attempts, deadline - time.monotonic())
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
                         continue
                     break
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
@@ -164,18 +177,22 @@ class Qwen3ASR:
                     attempts += 1
                     log.warning("Qwen3-ASR connection failure (attempt %d/%d)", attempts, max_retries + 1)
                     if attempts <= max_retries:
-                        time.sleep(backoff_s * attempts)
+                        sleep_time = min(backoff_s * attempts, deadline - time.monotonic())
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
                         continue
                     break
                 except httpx.HTTPError as exc:
                     last_exc = exc
                     self._failures += 1
                     log.error("Qwen3-ASR invalid response: %s", exc)
+                    # Permanent error — no retry
                     break
                 except Qwen3ASRError as exc:
                     last_exc = exc
                     self._failures += 1
                     log.error("Qwen3-ASR permanent failure: %s", exc)
+                    # Permanent error — no retry
                     break
 
             if (
@@ -184,14 +201,18 @@ class Qwen3ASR:
                 and not self._closed
                 and not stopping.is_set()
             ):
-                try:
-                    self._restart()
-                    text = self._transcribe_impl(audio, probe)
-                    self._failures = 0
-                except Exception as restart_exc:  # noqa: BLE001
-                    raise Qwen3ASRError(
-                        f"Qwen3-ASR restart failed after {attempts} attempt(s): {restart_exc}"
-                    ) from last_exc
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last_exc = TimeoutError("utterance budget exceeded after restart")
+                else:
+                    try:
+                        self._restart()
+                        text = self._transcribe_impl(audio, probe, timeout=remaining)
+                        self._failures = 0
+                    except Exception as restart_exc:  # noqa: BLE001
+                        raise Qwen3ASRError(
+                            f"Qwen3-ASR restart failed after {attempts} attempt(s): {restart_exc}"
+                        ) from last_exc
 
             if text is None:
                 raise Qwen3ASRError(
@@ -251,7 +272,11 @@ class Qwen3ASR:
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
                              vad_confidence: float | None = None,
                              timeout: float = 0.0) -> str:
-        """Retry transcription without context to recover from echo.
+        """Retry transcription to recover from context echo.
+
+        NOTE: Qwen3-ASR does not send user-provided context in the request
+        payload, so context removal is not applicable. This method retries
+        the transcription with the remaining timeout budget.
 
         Enforces the supplied remaining timeout and never starts recovery when
         the budget has expired. Cancellation is propagated via the generation
@@ -266,7 +291,7 @@ class Qwen3ASR:
         if not len(audio):
             return ""
         try:
-            text = self._transcribe_impl(audio, probe=probe, no_context=True, timeout=timeout)
+            text = self._transcribe_impl(audio, probe=probe, timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             log.warning("Qwen3-ASR context echo recovery failed: %s", exc)
             return ""
@@ -302,6 +327,10 @@ class Qwen3ASR:
 
         ``timeout`` overrides the configured response timeout (used by context
         echo recovery to enforce the remaining time budget).
+
+        NOTE: ``no_context`` is a no-op. Qwen3-ASR does not send user-provided
+        context in the request payload, so there is nothing to remove. The
+        parameter is kept for API compatibility with other ASR backends.
         """
         t0 = time.perf_counter()
 

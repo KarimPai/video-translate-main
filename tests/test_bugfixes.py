@@ -367,14 +367,16 @@ def test_gpu_budget_has_cooldown():
 
 
 def test_gpu_budget_initializes_last_relief_time():
-    """GpuBudget must initialize _last_relief_time."""
+    """GpuBudget must initialize per-level relief time trackers."""
     from auto_translate.config import GpuBudgetConfig
     from auto_translate.gpu_budget import GpuBudget
 
     cfg = GpuBudgetConfig()
     budget = GpuBudget(cfg)
-    assert hasattr(budget, "_last_relief_time")
-    assert budget._last_relief_time == 0.0
+    assert hasattr(budget, "_last_low_relief_time")
+    assert budget._last_low_relief_time == 0.0
+    assert hasattr(budget, "_last_critical_relief_time")
+    assert budget._last_critical_relief_time == 0.0
 
 
 # ============================================================================

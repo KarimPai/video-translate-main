@@ -2,7 +2,7 @@
 [models]
 asr_backend = "qwen3-asr"
 translate_backend = "plamo"
-vad_backend = "firered"
+vad_backend = "silero"
 
 [asr]
 threads = 4

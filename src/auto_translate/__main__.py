@@ -10,8 +10,6 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from . import cuda_dlls
-
 
 def main() -> None:
     with ExitStack() as resources:
@@ -143,7 +141,6 @@ def _main(resources: ExitStack) -> None:
         guard_gui_spawns()
         control = BackendControl(args.gui_control_port, args.gui_control_token, stop)
         resources.callback(control.close)
-    cuda_dlls.setup()
 
     from .config import load_config, mpv_youtube_format
     from .glossary import Glossary
@@ -336,8 +333,6 @@ def _main(resources: ExitStack) -> None:
         cfg.ingest,
         video_out="fmp4" if shared_live_hls else None,
         video_format=cfg.mpv.ytdlp_format if shared_live_hls else "",
-        separation_cfg=cfg.separation,
-        deepfilter_cfg=cfg.deepfilter,
     )
     ingest.inference_gate = gate
 

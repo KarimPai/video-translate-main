@@ -42,7 +42,7 @@ class ModelsConfig:
 
     asr_backend: str = "haas"
     translate_backend: str = "gemma4"
-    vad_backend: str = "firered"
+    vad_backend: str = "silero"
 
 
 @dataclass
@@ -58,19 +58,8 @@ class IngestConfig:
 
 
 @dataclass
-class SeparationConfig:
-    enabled: bool = False
-    model: str = "pretrained_models/separation/UVR-MDX-NET-Voc_FT.onnx"
-
-
-@dataclass
-class DeepFilterConfig:
-    enabled: bool = False
-
-
-@dataclass
 class VadConfig:
-    """FireRedVAD configuration."""
+    """Silero VAD configuration."""
 
     device: str = "cpu"
     threshold: float = 0.24
@@ -109,7 +98,7 @@ class VadConfig:
             if not getattr(self, key) >= 0:
                 raise ValueError(f"vad.{key} must be nonnegative")
         if self.device != "cpu":
-            raise ValueError("FireRedVAD must use cpu to preserve GPU memory for the models and playback")
+            raise ValueError("SileroVAD must use cpu to preserve GPU memory for the models and playback")
 
 
 LLAMA_SERVER_PATH = ".runtime/llama-b12318-cuda12/llama-server.exe"
@@ -438,8 +427,6 @@ class Config:
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
     gpu_budget: GpuBudgetConfig = field(default_factory=GpuBudgetConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
-    separation: SeparationConfig = field(default_factory=SeparationConfig)
-    deepfilter: DeepFilterConfig = field(default_factory=DeepFilterConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
@@ -513,8 +500,6 @@ def load_config(path: Path) -> Config:
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
         gpu_budget=GpuBudgetConfig(**data.get("gpu_budget", {})),
         ingest=IngestConfig(**data.get("ingest", {})),
-        separation=SeparationConfig(**data.get("separation", {})),
-        deepfilter=DeepFilterConfig(**data.get("deepfilter", {})),
         vad=VadConfig(**data.get("vad", {})),
         asr=AsrConfig(**data.get("asr", {})),
         translate=TranslateConfig(**data.get("translate", {})),
@@ -663,7 +648,6 @@ def resolve_model_identity(cfg: Config, backend_type: str, backend_name: str,
 __all__ = [
     "AsrConfig",
     "Config",
-    "DeepFilterConfig",
     "DiagnosticsConfig",
     "GpuBudgetConfig",
     "HolodexConfig",
@@ -673,7 +657,6 @@ __all__ = [
     "MpvConfig",
     "OutputConfig",
     "SafePlaybackConfig",
-    "SeparationConfig",
     "TranslateConfig",
     "VadConfig",
     "get_backend_config",

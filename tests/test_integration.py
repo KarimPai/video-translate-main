@@ -329,7 +329,7 @@ def test_registry_list_backends():
     # Check VAD backends
     vad_backends = registry.list_backends("vad")
     assert "vad" in vad_backends
-    assert "firered" in vad_backends["vad"]
+    assert "silero" in vad_backends["vad"]
 
 
 def test_registry_backend_capabilities():
@@ -451,12 +451,6 @@ def test_timeline_import():
     """Timeline module imports correctly."""
     from auto_translate.timeline import record_session_anchor
     assert callable(record_session_anchor)
-
-
-def test_cuda_dlls_import():
-    """CUDA DLLs module imports correctly."""
-    from auto_translate.cuda_dlls import setup
-    assert callable(setup)
 
 
 def test_windows_job_import():

@@ -5,11 +5,9 @@ description = "Modular video translation application with interchangeable ASR an
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
-    "audioread>=3.1.0",
-    "fireredvad[cpu]>=0.0.2",
+    "silero-vad-lite>=0.4.0",
     "httpx>=0.27",
     "huggingface-hub>=0.34.0",
-    "onnxruntime>=1.31.1",
 ]
 
 [dependency-groups]
@@ -19,16 +17,6 @@ ci = ["numpy>=1.26", "httpx>=0.27", "ruff>=0.9"]
 gui = ["PySide6>=6.8,<7"]
 diagnostics = ["nvidia-ml-py>=12.560.30,<14"]
 asr = ["faster-whisper>=1.0.0"]
-separation = [
-    "audio-separator>=0.48.0",
-    "scipy",
-    "soundfile",
-    "torch",
-]
-deepfilter = [
-    "deepfilternet-rs>=0.1.1",
-    "scipy",
-]
 
 [project.scripts]
 video-translate = "auto_translate.__main__:main"
@@ -36,16 +24,6 @@ video-translate = "auto_translate.__main__:main"
 [build-system]
 requires = ["uv_build>=0.12.22,<0.13.0"]
 build-backend = "uv_build"
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "scripts"]

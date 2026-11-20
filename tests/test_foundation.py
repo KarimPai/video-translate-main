@@ -48,7 +48,7 @@ def test_config_defaults():
     assert isinstance(cfg, Config)
     assert cfg.models.asr_backend == "haas"
     assert cfg.models.translate_backend == "gemma4"
-    assert cfg.models.vad_backend == "firered"
+    assert cfg.models.vad_backend == "silero"
     assert cfg.vad.device == "cpu"
     assert cfg.translate.context_lines == 6
 
@@ -76,16 +76,16 @@ def test_registry_creation():
 
 
 def test_registry_default():
-    """Default registry registers FireRed VAD."""
+    """Default registry registers Silero VAD."""
     from auto_translate.registry import get_default_registry
 
     registry = get_default_registry()
     vad_backends = registry.list_backends("vad")
-    assert "firered" in vad_backends["vad"]
+    assert "silero" in vad_backends["vad"]
 
-    caps = registry.get_capabilities("vad", "firered")
+    caps = registry.get_capabilities("vad", "silero")
     assert caps is not None
-    assert caps.runtime == "firered"
+    assert caps.runtime == "silero"
     assert caps.device == "cpu"
 
 

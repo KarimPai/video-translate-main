@@ -1,11 +1,7 @@
 
 """yt-dlp | ffmpeg → audio chunks for VAD.
 
-Normal mode:
-    FFmpeg → 16 kHz mono → pipeline
-
-Vocal separation mode:
-    FFmpeg → stereo 44.1 kHz → UVR → 16 kHz mono → pipeline
+FFmpeg → 16 kHz mono → pipeline
 
 MPV video/audio stream-copy output is kept separate from audio processing.
 """
@@ -31,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from .config import DeepFilterConfig, IngestConfig, SeparationConfig
+from .config import IngestConfig
 from .runtime_diagnostics import record_event, update_metrics
 from .timeline import load_vod_metadata
 from .types import SAMPLE_RATE, AudioChunk, SourceEOF
@@ -49,10 +45,7 @@ class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
 
 
 CHUNK_SAMPLES = 4096
-SEPARATION_READ_FRAMES = 8192
-SEPARATION_INPUT_RATE = 44100
 PCM_READ_TIMEOUT_S = 60.0
-DEEPFILTER_INPUT_RATE = 48000
 
 @dataclass
 class Source:
@@ -234,8 +227,6 @@ class Ingest:
         video_out: str | None = None,
         video_format: str = "",
         burst_s: float = 0.0,
-        separation_cfg: SeparationConfig | None = None,
-        deepfilter_cfg: DeepFilterConfig | None = None,
     ):
         self.source = source
         # Older versions archived raw FFmpeg reports, including signed URLs.
@@ -279,20 +270,6 @@ class Ingest:
         )
         self.burst_s = burst_s
 
-        self.separation_cfg = separation_cfg
-        self.separation_enabled = bool(
-            separation_cfg and separation_cfg.enabled
-        )
-
-        self.deepfilter_cfg = deepfilter_cfg
-        self.deepfilter_enabled = bool(
-            deepfilter_cfg and deepfilter_cfg.enabled
-        )
-
-        if self.separation_enabled and self.deepfilter_enabled:
-            raise ValueError(
-                "UVR separation and DeepFilterNet cannot both be enabled."
-            )
 
         self._procs: list[subprocess.Popen] = []
         self._video_proc: subprocess.Popen | None = None
@@ -748,12 +725,7 @@ class Ingest:
             ffmpeg += ["-ss", f"{offset:.3f}"]
         ffmpeg += ["-i", self.video_playlist_url]
 
-        if self.separation_enabled:
-            output_rate = SEPARATION_INPUT_RATE
-        elif self.deepfilter_enabled:
-            output_rate = DEEPFILTER_INPUT_RATE
-        else:
-            output_rate = SAMPLE_RATE
+        output_rate = SAMPLE_RATE
 
         audio_filters = []
         if self.source.live and abs(self.pitch_semitones) >= 1e-6:
@@ -762,13 +734,12 @@ class Ingest:
             audio_filters += [f"aresample={output_rate}", f"asettb=1/{output_rate}",
                               "ashowinfo@source"]
         audio_filters += self._pitch_filter(output_rate)
-        output_layout = "stereo" if self.separation_enabled else "mono"
         # Raw PCM has no timestamps. Keep the first *output* sample's PTS and
         # validate subsequent PTS against sample counts before removing them.
         # The stderr consumer discards frame diagnostics without logging them.
         audio_filters += [
             f"aresample={output_rate}",
-            f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
+            "aformat=sample_fmts=s16:channel_layouts=mono",
         ]
         if self.source.live:
             audio_filters += [f"asettb=1/{output_rate}", "ashowinfo"]
@@ -780,27 +751,12 @@ class Ingest:
         )
         ffmpeg += ["-map", "0:a:0", "-af", ",".join(audio_filters)]
 
-        if self.separation_enabled:
-            ffmpeg += [
-                "-ac", "2",
-                "-ar", str(SEPARATION_INPUT_RATE),
-                "-f", "s16le",
-                "pipe:1",
-            ]
-        elif self.deepfilter_enabled:
-            ffmpeg += [
-                "-ac", "1",
-                "-ar", str(DEEPFILTER_INPUT_RATE),
-                "-f", "s16le",
-                "pipe:1",
-            ]
-        else:
-            ffmpeg += [
-                "-ac", "1",
-                "-ar", str(SAMPLE_RATE),
-                "-f", "s16le",
-                "pipe:1",
-            ]
+        ffmpeg += [
+            "-ac", "1",
+            "-ar", str(SAMPLE_RATE),
+            "-f", "s16le",
+            "pipe:1",
+        ]
 
         return ffmpeg
 
@@ -1054,33 +1010,17 @@ class Ingest:
             if start_s:
                 ffmpeg += ["-ss", f"{start_s:.6f}"]
 
-        if self.separation_enabled:
-            output_rate = SEPARATION_INPUT_RATE
-            out = [
-                "-vn", "-ac", "2",
-                "-ar", str(output_rate),
-                "-f", "s16le", "pipe:1",
-            ]
-        elif self.deepfilter_enabled:
-            output_rate = DEEPFILTER_INPUT_RATE
-            out = [
-                "-vn", "-ac", "1",
-                "-ar", str(output_rate),
-                "-f", "s16le", "pipe:1",
-            ]
-        else:
-            output_rate = SAMPLE_RATE
-            out = [
-                "-vn", "-ac", "1",
-                "-ar", str(output_rate),
-                "-f", "s16le", "pipe:1",
-            ]
+        output_rate = SAMPLE_RATE
+        out = [
+            "-vn", "-ac", "1",
+            "-ar", str(output_rate),
+            "-f", "s16le", "pipe:1",
+        ]
 
-        output_layout = "stereo" if self.separation_enabled else "mono"
         filters = self._pitch_filter(output_rate)
         filters += [
             f"aresample={output_rate}",
-            f"aformat=sample_fmts=s16:channel_layouts={output_layout}",
+            "aformat=sample_fmts=s16:channel_layouts=mono",
         ]
         out = ["-af", ",".join(filters)] + out
 
@@ -1364,7 +1304,6 @@ class Ingest:
         start_s = self._audio_start_s()
         first = round(start_s * SAMPLE_RATE)
         sample = first
-        input_frames = 0
 
         # Arm only during a blocking PCM read. Queue backpressure and pauses
         # between reads are intentional and must never trigger recovery.
@@ -1387,66 +1326,16 @@ class Ingest:
         if watch_reads:
             threading.Thread(target=watch_pcm, args=(procs[-1],), name="pcm-read-watch", daemon=True).start()
 
-        worker = None
-        deepfilter_worker = None
-        pending = b""
-
         try:
-            if self.separation_enabled:
-                assert self.separation_cfg is not None
-
-                from .separation import SeparationWorker
-
-                worker = SeparationWorker(
-                    out_q,
-                    first,
-                    self.separation_cfg.model,
-                    generation=generation,
-                    gate=getattr(self, "inference_gate", None),
-                    current=lambda: self.generation,
-                )
-
-                log.info(
-                    "vocal separation enabled: stereo %d Hz input",
-                    SEPARATION_INPUT_RATE,
-                )
-
-            elif self.deepfilter_enabled:
-                from .deepfilter import DeepFilterWorker
-
-                deepfilter_worker = DeepFilterWorker(
-                    out_q,
-                    first,
-                    generation=generation,
-                )
-
-                log.info(
-                    "DeepFilterNet enabled: mono %d Hz input",
-                    DEEPFILTER_INPUT_RATE,
-                )
-
             while True:
                 # No unbounded 7-hour VOD ingestion while MPV is paused.
-                if worker:
-                    reader_sample = first + round(
-                        input_frames * SAMPLE_RATE / SEPARATION_INPUT_RATE
-                    )
-                elif deepfilter_worker:
-                    reader_sample = first + round(
-                        input_frames * SAMPLE_RATE / DEEPFILTER_INPUT_RATE
-                    )
-                else:
-                    reader_sample = sample
-                if not self._wait_for_vod_lead(reader_sample, generation):
+                if not self._wait_for_vod_lead(sample, generation):
                     break
 
                 if watch_reads:
                     with self._proc_lock:
                         read_deadline = time.monotonic() + PCM_READ_TIMEOUT_S
-                if worker:
-                    data = stdout.read(SEPARATION_READ_FRAMES * 4)
-                else:
-                    data = stdout.read(CHUNK_SAMPLES * 2)
+                data = stdout.read(CHUNK_SAMPLES * 2)
 
                 if watch_reads:
                     with self._proc_lock:
@@ -1473,111 +1362,48 @@ class Ingest:
                     )
                     first_chunk_after_seek = False
 
-                if worker:
-                    data = pending + data
-
-                    usable = len(data) - (len(data) % 4)
-                    pending = data[usable:]
-                    data = data[:usable]
-
-                    if not data:
-                        continue
-
-                    pcm = (
-                        np.frombuffer(data, dtype="<i2")
-                        .reshape(-1, 2)
-                        .astype(np.float32)
-                        / 32768.0
-                    )
-
-                    input_frames += len(pcm)
-                    worker.put(pcm)
-
-                elif deepfilter_worker:
-                    data = pending + data
-
-                    usable = len(data) - (len(data) % 2)
-                    pending = data[usable:]
-                    data = data[:usable]
-
-                    if not data:
-                        continue
-
-                    pcm = (
-                        np.frombuffer(data, dtype="<i2")
-                        .astype(np.float32)
-                        / 32768.0
-                    )
-
-                    input_frames += len(pcm)
-                    deepfilter_worker.put(pcm)
-                    deepfilter_worker.put_progress()
-
-                else:
-                    pcm = (
-                        np.frombuffer(data, dtype="<i2")
-                        .astype(np.float32)
-                        / 32768.0
-                    )
-
-                    if generation != self.generation:
-                        break
-
-                    out_q.put(
-                        AudioChunk(
-                            sample,
-                            pcm,
-                            time.monotonic(),
-                            generation=generation,
-                        )
-                    )
-
-                    sample += len(pcm)
-
-            if pending:
-                log.warning(
-                    "Discarded %d incomplete bytes from FFmpeg output",
-                    len(pending),
+                pcm = (
+                    np.frombuffer(data, dtype="<i2")
+                    .astype(np.float32)
+                    / 32768.0
                 )
 
+                if generation != self.generation:
+                    break
+
+                out_q.put(
+                    AudioChunk(
+                        sample,
+                        pcm,
+                        time.monotonic(),
+                        generation=generation,
+                    )
+                )
+
+                sample += len(pcm)
+
         except CancelledError:
-            # Optional separation admission can be invalidated by a seek or
-            # shutdown. Unwind this audio generation and let run() restart it.
-            gate = getattr(self, "inference_gate", None)
-            if (generation == self.generation and not self._stopped
-                    and not stopping.is_set()
-                    and not (gate is not None and gate.stop.is_set())):
+            # A seek or shutdown can cancel this audio generation.
+            # Unwind and let run() restart it.
+            if generation == self.generation and not self._stopped and not stopping.is_set():
                 raise
         finally:
             finished.set()
-            try:
-                if worker:
-                    worker.close()
+            for p in procs:
+                try:
+                    p.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait(timeout=2)
 
-                if deepfilter_worker:
-                    deepfilter_worker.close()
+            # Remove only this session's audio processes. Do not replace
+            # the shared list: it may also contain the MPV video process.
+            with self._proc_lock:
+                self._procs = [
+                    p for p in self._procs if p not in procs
+                ]
 
-            finally:
-                for p in procs:
-                    try:
-                        p.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        p.kill()
-                        p.wait(timeout=2)
-
-                # Remove only this session's audio processes. Do not replace
-                # the shared list: it may also contain the MPV video process.
-                with self._proc_lock:
-                    self._procs = [
-                        p for p in self._procs if p not in procs
-                    ]
-
-        if worker:
-            processed_seconds = input_frames / SEPARATION_INPUT_RATE
-        elif deepfilter_worker:
-            processed_seconds = input_frames / DEEPFILTER_INPUT_RATE
-        else:
-            processed_seconds = (sample - first) / SAMPLE_RATE
+        processed_seconds = (sample - first) / SAMPLE_RATE
 
         log.info(
             "ingest session ended after %.1fs of audio (exit codes %s)",
@@ -1585,12 +1411,8 @@ class Ingest:
             [p.poll() for p in procs],
         )
 
-        if input_frames == 0 and (worker or deepfilter_worker):
-            log.error(
-                "no audio received from FFmpeg; check the source and audio stream"
-            )
 
-        elif sample == first and not (worker or deepfilter_worker) and self.source.start_s and self._restart_at is None:
+        if sample == first and self.source.start_s and self._restart_at is None:
             log.error(
                     "no audio after %s: is the start time past the end of the video?",
                     fmt_hms(self.source.start_s),

@@ -799,7 +799,7 @@ def run(
 
     vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
     log.info(
-        "FireRedVAD accuracy-first (%s): threshold=%.2f, min_speech=%dms, "
+        "SileroVAD (%s): threshold=%.2f, min_speech=%dms, "
         "min_silence=%dms, pad=%dms, onset=%dms, soft_cap=%.1fs, hard_cap=%.1fs, "
         "VAD-negative probing=%s",
         "live" if ingest.source.live else "VOD",

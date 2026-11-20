@@ -196,14 +196,14 @@ def get_default_registry() -> ModelRegistry:
 
 def _register_builtin_backends(registry: ModelRegistry) -> None:
     """Register built-in backends that are always available."""
-    # FireRed VAD is always available
+    # Silero VAD is always available
     registry.register_vad(
-        "firered",
-        factory=_firered_vad_factory,
+        "silero",
+        factory=_silero_vad_factory,
         capabilities=BackendCapabilities(
-            runtime="firered",
+            runtime="silero",
             device="cpu",
-            description="FireRed streaming VAD (CPU)",
+            description="Silero streaming VAD (ONNX, CPU)",
         ),
     )
 
@@ -289,8 +289,8 @@ def _register_builtin_backends(registry: ModelRegistry) -> None:
     )
 
 
-def _firered_vad_factory(config: Any, **kwargs: Any) -> Any:
-    """Factory for FireRed VAD Segmenter."""
+def _silero_vad_factory(config: Any, **kwargs: Any) -> Any:
+    """Factory for Silero VAD Segmenter."""
     from .config import VadConfig
     from .vad import Segmenter
     if isinstance(config, dict):

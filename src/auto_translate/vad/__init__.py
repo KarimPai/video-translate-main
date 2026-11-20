@@ -43,10 +43,10 @@ class VADBackend(Protocol):
 __all__ = ["VADBackend", "VADSegment"]
 
 
-"""FireRed VAD segmenter: AudioChunk stream to timestamped ASR utterances.
+"""Silero VAD segmenter: AudioChunk stream to timestamped ASR utterances.
 
-Loads the FireRed streaming model from Hugging Face on first use and keeps its
-recurrent model state across calls so it works on a live stream.
+Loads the Silero VAD ONNX model on first use and keeps its LSTM recurrent
+state across calls so it works on a live stream.
 
 VAD-negative probes are disabled by default to avoid hallucinating speech
 from music, laughter and game sound effects. Optional probe mode is retained.
@@ -60,7 +60,6 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import CancelledError
 from contextlib import nullcontext
-from pathlib import Path
 
 import numpy as np
 
@@ -69,78 +68,38 @@ from ..types import SAMPLE_RATE, AudioChunk, AudioProgress, SourceEOF, Utterance
 
 log = logging.getLogger(__name__)
 
-FRAME = 160  # FireRed streaming VAD uses a 10 ms frame shift (16 kHz)
+FRAME = 512  # Silero VAD uses a 32 ms frame shift (16 kHz)
 
 
-class StreamingFireRedVAD:
-    """FireRedStreamVad adapter returning one speech probability per 10 ms."""
-
-    WINDOW_SAMPLES = 400  # 25 ms model window
+class StreamingSileroVAD:
+    """Silero VAD ONNX adapter returning one speech probability per 32 ms."""
 
     def __init__(self, speech_threshold: float, device: str = "cpu", model_dir: str = "") -> None:
-        import torch
-        from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
-        from huggingface_hub import snapshot_download
+        from silero_vad_lite import SileroVAD
 
-        if device not in ("cpu", "cuda"):
-            raise ValueError("FireRedVAD device must be cpu or cuda")
-        if device == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("FireRedVAD requested CUDA, but CUDA is unavailable")
+        if device not in ("cpu",):
+            raise ValueError("SileroVAD device must be cpu")
 
-        revision = "7990aaccc6b7aec1e527743bd30201f2c4a03b8c"
-        assets = Path(__file__).resolve().parents[2] / "assets" / "fireredvad" / revision
-        directory = Path(model_dir).expanduser() if model_dir else assets / "Stream-VAD"
-        required = ("cmvn.ark", "model.pth.tar")
-        if not all((directory / filename).is_file() for filename in required):
-            if model_dir:
-                raise FileNotFoundError(f"Incomplete FireRedVAD model directory: {directory}")
-            from huggingface_hub.errors import LocalEntryNotFoundError
-            options = {"repo_id": "FireRedTeam/FireRedVAD", "revision": revision,
-                       "allow_patterns": [f"Stream-VAD/{filename}" for filename in required]}
-            try:
-                directory = Path(snapshot_download(**options, local_files_only=True)) / "Stream-VAD"
-            except LocalEntryNotFoundError:
-                pass
-            if not all((directory / filename).is_file() for filename in required):
-                log.info("Downloading FireRedVAD streaming model from Hugging Face...")
-                directory = Path(snapshot_download(**options)) / "Stream-VAD"
-
-        config = FireRedStreamVadConfig(
-            use_gpu=(device == "cuda"),
-            smooth_window_size=3,  # reduced from 5 for lower VAD latency (~20ms per utterance)
-            speech_threshold=speech_threshold,
-            pad_start_frame=5,
-            min_speech_frame=8,
-            max_speech_frame=2000,
-            min_silence_frame=1,
-            chunk_max_frame=30000,
-        )
-        self._stream = FireRedStreamVad.from_pretrained(str(directory), config)
-        self._history = np.zeros(self.WINDOW_SAMPLES - FRAME, dtype=np.int16)
-        self.device = torch.cuda.get_device_name(0) if device == "cuda" else "CPU"
-        log.info("FireRed VAD initialized on %s", self.device)
+        self._model = SileroVAD(SAMPLE_RATE)
+        self.device = "CPU"
+        log.info("Silero VAD initialized on %s", self.device)
 
     def reset(self) -> None:
-        """Reset streaming caches at a VOD seek without reloading model weights."""
-        self._stream.reset()
-        self._history.fill(0)
+        """Reset LSTM state at a VOD seek without reloading model weights."""
+        self._model.reset()
 
     def __call__(self, audio: np.ndarray) -> np.ndarray:
-        """Accept float32 mono audio and return one raw speech probability per 10 ms."""
-        pcm = np.clip(audio * 32768.0, -32768, 32767).astype(np.int16, copy=False)
-        # FireRed's detect_chunk batches all 10 ms frames into one model forward
-        # pass. Keep the preceding 15 ms so each 25 ms fbank window is continuous
-        # across AudioChunk boundaries.
-        window = np.concatenate((self._history, pcm))
-        results = self._stream.detect_chunk(window)
-        self._history = window[-(self.WINDOW_SAMPLES - FRAME):].copy()
-        probs = np.asarray([result.raw_prob for result in results], dtype=np.float32)
-        expected = len(pcm) // FRAME
-        if len(probs) != expected:
-            raise RuntimeError(
-                f"FireRed returned {len(probs)} frames for {expected} audio frames"
-            )
-        return probs
+        """Accept float32 mono audio and return one raw speech probability per 32 ms."""
+        # Process audio in 512-sample (32ms) chunks, preserving LSTM state.
+        probs: list[float] = []
+        for i in range(0, len(audio), FRAME):
+            chunk = audio[i:i + FRAME]
+            if len(chunk) < FRAME:
+                # Pad short final chunk with silence.
+                chunk = np.pad(chunk, (0, FRAME - len(chunk)), mode='constant')
+            prob = self._model.process(chunk)
+            probs.append(float(prob))
+        return np.asarray(probs, dtype=np.float32)
 
 
 def _ms_to_frames(ms: float) -> int:
@@ -236,9 +195,9 @@ class Segmenter:
         self.fallback_frames = _ms_to_frames(cfg.fallback_s * 1000) if cfg.fallback_s > 0 else 0
         self.fallback_min = _ms_to_frames(cfg.fallback_min_s * 1000)
         self.fallback_min_rms = 10 ** (cfg.fallback_min_db / 20)
-        # Keep one FireRed model instance for the lifetime of the segmenter.
+        # Keep one Silero model instance for the lifetime of the segmenter.
         # A seek only resets recurrent state; it must not reload model weights.
-        self.vad = StreamingFireRedVAD(cfg.threshold, cfg.device, cfg.model_dir)
+        self.vad = StreamingSileroVAD(cfg.threshold, cfg.device, cfg.model_dir)
         self._reset(0, generation=0)
 
     def _reset(self, next_sample: int, generation: int) -> None:

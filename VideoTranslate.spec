@@ -18,7 +18,15 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Build tools
+        'setuptools', 'distutils', 'pip', 'wheel', 'cython',
+        # PyInstaller build-only deps
+        'altgraph', 'pefile', 'pywin32-ctypes',
+        # Unused transitive deps (leftover from removed torch/scipy)
+        'mpmath', 'sympy', 'networkx',
+        'joblib', 'threadpoolctl', 'lazy_loader',
+    ],
     noarchive=False,
     optimize=0,
 )

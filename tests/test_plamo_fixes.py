@@ -1247,8 +1247,8 @@ class TestCoverageTracker:
 class TestPlamoTokenBudgeting:
     """Test that PLaMO correctly uses context_size for token budgeting."""
 
-    def _make_translator(self, context_size: int, max_tokens: int):
-        """Create a PlamoTranslator mock with specific config."""
+    def _make_translator(self, context_size: int, max_tokens: int, parallel_slots: int = 1):
+        """Create a PlamoTranslator mock with specific context and slot count."""
         from auto_translate.config import TranslateConfig
         from auto_translate.glossary import Glossary
         from auto_translate.stream_context import StreamContext
@@ -1265,7 +1265,7 @@ class TestPlamoTokenBudgeting:
             top_p=0.9,
             repeat_penalty=1.1,
             context_size=context_size,
-            parallel_slots=1,
+            parallel_slots=parallel_slots,
             threads=4,
             gpu_layers=-1,
             load_timeout_s=60,
@@ -1498,6 +1498,42 @@ class TestPlamoTokenBudgeting:
         assert "context" not in requests[1][0]["chat_template_kwargs"]
         assert "context" not in requests[2][0]["chat_template_kwargs"]
         assert requests[2][1] == 512
+
+    def test_two_parallel_slots_reduce_available_context(self):
+        """llama-server -c is divided across -np slots for request budgeting."""
+        translator, _ = self._make_translator(
+            context_size=2048, max_tokens=128, parallel_slots=2,
+        )
+        from auto_translate.translate.plamo import PlamoTranslator
+        translator._context = mock.MagicMock(return_value="あ" * 300)
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append(prompt)
+            return "Valid translation", "stop"
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("あ" * 80, [])
+        assert result == "Valid translation"
+        assert len(requests) == 1
+        assert "context" not in requests[0]["chat_template_kwargs"]
+
+    def test_two_parallel_slots_reject_unfittable_simplified(self):
+        """Reject input that would fit total -c but exceed a single slot."""
+        translator, _ = self._make_translator(
+            context_size=2048, max_tokens=256, parallel_slots=2,
+        )
+        from auto_translate.translate.plamo import PlamoTranslator
+        requests = []
+
+        def capture(prompt, **kwargs):
+            requests.append(prompt)
+            return "Valid translation", "stop"
+
+        translator._chat = capture
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("あ" * 400, [])
+        assert result == ""
+        assert requests == []
 
     def test_old_bug_would_skip_full_prompt_for_200_chars(self):
         """Verify the old bug: max_tokens=512 as budget would skip full prompt for 200 chars.

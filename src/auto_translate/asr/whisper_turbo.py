@@ -33,6 +33,10 @@ _WHISPER_MODEL = "Systran/faster-whisper-large-v3-turbo"
 _DEFAULT_BEAM_SIZE = 5
 
 _CT2_MODEL_FILES = {"model.bin", "config.json", "tokenizer.json", "vocabulary.json"}
+# Minimum required files for a valid CTranslate2 Whisper model directory.
+# Requires model.bin + config.json + at least one tokenizer/vocab file.
+_CT2_REQUIRED_CORE = {"model.bin", "config.json"}
+_CT2_REQUIRED_TOKENIZER = {"tokenizer.json", "vocabulary.json"}
 
 
 class WhisperError(RuntimeError):
@@ -46,7 +50,7 @@ class WhisperASR:
     inference on CPU or CUDA. No external server process is needed.
     """
 
-    def __init__(self, cfg: AsrConfig, context: str = "") -> None:
+    def __init__(self, cfg: AsrConfig, context: str = "", *, is_explicit: bool = False) -> None:
         self.cfg = cfg
         self.context = context.strip()[: cfg.max_context_chars]
         self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
@@ -70,7 +74,7 @@ class WhisperASR:
             compute_type = "float16"
             device_index = cfg.cuda_device
 
-        model_path = self._resolve_model_path(cfg)
+        model_path = self._resolve_model_path(cfg, is_explicit=is_explicit)
 
         try:
             from faster_whisper import WhisperModel
@@ -171,28 +175,45 @@ class WhisperASR:
 
     @classmethod
     def _find_cached_model(cls, repo_id: str) -> Path | None:
-        """Return the cached snapshot directory for a HF repo id, or None."""
-        for filename in ("model.bin", "config.json"):
-            try:
-                hit = try_to_load_from_cache(repo_id, filename, revision="main")
-            except Exception:  # noqa: BLE001
-                hit = None
-            if hit:
-                return Path(hit).resolve().parent
+        """Return the cached snapshot directory for a HF repo id, or None.
+
+        Only returns a path if it contains a genuinely complete CTranslate2
+        Whisper model (model.bin + config.json + tokenizer/vocab).
+        Incomplete cache snapshots are rejected.
+        """
+        # First try to locate model.bin to find the snapshot directory
+        try:
+            hit = try_to_load_from_cache(repo_id, "model.bin", revision="main")
+        except Exception:  # noqa: BLE001
+            hit = None
+        if not hit:
+            return None
+        snapshot_dir = Path(hit).resolve().parent
+        # Validate that the snapshot is a complete Whisper model
+        if cls._looks_like_whisper_model(snapshot_dir):
+            return snapshot_dir
         return None
 
     @classmethod
     def _looks_like_whisper_model(cls, path: Path) -> bool:
-        """Accept only directories that contain CTranslate2 Whisper model files.
+        """Accept only directories that contain a complete CTranslate2 Whisper model.
 
-        Requires at least one file from _CT2_MODEL_FILES (model.bin, config.json,
-        tokenizer.json, vocabulary.json). A directory name containing "whisper"
-        is not sufficient — the files must actually be present.
+        Requires ALL of:
+        - model.bin (the model weights)
+        - config.json (model configuration)
+        - At least one of: tokenizer.json, vocabulary.json (tokenizer assets)
+
+        A directory containing only one or two of these files is rejected
+        as an incomplete cache snapshot.
         """
         if not path.is_dir():
             return False
         names = {child.name.lower() for child in path.iterdir()}
-        return bool(names & _CT2_MODEL_FILES)
+        # Must have both core files
+        if not _CT2_REQUIRED_CORE.issubset(names):
+            return False
+        # Must have at least one tokenizer/vocab file
+        return bool(names & _CT2_REQUIRED_TOKENIZER)
 
     # ------------------------------------------------------------------ #
     # ASRBackend protocol

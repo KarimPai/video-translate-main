@@ -527,6 +527,28 @@ def load_config(path: Path) -> Config:
 _MODEL_IDENTITY_ASR = {"model_path", "mmproj_path", "server_path"}
 _MODEL_IDENTITY_TRANSLATE = {"model_path", "server_path"}
 
+# Backends that are compatible with each other for model-identity inheritance.
+# Haas is the default ASR; its model identity may be used by haas backend only.
+# Gemma4 is the default translation; its model identity may be used by gemma4 only.
+# Qwen3-ASR, Whisper, PLaMo, Hy-MT2 must never inherit another backend's model.
+_DEFAULT_ASR_BACKEND = "haas"
+_DEFAULT_TRANSLATE_BACKEND = "gemma4"
+
+
+def _is_compatible_identity(backend_name: str, field: str, common_value: str,
+                            backend_type: str) -> bool:
+    """Check whether a common config model-identity value is compatible with the target backend.
+
+    A common config value is compatible only if it belongs to the same backend
+    (i.e., the target backend IS the default backend for that type).
+    This prevents Qwen3-ASR from inheriting Haas's model path, etc.
+    """
+    if backend_type == "asr":
+        return backend_name == _DEFAULT_ASR_BACKEND
+    elif backend_type == "translate":
+        return backend_name == _DEFAULT_TRANSLATE_BACKEND
+    return False
+
 
 def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
                        explicit_overrides: dict | None = None) -> dict:
@@ -537,9 +559,12 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
     2. Backend-specific profile ([asr.<name>] or [translate.<name>])
     3. Common config (cfg.asr or cfg.translate dataclass)
 
-    Model-identity fields (model_path, mmproj_path, server_path) are excluded
-    from common config inheritance when the backend profile is absent, so that
-    one backend never inherits another backend's model path.
+    Model-identity fields are resolved per-field:
+    - If the backend has a profile with the field, use it.
+    - If the backend is the default for its type (haas/gemma4), the common config
+      value is used as the compatible default.
+    - Otherwise, the field is empty — no cross-backend contamination.
+    - Explicit GUI/CLI overrides always win.
     """
     if backend_type == "asr":
         common = {f.name: getattr(cfg.asr, f.name) for f in fields(cfg.asr)}
@@ -554,18 +579,23 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
         profile = {}
         identity_fields = set()
 
-    # Determine whether a backend-specific profile exists
-    has_profile = bool(profile)
-
-    # Exclude model-identity fields from common config when the profile is absent.
-    # These fields are backend-specific — inheriting them from common config causes
-    # cross-backend contamination (e.g., PLaMo gets Gemma's GGUF path).
-    if not has_profile:
-        for field_name in identity_fields:
-            common.pop(field_name, None)
-
-    # Layer 1: common config (lowest priority, identity fields excluded if no profile)
+    # Layer 1: common config (lowest priority)
     merged = dict(common)
+
+    # Per-field model-identity resolution: prevent cross-backend contamination.
+    # For each identity field, check if the profile provides it. If not, only
+    # keep the common value if this backend is the default for its type.
+    for field_name in identity_fields:
+        if field_name in profile:
+            # Profile has the field — it will override via update() below
+            pass
+        elif _is_compatible_identity(backend_name, field_name, common.get(field_name, ""), backend_type):
+            # This IS the default backend — common config value is compatible
+            pass  # keep the common value
+        else:
+            # Not the default backend — remove incompatible identity from common
+            merged.pop(field_name, None)
+
     # Layer 2: backend-specific profile overrides common
     merged.update(profile)
     # Layer 3: explicit GUI/CLI overrides (highest priority)
@@ -576,31 +606,38 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
 
 def resolve_model_identity(cfg: Config, backend_type: str, backend_name: str,
                            explicit_overrides: dict | None = None) -> dict:
-    """Return model-identity fields from explicit override or backend profile only.
+    """Return model-identity fields from explicit override, backend profile, or compatible default.
 
-    Never returns model paths inherited from common config. This ensures each
-    backend resolves its own model identity independently.
+    Resolves per field with precedence:
+    1. Explicit override (GUI/CLI)
+    2. Backend-specific profile
+    3. Common config default (only if backend is the default for its type)
+    4. Empty string (no compatible source)
 
     Returns a dict with keys: model_path, mmproj_path (ASR only), server_path.
-    Values are empty strings when not configured for this backend.
     """
     if backend_type == "asr":
         profile = cfg.asr_profiles.get(backend_name, {})
         identity_keys = _MODEL_IDENTITY_ASR
+        common = {f.name: getattr(cfg.asr, f.name) for f in fields(cfg.asr)}
     elif backend_type == "translate":
         profile = cfg.translate_profiles.get(backend_name, {})
         identity_keys = _MODEL_IDENTITY_TRANSLATE
+        common = {f.name: getattr(cfg.translate, f.name) for f in fields(cfg.translate)}
     else:
         profile = {}
         identity_keys = set()
+        common = {}
 
     result = {}
     for key in identity_keys:
-        # Priority: explicit override > backend profile > empty string
+        # Priority: explicit override > backend profile > compatible default > empty
         if explicit_overrides and key in explicit_overrides:
             result[key] = explicit_overrides[key]
         elif key in profile:
             result[key] = profile[key]
+        elif _is_compatible_identity(backend_name, key, common.get(key, ""), backend_type):
+            result[key] = common.get(key, "")
         else:
             result[key] = ""
     return result

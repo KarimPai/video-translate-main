@@ -405,6 +405,8 @@ def _make_whisper_dir(tmp_path, whisper_like=True):
     if whisper_like:
         (d / "model.bin").write_bytes(b"")
         (d / "config.json").write_bytes(b"{}")
+        (d / "tokenizer.json").write_bytes(b"{}")
+        (d / "vocabulary.json").write_bytes(b"{}")
     return str(d)
 
 
@@ -463,11 +465,12 @@ def test_whisper_falls_back_to_cache_on_haas_path():
         haas_dir.mkdir()
         (haas_dir / "model.gguf").write_bytes(b"fake gguf")
 
-        # Mock HF cache to return a valid Whisper model
+        # Mock HF cache to return a valid Whisper model (with all required files)
         cached_dir = Path(td) / "cached_whisper"
         cached_dir.mkdir()
         (cached_dir / "model.bin").write_bytes(b"")
         (cached_dir / "config.json").write_bytes(b"{}")
+        (cached_dir / "tokenizer.json").write_bytes(b"{}")
 
         with mock.patch.object(WhisperASR, "_find_cached_model", return_value=cached_dir), \
                 mock.patch("faster_whisper.WhisperModel") as mock_wm:
@@ -1008,12 +1011,12 @@ def test_model_resolution_all_six_backends():
 
 
 def test_model_resolution_missing_profile_no_inheritance():
-    """When a backend profile is absent, model_path is empty, not inherited from common config."""
+    """When a non-default backend profile is absent, model_path is empty, not inherited from common config."""
     cfg = Config()
     cfg.asr.model_path = "C:/models/haas/model.gguf"
     cfg.translate.model_path = "C:/models/gemma4/model.gguf"
 
-    # No backend profiles defined — model_path should NOT be inherited
+    # Unknown backend — model_path should NOT be inherited
     unknown_asr = get_backend_config(cfg, "asr", "unknown-backend")
     assert unknown_asr.get("model_path", "") == "", \
         "model_path should be empty, not inherited from common config"
@@ -1021,6 +1024,28 @@ def test_model_resolution_missing_profile_no_inheritance():
     unknown_mt = get_backend_config(cfg, "translate", "unknown-backend")
     assert unknown_mt.get("model_path", "") == "", \
         "model_path should be empty, not inherited from common config"
+
+    # Default backends (haas, gemma4) SHOULD get their model_path from common config
+    haas_cfg = get_backend_config(cfg, "asr", "haas")
+    assert haas_cfg.get("model_path") == "C:/models/haas/model.gguf", \
+        "Haas (default ASR) should inherit model_path from common config"
+
+    gemma_cfg = get_backend_config(cfg, "translate", "gemma4")
+    assert gemma_cfg.get("model_path") == "C:/models/gemma4/model.gguf", \
+        "Gemma4 (default translate) should inherit model_path from common config"
+
+    # Non-default backends should NOT inherit
+    qwen3_cfg = get_backend_config(cfg, "asr", "qwen3-asr")
+    assert qwen3_cfg.get("model_path", "") == "", \
+        "Qwen3-ASR should NOT inherit Haas model_path"
+
+    whisper_cfg = get_backend_config(cfg, "asr", "whisper")
+    assert whisper_cfg.get("model_path", "") == "", \
+        "Whisper should NOT inherit Haas model_path"
+
+    plamo_cfg = get_backend_config(cfg, "translate", "plamo")
+    assert plamo_cfg.get("model_path", "") == "", \
+        "PLaMo should NOT inherit Gemma model_path"
 
 
 def test_model_resolution_combinations():
@@ -1052,18 +1077,28 @@ def test_model_resolution_combinations():
 
 
 def test_resolve_model_identity():
-    """resolve_model_identity returns only explicit or profile paths, never common config."""
+    """resolve_model_identity returns explicit, profile, or compatible default paths."""
     from auto_translate.config import resolve_model_identity
 
     cfg = Config()
     cfg.asr.model_path = "C:/models/haas/model.gguf"
     cfg.asr.mmproj_path = "C:/models/haas/mmproj.gguf"
 
-    # No profile, no override — should return empty strings
+    # Unknown backend — no profile, not the default — should return empty strings
     identity = resolve_model_identity(cfg, "asr", "unknown")
     assert identity["model_path"] == ""
     assert identity["mmproj_path"] == ""
     assert identity["server_path"] == ""
+
+    # Haas IS the default ASR — common config value IS compatible
+    identity = resolve_model_identity(cfg, "asr", "haas")
+    assert identity["model_path"] == "C:/models/haas/model.gguf"
+    assert identity["mmproj_path"] == "C:/models/haas/mmproj.gguf"
+
+    # Qwen3-ASR is NOT the default — common config should NOT be inherited
+    identity = resolve_model_identity(cfg, "asr", "qwen3-asr")
+    assert identity["model_path"] == ""
+    assert identity["mmproj_path"] == ""
 
     # With profile — should return profile values
     cfg.asr_profiles["qwen3-asr"] = {
@@ -1091,7 +1126,9 @@ def test_qwen3_asr_http_400_no_restart():
     inst = _make_qwen3()
 
     def fake_impl(audio, probe=False, no_context=False, timeout=None):
-        raise httpx.HTTPError("400 Bad Request")
+        resp = mock.Mock()
+        resp.status_code = 400
+        raise httpx.HTTPStatusError("400 Bad Request", request=mock.Mock(), response=resp)
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
             mock.patch.object(inst, "_restart", side_effect=AssertionError("should not restart")), \
@@ -1102,6 +1139,26 @@ def test_qwen3_asr_http_400_no_restart():
             assert "400" in str(exc) or "permanent" in str(exc).lower() or "failed" in str(exc).lower()
             return
     raise AssertionError("expected Qwen3ASRError for HTTP 400")
+
+
+def test_qwen3_asr_http_500_retry():
+    """HTTP 500 Internal Server Error should be retried as a transient failure."""
+    inst = _make_qwen3()
+    call_count = [0]
+
+    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            resp = mock.Mock()
+            resp.status_code = 500
+            raise httpx.HTTPStatusError("500 Internal Server Error", request=mock.Mock(), response=resp)
+        return "成功"
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
+            mock.patch("time.sleep", return_value=None):
+        text = inst.transcribe(np.zeros(16000, dtype=np.float32))
+    assert text == "成功"
+    assert call_count[0] == 3  # 2 failures + 1 success
 
 
 def test_qwen3_asr_permanent_error_no_restart():
@@ -1154,11 +1211,12 @@ def test_whisper_inherited_haas_path_ignored():
         haas_dir.mkdir()
         (haas_dir / "model.gguf").write_bytes(b"fake gguf")
 
-        # Mock HF cache to return a valid Whisper model
+        # Mock HF cache to return a valid Whisper model (with all required files)
         cached_dir = Path(td) / "cached_whisper"
         cached_dir.mkdir()
         (cached_dir / "model.bin").write_bytes(b"")
         (cached_dir / "config.json").write_bytes(b"{}")
+        (cached_dir / "tokenizer.json").write_bytes(b"{}")
 
         cfg = AsrConfig(model_path=str(haas_dir), cuda_device=-1)
 
@@ -1261,6 +1319,160 @@ def test_mpv_auto_pause_hysteresis():
     mpv._translated_until = 103.0  # lead 3.0 >= 3.0 -> resume (hysteresis)
     assert mpv._vod_should_resume() is True
     assert mpv._vod_should_pause() is False
+
+
+# ---------------------------------------------------------------------------
+# P1 — Whisper CTranslate2 model validation (complete model required)
+# ---------------------------------------------------------------------------
+
+def test_whisper_rejects_incomplete_model_missing_tokenizer():
+    """A directory with model.bin + config.json but no tokenizer is rejected."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "incomplete"
+        d.mkdir()
+        (d / "model.bin").write_bytes(b"")
+        (d / "config.json").write_bytes(b"{}")
+        # Missing tokenizer.json and vocabulary.json
+        assert WhisperASR._looks_like_whisper_model(d) is False
+
+
+def test_whisper_rejects_incomplete_model_single_file():
+    """A directory with only model.bin is rejected."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "single_file"
+        d.mkdir()
+        (d / "model.bin").write_bytes(b"")
+        assert WhisperASR._looks_like_whisper_model(d) is False
+
+
+def test_whisper_accepts_complete_model():
+    """A directory with model.bin + config.json + tokenizer is accepted."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "complete"
+        d.mkdir()
+        (d / "model.bin").write_bytes(b"")
+        (d / "config.json").write_bytes(b"{}")
+        (d / "tokenizer.json").write_bytes(b"{}")
+        assert WhisperASR._looks_like_whisper_model(d) is True
+
+
+def test_whisper_accepts_complete_model_with_vocabulary():
+    """A directory with model.bin + config.json + vocabulary.json is accepted."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "complete_vocab"
+        d.mkdir()
+        (d / "model.bin").write_bytes(b"")
+        (d / "config.json").write_bytes(b"{}")
+        (d / "vocabulary.json").write_bytes(b"{}")
+        assert WhisperASR._looks_like_whisper_model(d) is True
+
+
+def test_whisper_find_cached_model_rejects_incomplete():
+    """_find_cached_model rejects a snapshot missing tokenizer files."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        # Create an incomplete snapshot
+        incomplete_dir = Path(td) / "incomplete_snapshot"
+        incomplete_dir.mkdir()
+        (incomplete_dir / "model.bin").write_bytes(b"")
+        (incomplete_dir / "config.json").write_bytes(b"{}")
+        # Missing tokenizer
+
+        with mock.patch("auto_translate.asr.whisper_turbo.try_to_load_from_cache") as mock_load:
+            mock_load.return_value = incomplete_dir / "model.bin"
+            result = WhisperASR._find_cached_model("repo/id")
+        assert result is None
+
+
+def test_whisper_find_cached_model_accepts_complete():
+    """_find_cached_model accepts a complete snapshot."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        complete_dir = Path(td) / "complete_snapshot"
+        complete_dir.mkdir()
+        (complete_dir / "model.bin").write_bytes(b"")
+        (complete_dir / "config.json").write_bytes(b"{}")
+        (complete_dir / "tokenizer.json").write_bytes(b"{}")
+
+        with mock.patch("auto_translate.asr.whisper_turbo.try_to_load_from_cache") as mock_load:
+            mock_load.return_value = complete_dir / "model.bin"
+            result = WhisperASR._find_cached_model("repo/id")
+        assert result == complete_dir
+
+
+# ---------------------------------------------------------------------------
+# P1 — Whisper explicit path through registry factory
+# ---------------------------------------------------------------------------
+
+def test_whisper_registry_factory_passes_is_explicit():
+    """The registry factory passes is_explicit=True when model_path is set."""
+    import tempfile
+
+    from auto_translate.registry import get_default_registry
+
+    with tempfile.TemporaryDirectory() as td:
+        d = _make_whisper_dir(Path(td), whisper_like=True)
+        with mock.patch("faster_whisper.WhisperModel") as mock_wm:
+            mock_wm.return_value = mock.MagicMock()
+            registry = get_default_registry()
+            # Config dict with model_path set (simulating explicit override)
+            config = {"model_path": d, "cuda_device": -1, "threads": 4}
+            registry.create_asr("whisper", config, _whisper_is_explicit=True, context="")
+        # If we got here without error, the factory passed is_explicit correctly
+
+
+def test_whisper_registry_factory_default_is_not_explicit():
+    """The registry factory defaults to is_explicit=False."""
+    import tempfile
+
+    from auto_translate.registry import get_default_registry
+
+    with tempfile.TemporaryDirectory() as td:
+        d = _make_whisper_dir(Path(td), whisper_like=True)
+        with mock.patch("faster_whisper.WhisperModel") as mock_wm:
+            mock_wm.return_value = mock.MagicMock()
+            registry = get_default_registry()
+            config = {"model_path": d, "cuda_device": -1, "threads": 4}
+            # No _whisper_is_explicit passed — should default to False
+            registry.create_asr("whisper", config, context="")
+
+
+# ---------------------------------------------------------------------------
+# P2 — Backend startup receives correct resolved model identity
+# ---------------------------------------------------------------------------
+
+def test_backend_startup_receives_correct_model_identity():
+    """get_backend_config + resolve_model_identity produce consistent results."""
+    from auto_translate.config import resolve_model_identity
+
+    cfg = Config()
+    cfg.asr.model_path = "C:/models/haas/model.gguf"
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+    cfg.asr_profiles["qwen3-asr"] = {
+        "model_path": "C:/models/qwen3-asr/model.gguf",
+        "mmproj_path": "C:/models/qwen3-asr/mmproj.gguf",
+    }
+
+    # Haas: common config is the source
+    haas_merged = get_backend_config(cfg, "asr", "haas")
+    haas_identity = resolve_model_identity(cfg, "asr", "haas")
+    assert haas_merged["model_path"] == haas_identity["model_path"]
+    assert haas_merged["model_path"] == "C:/models/haas/model.gguf"
+
+    # Qwen3-ASR: profile is the source
+    qwen3_merged = get_backend_config(cfg, "asr", "qwen3-asr")
+    qwen3_identity = resolve_model_identity(cfg, "asr", "qwen3-asr")
+    assert qwen3_merged["model_path"] == qwen3_identity["model_path"]
+    assert qwen3_merged["model_path"] == "C:/models/qwen3-asr/model.gguf"
+
+    # Whisper: no profile, not default — empty
+    whisper_merged = get_backend_config(cfg, "asr", "whisper")
+    whisper_identity = resolve_model_identity(cfg, "asr", "whisper")
+    assert whisper_merged.get("model_path", "") == whisper_identity["model_path"] == ""
 
 
 if __name__ == "__main__":

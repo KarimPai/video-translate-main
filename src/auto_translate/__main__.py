@@ -280,7 +280,7 @@ def _main(resources: ExitStack) -> None:
 
     # Create ASR backend via registry with backend-specific profile first,
     # then derive timeout from the effective merged profile.
-    from .config import get_backend_config
+    from .config import get_backend_config, resolve_model_identity
     from .registry import get_default_registry
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
@@ -293,8 +293,15 @@ def _main(resources: ExitStack) -> None:
     live_timeout = asr_profile.get("live_response_timeout_s", cfg.asr.live_response_timeout_s)
     decode_timeout = min(response_timeout, live_timeout) if source.live else response_timeout
     asr_profile["response_timeout_s"] = decode_timeout
+    # For Whisper, determine if model_path was explicitly configured
+    asr_identity = resolve_model_identity(cfg, "asr", asr_backend_name,
+                                          explicit_overrides=asr_cli_overrides if asr_cli_overrides else None)
+    whisper_kwargs = {}
+    if asr_backend_name == "whisper" and asr_identity.get("model_path"):
+        whisper_kwargs["_whisper_is_explicit"] = True
     asr = registry.create_backend("asr", asr_backend_name, asr_profile,
-                                  context=stream_context.recognition_text())
+                                  context=stream_context.recognition_text(),
+                                  **whisper_kwargs)
     resources.callback(asr.close)
     budget.refresh()
     record_event("asr_loaded", backend=asr_backend_name, gpu=budget.snapshot())

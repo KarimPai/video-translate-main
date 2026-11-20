@@ -184,6 +184,27 @@ class Qwen3ASR:
                             time.sleep(sleep_time)
                         continue
                     break
+                except httpx.HTTPStatusError as exc:
+                    last_exc = exc
+                    self._failures += 1
+                    status_code = exc.response.status_code if exc.response is not None else 0
+                    # 4xx = permanent (bad request, auth failure, etc.) — no retry
+                    # 5xx = transient (server error, overload) — retry with backoff
+                    if 400 <= status_code < 500:
+                        self._terminal_failure = True
+                        log.error("Qwen3-ASR permanent HTTP %d error: %s", status_code, exc)
+                        break
+                    else:
+                        # Transient server error — retry
+                        attempts += 1
+                        log.warning("Qwen3-ASR transient HTTP %d (attempt %d/%d)",
+                                    status_code, attempts, max_retries + 1)
+                        if attempts <= max_retries:
+                            sleep_time = min(backoff_s * attempts, deadline - time.monotonic())
+                            if sleep_time > 0:
+                                time.sleep(sleep_time)
+                            continue
+                        break
                 except httpx.HTTPError as exc:
                     last_exc = exc
                     self._failures += 1

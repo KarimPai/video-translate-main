@@ -324,13 +324,22 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
 
 
 def _whisper_asr_factory(config: Any, **kwargs: Any) -> Any:
-    """Factory for Whisper Large-v3 Turbo."""
+    """Factory for Whisper Large-v3 Turbo.
+
+    Passes is_explicit flag so Whisper knows whether the model path was
+    explicitly configured (GUI/CLI override or backend profile) vs inherited
+    from common config (e.g., Haas default).
+    """
     from .asr.whisper_turbo import WhisperASR
     from .config import AsrConfig
     if isinstance(config, dict):
+        # Determine if model_path was explicitly set for this backend
+        is_explicit = kwargs.pop("_whisper_is_explicit", False)
         config = AsrConfig(**config)
+    else:
+        is_explicit = False
     context = kwargs.pop("context", "")
-    return WhisperASR(config, context=context)
+    return WhisperASR(config, context=context, is_explicit=is_explicit)
 
 
 def _gemma4_translate_factory(config: Any, **kwargs: Any) -> Any:

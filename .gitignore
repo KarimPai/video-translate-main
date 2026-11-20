@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Logs
+logs/
+*.log
+
+# Models (large binary files)
+models/
+
+# Runtime binaries (large LLM inference runtime)
+.runtime/
+
+# Distribution & PyInstaller
+dist/
+build/
+*.spec.backup
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with sensitive data
+config.toml

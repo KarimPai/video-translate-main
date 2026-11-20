@@ -1,0 +1,519 @@
+
+# Fixed JA → EN translations, applied before the translator runs.
+# NMT presets: The Japanese term is replaced by the English one in the input text.
+# LLM presets: Matching entries are listed in the prompt.
+# Longer terms win over shorter ones; keep single-kanji terms rare (they can match inside words).
+
+[terms]
+# Hololive / general
+"ホロライブ" = "Hololive"
+"ホロメン" = "Hololive member"
+"ホロリス" = "Hololive fan"
+"ホロックス" = "holoX"
+"ホロアース" = "Holoearth"
+"ホロぐら" = "Holo no Graffiti"
+"ホロライブEN" = "Hololive English"
+"ホロライブID" = "Hololive Indonesia"
+"ホロライブJP" = "Hololive Japan"
+"ホロスタ" = "Holostars"
+"卒業" = "graduation"
+"配信" = "stream"
+"生配信" = "live stream"
+"切り抜き" = "clip"
+"同時視聴" = "watchalong"
+"凸待ち" = "call-in stream"
+"耐久配信" = "endurance stream"
+"記念配信" = "anniversary stream"
+"歌枠" = "karaoke stream"
+"雑談枠" = "chatting stream"
+"メン限" = "members-only"
+"スパチャ" = "Super Chat"
+"赤スパ" = "red Super Chat"
+"メンバーシップ" = "membership"
+"待機所" = "waiting room"
+"マシュマロ" = "Marshmallow questions"
+"てぇてぇ" = "teetee"
+"ガチ恋" = "romantic fan"
+"推し" = "oshi"
+"推し活" = "supporting your oshi"
+"限界化" = "losing it"
+"初見" = "first-time viewer"
+"古参" = "long-time fan"
+"同接" = "concurrent viewers"
+"登録者" = "subscribers"
+# 草 can mean literal grass or a laughter reaction; resolve it in context.
+"ｗｗｗ" = "LOL"
+"なんでやねん" = "what the heck"
+"助かる" = "blessed"
+"かわ余" = "cute"
+"エッッッ" = "seggs"
+"センシティブ" = "NSFW"
+"事故る" = "mess up"
+"ポン" = "clumsy"
+"ぺこら" = "Pekora"
+"こより" = "Koyori"
+"助手くん" = "Assistant-kun"
+"野うさぎ" = "Nousagi"
+"35P" = "35P"
+"宝鐘マリン" = "Houshou Marine"
+"兎田ぺこら" = "Usada Pekora"
+"さくらみこ" = "Sakura Miko"
+
+
+# NPC terminology
+"エヌピーシー" = "NPC"
+"ノンプレイヤーキャラクター" = "NPC"
+"ノンプレイヤー" = "NPC"
+"NPCキャラ" = "NPC"
+"敵NPC" = "enemy NPC"
+"味方NPC" = "friendly NPC"
+"クエストNPC" = "quest NPC"
+"村人" = "villager"
+"住民" = "resident"
+"店員" = "shopkeeper"
+"商人" = "merchant"
+"案内人" = "guide"
+"モブキャラ" = "background character"
+"モブ敵" = "mob enemy"
+"モブ" = "mob"
+
+
+# Hololive JP talents (short names preferred)
+"ときのそら" = "Tokino Sora"
+"ロボ子さん" = "Roboco"
+"星街すいせい" = "Hoshimachi Suisei"
+"白上フブキ" = "Shirakami Fubuki"
+"夏色まつり" = "Natsuiro Matsuri"
+"百鬼あやめ" = "Nakiri Ayame"
+"大空スバル" = "Oozora Subaru"
+"大神ミオ" = "Ookami Mio"
+"猫又おかゆ" = "Nekomata Okayu"
+"戌神ころね" = "Inugami Korone"
+"不知火フレア" = "Shiranui Flare"
+"白銀ノエル" = "Shirogane Noel"
+"角巻わため" = "Tsunomaki Watame"
+"常闇トワ" = "Tokoyami Towa"
+"姫森ルーナ" = "Himemori Luna"
+"雪花ラミィ" = "Yukihana Lamy"
+"桃鈴ねね" = "Momosuzu Nene"
+"獅白ぼたん" = "Shishiro Botan"
+"尾丸ポルカ" = "Omaru Polka"
+"ラプラス・ダークネス" = "Laplus Darknesss"
+"鷹嶺ルイ" = "Takane Lui"
+"博衣こより" = "Hakui Koyori"
+"沙花叉クロヱ" = "Sakamata Chloe"
+"風真いろは" = "Kazama Iroha"
+"アキ・ローゼンタール" = "Aki Rosenthal"
+"赤井はあと" = "Akai Haato"
+"癒月ちょこ" = "Yuzuki Choco"
+"AZKi" = "AZKi"
+
+# Hololive English talents
+"森カリオペ" = "Mori Calliope"
+"小鳥遊キアラ" = "Takanashi Kiara"
+"一伊那尓栖" = "Ninomae Ina'nis"
+"がうるぐら" = "Gawr Gura"
+"ワトソン・アメリア" = "Watson Amelia"
+"IRyS" = "IRyS"
+"オーロ・クロニー" = "Ouro Kronii"
+"ハコス・ベールズ" = "Hakos Baelz"
+"七詩ムメイ" = "Nanashi Mumei"
+"セレス・ファウナ" = "Ceres Fauna"
+"シオリ・ノヴェラ" = "Shiori Novella"
+"古石ビジュー" = "Koseki Bijou"
+"ビジュー" = "Bijou"
+"ビジュ" = "Bijou"
+"ネリッサ・レイヴンクロフト" = "Nerissa Ravencroft"
+"フワワ・アビスガード" = "Fuwawa Abyssgard"
+"モココ・アビスガード" = "Mococo Abyssgard"
+"エリザベス・ローズ・ブラッドフレイム" = "Elizabeth Rose Bloodflame"
+"ジジ・ムリン" = "Gigi Murin"
+"セシリア・イマーグリーン" = "Cecilia Immergreen"
+"ラオーラ・パンテーラ" = "Raora Panthera"
+
+# Hololive Indonesia talents
+"アユンダ・リス" = "Ayunda Risu"
+"ムーナ・ホシノヴァ" = "Moona Hoshinova"
+"アイラニ・イオフィフティーン" = "Airani Iofifteen"
+"クレイジー・オリー" = "Kureiji Ollie"
+"アーニャ・メルフィッサ" = "Anya Melfissa"
+"パヴォリア・レイネ" = "Pavolia Reine"
+"ベスティア・ゼータ" = "Vestia Zeta"
+"カエラ・コヴァルスキア" = "Kaela Kovalskia"
+"こぼ・かなえる" = "Kobo Kanaeru"
+
+# Hololive DEV_IS talents
+"音乃瀬奏" = "Otonose Kanade"
+"一条莉々華" = "Ichijou Ririka"
+"儒烏風亭らでん" = "Juufuutei Raden"
+"轟はじめ" = "Todoroki Hajime"
+"響咲リオナ" = "Isaki Riona"
+"虎金妃笑虎" = "Koganei Niko"
+"水宮枢" = "Mizumiya Su"
+"輪堂千速" = "Rindo Chihaya"
+"綺々羅々ヴィヴィ" = "Kikirara Vivi"
+
+# ASOBI★MAWARI-TAI!
+"熱千めら" = "Achichi Mela"
+"宙科そぴあ" = "Sorashina Sopia"
+"鈴鳴つづり" = "Suzuna Tsuzuri"
+"百灯キョーコ" = "Hyakuto Kyoko"
+
+# holoAN staff
+"井月みちる" = "Izuki Michiru"
+"花園さやか" = "Hanazono Sayaka"
+"風白ゆき" = "Kazeshiro Yuki"
+
+# Graduated talents (low priority)
+"湊あくあ" = "Minato Aqua"
+"紫咲シオン" = "Murasaki Shion"
+"天音かなた" = "Amane Kanata"
+"桐生ココ" = "Kiryu Coco"
+"九十九佐命" = "Tsukumo Sana"
+"火威青" = "Hiodoshi Ao"
+
+# Units and groups
+"秘密結社holoX" = "Secret Society holoX"
+"アソビ★まわり隊！" = "ASOBI★MAWARI-TAI!"
+"リグロス" = "ReGLOSS"
+"フロウグロウ" = "FLOW GLOW"
+"友人A" = "Friend A"
+
+# Gaming vocabulary
+"エイム" = "aim"
+"エイム力" = "aim skill"
+"ヘッドショット" = "headshot"
+"ヘッショ" = "headshot"
+"キル" = "kill"
+"デス" = "death"
+"キルレ" = "K/D ratio"
+"キルログ" = "kill feed"
+"リスポーン" = "respawn"
+"リスポーン地点" = "spawn point"
+"リロード" = "reload"
+"弾切れ" = "out of ammo"
+"弾薬" = "ammo"
+"反動" = "recoil"
+"腰撃ち" = "hip fire"
+"撃ち合い" = "gunfight"
+"裏取り" = "flanking"
+"奇襲" = "ambush"
+"索敵" = "scouting"
+"立ち回り" = "game sense"
+"エイムアシスト" = "aim assist"
+"感度" = "sensitivity"
+"視点" = "camera"
+"当たり判定" = "hitbox"
+"判定" = "hit registration"
+"ラグ" = "lag"
+"回線落ち" = "disconnect"
+"同期ズレ" = "desync"
+"チーター" = "cheater"
+"初心者狩り" = "smurfing"
+"キャリー" = "carry"
+"ナイス" = "nice"
+"ナイスショット" = "nice shot"
+"ナイスプレイ" = "nice play"
+"戦犯" = "the reason we lost"
+"味方" = "teammate"
+"敵" = "enemy"
+"野良" = "random teammate"
+"ソロキュー" = "solo queue"
+"ランクマ" = "ranked"
+"ランク戦" = "ranked match"
+"マッチング" = "matchmaking"
+"フルパ" = "full party"
+"パーティー" = "party"
+"ボイチャ" = "voice chat"
+"VC" = "voice chat"
+"固定" = "premade team"
+"野良マッチ" = "public match"
+"初心者" = "beginner"
+"上級者" = "advanced player"
+"沼る" = "get stuck"
+"詰んだ" = "it's over"
+"壊れ性能" = "overpowered"
+"ぶっ壊れ" = "broken"
+"弱体化" = "nerf"
+"ナーフ" = "nerf"
+"強化" = "buff"
+"バフ" = "buff"
+"デバフ" = "debuff"
+"クールタイム" = "cooldown"
+"CT" = "cooldown"
+"スキル回し" = "skill rotation"
+"必殺技" = "ultimate"
+"ウルト" = "ultimate"
+" ult " = "ultimate"
+"ボス戦" = "boss fight"
+"レイド" = "raid"
+"ダンジョン" = "dungeon"
+"周回" = "farming"
+"素材集め" = "material farming"
+"経験値" = "experience"
+"レベル上げ" = "leveling"
+"ドロップ率" = "drop rate"
+"ガチャ" = "gacha"
+"天井" = "pity"
+"爆死" = "terrible gacha pulls"
+"神引き" = "god-tier pull"
+"リセマラ" = "rerolling"
+"課金" = "spending money"
+"無課金" = "free-to-play"
+"微課金" = "low spender"
+"石" = "premium currency"
+"スタミナ" = "stamina"
+"周回ゲー" = "grind-heavy game"
+"作業ゲー" = "grindy game"
+"初見殺し" = "newbie trap"
+"攻略" = "strategy guide"
+"ネタバレ" = "spoiler"
+"バグ" = "bug"
+"グリッチ" = "glitch"
+"アプデ" = "update"
+"メンテ" = "maintenance"
+"サーバー" = "server"
+"フレームレート" = "frame rate"
+"FPS" = "FPS"
+"TPS" = "TPS"
+"DPS" = "DPS"
+"HP" = "HP"
+"MP" = "MP"
+"タンク" = "tank"
+"ヒーラー" = "healer"
+"アタッカー" = "DPS"
+"火力" = "damage"
+"火力不足" = "not enough damage"
+"耐久" = "survivability"
+"回避" = "dodge"
+"パリィ" = "parry"
+"ジャスト回避" = "perfect dodge"
+"スタン" = "stun"
+"ノックバック" = "knockback"
+"範囲攻撃" = "AoE"
+"範囲技" = "AoE ability"
+"バースト" = "burst damage"
+"コンボ" = "combo"
+"連携" = "team combo"
+"クリティカル" = "critical hit"
+"会心" = "critical hit"
+"即死" = "instant kill"
+"ワンパン" = "one-shot"
+"ワイプ" = "wipe"
+"全滅" = "party wipe"
+"ヘイト" = "aggro"
+"タゲ" = "target"
+"ターゲット" = "target"
+"ギミック" = "mechanic"
+"フェーズ" = "phase"
+"パターン" = "pattern"
+"リトライ" = "retry"
+"リベンジ" = "rematch"
+"勝ち確" = "guaranteed win"
+"負け確" = "guaranteed loss"
+"GG" = "GG"
+"EZ" = "easy"
+
+# Nicknames - only commonly used short forms and ambiguous names
+[nicknames]
+# Botan - ambiguous with "button"
+"ぼたん" = "Botan"
+"ボタン" = "Botan"
+"シシロン" = "Shishiron"
+"ししろん" = "Shishiron"
+# Pekora
+"ぺこら" = "Pekora"
+"ペコラ" = "Pekora"
+"ぺこちゃん" = "Peko-chan"
+# Miko - ambiguous with "shrine maiden"
+"みこ" = "Miko"
+"みこち" = "Mikochi"
+# Matsuri - ambiguous with "festival"
+"まつり" = "Matsuri"
+"祭り" = "Matsuri"
+# Suisei - ASR writes すいせい as 水星
+"すいせい" = "Suisei"
+"水星" = "Suisei"
+"すいちゃん" = "Sui-chan"
+# Laplus
+"らぷ" = "Lap"
+"ラプ" = "Lap"
+"ラプちゃん" = "Lap-chan"
+"ラプラス" = "Laplus"
+# Akutan (ASR may transcribe as アクタン or アクター)
+"アクタン" = "Akutan"
+"アクター" = "Akutan"
+# Other common nicknames
+"こより" = "Koyori"
+"ねねち" = "Nenechi"
+"わため" = "Watame"
+"ルイ" = "Lui"
+"ルイちゃん" = "Lui-chan"
+"カリオペ" = "Calliope"
+"カリちゃん" = "Calli-chan"
+"船長" = "Senchou"
+"フワワ" = "Fuwawa"
+"モココ" = "Mococo"
+"イオフィ" = "Iofi"
+"ムーナ" = "Moona"
+"カエラ" = "Kaela"
+# Honorific-suffixed nicknames
+"まつりちゃん" = "Matsuri-chan"
+"ラプ様" = "Lap-sama"
+"水星先輩" = "Suisei-senpai"
+"すいせい先輩" = "Suisei-senpai"
+"水星さん" = "Suisei-san"
+
+[talent_aliases]
+# Maps nicknames to canonical talent names for context resolution
+"すいちゃん" = "星街すいせい"
+"すいせい" = "星街すいせい"
+"水星" = "星街すいせい"
+"みこち" = "ときのそら"
+"みこ" = "ときのそら"
+"ぺこら" = "兎田ぺこら"
+"ぺこちゃん" = "兎田ぺこら"
+"ししろん" = "獅白ぼたん"
+"ぼたん" = "獅白ぼたん"
+"わため" = "角巻わため"
+"ねねち" = "桃鈴ねね"
+"こより" = "博衣こより"
+"ルイ" = "鷹嶺ルイ"
+"ルイちゃん" = "鷹嶺ルイ"
+"カリオペ" = "森カリオペ"
+"カリちゃん" = "森カリオペ"
+"船長" = "宝鐘マリン"
+"らぷ" = "ラプラス・ダークネス"
+"ラプラス" = "ラプラス・ダークネス"
+"ラプ様" = "ラプラス・ダークネス"
+"まつり" = "夏色まつり"
+"祭り" = "夏色まつり"
+"まつりちゃん" = "夏色まつり"
+"水星先輩" = "星街すいせい"
+"すいせい先輩" = "星街すいせい"
+"水星さん" = "星街すいせい"
+"フワワ" = "フワワ・アビスガード"
+"モココ" = "モココ・アビスガード"
+"イオフィ" = "アイラニ・イオフィフティーン"
+"ムーナ" = "ムーナ・ホシノヴァ"
+"カエラ" = "カエラ・コヴァルスキア"
+
+# Streamer profiles, matched against the channel name and video metadata.
+# "self" lists first-person forms the streamer uses for themselves, so the
+# translator resolves dropped subjects and third-person self-reference.
+# pronoun is "she" (default) or "he".
+[talents]
+# Hololive JP
+"ときのそら" = {}
+"ロボ子さん" = {}
+"星街すいせい" = { self = ["すいちゃん"] }
+"白上フブキ" = { self = ["白上"] }
+"夏色まつり" = { self = ["まつり"] }
+"百鬼あやめ" = { self = ["余"] }
+"大空スバル" = { self = ["スバル"] }
+"大神ミオ" = { self = ["ウチ"] }
+"猫又おかゆ" = { self = ["ボク"] }
+"戌神ころね" = {}
+"不知火フレア" = {}
+"白銀ノエル" = { self = ["団長"] }
+"宝鐘マリン" = { self = ["船長", "マリン"] }
+"兎田ぺこら" = { self = ["ぺこーら"] }
+"角巻わため" = { self = ["わため"] }
+"常闇トワ" = {}
+"姫森ルーナ" = { self = ["ルーナ"] }
+"雪花ラミィ" = { self = ["ラミィ"] }
+"桃鈴ねね" = { self = ["ねね"] }
+"獅白ぼたん" = {}
+"尾丸ポルカ" = {}
+"ラプラス・ダークネス" = { self = ["吾輩"] }
+"鷹嶺ルイ" = {}
+"博衣こより" = { self = ["こより"] }
+"沙花叉クロヱ" = { self = ["沙花叉"] }
+"風真いろは" = { self = ["風真"] }
+"アキ・ローゼンタール" = {}
+"赤井はあと" = { self = ["はあちゃま"] }
+"癒月ちょこ" = {}
+"AZKi" = {}
+
+# Hololive English
+"森カリオペ" = {}
+"小鳥遊キアラ" = {}
+"一伊那尓栖" = {}
+"がうるぐら" = {}
+"ワトソン・アメリア" = {}
+"IRyS" = {}
+"オーロ・クロニー" = {}
+"ハコス・ベールズ" = {}
+"七詩ムメイ" = {}
+"セレス・ファウナ" = {}
+"シオリ・ノヴェラ" = {}
+"古石ビジュー" = {}
+"ネリッサ・レイヴンクロフト" = {}
+"フワワ・アビスガード" = {}
+"モココ・アビスガード" = {}
+"エリザベス・ローズ・ブラッドフレイム" = {}
+"ジジ・ムリン" = {}
+"セシリア・イマーグリーン" = {}
+"ラオーラ・パンテーラ" = {}
+
+# Hololive Indonesia
+"アユンダ・リス" = {}
+"ムーナ・ホシノヴァ" = {}
+"アイラニ・イオフィフティーン" = {}
+"クレイジー・オリー" = {}
+"アーニャ・メルフィッサ" = {}
+"パヴォリア・レイネ" = {}
+"ベスティア・ゼータ" = {}
+"カエラ・コヴァルスキア" = {}
+"こぼ・かなえる" = {}
+
+# Hololive DEV_IS
+"音乃瀬奏" = {}
+"一条莉々華" = {}
+"儒烏風亭らでん" = {}
+"轟はじめ" = {}
+"響咲リオナ" = {}
+"虎金妃笑虎" = {}
+"水宮枢" = {}
+"輪堂千速" = {}
+"綺々羅々ヴィヴィ" = {}
+
+# ASOBI★MAWARI-TAI!
+"熱千めら" = {}
+"宙科そぴあ" = {}
+"鈴鳴つづり" = {}
+"百灯キョーコ" = {}
+
+# Graduated talents
+"湊あくあ" = { self = ["あてぃし"] }
+"紫咲シオン" = {}
+"天音かなた" = {}
+"桐生ココ" = {}
+"九十九佐命" = {}
+"火威青" = {}
+
+# Stream topics, enabled when the title or tags contain a "match" word.
+# "asr" words bias speech recognition toward the topic's vocabulary;
+# "terms" are added to the translation glossary for that stream only.
+[topics.gta]
+match = ["GTA", "グラセフ", "ストグラ"]
+# The first four are broad recognition hints. Title matches take precedence.
+asr = ["銀行強盗", "無線", "救急隊", "指名手配", "店舗強盗", "宝石店強盗", "コンビニ強盗", "現着", "応援", "犯人", "パトカー"]
+
+[topics.gta.terms]
+"店舗強盗" = "store robbery"
+"銀行強盗" = "bank robbery"
+"宝石店強盗" = "jewelry store robbery"
+"コンビニ強盗" = "convenience store robbery"
+"指名手配" = "wanted"
+"現着" = "on scene"
+"現場到着" = "arrived on scene"
+"救急隊" = "EMS"
+"無線" = "radio"
+"犯人" = "suspect"
+# Speech recognition mishearings of 店舗強盗 and 指名手配.
+"店舗号" = "store robbery"
+"店舗コート" = "store robbery"
+"店舗ゴート" = "store robbery"
+"店舗オート" = "store robbery"
+"締め手配" = "wanted"

@@ -12,6 +12,13 @@ startup_timeout_s = 180
 response_timeout_s = 30
 live_response_timeout_s = 15
 
+[asr.qwen3-asr]
+model_path = "C:/Games/video-translate-universal/models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
+mmproj_path = "C:/Games/video-translate-universal/models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+threads = 4
+cuda_device = 0
+
 [gpu_budget]
 # RTX 3070 8GB: Plenty of VRAM headroom (~3.3 GB free after full GPU offload).
 # Minimal headroom — no need for conservative safety margins.

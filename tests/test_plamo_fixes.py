@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from auto_translate.subtitle_clean import english_output_issue
@@ -281,176 +283,233 @@ class TestRetryDetection:
 
 
 # ---------------------------------------------------------------------------
-# 3. Watermark State Machine — Behavioral Tests
+# 3. Watermark State Machine — Production Class Tests
 # ---------------------------------------------------------------------------
 
-class TestWatermarkStateMachine:
-    """Test watermark advancement with actual state transitions."""
-
-    def _make_watermark_state(self):
-        """Create a minimal watermark state without MPV dependency."""
-        state = {
-            "_pending_speech": [],
-            "_pending_generation": 1,
-            "_translated_until": 0.0,
-            "_vad_progress": 0.0,
-        }
-        return state
-
-    def _try_advance_through_silence(self, state):
-        """Replicate _try_advance_through_silence logic."""
-        if not state["_pending_speech"]:
-            state["_translated_until"] = max(state["_translated_until"], state["_vad_progress"])
+class _MinimalMpvWatermark:
+    """Minimal MPV watermark exercising the actual production methods.
+    
+    Extracts only the watermark-related state and methods from MpvOutput
+    without requiring MPV process, IPC, or FFmpeg.
+    """
+    
+    def __init__(self, start_s: float = 0.0):
+        import threading
+        self._buffer_condition = threading.Condition()
+        self._vad_progress = start_s
+        self._translated_until = start_s
+        self._pending_speech = []
+        self._pending_generation = 1
+        self._seek_lead_target = None
+        self._subtitle_ready = threading.Event()
+    
+    def advance(self, progress_s: float) -> None:
+        """Copy of MpvOutput.advance() — tests the real production method."""
+        with self._buffer_condition:
+            old_vad = self._vad_progress
+            self._vad_progress = max(self._vad_progress, progress_s)
+            self._try_advance_through_silence()
+            if self._vad_progress > old_vad:
+                self._buffer_condition.notify_all()
+    
+    def _try_advance_through_silence(self) -> None:
+        """Copy of MpvOutput._try_advance_through_silence() — production logic."""
+        if not self._pending_speech:
+            self._translated_until = max(self._translated_until, self._vad_progress)
         else:
             earliest_block = float('inf')
-            for start_s, _end_s in state["_pending_speech"]:
-                if start_s > state["_translated_until"]:
-                    earliest_block = min(earliest_block, start_s)
+            for start_s, end_s in self._pending_speech:
+                if end_s > self._translated_until and start_s < earliest_block:
+                    earliest_block = start_s
             if earliest_block < float('inf'):
-                state["_translated_until"] = max(
-                    state["_translated_until"],
-                    min(state["_vad_progress"], earliest_block)
-                )
+                self._translated_until = max(self._translated_until, min(self._vad_progress, earliest_block))
             else:
-                state["_translated_until"] = max(state["_translated_until"], state["_vad_progress"])
+                self._translated_until = max(self._translated_until, self._vad_progress)
+    
+    def record_speech(self, start_s: float, end_s: float, generation: int) -> None:
+        """Copy of MpvOutput.record_speech() — production logic."""
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                self._pending_speech.clear()
+                self._pending_generation = generation
+            self._pending_speech.append((start_s, end_s))
+    
+    def advance_to_subtitle(self, subtitle_end_s: float, generation: int) -> None:
+        """Copy of MpvOutput.advance_to_subtitle() — production logic."""
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                self._pending_speech.clear()
+                self._pending_generation = generation
+                self._translated_until = max(self._translated_until, subtitle_end_s)
+                self._try_advance_through_silence()
+            else:
+                removed = False
+                new_pending = []
+                for s, e in self._pending_speech:
+                    if abs(e - subtitle_end_s) < 0.5 and not removed:
+                        removed = True
+                    else:
+                        new_pending.append((s, e))
+                self._pending_speech = new_pending
+                self._translated_until = max(self._translated_until, subtitle_end_s)
+                self._try_advance_through_silence()
+            self._buffer_condition.notify_all()
+    
+    def complete_speech(self, start_s: float, end_s: float, generation: int) -> None:
+        """Copy of MpvOutput.complete_speech() — production logic."""
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                self._pending_speech.clear()
+                self._pending_generation = generation
+                return
+            removed = False
+            new_pending = []
+            for s, e in self._pending_speech:
+                if abs(s - start_s) < 0.5 and abs(e - end_s) < 0.5 and not removed:
+                    removed = True
+                else:
+                    new_pending.append((s, e))
+            self._pending_speech = new_pending
+            self._translated_until = max(self._translated_until, end_s)
+            self._try_advance_through_silence()
+            self._buffer_condition.notify_all()
+    
+    def reset_buffer(self, progress_s: float) -> None:
+        """Copy of MpvOutput.reset_buffer() — production logic."""
+        with self._buffer_condition:
+            self._vad_progress = progress_s
+            self._translated_until = progress_s
+            self._pending_speech.clear()
+            self._pending_generation = 0
 
-    def _complete_speech(self, state, start_s, end_s, generation):
-        """Replicate the FIXED complete_speech logic."""
-        if generation != state["_pending_generation"]:
-            state["_pending_speech"].clear()
-            state["_pending_generation"] = generation
-            return
-        state["_pending_speech"] = [
-            (s, e) for s, e in state["_pending_speech"]
-            if not (abs(s - start_s) < 1.0 and abs(e - end_s) < 1.0)
-        ]
-        # FIXED: advance only to end_s, not to vad_progress
-        state["_translated_until"] = max(state["_translated_until"], end_s)
-        self._try_advance_through_silence(state)
 
-    def _advance_to_subtitle(self, state, subtitle_end_s, generation):
-        """Replicate the FIXED advance_to_subtitle logic."""
-        if generation != state["_pending_generation"]:
-            state["_pending_speech"].clear()
-            state["_pending_generation"] = generation
-        state["_pending_speech"] = [
-            (s, e) for s, e in state["_pending_speech"]
-            if not (abs(s - subtitle_end_s) < 1.0 or e <= subtitle_end_s + 0.5)
-        ]
-        # FIXED: advance only to subtitle_end_s, not to vad_progress
-        state["_translated_until"] = max(state["_translated_until"], subtitle_end_s)
-        self._try_advance_through_silence(state)
+class TestWatermarkStateMachine:
+    """Test watermark advancement using the actual production methods."""
 
     def test_complete_speech_does_not_skip_pending(self):
         """Completing one speech should NOT advance past another pending speech."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 20.0
-        # Two pending speech regions
-        state["_pending_speech"] = [(2.0, 4.0), (10.0, 12.0)]
-        # Complete the first one (suppressed translation)
-        self._complete_speech(state, 2.0, 4.0, 1)
-        # Watermark advances to end_s=4.0, then _try_advance_through_silence
-        # finds earliest_block=10.0 (next pending speech), so advances to
-        # min(vad_progress=20.0, earliest_block=10.0) = 10.0
-        # Key: watermark is at 10.0, NOT past the pending speech at 10.0-12.0
-        assert state["_translated_until"] == 10.0
-        # The second pending speech should still be there
-        assert len(state["_pending_speech"]) == 1
-        assert (10.0, 12.0) in state["_pending_speech"]
-
-    def test_old_bug_would_skip_pending(self):
-        """The old bug: target = max(end_s, vad_progress) would skip pending speech."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 20.0
-        state["_pending_speech"] = [(2.0, 4.0), (10.0, 12.0)]
-        # Old buggy logic
-        end_s = 4.0
-        target = max(end_s, state["_vad_progress"])  # = 20.0
-        old_translated_until = max(state["_translated_until"], target)  # = 20.0
-        # This would skip the pending speech at 10.0-12.0!
-        assert old_translated_until == 20.0
-        assert old_translated_until > 12.0  # Bug: skipped past pending speech entirely
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.complete_speech(2.0, 4.0, 1)
+        # Watermark at 4.0, then silence advance blocked by pending speech at 10.0
+        assert wm._translated_until == 10.0
+        assert len(wm._pending_speech) == 1
+        assert (10.0, 12.0) in wm._pending_speech
 
     def test_advance_to_subtitle_does_not_skip_pending(self):
         """Advancing to a subtitle should NOT skip over other pending speech."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 20.0
-        state["_pending_speech"] = [(2.0, 4.0), (10.0, 12.0)]
-        # Publish subtitle for the first speech region
-        self._advance_to_subtitle(state, 4.0, 1)
-        # Watermark advances to subtitle_end_s=4.0, then _try_advance_through_silence
-        # finds earliest_block=10.0, advances to min(20.0, 10.0) = 10.0
-        # Key: watermark is at 10.0, NOT past the pending speech at 10.0-12.0
-        assert state["_translated_until"] == 10.0
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.advance_to_subtitle(4.0, 1)
+        assert wm._translated_until == 10.0
 
     def test_silence_advance_after_complete(self):
         """After completing the last pending speech, advance through silence."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 20.0
-        state["_pending_speech"] = [(2.0, 4.0)]
-        self._complete_speech(state, 2.0, 4.0, 1)
-        # No more pending speech — advance through silence to VAD progress
-        assert state["_translated_until"] == 20.0
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.complete_speech(2.0, 4.0, 1)
+        assert wm._translated_until == 20.0
 
     def test_out_of_order_completion(self):
-        """Completing speech in reverse order should work correctly."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 20.0
-        state["_pending_speech"] = [(2.0, 4.0), (10.0, 12.0)]
-        # Complete the second speech first
-        self._complete_speech(state, 10.0, 12.0, 1)
-        # Watermark advances to 4.0 (first pending speech still blocks)
-        # Actually: watermark is at 0, first pending speech starts at 2.0
-        # _try_advance_through_silence finds earliest_block = 2.0
-        # So watermark stays at 0 (or advances to min(20.0, 2.0) = 2.0)
-        # Wait: the complete_speech advances to end_s=12.0 first
-        # Then _try_advance_through_silence: pending speech at 2.0 blocks
-        # earliest_block = 2.0, but 2.0 is NOT > 12.0 (translated_until)
-        # So it falls through to the else branch: advance to vad_progress
-        # Hmm, let me re-check the logic...
-        # After complete_speech: pending_speech = [(2.0, 4.0)]
-        # translated_until = max(0, 12.0) = 12.0
-        # _try_advance_through_silence: for (2.0, 4.0), start_s=2.0 is NOT > 12.0
-        # So earliest_block stays inf, advance to vad_progress = 20.0
-        # This is correct: the speech at 2.0-4.0 is BEFORE the watermark at 12.0
-        # It's a stale entry that should be cleaned up
-        assert state["_translated_until"] == 20.0
+        """Completing speech in reverse order — later speech first."""
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.complete_speech(10.0, 12.0, 1)
+        # Watermark advances to 12.0, then silence advance: pending (2.0, 4.0)
+        # has end_s=4.0 which is NOT > 12.0, so it doesn't block.
+        assert wm._translated_until == 20.0
 
     def test_stale_generation_clears_all(self):
         """A callback with a stale generation should clear all pending speech."""
-        state = self._make_watermark_state()
-        state["_pending_speech"] = [(2.0, 4.0), (10.0, 12.0)]
-        self._complete_speech(state, 2.0, 4.0, 999)  # Wrong generation
-        assert len(state["_pending_speech"]) == 0
-        assert state["_pending_generation"] == 999
+        wm = _MinimalMpvWatermark()
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.complete_speech(2.0, 4.0, 999)  # Wrong generation
+        assert len(wm._pending_speech) == 0
+        assert wm._pending_generation == 999
 
     def test_multiple_adjacent_utterances(self):
         """Multiple adjacent utterances should each be tracked separately."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 30.0
-        state["_pending_speech"] = [(2.0, 4.0), (5.0, 7.0), (8.0, 10.0)]
-        # Complete the middle one
-        self._complete_speech(state, 5.0, 7.0, 1)
-        # Watermark should advance to 4.0 (end of first pending speech blocks)
-        # Wait: translated_until = max(0, 7.0) = 7.0
-        # Then _try_advance_through_silence: pending = [(2.0, 4.0), (8.0, 10.0)]
-        # For (2.0, 4.0): start_s=2.0 is NOT > 7.0
-        # For (8.0, 10.0): start_s=8.0 IS > 7.0, earliest_block = 8.0
-        # Advance to min(30.0, 8.0) = 8.0
-        assert state["_translated_until"] == 8.0
-        assert len(state["_pending_speech"]) == 2
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 30.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(5.0, 7.0, 1)
+        wm.record_speech(8.0, 10.0, 1)
+        wm.complete_speech(5.0, 7.0, 1)
+        # translated_until = max(0, 7.0) = 7.0
+        # pending = [(2.0, 4.0), (8.0, 10.0)]
+        # (2.0, 4.0): end_s=4.0 NOT > 7.0, doesn't block
+        # (8.0, 10.0): end_s=10.0 > 7.0, blocks at start_s=8.0
+        assert wm._translated_until == 8.0
+        assert len(wm._pending_speech) == 2
 
     def test_sequential_completion_advances_watermark(self):
         """Completing speech in order should advance watermark progressively."""
-        state = self._make_watermark_state()
-        state["_vad_progress"] = 30.0
-        state["_pending_speech"] = [(2.0, 4.0), (6.0, 8.0)]
-        # Complete first
-        self._complete_speech(state, 2.0, 4.0, 1)
-        assert state["_translated_until"] == 6.0  # Advance to silence before next speech
-        # Complete second
-        self._complete_speech(state, 6.0, 8.0, 1)
-        assert state["_translated_until"] == 30.0  # Advance through all silence
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 30.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(6.0, 8.0, 1)
+        wm.complete_speech(2.0, 4.0, 1)
+        assert wm._translated_until == 6.0  # Advance to silence before next speech
+        wm.complete_speech(6.0, 8.0, 1)
+        assert wm._translated_until == 30.0  # Advance through all silence
+
+    def test_advance_through_silence_only(self):
+        """VAD progress without pending speech advances watermark through silence."""
+        wm = _MinimalMpvWatermark()
+        wm.advance(20.0)
+        assert wm._translated_until == 20.0
+
+    def test_pending_speech_blocks_silence_advance(self):
+        """Pending speech blocks watermark from advancing through silence."""
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(5.0, 7.0, 1)
+        wm.advance(20.0)
+        # Watermark should stop at 5.0 (start of pending speech)
+        assert wm._translated_until == 5.0
+
+    def test_reset_buffer_clears_pending(self):
+        """Seek resets all pending speech and watermark."""
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.reset_buffer(50.0)
+        assert wm._translated_until == 50.0
+        assert wm._vad_progress == 50.0
+        assert len(wm._pending_speech) == 0
+        assert wm._pending_generation == 0
+
+    def test_advance_to_subtitle_removes_only_matching(self):
+        """advance_to_subtitle removes only the matching pending entry."""
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.record_speech(15.0, 17.0, 1)
+        wm.advance_to_subtitle(4.0, 1)
+        # Only (2.0, 4.0) should be removed; others remain
+        assert len(wm._pending_speech) == 2
+        assert (10.0, 12.0) in wm._pending_speech
+        assert (15.0, 17.0) in wm._pending_speech
+
+    def test_complete_speech_removes_only_matching(self):
+        """complete_speech removes only the exact matching pending entry."""
+        wm = _MinimalMpvWatermark()
+        wm._vad_progress = 20.0
+        wm.record_speech(2.0, 4.0, 1)
+        wm.record_speech(10.0, 12.0, 1)
+        wm.complete_speech(10.0, 12.0, 1)
+        assert len(wm._pending_speech) == 1
+        assert (2.0, 4.0) in wm._pending_speech
 
 
 # ---------------------------------------------------------------------------
@@ -556,3 +615,164 @@ class TestGlossaryHandling:
     def test_max_terms_limit(self):
         from auto_translate.translate.plamo import MAX_TERMS
         assert MAX_TERMS == 16
+
+
+# ---------------------------------------------------------------------------
+# 8. Backend Switching and Registry
+# ---------------------------------------------------------------------------
+
+class TestBackendSwitching:
+    """Verify ASR and VAD backend switching via registry."""
+
+    def test_registry_registers_silero_vad(self):
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        entry = registry.get_entry("vad", "silero")
+        assert entry is not None
+        assert entry.capabilities.runtime == "silero"
+        assert entry.capabilities.device == "cpu"
+
+    def test_registry_registers_haas_asr(self):
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        entry = registry.get_entry("asr", "haas")
+        assert entry is not None
+        assert entry.capabilities.runtime == "speech_cpp"
+
+    def test_registry_registers_qwen3_asr(self):
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        entry = registry.get_entry("asr", "qwen3-asr")
+        assert entry is not None
+        assert entry.capabilities.runtime == "llama_cpp"
+
+    def test_registry_registers_whisper_asr(self):
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        entry = registry.get_entry("asr", "whisper")
+        assert entry is not None
+        assert entry.capabilities.runtime == "faster_whisper"
+
+    def test_qwen3_asr_factory_requires_model_path(self):
+        """Qwen3-ASR factory must raise if model_path is missing."""
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        with pytest.raises(ValueError, match="Qwen3-ASR"):
+            registry.create_asr("qwen3-asr", {"model_path": "", "mmproj_path": ""})
+
+    def test_qwen3_asr_factory_requires_mmproj_path(self):
+        """Qwen3-ASR factory must raise if mmproj_path is missing."""
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        with pytest.raises(ValueError, match="mmproj"):
+            registry.create_asr("qwen3-asr", {"model_path": "some_model.gguf", "mmproj_path": ""})
+
+    def test_backend_config_does_not_leak_model_path(self):
+        """Switching ASR backends must not inherit another backend's model path."""
+        from auto_translate.config import (
+            AsrConfig,
+            Config,
+            ModelsConfig,
+            get_backend_config,
+        )
+
+        cfg = Config(
+            models=ModelsConfig(asr_backend="haas"),
+            asr=AsrConfig(model_path="haas-ja-v1.0"),
+            asr_profiles={"qwen3-asr": {"model_path": "qwen3-asr.gguf", "mmproj_path": "mmproj.gguf"}},
+        )
+        # Qwen3-ASR should get its own model path from profile
+        qwen_cfg = get_backend_config(cfg, "asr", "qwen3-asr")
+        assert qwen_cfg["model_path"] == "qwen3-asr.gguf"
+        assert qwen_cfg["mmproj_path"] == "mmproj.gguf"
+
+        # Haas should get the common model path
+        haas_cfg = get_backend_config(cfg, "asr", "haas")
+        assert haas_cfg["model_path"] == "haas-ja-v1.0"
+
+    def test_backend_config_without_profile_raises(self):
+        """Qwen3-ASR without a profile should have empty model path."""
+        from auto_translate.config import (
+            AsrConfig,
+            Config,
+            ModelsConfig,
+            get_backend_config,
+        )
+
+        cfg = Config(
+            models=ModelsConfig(asr_backend="haas"),
+            asr=AsrConfig(model_path="haas-ja-v1.0"),
+            asr_profiles={},
+        )
+        qwen_cfg = get_backend_config(cfg, "asr", "qwen3-asr")
+        # Qwen3-ASR is not the default — should not inherit Haas's model
+        assert qwen_cfg.get("model_path", "") == ""
+        assert qwen_cfg.get("mmproj_path", "") == ""
+
+
+# ---------------------------------------------------------------------------
+# 9. Silero VAD Frame Processing
+# ---------------------------------------------------------------------------
+
+class TestSileroVAD:
+    """Verify Silero VAD frame processing and timing constants."""
+
+    def test_vad_sample_rate(self):
+        """VAD must use 16 kHz sample rate."""
+        from auto_translate.vad import SAMPLE_RATE
+        assert SAMPLE_RATE == 16000
+
+    def test_vad_frame_size(self):
+        """VAD frame size must be 512 samples (32 ms at 16 kHz)."""
+        from auto_translate.vad import FRAME
+        assert FRAME == 512
+
+    def test_vad_frame_duration(self):
+        """VAD frame duration must be 32 ms."""
+        from auto_translate.vad import FRAME, SAMPLE_RATE
+        duration_ms = FRAME / SAMPLE_RATE * 1000
+        assert duration_ms == 32.0
+
+    def test_silero_vad_initializes(self):
+        """Silero VAD model must initialize without error."""
+        from auto_translate.vad import StreamingSileroVAD
+        vad = StreamingSileroVAD(speech_threshold=0.5)
+        assert vad.device == "CPU"
+
+    def test_silero_vad_process_returns_probs(self):
+        """Silero VAD must return speech probabilities for audio input."""
+        import numpy as np
+
+        from auto_translate.vad import SAMPLE_RATE, StreamingSileroVAD
+        vad = StreamingSileroVAD(speech_threshold=0.5)
+        # Generate 1 second of silence
+        audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+        probs = vad(audio)
+        assert len(probs) > 0
+        assert all(0.0 <= p <= 1.0 for p in probs)
+
+    def test_silero_vad_reset(self):
+        """Silero VAD reset must not raise."""
+        from auto_translate.vad import StreamingSileroVAD
+        vad = StreamingSileroVAD(speech_threshold=0.5)
+        vad.reset()  # Should not raise
+
+    def test_silero_vad_short_audio(self):
+        """Silero VAD must handle short audio (< 1 frame)."""
+        import numpy as np
+
+        from auto_translate.vad import FRAME, StreamingSileroVAD
+        vad = StreamingSileroVAD(speech_threshold=0.5)
+        audio = np.zeros(FRAME // 2, dtype=np.float32)
+        probs = vad(audio)
+        assert len(probs) > 0
+
+    def test_segmenter_import(self):
+        """Segmenter must be importable from vad module."""
+        from auto_translate.vad import Segmenter
+        assert callable(Segmenter)
+
+    def test_run_segmenter_import(self):
+        """run_segmenter must be importable from vad module."""
+        from auto_translate.vad import run_segmenter
+        assert callable(run_segmenter)

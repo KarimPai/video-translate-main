@@ -747,18 +747,20 @@ class MpvOutput:
             # No pending speech — advance through all confirmed silence
             self._translated_until = max(self._translated_until, self._vad_progress)
         else:
-            # Find the earliest pending speech region that blocks the watermark
-            # Sort by start time and find the first one after the current watermark
+            # Find the earliest pending speech region that blocks the watermark.
+            # A pending speech blocks if its start is after the current watermark
+            # AND its end is after the current watermark (it overlaps the gap ahead).
             earliest_block = float('inf')
             for start_s, end_s in self._pending_speech:
-                if start_s > self._translated_until:
-                    earliest_block = min(earliest_block, start_s)
+                # Only consider speech regions that actually block advancement:
+                # their end must be after the watermark, so they overlap the gap ahead.
+                if end_s > self._translated_until and start_s < earliest_block:
+                    earliest_block = start_s
             # Advance through silence up to the earliest blocking speech
             if earliest_block < float('inf'):
                 self._translated_until = max(self._translated_until, min(self._vad_progress, earliest_block))
             else:
-                # All pending speech is before the watermark — shouldn't happen
-                # but handle gracefully
+                # All pending speech is entirely before the watermark — advance through silence
                 self._translated_until = max(self._translated_until, self._vad_progress)
     
     def record_speech(self, start_s: float, end_s: float, generation: int) -> None:
@@ -792,21 +794,33 @@ class MpvOutput:
         When a subtitle is published, the watermark can advance to its end_s,
         including any contiguous VAD-confirmed silence between the current
         watermark and the subtitle. Will NOT skip over other pending speech.
+        
+        Uses exact interval matching: removes the pending entry whose end matches
+        the subtitle's end (within a small tolerance), rather than approximate
+        timestamp matching that could delete unrelated entries.
         """
         with self._buffer_condition:
             if generation != self._pending_generation:
                 self._pending_speech.clear()
                 self._pending_generation = generation
-            # Remove this speech region from pending
-            self._pending_speech = [
-                (s, e) for s, e in self._pending_speech
-                if not (abs(s - subtitle_end_s) < 1.0 or e <= subtitle_end_s + 0.5)
-            ]
-            # Advance watermark to the subtitle's end, but NOT past other pending speech.
-            # First, advance to the subtitle end itself.
-            self._translated_until = max(self._translated_until, subtitle_end_s)
-            # Then try to advance further through now-unblocked silence
-            self._try_advance_through_silence()
+                self._translated_until = max(self._translated_until, subtitle_end_s)
+                self._try_advance_through_silence()
+            else:
+                # Remove the pending speech entry whose end matches this subtitle's end.
+                # Use exact end matching (within 0.5s tolerance) to avoid deleting
+                # unrelated pending entries.
+                removed = False
+                new_pending = []
+                for s, e in self._pending_speech:
+                    if abs(e - subtitle_end_s) < 0.5 and not removed:
+                        removed = True  # remove only the first match
+                    else:
+                        new_pending.append((s, e))
+                self._pending_speech = new_pending
+                # Advance watermark to the subtitle's end, but NOT past other pending speech.
+                self._translated_until = max(self._translated_until, subtitle_end_s)
+                # Then try to advance further through now-unblocked silence
+                self._try_advance_through_silence()
             if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
                 log.info("translation lead ready at %.3fs", self._seek_lead_target)
                 self._seek_lead_target = None
@@ -822,19 +836,26 @@ class MpvOutput:
         
         Will NOT advance the watermark past other pending (untranslated) speech regions.
         Only the suppressed region's own entry is cleared.
+        
+        Uses exact interval matching (both start and end within 0.5s tolerance) to
+        remove only the matching pending entry, preserving unrelated entries.
         """
         with self._buffer_condition:
             if generation != self._pending_generation:
                 self._pending_speech.clear()
                 self._pending_generation = generation
                 return
-            # Remove ONLY the matching pending speech entry — don't clear others
-            self._pending_speech = [
-                (s, e) for s, e in self._pending_speech
-                if not (abs(s - start_s) < 1.0 and abs(e - end_s) < 1.0)
-            ]
+            # Remove ONLY the matching pending speech entry — use exact interval matching
+            # to avoid deleting unrelated entries. Match by both start and end.
+            removed = False
+            new_pending = []
+            for s, e in self._pending_speech:
+                if abs(s - start_s) < 0.5 and abs(e - end_s) < 0.5 and not removed:
+                    removed = True  # remove only the first exact match
+                else:
+                    new_pending.append((s, e))
+            self._pending_speech = new_pending
             # Advance watermark past the suppressed region, but NOT past other pending speech.
-            # First, advance to the end of this specific region.
             self._translated_until = max(self._translated_until, end_s)
             # Then try to advance further through now-unblocked silence
             self._try_advance_through_silence()

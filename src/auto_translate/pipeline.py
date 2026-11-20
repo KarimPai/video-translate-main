@@ -40,7 +40,7 @@ from .types import (
     Transcript,
     Utterance,
 )
-from .vad import Segmenter, run_segmenter
+from .vad import run_segmenter
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,25 @@ class _PipelineState:
 
 
 _run_state = _PipelineState()
+
+
+def _create_vad_segmenter(vad_cfg, vad_backend_name: str):
+    """Create a VAD segmenter using the configured backend via registry.
+    
+    Falls back to direct Segmenter instantiation if the registry is unavailable.
+    """
+    try:
+        from .registry import get_default_registry
+        registry = get_default_registry()
+        return registry.create_vad(vad_backend_name, vad_cfg)
+    except (ValueError, ImportError):
+        # Registry unavailable or backend not registered — fall back to direct creation
+        log.warning(
+            "VAD registry unavailable for '%s', falling back to direct Segmenter",
+            vad_backend_name,
+        )
+        from .vad import Segmenter
+        return Segmenter(vad_cfg)
 
 
 def _guard_stage(
@@ -798,10 +817,12 @@ def run(
         session_cache = None
 
     vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
+    vad_backend_name = cfg.models.vad_backend
     log.info(
-        "SileroVAD (%s): threshold=%.2f, min_speech=%dms, "
+        "VAD backend '%s' (%s): threshold=%.2f, min_speech=%dms, "
         "min_silence=%dms, pad=%dms, onset=%dms, soft_cap=%.1fs, hard_cap=%.1fs, "
         "VAD-negative probing=%s",
+        vad_backend_name,
         "live" if ingest.source.live else "VOD",
         vad_cfg.threshold, vad_cfg.min_speech_ms, vad_cfg.min_silence_ms,
         vad_cfg.speech_pad_ms, vad_cfg.onset_ms,
@@ -839,7 +860,9 @@ def run(
         ),
         threading.Thread(
             target=_guard_stage,
-            args=("vad", run_segmenter, failures, segmenter if segmenter is not None else Segmenter(vad_cfg), audio_q, utt_q,
+            args=("vad", run_segmenter, failures,
+                  segmenter if segmenter is not None else _create_vad_segmenter(vad_cfg, vad_backend_name),
+                  audio_q, utt_q,
                   lambda: ingest.generation, None, stop),
             name="vad",
             daemon=True,

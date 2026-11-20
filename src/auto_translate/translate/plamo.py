@@ -532,14 +532,17 @@ class PlamoTranslator:
                 long_text = len(ja) > 100
 
                 try:
+                    first_key = "simplified" if long_text else "full"
                     if long_text:
                         # Simplified prompt first — higher success rate for long utterances
                         english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
-                        _record(english, "simplified")
                         record_event("mt_request", strategy="simplified_first", input_tokens=len(ja))
                     else:
                         english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
-                        _record(english, "full")
+
+                    # Always record the first attempt's output so truncation retries
+                    # can detect deterministic repetition against it.
+                    _record(english, first_key)
 
                     if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES and _elapsed_ok():
                         retries_left -= 1
@@ -550,20 +553,22 @@ class PlamoTranslator:
                             record_event("mt_truncation_retry", strategy="full_prompt_after_simplified")
                             increment_counter("mt_retries")
                             english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
-                            _record(english, "full_retry")
                         else:
                             # First attempt was full prompt — retry with simplified to reduce input tokens
                             record_event("mt_truncation_retry", strategy="simplified_prompt")
                             increment_counter("mt_retries")
                             english, finish_reason = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
-                            _record(english, "simplified")
 
                         if finish_reason == "length":
-                            if _repeated(english, "full_retry" if long_text else "simplified"):
-                                # Deterministic repeat — more tokens won't help; stop truncation recovery.
+                            # Check for deterministic repetition BEFORE recording the retry output.
+                            # Compare against the first attempt's key so we detect if the
+                            # retry produced the same truncated output.
+                            if _repeated(english, first_key):
                                 record_event("mt_truncation_failed", max_tokens=self.cfg.max_tokens)
                                 increment_counter("mt_rejected")
                                 return ""
+                            # Record the retry output so subsequent retries can detect repetition
+                            _record(english, "retry")
                             # Second retry: increase token limit
                             if retries_left > 0 and _elapsed_ok():
                                 retries_left -= 1

@@ -292,7 +292,10 @@ def run_asr(
             if cancelled(utt.generation):
                 continue
             accepted(cached.ja, utt.end_s)
-            out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
+            # Strip speech_id from cached subtitles so they don't complete
+            # unrelated pending intervals from a different generation.
+            out_q.put(replace(cached, generation=utt.generation, timings=utt.timings,
+                              speech_id=None))
             continue
         if cancelled(utt.generation):
             continue

@@ -466,15 +466,17 @@ class TestMpvPlaybackState:
     # -------------------------------------------------------------------------
 
     def test_reset_buffer_clears_state(self, mpv):
-        """reset_buffer should clear all pending state."""
+        """reset_buffer should clear all pending state and sync generation."""
         mpv._pending_generation = 5
         mpv._speech_id_map = {1: (0, 2), 2: (2, 4)}
         mpv._coverage._translated_until = 100.0
         mpv._source_finished = True
+        mpv.ingest.generation = 3  # new generation after seek
         
         mpv.reset_buffer(50.0)
         
-        assert mpv._pending_generation == 0
+        # Generation should sync with ingest.generation, not reset to 0
+        assert mpv._pending_generation == 3
         assert len(mpv._speech_id_map) == 0
         assert mpv._source_finished is False
         assert mpv._coverage.translated_until == 50.0

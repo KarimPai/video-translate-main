@@ -254,12 +254,12 @@ def _main(resources: ExitStack) -> None:
     vad_cfg = vad_for_source(cfg.vad, live=bool(source.live))
     registry = get_default_registry()
     try:
-        segmenter = registry.create_vad(vad_backend_name, {"threshold": vad_cfg.threshold,
-            "min_speech_ms": vad_cfg.min_speech_ms, "min_silence_ms": vad_cfg.min_silence_ms,
-            "speech_pad_ms": vad_cfg.speech_pad_ms, "onset_ms": vad_cfg.onset_ms,
-            "max_utterance_s": vad_cfg.max_utterance_s,
-            "max_split_extension_s": vad_cfg.max_split_extension_s,
-            "fallback_s": vad_cfg.fallback_s})
+        # Pass the complete VadConfig so all user-configured settings are
+        # preserved (thresholds, padding, short-reply, probability smoothing,
+        # adaptive splitting, live/VOD limits, pause/split-context, fallback,
+        # model directory, and device).
+        from dataclasses import asdict
+        segmenter = registry.create_vad(vad_backend_name, asdict(vad_cfg))
         log.info("VAD backend '%s' created via registry", vad_backend_name)
     except ValueError as exc:
         log.error("Failed to create VAD backend '%s': %s", vad_backend_name, exc)

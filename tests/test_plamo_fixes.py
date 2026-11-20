@@ -645,6 +645,370 @@ class TestCoverageTracker:
         assert (2.0, 4.0) in intervals
         assert (10.0, 12.0) in intervals
 
+    # --- Unconfirmed gap must not be skipped ---
+
+    def test_unconfirmed_gap_blocks_advancement(self):
+        """Completed speech beyond an unconfirmed gap must not advance watermark.
+
+        Coverage starts at 0. VAD progress reaches 5s.
+        Completed speech at 10-12s. Gap 5-10s is not VAD-confirmed.
+        Watermark must NOT jump to 12s.
+        """
+        ct = self._make()
+        ct.advance_vad(5.0)
+        sid = ct.record_speech(10.0, 12.0)
+        ct.complete_speech(sid)
+        # Watermark should be at 5.0 (VAD progress), not 12.0
+        assert ct.translated_until == 5.0
+
+    def test_vad_confirmation_advances_gap(self):
+        """When VAD confirms the gap, watermark should advance through it."""
+        ct = self._make()
+        sid = ct.record_speech(10.0, 12.0)
+        ct.complete_speech(sid)
+        ct.advance_vad(15.0)
+        # Now VAD confirms the gap 0-10s and the speech 10-12s
+        # Watermark should advance to 15.0
+        assert ct.translated_until == 15.0
+
+    def test_late_registered_speech_blocks_retroactively(self):
+        """Speech registered after watermark passes should block retroactively."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        # Watermark at 20.0 (no pending speech)
+        assert ct.translated_until == 20.0
+        # Now register speech at 5-7s (late)
+        ct.record_speech(5.0, 7.0)
+        # Watermark should retroactively drop to 5.0
+        assert ct.translated_until == 5.0
+
+    # --- Generation tracking ---
+
+    def test_set_generation(self):
+        """set_generation updates the authoritative generation."""
+        ct = self._make()
+        ct.set_generation(5)
+        assert ct.generation == 5
+
+    def test_reject_stale(self):
+        """reject_stale returns True for old generation callbacks."""
+        ct = self._make()
+        ct.set_generation(3)
+        assert ct.reject_stale(2) is True
+        assert ct.reject_stale(3) is False
+        assert ct.reject_stale(4) is True
+
+    def test_reset_preserves_generation_until_set(self):
+        """reset() clears intervals but does not reset generation."""
+        ct = self._make()
+        ct.set_generation(5)
+        ct.record_speech(2.0, 4.0)
+        ct.reset(50.0)
+        # Generation should still be 5 (caller will set it via set_generation)
+        assert ct.generation == 5
+        assert ct.translated_until == 50.0
+        assert ct.pending_count() == 0
+
+    # --- Compact completed intervals ---
+
+    def test_compact_completed_removes_old_intervals(self):
+        """compact_completed removes completed intervals behind the watermark."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(6.0, 8.0)
+        sid3 = ct.record_speech(10.0, 12.0)
+        ct.complete_speech(sid1)
+        ct.complete_speech(sid2)
+        ct.complete_speech(sid3)
+        assert ct.translated_until == 100.0
+        ct.compact_completed()
+        # All completed intervals are behind watermark (100.0)
+        # Internal _completed should be empty
+        with ct._lock:
+            assert len(ct._completed) == 0
+
+    def test_compact_completed_preserves_pending(self):
+        """compact_completed must not remove pending intervals."""
+        ct = self._make()
+        ct.advance_vad(100.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)  # pending, not completed
+        ct.complete_speech(sid1)
+        ct.compact_completed()
+        assert ct.pending_count() == 1
+
+    def test_stress_many_utterances(self):
+        """Stress test: thousands of utterances should not grow unbounded."""
+        ct = self._make()
+        ct.advance_vad(10000.0)
+        # Record and complete 1000 utterances
+        sids = []
+        for i in range(1000):
+            start = i * 10.0 + 1.0
+            end = start + 2.0
+            sid = ct.record_speech(start, end)
+            sids.append(sid)
+        for sid in sids:
+            ct.complete_speech(sid)
+        assert ct.translated_until == 10000.0
+        # Before compact: 1000 completed intervals
+        with ct._lock:
+            assert len(ct._completed) == 1000
+        ct.compact_completed()
+        with ct._lock:
+            assert len(ct._completed) == 0
+        # Watermark should still be correct
+        assert ct.translated_until == 10000.0
+
+
+# ---------------------------------------------------------------------------
+# 3b. MpvOutput generation sync tests
+# ---------------------------------------------------------------------------
+
+class TestMpvOutputGenerationSync:
+    """Test that MpvOutput correctly syncs generation after seeking."""
+
+    def test_reset_buffer_syncs_generation(self):
+        """reset_buffer must sync _pending_generation with ingest.generation."""
+        import threading
+        from unittest import mock
+
+        from auto_translate.output.coverage import CoverageTracker
+        from auto_translate.output.mpv import MpvOutput
+
+        mpv = MpvOutput.__new__(MpvOutput)
+        mpv.ingest = mock.MagicMock()
+        mpv.ingest.source.live = False
+        mpv.ingest.source.start_s = 0.0
+        mpv.ingest.generation = 5  # new generation after seek
+        mpv.cfg = mock.MagicMock()
+        mpv.cfg.vod_pause_threshold_s = 2.0
+        mpv.cfg.vod_resume_threshold_s = 8.0
+        mpv.cfg.vod_seek_resume_threshold_s = 5.0
+        mpv.cfg.window_id = None
+        mpv.PAUSE_LEAD_SECONDS = 5.0
+        mpv._coverage = CoverageTracker(0.0)
+        mpv._source_finished = False
+        mpv._buffer_condition = threading.Condition()
+        mpv._lock = threading.Lock()
+        mpv._lines = []
+        mpv._speech_id_map = {}
+        mpv._pending_generation = 0
+        mpv._subtitle_ready = mock.MagicMock()
+        mpv._vod_auto_paused = False
+
+        mpv.reset_buffer(50.0)
+
+        assert mpv._pending_generation == 5
+        assert mpv._coverage.generation == 5
+
+    def test_seek_allows_current_generation_callbacks(self):
+        """After seek, callbacks matching the new generation must be accepted."""
+        import threading
+        from unittest import mock
+
+        from auto_translate.output.coverage import CoverageTracker
+        from auto_translate.output.mpv import MpvOutput
+
+        mpv = MpvOutput.__new__(MpvOutput)
+        mpv.ingest = mock.MagicMock()
+        mpv.ingest.source.live = False
+        mpv.ingest.source.start_s = 0.0
+        mpv.ingest.generation = 2
+        mpv.cfg = mock.MagicMock()
+        mpv.cfg.vod_pause_threshold_s = 2.0
+        mpv.cfg.vod_resume_threshold_s = 8.0
+        mpv.cfg.vod_seek_resume_threshold_s = 5.0
+        mpv.cfg.window_id = None
+        mpv.PAUSE_LEAD_SECONDS = 5.0
+        mpv._coverage = CoverageTracker(0.0)
+        mpv._source_finished = False
+        mpv._buffer_condition = threading.Condition()
+        mpv._lock = threading.Lock()
+        mpv._lines = []
+        mpv._speech_id_map = {}
+        mpv._pending_generation = 0
+        mpv._subtitle_ready = mock.MagicMock()
+        mpv._vod_auto_paused = False
+
+        # Simulate seek: reset_buffer syncs generation
+        mpv.reset_buffer(30.0)
+
+        # Current generation callback should be accepted
+        sid = mpv.record_speech(32.0, 34.0, generation=2)
+        assert sid is not None
+
+        # Stale callback should be rejected
+        stale = mpv.record_speech(35.0, 37.0, generation=1)
+        assert stale is None
+
+    def test_consecutive_seeks_update_generation(self):
+        """Multiple consecutive seeks must each update generation correctly."""
+        import threading
+        from unittest import mock
+
+        from auto_translate.output.coverage import CoverageTracker
+        from auto_translate.output.mpv import MpvOutput
+
+        mpv = MpvOutput.__new__(MpvOutput)
+        mpv.ingest = mock.MagicMock()
+        mpv.ingest.source.live = False
+        mpv.ingest.source.start_s = 0.0
+        mpv.ingest.generation = 1
+        mpv.cfg = mock.MagicMock()
+        mpv.cfg.vod_pause_threshold_s = 2.0
+        mpv.cfg.vod_resume_threshold_s = 8.0
+        mpv.cfg.vod_seek_resume_threshold_s = 5.0
+        mpv.cfg.window_id = None
+        mpv.PAUSE_LEAD_SECONDS = 5.0
+        mpv._coverage = CoverageTracker(0.0)
+        mpv._source_finished = False
+        mpv._buffer_condition = threading.Condition()
+        mpv._lock = threading.Lock()
+        mpv._lines = []
+        mpv._speech_id_map = {}
+        mpv._pending_generation = 0
+        mpv._subtitle_ready = mock.MagicMock()
+        mpv._vod_auto_paused = False
+
+        # First seek
+        mpv.ingest.generation = 2
+        mpv.reset_buffer(30.0)
+        assert mpv._pending_generation == 2
+
+        # Second seek
+        mpv.ingest.generation = 3
+        mpv.reset_buffer(60.0)
+        assert mpv._pending_generation == 3
+
+        # Third seek
+        mpv.ingest.generation = 4
+        mpv.reset_buffer(90.0)
+        assert mpv._pending_generation == 4
+
+
+# ---------------------------------------------------------------------------
+# 3c. Cached subtitle speech_id tests
+# ---------------------------------------------------------------------------
+
+class TestCachedSubtitleSpeechId:
+    """Test that cached subtitles don't cause speech_id collisions."""
+
+    def test_cached_subtitle_strips_speech_id(self):
+        """Cached subtitles must have speech_id=None to avoid collisions."""
+        from dataclasses import replace as dc_replace
+
+        from auto_translate.types import Subtitle, Timings
+
+        # Simulate a cached subtitle from a previous generation
+        cached = Subtitle(
+            start_s=10.0, end_s=12.0,
+            ja="こんにちは", en="Hello",
+            timings=Timings(),
+            generation=1,
+            speech_id=42,  # old generation's ID
+        )
+        # Pipeline should strip speech_id when reusing cached subtitle
+        reused = dc_replace(cached, generation=2, speech_id=None)
+        assert reused.speech_id is None
+        assert reused.generation == 2
+
+    def test_new_subtitle_has_speech_id(self):
+        """Newly translated subtitles should have a valid speech_id."""
+        from auto_translate.output.coverage import CoverageTracker
+
+        ct = CoverageTracker(0.0)
+        sid = ct.record_speech(10.0, 12.0)
+        assert sid is not None
+        assert sid > 0
+
+
+# ---------------------------------------------------------------------------
+# 3d. VAD config propagation tests
+# ---------------------------------------------------------------------------
+
+class TestVadConfigPropagation:
+    """Test that VadConfig settings are fully propagated through registry."""
+
+    def test_vad_config_asdict_contains_all_fields(self):
+        """asdict(VadConfig) must contain all VadConfig fields."""
+        from dataclasses import asdict
+
+        from auto_translate.config import VadConfig
+
+        cfg = VadConfig(
+            threshold=0.3,
+            neg_threshold=0.2,
+            min_silence_ms=500,
+            speech_pad_ms=400,
+            min_speech_ms=200,
+            short_reply_ms=100,
+            short_reply_probability=0.9,
+            onset_ms=30,
+            prob_smooth_frames=5,
+            max_utterance_s=15.0,
+            max_split_extension_s=3.0,
+            live_max_utterance_s=8.0,
+            live_max_split_extension_s=1.5,
+            adaptive_split=True,
+            adaptive_split_s=6.0,
+            live_adaptive_split_s=5.0,
+            adaptive_pause_ms=200,
+            split_pause_min_ms=150,
+            split_context_ms=180,
+            fallback_s=1.0,
+            fallback_min_s=2.0,
+            fallback_min_db=-45.0,
+            model_dir="/custom/model/dir",
+        )
+        d = asdict(cfg)
+        assert d["threshold"] == 0.3
+        assert d["neg_threshold"] == 0.2
+        assert d["min_silence_ms"] == 500
+        assert d["speech_pad_ms"] == 400
+        assert d["min_speech_ms"] == 200
+        assert d["short_reply_ms"] == 100
+        assert d["short_reply_probability"] == 0.9
+        assert d["onset_ms"] == 30
+        assert d["prob_smooth_frames"] == 5
+        assert d["max_utterance_s"] == 15.0
+        assert d["max_split_extension_s"] == 3.0
+        assert d["live_max_utterance_s"] == 8.0
+        assert d["live_max_split_extension_s"] == 1.5
+        assert d["adaptive_split"] is True
+        assert d["adaptive_split_s"] == 6.0
+        assert d["live_adaptive_split_s"] == 5.0
+        assert d["adaptive_pause_ms"] == 200
+        assert d["split_pause_min_ms"] == 150
+        assert d["split_context_ms"] == 180
+        assert d["fallback_s"] == 1.0
+        assert d["fallback_min_s"] == 2.0
+        assert d["fallback_min_db"] == -45.0
+        assert d["model_dir"] == "/custom/model/dir"
+
+    def test_vad_for_source_preserves_live_settings(self):
+        """vad_for_source must apply live-specific adjustments."""
+        from auto_translate.config import VadConfig, vad_for_source
+
+        cfg = VadConfig(
+            max_utterance_s=14.0,
+            live_max_utterance_s=7.0,
+            adaptive_split_s=5.0,
+            live_adaptive_split_s=4.0,
+            max_split_extension_s=2.0,
+            live_max_split_extension_s=1.0,
+        )
+        live_cfg = vad_for_source(cfg, live=True)
+        assert live_cfg.max_utterance_s == 7.0
+        assert live_cfg.adaptive_split_s == 4.0
+        assert live_cfg.max_split_extension_s == 1.0
+
+        vod_cfg = vad_for_source(cfg, live=False)
+        assert vod_cfg.max_utterance_s == 14.0
+        assert vod_cfg.adaptive_split_s == 5.0
+        assert vod_cfg.max_split_extension_s == 2.0
+
 
 # ---------------------------------------------------------------------------
 # 4. Output Validation

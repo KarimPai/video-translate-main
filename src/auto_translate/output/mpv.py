@@ -880,14 +880,21 @@ class MpvOutput:
         Clears all pending speech, resets the watermark, and prepares for
         fresh translation coverage at the new seek position. The seek-buffering
         state is managed by _restart_audio_at() which calls this method.
+        
+        Synchronizes _pending_generation with the current ingest.generation
+        so that valid callbacks are not rejected after seeking.
         """
         with self._buffer_condition:
             self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
             self._coverage.reset(progress_s)
             self._source_finished = False
             self._speech_id_map.clear()
-            # Authoritative generation reset — new callbacks must match this.
-            self._pending_generation = 0
+            # Synchronize generation with the current ingest generation.
+            # request_restart() increments ingest._generation before calling
+            # reset_buffer(), so the new generation is already available.
+            new_gen = self.ingest.generation
+            self._pending_generation = new_gen
+            self._coverage.set_generation(new_gen)
             # Reset pause state after seek — _restart_audio_at() will set
             # the appropriate state (seek-buffering or manual pause preserved).
             self._vod_auto_paused = False

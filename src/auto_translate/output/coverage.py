@@ -126,7 +126,9 @@ class CoverageTracker:
         """Reset all state for a new seek position.
 
         Clears pending and completed intervals, resets VAD progress and
-        watermark to the new position.
+        watermark to the new position. Does NOT reset _generation — the
+        caller (MpvOutput.reset_buffer) sets the authoritative generation
+        via set_generation() after calling reset().
         """
         with self._lock:
             self._vad_progress = progress_s
@@ -134,7 +136,7 @@ class CoverageTracker:
             self._pending.clear()
             self._completed.clear()
             self._next_id = 1
-            self._generation = 0
+            # Do NOT reset _generation here — caller sets it via set_generation()
 
     def set_generation(self, generation: int) -> None:
         """Set the authoritative generation. Called during seek/reset."""
@@ -155,6 +157,22 @@ class CoverageTracker:
         with self._lock:
             return [(iv.start_s, iv.end_s) for iv in self._pending.values()]
 
+    def compact_completed(self) -> None:
+        """Remove completed intervals that are already behind the watermark.
+
+        This bounds memory usage during long streams by discarding completed
+        intervals that can no longer affect the watermark computation.
+        Pending intervals are always retained.
+        """
+        with self._lock:
+            cutoff = self._translated_until
+            to_remove = [
+                sid for sid, iv in self._completed.items()
+                if iv.end_s <= cutoff + 1e-9
+            ]
+            for sid in to_remove:
+                del self._completed[sid]
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -171,6 +189,10 @@ class CoverageTracker:
            - Pending intervals: stop at their start (can't advance further).
            - Gaps between intervals: advance through VAD-confirmed silence.
         3. The watermark is the furthest contiguous position reached.
+
+        Critical: never advance through an unconfirmed gap. If VAD has not
+        confirmed the silence between the watermark and the next interval,
+        stop — do not skip ahead to a completed interval beyond the gap.
 
         This is a full recomputation, not an incremental advance, so it
         correctly handles late-registered speech that retroactively blocks
@@ -195,13 +217,19 @@ class CoverageTracker:
             start_s, end_s, is_completed = all_intervals[i]
 
             if start_s > watermark:
-                # Gap (silence) between watermark and next interval
-                # Advance through VAD-confirmed silence
+                # Gap (silence) between watermark and next interval.
+                # Advance only through VAD-confirmed silence.
                 silence_end = min(start_s, self._vad_progress)
                 if silence_end <= watermark:
-                    # VAD hasn't confirmed this silence yet — can't advance
+                    # VAD hasn't confirmed this silence — cannot reach this
+                    # interval contiguously. Stop here.
                     break
                 watermark = silence_end
+                # If VAD confirmed only part of the gap (watermark < start_s),
+                # we cannot reach this interval contiguously. Do not skip
+                # ahead to a completed interval beyond an unconfirmed gap.
+                if watermark < start_s - 1e-9:
+                    break
 
             if is_completed:
                 # Completed interval — advance past its end, but check if any

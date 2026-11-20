@@ -103,17 +103,22 @@ class WhisperASR:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def _resolve_model_path(cls, cfg: AsrConfig) -> str:
+    def _resolve_model_path(cls, cfg: AsrConfig, is_explicit: bool = False) -> str:
         """Resolve a Whisper model path without triggering downloads.
 
         Prefers an explicitly configured local model directory, then an
         already-cached Hugging Face model. Raises if no usable local model
         exists — never falls back to a Haas model or silent download.
 
-        If cfg.model_path is set but points to a non-Whisper directory
-        (e.g., inherited Haas path), fall through to HF cache search instead
-        of raising immediately. This allows Whisper to find its own cached
-        model even when the shared ASR config has an incompatible path.
+        Args:
+            cfg: ASR configuration containing model_path.
+            is_explicit: True if model_path was explicitly set by the user
+                (GUI override or backend profile). False if inherited from
+                common config (e.g., Haas default).
+
+        When ``is_explicit=True`` and the path is invalid, raises a clear
+        error. When ``is_explicit=False`` (inherited), falls through to HF
+        cache search so Whisper can find its own cached model.
         """
         model_path = (cfg.model_path or "").strip()
 
@@ -123,13 +128,27 @@ class WhisperASR:
             if candidate.exists():
                 if cls._looks_like_whisper_model(candidate):
                     return str(candidate.resolve())
-                # Configured path is not a Whisper model (e.g., Haas path).
-                # Fall through to HF cache search rather than failing outright.
+                # Configured path exists but is not a Whisper model.
+                if is_explicit:
+                    # User explicitly set this path — reject with clear error.
+                    raise WhisperError(
+                        f"Explicitly configured model path is not a valid Whisper model: "
+                        f"{candidate}. Expected a CTranslate2 Whisper directory "
+                        f"containing model.bin, config.json, etc."
+                    )
+                # Inherited path (e.g., Haas default) — fall through to cache search.
                 log.warning(
                     "Configured ASR model path is not a Whisper model: %s — "
                     "falling back to Hugging Face cache search",
                     candidate,
                 )
+            else:
+                # Path doesn't exist.
+                if is_explicit:
+                    raise WhisperError(
+                        f"Explicitly configured model path does not exist: {candidate}"
+                    )
+                # Inherited non-existent path — fall through to cache search.
 
         # Search for cached Whisper model in Hugging Face cache.
         # Try the configured path as a repo id first, then the default model.

@@ -71,6 +71,7 @@ class Qwen3ASR:
         self._closed = False
         self._failures = 0
         self._restarts = 0
+        self._terminal_failure = False
         self.last_timing: dict | None = None
 
         # Resolve model and mmproj paths
@@ -151,6 +152,7 @@ class Qwen3ASR:
             text: str | None = None
             last_exc: Exception | None = None
             attempts = 0
+            self._terminal_failure = False
             while attempts <= max_retries:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -185,18 +187,24 @@ class Qwen3ASR:
                 except httpx.HTTPError as exc:
                     last_exc = exc
                     self._failures += 1
-                    log.error("Qwen3-ASR invalid response: %s", exc)
-                    # Permanent error — no retry
+                    self._terminal_failure = True
+                    log.error("Qwen3-ASR permanent HTTP error: %s", exc)
+                    # Permanent error — no retry, no restart
                     break
                 except Qwen3ASRError as exc:
                     last_exc = exc
                     self._failures += 1
+                    self._terminal_failure = True
                     log.error("Qwen3-ASR permanent failure: %s", exc)
-                    # Permanent error — no retry
+                    # Permanent error — no retry, no restart
                     break
 
+            # Restart only for transient failures, never for permanent errors.
+            # Permanent errors (HTTP 4xx, Qwen3ASRError) set _terminal_failure
+            # so the server cannot recover from a malformed request or invalid config.
             if (
                 text is None
+                and not self._terminal_failure
                 and self._restarts < restart_limit
                 and not self._closed
                 and not stopping.is_set()

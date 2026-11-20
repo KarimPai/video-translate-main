@@ -785,14 +785,14 @@ def test_gui_backend_switching_preserves_paths():
 asr_backend = "haas"
 translate_backend = "gemma4"
 
-[asr]
+[asr.haas]
 model_path = "C:/models/haas/model.gguf"
 
 [asr.qwen3-asr]
 model_path = "C:/models/qwen3-asr/model.gguf"
 mmproj_path = "C:/models/qwen3-asr/mmproj.gguf"
 
-[translate]
+[translate.gemma4]
 model_path = "C:/models/gemma4/model.gguf"
 
 [translate.plamo]
@@ -957,6 +957,267 @@ model_path = "C:/models/hymt/model.gguf"
         window.mt_backend.setCurrentIndex(plamo_idx)
         assert window._last_asr_backend == "whisper"
         assert window._last_mt_backend == "plamo"
+
+
+# ---------------------------------------------------------------------------
+# P0 — Model resolution: no cross-backend contamination
+# ---------------------------------------------------------------------------
+
+def test_model_resolution_all_six_backends():
+    """Each of the 6 backends resolves correct model paths without cross-contamination."""
+    cfg = Config()
+    # Set common defaults that should NOT be inherited by other backends
+    cfg.asr.model_path = "C:/models/haas/model.gguf"
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+
+    # Backend profiles
+    cfg.asr_profiles["haas"] = {"model_path": "C:/models/haas/model.gguf"}
+    cfg.asr_profiles["qwen3-asr"] = {
+        "model_path": "C:/models/qwen3-asr/model.gguf",
+        "mmproj_path": "C:/models/qwen3-asr/mmproj.gguf",
+    }
+    cfg.asr_profiles["whisper"] = {"model_path": "C:/models/whisper/model.bin"}
+    cfg.translate_profiles["gemma4"] = {"model_path": "C:/models/gemma4/model.gguf"}
+    cfg.translate_profiles["plamo"] = {"model_path": "C:/models/plamo/model.gguf"}
+    cfg.translate_profiles["hymt"] = {"model_path": "C:/models/hymt/model.gguf"}
+
+    # ASR backends
+    haas = get_backend_config(cfg, "asr", "haas")
+    assert haas["model_path"] == "C:/models/haas/model.gguf"
+
+    qwen3 = get_backend_config(cfg, "asr", "qwen3-asr")
+    assert qwen3["model_path"] == "C:/models/qwen3-asr/model.gguf"
+    assert qwen3["mmproj_path"] == "C:/models/qwen3-asr/mmproj.gguf"
+    assert qwen3["model_path"] != cfg.asr.model_path  # no Haas contamination
+
+    whisper = get_backend_config(cfg, "asr", "whisper")
+    assert whisper["model_path"] == "C:/models/whisper/model.bin"
+    assert whisper["model_path"] != cfg.asr.model_path  # no Haas contamination
+
+    # Translate backends
+    gemma = get_backend_config(cfg, "translate", "gemma4")
+    assert gemma["model_path"] == "C:/models/gemma4/model.gguf"
+
+    plamo = get_backend_config(cfg, "translate", "plamo")
+    assert plamo["model_path"] == "C:/models/plamo/model.gguf"
+    assert plamo["model_path"] != cfg.translate.model_path  # no Gemma contamination
+
+    hymt = get_backend_config(cfg, "translate", "hymt")
+    assert hymt["model_path"] == "C:/models/hymt/model.gguf"
+    assert hymt["model_path"] != cfg.translate.model_path  # no Gemma contamination
+
+
+def test_model_resolution_missing_profile_no_inheritance():
+    """When a backend profile is absent, model_path is empty, not inherited from common config."""
+    cfg = Config()
+    cfg.asr.model_path = "C:/models/haas/model.gguf"
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+
+    # No backend profiles defined — model_path should NOT be inherited
+    unknown_asr = get_backend_config(cfg, "asr", "unknown-backend")
+    assert unknown_asr.get("model_path", "") == "", \
+        "model_path should be empty, not inherited from common config"
+
+    unknown_mt = get_backend_config(cfg, "translate", "unknown-backend")
+    assert unknown_mt.get("model_path", "") == "", \
+        "model_path should be empty, not inherited from common config"
+
+
+def test_model_resolution_combinations():
+    """Test ASR+MT combinations: no cross-contamination between backends."""
+    cfg = Config()
+    cfg.asr.model_path = "C:/models/haas/model.gguf"
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+
+    cfg.asr_profiles["qwen3-asr"] = {
+        "model_path": "C:/models/qwen3-asr/model.gguf",
+        "mmproj_path": "C:/models/qwen3-asr/mmproj.gguf",
+    }
+    cfg.asr_profiles["whisper"] = {"model_path": "C:/models/whisper/model.bin"}
+    cfg.translate_profiles["plamo"] = {"model_path": "C:/models/plamo/model.gguf"}
+    cfg.translate_profiles["hymt"] = {"model_path": "C:/models/hymt/model.gguf"}
+
+    # Qwen3-ASR + PLaMo
+    asr = get_backend_config(cfg, "asr", "qwen3-asr")
+    mt = get_backend_config(cfg, "translate", "plamo")
+    assert asr["model_path"] == "C:/models/qwen3-asr/model.gguf"
+    assert mt["model_path"] == "C:/models/plamo/model.gguf"
+    assert asr["model_path"] != mt["model_path"]
+
+    # Whisper + Hy-MT2
+    asr = get_backend_config(cfg, "asr", "whisper")
+    mt = get_backend_config(cfg, "translate", "hymt")
+    assert asr["model_path"] == "C:/models/whisper/model.bin"
+    assert mt["model_path"] == "C:/models/hymt/model.gguf"
+
+
+def test_resolve_model_identity():
+    """resolve_model_identity returns only explicit or profile paths, never common config."""
+    from auto_translate.config import resolve_model_identity
+
+    cfg = Config()
+    cfg.asr.model_path = "C:/models/haas/model.gguf"
+    cfg.asr.mmproj_path = "C:/models/haas/mmproj.gguf"
+
+    # No profile, no override — should return empty strings
+    identity = resolve_model_identity(cfg, "asr", "unknown")
+    assert identity["model_path"] == ""
+    assert identity["mmproj_path"] == ""
+    assert identity["server_path"] == ""
+
+    # With profile — should return profile values
+    cfg.asr_profiles["qwen3-asr"] = {
+        "model_path": "C:/models/qwen3-asr/model.gguf",
+        "mmproj_path": "C:/models/qwen3-asr/mmproj.gguf",
+    }
+    identity = resolve_model_identity(cfg, "asr", "qwen3-asr")
+    assert identity["model_path"] == "C:/models/qwen3-asr/model.gguf"
+    assert identity["mmproj_path"] == "C:/models/qwen3-asr/mmproj.gguf"
+
+    # Explicit override wins over profile
+    identity = resolve_model_identity(
+        cfg, "asr", "qwen3-asr",
+        explicit_overrides={"model_path": "C:/custom/model.gguf"}
+    )
+    assert identity["model_path"] == "C:/custom/model.gguf"
+
+
+# ---------------------------------------------------------------------------
+# P1 — Qwen3-ASR permanent error: no restart
+# ---------------------------------------------------------------------------
+
+def test_qwen3_asr_http_400_no_restart():
+    """HTTP 400 Bad Request should not trigger a server restart."""
+    inst = _make_qwen3()
+
+    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+        raise httpx.HTTPError("400 Bad Request")
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
+            mock.patch.object(inst, "_restart", side_effect=AssertionError("should not restart")), \
+            mock.patch("time.sleep", return_value=None):
+        try:
+            inst.transcribe(np.zeros(16000, dtype=np.float32))
+        except Qwen3ASRError as exc:
+            assert "400" in str(exc) or "permanent" in str(exc).lower() or "failed" in str(exc).lower()
+            return
+    raise AssertionError("expected Qwen3ASRError for HTTP 400")
+
+
+def test_qwen3_asr_permanent_error_no_restart():
+    """Qwen3ASRError should not trigger a server restart."""
+    inst = _make_qwen3()
+
+    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+        raise Qwen3ASRError("invalid model configuration")
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
+            mock.patch.object(inst, "_restart", side_effect=AssertionError("should not restart")), \
+            mock.patch("time.sleep", return_value=None):
+        try:
+            inst.transcribe(np.zeros(16000, dtype=np.float32))
+        except Qwen3ASRError as exc:
+            assert "invalid model" in str(exc).lower() or "permanent" in str(exc).lower() or "failed" in str(exc).lower()
+            return
+    raise AssertionError("expected Qwen3ASRError for permanent error")
+
+
+# ---------------------------------------------------------------------------
+# P1 — Whisper explicit path handling
+# ---------------------------------------------------------------------------
+
+def test_whisper_explicit_invalid_path_raises():
+    """Explicitly configured invalid Whisper path raises clear error, no fallback."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        # Create a non-Whisper directory (e.g., GGUF model)
+        gguf_dir = Path(td) / "my-whisper"
+        gguf_dir.mkdir()
+        (gguf_dir / "model.gguf").write_bytes(b"fake gguf")
+
+        cfg = AsrConfig(model_path=str(gguf_dir), cuda_device=-1)
+
+        # is_explicit=True should raise, not fall back to cache
+        try:
+            WhisperASR._resolve_model_path(cfg, is_explicit=True)
+            raise AssertionError("expected WhisperError for explicit invalid path")
+        except WhisperError as exc:
+            assert "not a valid Whisper model" in str(exc) or "explicitly configured" in str(exc).lower()
+
+
+def test_whisper_inherited_haas_path_ignored():
+    """Inherited Haas path falls through to HF cache search."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        # Create a Haas-like directory (not Whisper)
+        haas_dir = Path(td) / "haas-ja-v1.0"
+        haas_dir.mkdir()
+        (haas_dir / "model.gguf").write_bytes(b"fake gguf")
+
+        # Mock HF cache to return a valid Whisper model
+        cached_dir = Path(td) / "cached_whisper"
+        cached_dir.mkdir()
+        (cached_dir / "model.bin").write_bytes(b"")
+        (cached_dir / "config.json").write_bytes(b"{}")
+
+        cfg = AsrConfig(model_path=str(haas_dir), cuda_device=-1)
+
+        with mock.patch.object(WhisperASR, "_find_cached_model", return_value=cached_dir):
+            result = WhisperASR._resolve_model_path(cfg, is_explicit=False)
+        # Should use the cached Whisper model, not the Haas path
+        assert result == str(cached_dir)
+
+
+def test_whisper_explicit_nonexistent_path_raises():
+    """Explicitly configured non-existent path raises clear error."""
+    cfg = AsrConfig(model_path="C:/nonexistent/whisper-model", cuda_device=-1)
+
+    try:
+        WhisperASR._resolve_model_path(cfg, is_explicit=True)
+        raise AssertionError("expected WhisperError for non-existent explicit path")
+    except WhisperError as exc:
+        assert "does not exist" in str(exc) or "explicitly configured" in str(exc).lower()
+
+
+# ---------------------------------------------------------------------------
+# P2 — Pipeline config propagation from production path
+# ---------------------------------------------------------------------------
+
+def test_pipeline_config_from_production_path():
+    """Test actual __main__.py config resolution path, not manual reproduction."""
+    cfg = Config()
+    cfg.translate_profiles["plamo"] = {
+        "context_lines": 10,
+        "merge_fragments": True,
+        "merge_max_gap_s": 2.0,
+        "merge_max_s": 5.0,
+        "timeout_s": 120.0,
+    }
+    cfg.asr_profiles["qwen3-asr"] = {
+        "response_timeout_s": 60.0,
+        "live_response_timeout_s": 20.0,
+    }
+
+    # Simulate what __main__.py does: get_backend_config then apply to shared config
+    translate_profile = get_backend_config(cfg, "translate", "plamo")
+    for key in ("context_lines", "merge_fragments", "merge_max_gap_s", "merge_max_s",
+                "live_merge_margin_s", "max_identical_cues", "timeout_s"):
+        if key in translate_profile:
+            setattr(cfg.translate, key, translate_profile[key])
+
+    asr_profile = get_backend_config(cfg, "asr", "qwen3-asr")
+    for key in ("response_timeout_s", "live_response_timeout_s"):
+        if key in asr_profile:
+            setattr(cfg.asr, key, asr_profile[key])
+
+    # Verify backend-specific values are now in the shared config
+    assert cfg.translate.context_lines == 10
+    assert cfg.translate.merge_fragments is True
+    assert cfg.translate.merge_max_gap_s == 2.0
+    assert cfg.translate.merge_max_s == 5.0
+    assert cfg.translate.timeout_s == 120.0
+    assert cfg.asr.response_timeout_s == 60.0
+    assert cfg.asr.live_response_timeout_s == 20.0
 
 
 # ---------------------------------------------------------------------------

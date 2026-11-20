@@ -26,12 +26,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # ============================================================================
 
 def test_get_backend_config_precedence_common_only():
-    """Common config is used when no profile or override exists."""
+    """Common config is used when no profile or override exists.
+
+    Model-identity fields (model_path, mmproj_path, server_path) are excluded
+    from common config inheritance when the backend profile is absent.
+    """
     from auto_translate.config import Config, get_backend_config
 
     cfg = Config()
     merged = get_backend_config(cfg, "asr", "haas")
-    assert merged["model_path"] == "haas-ja-v1.0"
+    # model_path is a backend-identity field — not inherited from common config
+    assert merged.get("model_path", "") == ""
+    # Non-identity fields are still inherited from common config
     assert merged["threads"] == 8
     assert merged["context_size"] == 4096
 

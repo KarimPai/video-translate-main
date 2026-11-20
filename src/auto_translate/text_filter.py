@@ -147,24 +147,18 @@ class LanguageFilter:
         Short utterances below min_duration_s are always kept to avoid
         dropping brief Japanese reactions.
 
-        For longer utterances, any text containing hiragana or katakana is kept
-        as confirmed Japanese. Text with CJK ideographs but no kana is treated
-        as uncertain (kept but not classified as confirmed Japanese) to avoid
-        incorrectly classifying Chinese text as Japanese.
-
-        Only pure Latin-script text without Japanese characters is dropped.
+        For longer utterances, any text containing Japanese characters (kana
+        or CJK ideographs) is kept to preserve mixed-language dialogue
+        such as "Jason said こんにちは". Only pure Latin-script text
+        without Japanese characters is dropped.
         """
         # Short utterances: keep them (likely genuine reactions)
         if duration_s < self.min_duration_s:
             return True
 
-        # Hiragana or katakana presence is a strong Japanese signal.
-        if _HIRAGANA.search(text) or _KATAKANA.search(text):
-            return True
-
-        # CJK ideographs without kana: uncertain (could be Chinese).
-        # Keep the text to avoid dropping legitimate content, but don't
-        # classify it as confirmed Japanese.
+        # Keep any text containing Japanese characters (kana or CJK ideographs).
+        # This preserves mixed-language dialogue like "Jason said こんにちは"
+        # while still dropping pure English or Indonesian text.
         if _JAPANESE.search(text):
             return True
 

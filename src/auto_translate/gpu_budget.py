@@ -9,6 +9,7 @@ import logging
 import math
 import subprocess
 import threading
+import time
 
 log = logging.getLogger(__name__)
 _MIB_TO_GB = 1048576 / 1e9
@@ -103,6 +104,10 @@ def used_gb():
 
 
 class GpuBudget:
+    # Minimum interval between GPU relief requests (seconds).
+    # Prevents rapid reload loops when pressure fluctuates near the threshold.
+    RELIEF_COOLDOWN_S = 30.0
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.used = None
@@ -113,6 +118,7 @@ class GpuBudget:
         self.stop = threading.Event()
         self.thread = None
         self._last_pressure = "normal"
+        self._last_relief_time = 0.0
         self.metrics = {}
         self.refresh()
 
@@ -165,15 +171,20 @@ class GpuBudget:
                          None if self.total is None else round(self.total, 3),
                          None if self.free is None else round(self.free, 3), level)
                 if level in ("low", "critical"):
-                    if level != self._last_pressure:
-                        log.warning("GPU free-memory pressure=%s; keeping ASR/translation playback alive",
-                                    level)
-                        record_event("gpu_memory_pressure", **self.snapshot())
-                    try:
-                        release()
-                    except Exception:
-                        # Optional-model cleanup must not kill the sampler.
-                        log.exception("GPU pressure resource release failed")
+                    now = time.monotonic()
+                    if now - self._last_relief_time < self.RELIEF_COOLDOWN_S:
+                        pass  # Within cooldown; skip relief request
+                    else:
+                        if level != self._last_pressure:
+                            log.warning("GPU free-memory pressure=%s; keeping ASR/translation playback alive",
+                                        level)
+                            record_event("gpu_memory_pressure", **self.snapshot())
+                        try:
+                            release()
+                            self._last_relief_time = now
+                        except Exception:
+                            # Optional-model cleanup must not kill the sampler.
+                            log.exception("GPU pressure resource release failed")
                 self._last_pressure = level
                 self.stop.wait(self.cfg.sample_interval_s)
 

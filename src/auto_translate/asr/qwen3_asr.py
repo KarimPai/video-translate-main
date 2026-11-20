@@ -195,9 +195,14 @@ class Qwen3ASR:
                 if self._recent:
                     self._recent.pop()
 
-    def recover_context_echo(self, audio: np.ndarray) -> str:
-        """Retry transcription without context to recover from echo."""
-        return self._transcribe_impl(audio, probe=False, no_context=True)
+    def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
+                             vad_confidence: float | None = None,
+                             timeout: float = 0.0) -> str:
+        """Retry transcription without context to recover from echo.
+
+        Compatible signature with Haas and Whisper backends.
+        """
+        return self._transcribe_impl(audio, probe=probe, no_context=True)
 
     # ------------------------------------------------------------------ #
     # Internal
@@ -258,6 +263,7 @@ class Qwen3ASR:
         }
 
         timeout = self.cfg.response_timeout_s
+        http_s = 0.0
         try:
             resp = self.server.client.post(
                 f"{self.server.base_url}/v1/chat/completions",
@@ -268,11 +274,13 @@ class Qwen3ASR:
             resp.raise_for_status()
             body = resp.json()
         except httpx.TimeoutException:
-            log.warning("Qwen3-ASR HTTP timeout after %.1fs", http_s)
+            elapsed_on_timeout = time.perf_counter() - t0
+            log.warning("Qwen3-ASR HTTP timeout after %.1fs", elapsed_on_timeout)
             update_metrics(counters={"asr_stall_count": 1})
-            raise Qwen3ASRError(f"Qwen3-ASR timeout after {http_s:.1f}s")
+            raise Qwen3ASRError(f"Qwen3-ASR timeout after {elapsed_on_timeout:.1f}s")
         except httpx.HTTPError as exc:
-            log.error("Qwen3-ASR HTTP error: %s", exc)
+            elapsed_on_error = time.perf_counter() - t0
+            log.error("Qwen3-ASR HTTP error after %.1fs: %s", elapsed_on_error, exc)
             raise Qwen3ASRError(str(exc)) from exc
 
         # Extract text from response
@@ -282,10 +290,12 @@ class Qwen3ASR:
         except (KeyError, IndexError) as exc:
             raise Qwen3ASRError(f"Unexpected response format: {body}") from exc
 
-        # Clean up
+        # Clean up protocol metadata that must never reach subtitles
+        # Remove "language Japanese" prefix (model protocol metadata, not spoken text)
+        text = re.sub(r"^language\s+japanese\s*", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"<asr_text>", "", text).strip()
         text = " ".join(unicodedata.normalize("NFC", text).split())
         text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
-        text = re.sub(r"<asr_text>", "", text).strip()
         text = re.sub(r"\s+", " ", text).strip()
 
         self.last_raw_transcript = text
@@ -306,10 +316,17 @@ class Qwen3ASR:
         return text
 
     def _restart(self) -> None:
-        """Restart the server after a failure."""
+        """Restart the server after a failure.
+
+        Uses reset_for_restart() to clear the permanently-closed flag so
+        start() can run again. Bounds restart attempts to prevent infinite loops.
+        """
+        if self._restarts >= 2:
+            raise Qwen3ASRError("Qwen3-ASR restart limit reached (2 attempts); server is unstable")
         self._restarts += 1
         log.warning("Restarting Qwen3-ASR server (attempt %d)", self._restarts)
-        self.server.close()
+        # reset_for_restart stops the old process, clears _closed flag, and recreates the HTTP client
+        self.server.reset_for_restart()
         self.server.start()
         self._warmup()
         self._failures = 0

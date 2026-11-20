@@ -94,3 +94,67 @@ def rejection_reason(text: str) -> str | None:
 
 def is_usable_transcript(text: str) -> bool:
     return rejection_reason(text) is None
+
+
+# ---------------------------------------------------------------------------
+# Spoken-language filter: distinguishes Japanese dialogue from non-Japanese
+# ---------------------------------------------------------------------------
+
+# Character ranges for Japanese scripts
+_JAPANESE_CHARS = set(range(0x3040, 0x3100)) | set(range(0x30A0, 0x3100))  # Hiragana + Katakana
+_JAPANESE_CHARS |= set(range(0x4E00, 0x9FFF)) | set(range(0x3400, 0x4DBF))  # CJK ideographs
+_JAPANESE_CHARS |= {0x3002, 0x3001, 0xFF01, 0xFF0C, 0xFF0E, 0xFF0F}  # Japanese punctuation
+
+
+def _japanese_ratio(text: str) -> float:
+    """Return the fraction of Japanese-script characters in *text*.
+
+    Uses Unicode block analysis — no external model required.
+    """
+    if not text:
+        return 0.0
+    jp_count = sum(1 for ch in text if ord(ch) in _JAPANESE_CHARS)
+    visible = sum(1 for ch in text if not unicodedata.category(ch).startswith("C"))
+    if visible == 0:
+        return 0.0
+    return jp_count / visible
+
+
+class LanguageFilter:
+    """CPU-only spoken-language gate that drops non-Japanese utterances.
+
+    Uses Unicode character analysis to distinguish Japanese dialogue from
+    English or Indonesian speech. Does not require external models.
+
+    When the user enables language filtering but the ASR output contains
+    sufficient Japanese script, the subtitle passes. Otherwise it is dropped.
+    """
+
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+        self.min_duration_s = cfg.min_duration_s
+        self.max_window_s = cfg.max_window_s
+        self.drop_probability = cfg.drop_probability
+        self.max_japanese_probability = cfg.max_japanese_probability
+        self.min_top_margin = cfg.min_top_margin
+
+    def should_keep(self, text: str, duration_s: float = 0.0) -> bool:
+        """Return True if the utterance should be kept (is Japanese dialogue).
+
+        Short utterances below min_duration_s are always kept to avoid
+        dropping brief Japanese reactions. Longer utterances are classified
+        by their Japanese character ratio.
+        """
+        # Short utterances: keep them (likely genuine reactions)
+        if duration_s < self.min_duration_s:
+            return True
+
+        ratio = _japanese_ratio(text)
+        # Keep if Japanese ratio is above threshold; drop non-Japanese speech.
+        return ratio >= (1.0 - self.max_japanese_probability)
+
+    def filter(self, text: str, duration_s: float = 0.0) -> str | None:
+        """Return *text* if it should be kept, or None if it should be dropped."""
+        if self.should_keep(text, duration_s):
+            return text
+        return None

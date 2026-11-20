@@ -525,10 +525,14 @@ def load_config(path: Path) -> Config:
     )
 
 
-def get_backend_config(cfg: Config, backend_type: str, backend_name: str) -> dict:
-    """Merge common config with backend-specific profile.
+def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
+                       explicit_overrides: dict | None = None) -> dict:
+    """Merge common config with backend-specific profile and explicit overrides.
 
-    Backend-specific values override common values.
+    Precedence (highest to lowest):
+    1. explicit_overrides (GUI/CLI overrides)
+    2. Backend-specific profile ([asr.<name>] or [translate.<name>])
+    3. Common config (cfg.asr or cfg.translate dataclass)
     """
     if backend_type == "asr":
         common = {f.name: getattr(cfg.asr, f.name) for f in fields(cfg.asr)}
@@ -540,8 +544,13 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str) -> dic
         common = {}
         profile = {}
 
+    # Layer 1: common config (lowest priority)
     merged = dict(common)
+    # Layer 2: backend-specific profile overrides common
     merged.update(profile)
+    # Layer 3: explicit GUI/CLI overrides (highest priority)
+    if explicit_overrides:
+        merged.update(explicit_overrides)
     return merged
 
 

@@ -155,18 +155,27 @@ def _main(resources: ExitStack) -> None:
     from .session_cache import SessionSubtitleCache
 
     cfg = load_config(args.config)
-    for option, section, field_name in (
-        ("asr_model", cfg.asr, "model_path"),
-        ("speech_server", cfg.asr, "speech_server_path"),
-        ("mt_model", cfg.translate, "model_path"),
-        ("llama_server", cfg.translate, "server_path"),
-        ("context_lines", cfg.translate, "context_lines"),
-        ("safe_playback", cfg.safe_playback, "enabled"),
-        ("diagnostics", cfg.diagnostics, "enabled"),
+
+    # Collect explicit CLI overrides for backend config precedence.
+    # These must override both common config AND backend-specific profiles.
+    asr_cli_overrides = {}
+    translate_cli_overrides = {}
+    for option, section, field_name, override_dict in (
+        ("asr_model", cfg.asr, "model_path", asr_cli_overrides),
+        ("speech_server", cfg.asr, "speech_server_path", asr_cli_overrides),
+        ("mt_model", cfg.translate, "model_path", translate_cli_overrides),
+        ("llama_server", cfg.translate, "server_path", translate_cli_overrides),
+        ("context_lines", cfg.translate, "context_lines", translate_cli_overrides),
     ):
         value = getattr(args, option)
         if value is not None:
-            setattr(section, field_name, str(value) if isinstance(value, Path) else value)
+            str_value = str(value) if isinstance(value, Path) else value
+            setattr(section, field_name, str_value)
+            override_dict[field_name] = str_value
+    if args.safe_playback is not None:
+        cfg.safe_playback.enabled = args.safe_playback
+    if args.diagnostics is not None:
+        cfg.diagnostics.enabled = args.diagnostics
     if args.asr_backend is not None:
         cfg.models.asr_backend = args.asr_backend
     if args.translate_backend is not None:
@@ -276,7 +285,8 @@ def _main(resources: ExitStack) -> None:
     from .registry import get_default_registry
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
-    asr_profile = get_backend_config(cfg, "asr", asr_backend_name)
+    asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
+                                     explicit_overrides=asr_cli_overrides if asr_cli_overrides else None)
     asr_profile["response_timeout_s"] = decode_timeout
     asr = registry.create_backend("asr", asr_backend_name, asr_profile,
                                   context=stream_context.recognition_text())
@@ -288,7 +298,8 @@ def _main(resources: ExitStack) -> None:
 
     t0 = time.perf_counter()
     check_running()
-    translator = _load_translator(cfg, glossary, stream_context, budget, log, registry)
+    translator = _load_translator(cfg, glossary, stream_context, budget, log, registry,
+                                  translate_cli_overrides if translate_cli_overrides else None)
     record_event("mt_loaded", backend=cfg.models.translate_backend, gpu=budget.snapshot(),
                  gpu_layers=getattr(translator, "gpu_layers", None))
     translator_layers = getattr(translator, "gpu_layers", None)
@@ -398,13 +409,15 @@ def _main(resources: ExitStack) -> None:
         budget.close()
 
 
-def _load_translator(cfg, glossary, stream_context, budget, log, registry):
+def _load_translator(cfg, glossary, stream_context, budget, log, registry,
+                     translate_cli_overrides=None):
     """Start translation backend, adapting GPU layers for llama.cpp-based models."""
     from .config import get_backend_config
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
 
     translate_backend_name = cfg.models.translate_backend
-    translate_profile = get_backend_config(cfg, "translate", translate_backend_name)
+    translate_profile = get_backend_config(cfg, "translate", translate_backend_name,
+                                           explicit_overrides=translate_cli_overrides)
 
     headroom = cfg.gpu_budget.startup_headroom_gb
     auto = translate_profile.get("gpu_layers", -1) < 0

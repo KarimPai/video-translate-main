@@ -287,7 +287,7 @@ def _main(resources: ExitStack) -> None:
     asr_backend_name = cfg.models.asr_backend
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
                                      explicit_overrides=asr_cli_overrides if asr_cli_overrides else None)
-    asr_profile["response_timeout_s"] = decode_timeout
+    asr_profile.setdefault("response_timeout_s", decode_timeout)
     asr = registry.create_backend("asr", asr_backend_name, asr_profile,
                                   context=stream_context.recognition_text())
     resources.callback(asr.close)

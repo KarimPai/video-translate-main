@@ -104,9 +104,9 @@ def used_gb():
 
 
 class GpuBudget:
-    # Minimum interval between GPU relief requests (seconds).
-    # Prevents rapid reload loops when pressure fluctuates near the threshold.
-    RELIEF_COOLDOWN_S = 30.0
+    LOW_RELIEF_COOLDOWN_S = 30.0
+    RELIEF_COOLDOWN_S = LOW_RELIEF_COOLDOWN_S  # backwards-compatible alias
+    CRITICAL_RELIEF_COOLDOWN_S = 5.0
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -172,13 +172,16 @@ class GpuBudget:
                          None if self.free is None else round(self.free, 3), level)
                 if level in ("low", "critical"):
                     now = time.monotonic()
-                    if now - self._last_relief_time < self.RELIEF_COOLDOWN_S:
-                        pass  # Within cooldown; skip relief request
-                    else:
-                        if level != self._last_pressure:
-                            log.warning("GPU free-memory pressure=%s; keeping ASR/translation playback alive",
-                                        level)
-                            record_event("gpu_memory_pressure", **self.snapshot())
+                    cooldown = (
+                        self.CRITICAL_RELIEF_COOLDOWN_S
+                        if level == "critical"
+                        else self.LOW_RELIEF_COOLDOWN_S
+                    )
+                    escalated = level != self._last_pressure
+                    within_cooldown = now - self._last_relief_time < cooldown
+                    if escalated and not within_cooldown:
+                        log.warning("GPU free-memory pressure=%s; requesting model unload", level)
+                        record_event("gpu_memory_pressure", **self.snapshot())
                         try:
                             release()
                             self._last_relief_time = now

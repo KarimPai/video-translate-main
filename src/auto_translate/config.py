@@ -286,8 +286,8 @@ class AsrConfig:
             raise ValueError("asr.context_retry_limit must be 0 or 1")
         if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
             raise ValueError("asr.context_size must be an integer in 1024..32768")
-        if type(self.cuda_device) is not int or self.cuda_device < 0:
-            raise ValueError("asr.cuda_device must be a nonnegative integer")
+        if type(self.cuda_device) is not int or self.cuda_device < -1:
+            raise ValueError("asr.cuda_device must be -1 (CPU) or a nonnegative CUDA device index")
         if type(self.threads) is not int or not 1 <= self.threads <= 256:
             raise ValueError("asr.threads must be an integer in 1..256")
         if not isinstance(self.blocklist, list) or any(not isinstance(x, str) or not x.strip() for x in self.blocklist):
@@ -493,10 +493,7 @@ def load_config(path: Path) -> Config:
             asr_profiles[key] = asr_section.pop(key)
     
     # Handle legacy ASR config keys
-    if "mmproj_path" in asr_section:
-        logger.info("Ignoring legacy asr.mmproj_path (not needed for Haas)")
-        del asr_section["mmproj_path"]
-    
+
     # Extract profiles from TOML subtables: data["translate"]["plamo"] etc.
     translate_section = data.get("translate", {})
     for key in list(translate_section.keys()):

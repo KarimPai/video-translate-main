@@ -254,14 +254,26 @@ class LlamaServer:
     def reset_for_restart(self) -> None:
         """Clear the closed flag so start() can be called again.
 
-        Used by Qwen3-ASR restart: stops the old process, clears state,
-        and allows a fresh start() without reusing a permanently-closed instance.
+        Stops the old process, clears the cancellation watcher (start()
+        recreates a fresh one), and recreates the HTTP client to release
+        sockets bound to the old process/port. Does not revive the server
+        while the application is shutting down.
         """
         with self._lock:
+            if stopping.is_set():
+                self._closed = True
+                self._shutdown.set()
+                self._stop_process()
+                self.client.close()
+                return
+            self._stop_process()
+            # Wake the previous cancellation watcher and let start() create
+            # a fresh one (it only spawns when _cancel_thread is None).
+            self._shutdown.set()
+            self._cancel_thread = None
             self._closed = False
             self._shutdown.clear()
-            self._stop_process()
-            # Close and recreate the HTTP client to release sockets
+            # Close and recreate the HTTP client to release sockets.
             self.client.close()
             self.client = httpx.Client(trust_env=False)
         log.info("%s server reset for restart", self.name)

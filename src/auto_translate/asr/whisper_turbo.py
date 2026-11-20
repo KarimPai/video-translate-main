@@ -18,6 +18,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+from huggingface_hub import try_to_load_from_cache
 
 from ..config import AsrConfig
 from ..runtime_diagnostics import update_metrics
@@ -28,6 +29,10 @@ from .quality_guard import transcript_problem
 log = logging.getLogger(__name__)
 
 _WHISPER_MODEL = "Systran/faster-whisper-large-v3-turbo"
+
+_DEFAULT_BEAM_SIZE = 5
+
+_CT2_MODEL_FILES = {"model.bin", "config.json", "tokenizer.json", "vocabulary.json"}
 
 
 class WhisperError(RuntimeError):
@@ -56,31 +61,27 @@ class WhisperASR:
         self._failures = 0
         self.last_timing: dict | None = None
 
-        # Determine device and compute type: cuda_device=0 means GPU, >0 means specific GPU index.
-        # Only use CPU if cuda_device is explicitly negative (profile override).
-        device = "cuda"
-        compute_type = "float16"
         if cfg.cuda_device < 0:
             device = "cpu"
             compute_type = "int8"
-
-        # Model path: use configured path or default Hugging Face model.
-        # The common AsrConfig default is "haas-ja-v1.0" which is wrong for Whisper,
-        # so only use cfg.model_path if it looks like a Whisper model path.
-        if cfg.model_path and ("whisper" in cfg.model_path.lower() or Path(cfg.model_path).exists()):
-            model_path = cfg.model_path
+            device_index = None
         else:
-            model_path = _WHISPER_MODEL
+            device = "cuda"
+            compute_type = "float16"
+            device_index = cfg.cuda_device
 
-        # Load the model — this may download from Hugging Face on first use
+        model_path = self._resolve_model_path(cfg)
+
         try:
             from faster_whisper import WhisperModel
             self._model = WhisperModel(
                 model_path,
                 device=device,
+                device_index=device_index,
                 compute_type=compute_type,
                 cpu_threads=cfg.threads,
                 num_workers=1,
+                local_files_only=True,
             )
         except ImportError:
             raise WhisperError(
@@ -93,9 +94,67 @@ class WhisperASR:
 
         update_metrics(workers={"asr": f"ready (Whisper Turbo, {device})"})
         log.info(
-            "Whisper Large-v3 Turbo ready: model=%s device=%s compute=%s threads=%d",
-            model_path, device, compute_type, cfg.threads,
+            "Whisper Large-v3 Turbo ready: model=%s device=%s compute=%s threads=%d device_index=%s",
+            model_path, device, compute_type, cfg.threads, device_index,
         )
+
+    # ------------------------------------------------------------------ #
+    # Model resolution
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def _resolve_model_path(cls, cfg: AsrConfig) -> str:
+        """Resolve a Whisper model path without triggering downloads.
+
+        Prefers an explicitly configured local model directory, then an
+        already-cached Hugging Face model. Raises if no usable local model
+        exists — never falls back to a Haas model or silent download.
+        """
+        model_path = (cfg.model_path or "").strip()
+        if not model_path:
+            cached = cls._find_cached_model(_WHISPER_MODEL)
+            if cached is not None:
+                return str(cached)
+            raise WhisperError(
+                "No Whisper model configured. Set asr.model_path to a local "
+                f"faster-whisper model directory or cache {_WHISPER_MODEL}."
+            )
+
+        candidate = Path(model_path).expanduser()
+        if candidate.exists():
+            if not cls._looks_like_whisper_model(candidate):
+                raise WhisperError(
+                    f"Configured ASR model is not a compatible Whisper model: {candidate}"
+                )
+            return str(candidate.resolve())
+
+        # Not a local path: treat as a Hugging Face repo id and use the cache only.
+        cached = cls._find_cached_model(model_path)
+        if cached is not None:
+            return str(cached)
+        raise WhisperError(
+            f"Whisper model not available locally and auto-download is disabled: {model_path}"
+        )
+
+    @classmethod
+    def _find_cached_model(cls, repo_id: str) -> Path | None:
+        """Return the cached snapshot directory for a HF repo id, or None."""
+        for filename in ("model.bin", "config.json"):
+            try:
+                hit = try_to_load_from_cache(repo_id, filename, revision="main")
+            except Exception:  # noqa: BLE001
+                hit = None
+            if hit:
+                return Path(hit).resolve().parent
+        return None
+
+    @classmethod
+    def _looks_like_whisper_model(cls, path: Path) -> bool:
+        """Heuristic: accept only directories that contain Whisper model files."""
+        if not path.is_dir():
+            return False
+        names = {child.name.lower() for child in path.iterdir()}
+        return bool(names & _CT2_MODEL_FILES) or "whisper" in path.name.lower()
 
     # ------------------------------------------------------------------ #
     # ASRBackend protocol
@@ -241,11 +300,11 @@ class WhisperASR:
                 recent = list(self._recent)
                 initial_prompt = " ".join(recent[-3:])[:256]
 
-        segments, _info = self._model.transcribe(
-            samples,
-            language="ja",
-            task="transcribe",
-            beam_size=self.cfg.threads,
+            segments, _info = self._model.transcribe(
+                samples,
+                language="ja",
+                task="transcribe",
+                beam_size=_DEFAULT_BEAM_SIZE,
             patience=1.0,
             length_penalty=1.0,
             temperature=0.0 if not probe else 0.3,

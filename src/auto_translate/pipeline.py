@@ -275,12 +275,6 @@ def run_asr(
             accepted(cached.ja, utt.end_s)
             out_q.put(replace(cached, generation=utt.generation, timings=utt.timings))
             continue
-        if language_filter is not None:
-            verdict = language_filter.classify(utt.audio)
-            if verdict.drop:
-                record_event("language_filtered", generation=utt.generation,
-                             language=verdict.language, probability=verdict.probability)
-                continue
         if cancelled(utt.generation):
             continue
         if (last_accepted_end_s is not None and callable(forget)
@@ -352,6 +346,12 @@ def run_asr(
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
             continue
+        if language_filter is not None:
+            duration_s = utt.end_s - utt.start_s
+            if not language_filter.filter(text, duration_s):
+                record_event("language_filtered", generation=utt.generation,
+                             source_start_s=utt.start_s, source_end_s=utt.end_s)
+                continue
         # Record client-side HTTP timing from Haas for stall diagnosis
         last_timing = getattr(asr, "last_timing", None)
         if last_timing is not None:

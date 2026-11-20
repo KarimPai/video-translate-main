@@ -31,7 +31,7 @@ from ..llama_server import (
 )
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
-from ..windows_subprocess import check_running
+from ..windows_subprocess import check_running, stopping
 from .context_echo import speech_key
 from .quality_guard import transcript_problem
 
@@ -124,26 +124,79 @@ class Qwen3ASR:
     # ------------------------------------------------------------------ #
 
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
-        """Transcribe 16 kHz mono float32 audio to Japanese text."""
+        """Transcribe 16 kHz mono float32 audio to Japanese text.
+
+        Recoverable failures (timeout, connection) are retried a bounded number
+        of times before a server restart is attempted. Permanent failures and
+        exhausted retries raise a clear terminal Qwen3ASRError so a single
+        transient error cannot terminate the whole session.
+        """
         gen = self._generation
         duration_s = len(audio) / 16000
         if duration_s < 0.05:
             return ""
 
+        max_retries = 3
+        restart_limit = 2
+        backoff_s = 0.5
+
         with self._inference_lock:
-            try:
-                text = self._transcribe_impl(audio, probe)
-            except Exception as exc:
-                self._failures += 1
-                if self._failures >= 3 and self._restarts < 2:
-                    log.warning("Qwen3-ASR failed %d times, attempting restart", self._failures)
-                    try:
-                        self._restart()
-                        text = self._transcribe_impl(audio, probe)
-                    except Exception:  # noqa: BLE001
-                        raise Qwen3ASRError(f"Qwen3-ASR restart failed: {exc}") from exc
-                else:
-                    raise Qwen3ASRError(f"Qwen3-ASR transcription failed: {exc}") from exc
+            text: str | None = None
+            last_exc: Exception | None = None
+            attempts = 0
+            while attempts <= max_retries:
+                try:
+                    text = self._transcribe_impl(audio, probe)
+                    self._failures = 0
+                    break
+                except httpx.TimeoutException as exc:
+                    last_exc = exc
+                    self._failures += 1
+                    attempts += 1
+                    log.warning("Qwen3-ASR timeout (attempt %d/%d)", attempts, max_retries + 1)
+                    if attempts <= max_retries:
+                        time.sleep(backoff_s * attempts)
+                        continue
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    last_exc = exc
+                    self._failures += 1
+                    attempts += 1
+                    log.warning("Qwen3-ASR connection failure (attempt %d/%d)", attempts, max_retries + 1)
+                    if attempts <= max_retries:
+                        time.sleep(backoff_s * attempts)
+                        continue
+                    break
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+                    self._failures += 1
+                    log.error("Qwen3-ASR invalid response: %s", exc)
+                    break
+                except Qwen3ASRError as exc:
+                    last_exc = exc
+                    self._failures += 1
+                    log.error("Qwen3-ASR permanent failure: %s", exc)
+                    break
+
+            if (
+                text is None
+                and self._restarts < restart_limit
+                and not self._closed
+                and not stopping.is_set()
+            ):
+                try:
+                    self._restart()
+                    text = self._transcribe_impl(audio, probe)
+                    self._failures = 0
+                except Exception as restart_exc:  # noqa: BLE001
+                    raise Qwen3ASRError(
+                        f"Qwen3-ASR restart failed after {attempts} attempt(s): {restart_exc}"
+                    ) from last_exc
+
+            if text is None:
+                raise Qwen3ASRError(
+                    f"Qwen3-ASR transcription failed after {attempts} attempt(s): {last_exc}"
+                ) from last_exc
 
         if self._generation != gen:
             return ""
@@ -200,9 +253,30 @@ class Qwen3ASR:
                              timeout: float = 0.0) -> str:
         """Retry transcription without context to recover from echo.
 
-        Compatible signature with Haas and Whisper backends.
+        Enforces the supplied remaining timeout and never starts recovery when
+        the budget has expired. Cancellation is propagated via the generation
+        counter and the closed flag.
         """
-        return self._transcribe_impl(audio, probe=probe, no_context=True)
+        if timeout <= 0:
+            return ""
+        with self._state_lock:
+            if self._closed:
+                return ""
+            gen = self._generation
+        if not len(audio):
+            return ""
+        try:
+            text = self._transcribe_impl(audio, probe=probe, no_context=True, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Qwen3-ASR context echo recovery failed: %s", exc)
+            return ""
+        if self._generation != gen or self._closed:
+            return ""
+        text = re.sub(r"\s+", " ", text or "").strip()
+        if not text:
+            self.last_rejection = "no_speech"
+            return ""
+        return text
 
     # ------------------------------------------------------------------ #
     # Internal
@@ -222,8 +296,13 @@ class Qwen3ASR:
         audio: np.ndarray,
         probe: bool = False,
         no_context: bool = False,
+        timeout: float | None = None,
     ) -> str:
-        """Send audio to the server and return transcribed text."""
+        """Send audio to the server and return transcribed text.
+
+        ``timeout`` overrides the configured response timeout (used by context
+        echo recovery to enforce the remaining time budget).
+        """
         t0 = time.perf_counter()
 
         # Encode audio as WAV base64
@@ -262,7 +341,7 @@ class Qwen3ASR:
             "stream": False,
         }
 
-        timeout = self.cfg.response_timeout_s
+        timeout = timeout if timeout is not None else self.cfg.response_timeout_s
         http_s = 0.0
         try:
             resp = self.server.client.post(
@@ -277,11 +356,11 @@ class Qwen3ASR:
             elapsed_on_timeout = time.perf_counter() - t0
             log.warning("Qwen3-ASR HTTP timeout after %.1fs", elapsed_on_timeout)
             update_metrics(counters={"asr_stall_count": 1})
-            raise Qwen3ASRError(f"Qwen3-ASR timeout after {elapsed_on_timeout:.1f}s")
+            raise
         except httpx.HTTPError as exc:
             elapsed_on_error = time.perf_counter() - t0
             log.error("Qwen3-ASR HTTP error after %.1fs: %s", elapsed_on_error, exc)
-            raise Qwen3ASRError(str(exc)) from exc
+            raise
 
         # Extract text from response
         try:
@@ -318,11 +397,16 @@ class Qwen3ASR:
     def _restart(self) -> None:
         """Restart the server after a failure.
 
-        Uses reset_for_restart() to clear the permanently-closed flag so
-        start() can run again. Bounds restart attempts to prevent infinite loops.
+        Uses reset_for_restart() to clear the closed flag so start() can run
+        again. Bounds restart attempts and never revives the server when the
+        application is shutting down or the instance is closed.
         """
         if self._restarts >= 2:
             raise Qwen3ASRError("Qwen3-ASR restart limit reached (2 attempts); server is unstable")
+        if stopping.is_set() or self._closed:
+            raise Qwen3ASRError(
+                "Qwen3-ASR restart skipped: application is shutting down or server is closed"
+            )
         self._restarts += 1
         log.warning("Restarting Qwen3-ASR server (attempt %d)", self._restarts)
         # reset_for_restart stops the old process, clears _closed flag, and recreates the HTTP client

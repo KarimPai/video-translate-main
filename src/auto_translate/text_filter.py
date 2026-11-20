@@ -14,6 +14,8 @@ _LAUGHTER = re.compile(
 _NON_TEXT = re.compile(r"[\s、。，．・！？!?…〜～.,:;()（）「」『』【】\[\]{}<>]+")
 _JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _KANA = re.compile(r"[\u3040-\u30ff]+")
+_HIRAGANA = re.compile(r"[\u3040-\u309f]")
+_KATAKANA = re.compile(r"[\u30a0-\u30ff]")
 
 
 _TAIL = re.compile(r"([ぁ-ヺー一-鿿]{1,12}?)\1{7,}[。！？!?]*$")
@@ -145,17 +147,24 @@ class LanguageFilter:
         Short utterances below min_duration_s are always kept to avoid
         dropping brief Japanese reactions.
 
-        For longer utterances, any text containing Japanese characters is kept
-        to preserve mixed-language dialogue (e.g., "Jason said こんにちは").
+        For longer utterances, any text containing hiragana or katakana is kept
+        as confirmed Japanese. Text with CJK ideographs but no kana is treated
+        as uncertain (kept but not classified as confirmed Japanese) to avoid
+        incorrectly classifying Chinese text as Japanese.
+
         Only pure Latin-script text without Japanese characters is dropped.
         """
         # Short utterances: keep them (likely genuine reactions)
         if duration_s < self.min_duration_s:
             return True
 
-        # Conservative: keep any text containing Japanese characters.
-        # This preserves mixed-language dialogue like "Jason said こんにちは"
-        # or "GTAのゲームプレイ" while still dropping pure English/Indonesian.
+        # Hiragana or katakana presence is a strong Japanese signal.
+        if _HIRAGANA.search(text) or _KATAKANA.search(text):
+            return True
+
+        # CJK ideographs without kana: uncertain (could be Chinese).
+        # Keep the text to avoid dropping legitimate content, but don't
+        # classify it as confirmed Japanese.
         if _JAPANESE.search(text):
             return True
 

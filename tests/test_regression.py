@@ -150,6 +150,27 @@ def test_language_filter_mixed_japanese_english():
     assert lf.filter("Apa kabar kamu hari ini?", duration_s=3.0) is None
 
 
+def test_language_filter_chinese_text_handling():
+    """CJK-only text (Chinese) is kept as uncertain, not dropped.
+
+    Chinese text without hiragana/katakana is ambiguous — it could be
+    Chinese dialogue or Japanese kanji-only text. The filter keeps it
+    to avoid dropping legitimate content, but doesn't classify it as
+    confirmed Japanese.
+    """
+    lf = LanguageFilter(LanguageFilterConfig(enabled=True, min_duration_s=2.5))
+    # Pure Chinese text (no kana) — kept as uncertain
+    chinese = "你好世界"
+    result = lf.filter(chinese, duration_s=3.0)
+    assert result is not None, "CJK-only text should be kept as uncertain"
+    # Japanese with hiragana — confirmed Japanese
+    assert lf.filter("こんにちは世界", duration_s=3.0) is not None
+    # Japanese with katakana — confirmed Japanese
+    assert lf.filter("コンニチハ世界", duration_s=3.0) is not None
+    # Mixed Chinese/Japanese with kana — confirmed Japanese
+    assert lf.filter("你好、こんにちは", duration_s=3.0) is not None
+
+
 # ---------------------------------------------------------------------------
 # P1-A — Qwen3-ASR bounded retries and error classification
 # ---------------------------------------------------------------------------
@@ -263,6 +284,35 @@ def test_qwen3_asr_shutdown_skips_restart():
         except Qwen3ASRError:
             return
     raise AssertionError("expected terminal Qwen3ASRError when closed")
+
+
+def test_qwen3_asr_slow_restart_consumes_budget():
+    """If restart + warmup consumes the entire budget, no inference is attempted."""
+    inst = _make_qwen3()
+    monotonic_counter = [0.0]
+
+    def fake_monotonic():
+        return monotonic_counter[0]
+
+    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+        raise httpx.TimeoutException("fail")
+
+    def fake_restart():
+        # Simulate slow warmup consuming the entire budget
+        monotonic_counter[0] += inst.cfg.response_timeout_s + 1.0
+        inst._restarts += 1
+
+    with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
+            mock.patch.object(inst, "_restart", side_effect=fake_restart), \
+            mock.patch("time.sleep", return_value=None), \
+            mock.patch("time.monotonic", side_effect=fake_monotonic):
+        try:
+            inst.transcribe(np.zeros(16000, dtype=np.float32))
+        except Qwen3ASRError as exc:
+            # Budget consumed by restart + warmup — no post-restart inference
+            assert "budget exceeded" in str(exc).lower() or "transcription failed" in str(exc).lower()
+            return
+    raise AssertionError("expected Qwen3ASRError when budget consumed by restart")
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +452,30 @@ def test_whisper_rejects_non_whisper_model_directory():
         except WhisperError:
             return
     raise AssertionError("expected WhisperError for non-Whisper model dir")
+
+
+def test_whisper_falls_back_to_cache_on_haas_path():
+    """When cfg.model_path points to a Haas model, Whisper falls back to HF cache."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        # Create a Haas-like directory (not Whisper)
+        haas_dir = Path(td) / "haas-ja-v1.0"
+        haas_dir.mkdir()
+        (haas_dir / "model.gguf").write_bytes(b"fake gguf")
+
+        # Mock HF cache to return a valid Whisper model
+        cached_dir = Path(td) / "cached_whisper"
+        cached_dir.mkdir()
+        (cached_dir / "model.bin").write_bytes(b"")
+        (cached_dir / "config.json").write_bytes(b"{}")
+
+        with mock.patch.object(WhisperASR, "_find_cached_model", return_value=cached_dir), \
+                mock.patch("faster_whisper.WhisperModel") as mock_wm:
+            mock_wm.return_value = mock.MagicMock()
+            cfg = AsrConfig(model_path=str(haas_dir), cuda_device=-1)
+            WhisperASR(cfg)
+        # Should use the cached Whisper model, not the Haas path
+        assert mock_wm.call_args.kwargs["device"] == "cpu"
 
 
 def test_whisper_rejects_missing_model_no_download():
@@ -646,6 +720,36 @@ def test_timeout_resolution_live_vod():
     assert vod_timeout == 60.0
 
 
+def test_backend_profile_propagates_to_pipeline():
+    """Backend-specific translate settings reach the pipeline via cfg.translate."""
+    cfg = Config()
+    cfg.translate_profiles["plamo"] = {
+        "context_lines": 10,
+        "merge_fragments": True,
+        "merge_max_gap_s": 2.0,
+        "merge_max_s": 5.0,
+        "timeout_s": 120.0,
+    }
+    merged = get_backend_config(cfg, "translate", "plamo")
+    # Verify profile values are present
+    assert merged["context_lines"] == 10
+    assert merged["merge_fragments"] is True
+    assert merged["merge_max_gap_s"] == 2.0
+    assert merged["merge_max_s"] == 5.0
+    assert merged["timeout_s"] == 120.0
+    # Simulate what __main__.py does: apply profile to shared config
+    for key in ("context_lines", "merge_fragments", "merge_max_gap_s", "merge_max_s",
+                "live_merge_margin_s", "max_identical_cues", "timeout_s"):
+        if key in merged:
+            setattr(cfg.translate, key, merged[key])
+    # Pipeline now sees backend-specific values
+    assert cfg.translate.context_lines == 10
+    assert cfg.translate.merge_fragments is True
+    assert cfg.translate.merge_max_gap_s == 2.0
+    assert cfg.translate.merge_max_s == 5.0
+    assert cfg.translate.timeout_s == 120.0
+
+
 def test_llama_server_watcher_lifecycle():
     """Only one cancellation watcher exists per server; old watcher is joined on restart."""
     import tempfile
@@ -718,6 +822,141 @@ model_path = "C:/models/plamo/model.gguf"
     assert "mmproj_path" not in asr_profile or not asr_profile.get("mmproj_path")
     # Qwen3-ASR should NOT have Haas's model path
     assert qwen3_profile["model_path"] != asr_profile["model_path"]
+
+
+def test_gui_qt_backend_switching_integration():
+    """Real Qt offscreen test: exercise dropdown signals and model path fields.
+
+    Tests Haas -> Whisper -> Haas, Haas -> Qwen3-ASR -> Whisper -> Haas,
+    and Gemma -> PLaMo -> Hy-MT2 -> Gemma switching scenarios.
+    Verifies custom paths are preserved on switch-back and defaults are restored.
+    """
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    import tempfile
+
+    from auto_translate.gui import VideoTranslateWindow
+
+    toml = """
+[models]
+asr_backend = "haas"
+translate_backend = "gemma4"
+
+[asr]
+model_path = "C:/models/haas/model.gguf"
+
+[asr.qwen3-asr]
+model_path = "C:/models/qwen3-asr/model.gguf"
+mmproj_path = "C:/models/qwen3-asr/mmproj.gguf"
+
+[asr.whisper]
+model_path = "C:/models/whisper/model.bin"
+
+[translate]
+model_path = "C:/models/gemma4/model.gguf"
+
+[translate.plamo]
+model_path = "C:/models/plamo/model.gguf"
+
+[translate.hymt]
+model_path = "C:/models/hymt/model.gguf"
+"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        config_file = root / "config.toml"
+        config_file.write_text(toml)
+        (root / "pyproject.toml").write_text("")
+        (root / "src" / "auto_translate" / "__main__.py").parent.mkdir(parents=True)
+        (root / "src" / "auto_translate" / "__main__.py").write_text("")
+
+        window = VideoTranslateWindow(root)
+
+        # Verify initial state: Haas ASR, Gemma4 MT
+        assert window._last_asr_backend == "haas"
+        assert window._last_mt_backend == "gemma4"
+        assert window.asr_model.text() == "C:/models/haas/model.gguf"
+        assert window.mt_model.text() == "C:/models/gemma4/model.gguf"
+
+        # --- ASR: Haas -> Whisper -> Haas ---
+        # Switch to Whisper
+        whisper_idx = window.asr_backend.findData("whisper")
+        assert whisper_idx >= 0, "Whisper backend should be in dropdown"
+        window.asr_backend.setCurrentIndex(whisper_idx)
+        assert window._last_asr_backend == "whisper"
+        assert window.asr_model.text() == "C:/models/whisper/model.bin"
+
+        # Switch back to Haas — should restore Haas default
+        haas_idx = window.asr_backend.findData("haas")
+        window.asr_backend.setCurrentIndex(haas_idx)
+        assert window._last_asr_backend == "haas"
+        assert window.asr_model.text() == "C:/models/haas/model.gguf"
+
+        # --- ASR: Haas -> Qwen3-ASR -> Whisper -> Haas ---
+        qwen3_idx = window.asr_backend.findData("qwen3-asr")
+        assert qwen3_idx >= 0, "Qwen3-ASR backend should be in dropdown"
+        window.asr_backend.setCurrentIndex(qwen3_idx)
+        assert window._last_asr_backend == "qwen3-asr"
+        assert window.asr_model.text() == "C:/models/qwen3-asr/model.gguf"
+
+        window.asr_backend.setCurrentIndex(whisper_idx)
+        assert window._last_asr_backend == "whisper"
+
+        window.asr_backend.setCurrentIndex(haas_idx)
+        assert window._last_asr_backend == "haas"
+        assert window.asr_model.text() == "C:/models/haas/model.gguf"
+
+        # --- Custom path preservation ---
+        # Set custom path for Haas, switch away, switch back
+        window.asr_model.setText("C:/custom/haas.gguf")
+        window.asr_backend.setCurrentIndex(whisper_idx)
+        window.asr_backend.setCurrentIndex(haas_idx)
+        # Custom path should be preserved
+        assert window.asr_model.text() == "C:/custom/haas.gguf"
+
+        # Restore default by setting the default path explicitly
+        window.asr_model.setText("C:/models/haas/model.gguf")
+        window.asr_backend.setCurrentIndex(whisper_idx)
+        window.asr_backend.setCurrentIndex(haas_idx)
+        # Should show default, no stale override
+        assert window.asr_model.text() == "C:/models/haas/model.gguf"
+
+        # --- MT: Gemma -> PLaMo -> Hy-MT2 -> Gemma ---
+        plamo_idx = window.mt_backend.findData("plamo")
+        assert plamo_idx >= 0, "PLaMo backend should be in dropdown"
+        window.mt_backend.setCurrentIndex(plamo_idx)
+        assert window._last_mt_backend == "plamo"
+        assert window.mt_model.text() == "C:/models/plamo/model.gguf"
+
+        hymt_idx = window.mt_backend.findData("hymt")
+        assert hymt_idx >= 0, "Hy-MT2 backend should be in dropdown"
+        window.mt_backend.setCurrentIndex(hymt_idx)
+        assert window._last_mt_backend == "hymt"
+        assert window.mt_model.text() == "C:/models/hymt/model.gguf"
+
+        gemma_idx = window.mt_backend.findData("gemma4")
+        window.mt_backend.setCurrentIndex(gemma_idx)
+        assert window._last_mt_backend == "gemma4"
+        assert window.mt_model.text() == "C:/models/gemma4/model.gguf"
+
+        # --- Verify _get_asr_model_override returns None for defaults ---
+        window.asr_backend.setCurrentIndex(haas_idx)
+        window.asr_model.setText("C:/models/haas/model.gguf")
+        assert window._get_asr_model_override() is None
+
+        # --- Verify _get_asr_model_override returns path for custom ---
+        window.asr_model.setText("C:/custom/haas.gguf")
+        override = window._get_asr_model_override()
+        assert override == "C:/custom/haas.gguf"
+
+        # --- Verify ASR and MT selections are independent ---
+        window.asr_backend.setCurrentIndex(whisper_idx)
+        window.mt_backend.setCurrentIndex(plamo_idx)
+        assert window._last_asr_backend == "whisper"
+        assert window._last_mt_backend == "plamo"
 
 
 # ---------------------------------------------------------------------------

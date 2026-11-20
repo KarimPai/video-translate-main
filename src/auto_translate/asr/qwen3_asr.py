@@ -207,8 +207,15 @@ class Qwen3ASR:
                 else:
                     try:
                         self._restart()
-                        text = self._transcribe_impl(audio, probe, timeout=remaining)
-                        self._failures = 0
+                        # Recalculate remaining after restart + warmup
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            last_exc = TimeoutError(
+                                "utterance budget exceeded after restart and warmup"
+                            )
+                        else:
+                            text = self._transcribe_impl(audio, probe, timeout=remaining)
+                            self._failures = 0
                     except Exception as restart_exc:  # noqa: BLE001
                         raise Qwen3ASRError(
                             f"Qwen3-ASR restart failed after {attempts} attempt(s): {restart_exc}"

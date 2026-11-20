@@ -109,31 +109,45 @@ class WhisperASR:
         Prefers an explicitly configured local model directory, then an
         already-cached Hugging Face model. Raises if no usable local model
         exists — never falls back to a Haas model or silent download.
+
+        If cfg.model_path is set but points to a non-Whisper directory
+        (e.g., inherited Haas path), fall through to HF cache search instead
+        of raising immediately. This allows Whisper to find its own cached
+        model even when the shared ASR config has an incompatible path.
         """
         model_path = (cfg.model_path or "").strip()
-        if not model_path:
-            cached = cls._find_cached_model(_WHISPER_MODEL)
+
+        candidate = None
+        if model_path:
+            candidate = Path(model_path).expanduser()
+            if candidate.exists():
+                if cls._looks_like_whisper_model(candidate):
+                    return str(candidate.resolve())
+                # Configured path is not a Whisper model (e.g., Haas path).
+                # Fall through to HF cache search rather than failing outright.
+                log.warning(
+                    "Configured ASR model path is not a Whisper model: %s — "
+                    "falling back to Hugging Face cache search",
+                    candidate,
+                )
+
+        # Search for cached Whisper model in Hugging Face cache.
+        # Try the configured path as a repo id first, then the default model.
+        repo_ids = []
+        if model_path:
+            repo_ids.append(model_path)
+        if _WHISPER_MODEL not in repo_ids:
+            repo_ids.append(_WHISPER_MODEL)
+
+        for repo_id in repo_ids:
+            cached = cls._find_cached_model(repo_id)
             if cached is not None:
                 return str(cached)
-            raise WhisperError(
-                "No Whisper model configured. Set asr.model_path to a local "
-                f"faster-whisper model directory or cache {_WHISPER_MODEL}."
-            )
 
-        candidate = Path(model_path).expanduser()
-        if candidate.exists():
-            if not cls._looks_like_whisper_model(candidate):
-                raise WhisperError(
-                    f"Configured ASR model is not a compatible Whisper model: {candidate}"
-                )
-            return str(candidate.resolve())
-
-        # Not a local path: treat as a Hugging Face repo id and use the cache only.
-        cached = cls._find_cached_model(model_path)
-        if cached is not None:
-            return str(cached)
         raise WhisperError(
-            f"Whisper model not available locally and auto-download is disabled: {model_path}"
+            "No Whisper model available locally. Set asr.model_path to a local "
+            f"faster-whisper model directory or cache {_WHISPER_MODEL}. "
+            "Auto-download is disabled."
         )
 
     @classmethod
@@ -261,12 +275,18 @@ class WhisperASR:
                     self._recent.pop()
 
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
-                             vad_confidence: float | None = None,
-                             timeout: float = 0.0) -> str:
+                              vad_confidence: float | None = None,
+                              timeout: float = 0.0) -> str:
         """Retry transcription without context to recover from echo.
 
         Enforces the supplied remaining timeout budget. If the budget has
         expired, returns early without starting inference.
+
+        NOTE: The timeout is a soft deadline. CTranslate2 inference blocks
+        the calling thread and cannot be interrupted from Python without
+        process-level termination. The deadline is checked after inference
+        returns: if it expired during inference, the result is discarded.
+        Hard interruption of CTranslate2 is not supported.
         """
         if timeout <= 0:
             return ""

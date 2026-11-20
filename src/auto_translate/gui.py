@@ -512,6 +512,9 @@ class VideoTranslateWindow(QMainWindow):
                 old_default = old_profile.get("model_path", self._cfg.asr.model_path)
                 if current_text != old_default:
                     self._asr_model_overrides[str(old_backend)] = current_text
+                else:
+                    # User restored the default — clear any stale override
+                    self._asr_model_overrides.pop(str(old_backend), None)
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):
@@ -548,6 +551,9 @@ class VideoTranslateWindow(QMainWindow):
                 old_default = old_profile.get("model_path", self._cfg.translate.model_path)
                 if current_text != old_default:
                     self._mt_model_overrides[str(old_backend)] = current_text
+                else:
+                    # User restored the default — clear any stale override
+                    self._mt_model_overrides.pop(str(old_backend), None)
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):

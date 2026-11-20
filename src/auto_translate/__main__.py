@@ -393,6 +393,24 @@ def _main(resources: ExitStack) -> None:
     print(f"ASR: {asr_name} | "
           f"Japanese only (CPU language filter: {'on' if language_filter else 'off'}) | "
           f"MT: {cfg.models.translate_backend}, {layers_str} GPU layers", flush=True)
+    # Apply effective backend profile values to shared config so the pipeline
+    # sees backend-specific settings (context_lines, merge_fragments, timeouts, etc.)
+    # instead of only common defaults. This preserves the precedence:
+    # explicit CLI override > backend profile > common config.
+    from .config import get_backend_config
+    translate_profile = get_backend_config(cfg, "translate", cfg.models.translate_backend,
+                                           explicit_overrides=translate_cli_overrides)
+    for key in ("context_lines", "merge_fragments", "merge_max_gap_s", "merge_max_s",
+                "live_merge_margin_s", "max_identical_cues", "timeout_s"):
+        if key in translate_profile:
+            setattr(cfg.translate, key, translate_profile[key])
+
+    asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
+                                     explicit_overrides=asr_cli_overrides)
+    for key in ("response_timeout_s", "live_response_timeout_s"):
+        if key in asr_profile:
+            setattr(cfg.asr, key, asr_profile[key])
+
     check_running()
     budget.start(relieve_pressure)
     try:

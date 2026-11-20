@@ -491,9 +491,15 @@ class MpvOutput:
         self._last_live_sample_at: float | None = None
         self._clock_generation: int | None = None
         self._live_clock_discontinuity = False
-        self._user_paused = False
+        # Pause ownership: track who initiated the pause so auto-pause doesn't
+        # become a permanent user-pause that blocks auto-resume.
+        # "none" = playing, "user" = manual pause, "auto" = VOD buffer pause
+        self._pause_owner: str = "none"
         self._manually_paused = False
         self._vod_auto_paused = False  # True when MPV is paused by the VOD sync gate
+        # Seek-buffering: True while waiting for translation coverage after a seek.
+        # Auto-resumes when sufficient contiguous coverage is available.
+        self._seek_buffering = False
         if not ingest.source.live:
             ingest.enable_vod_restart()
             ingest.enable_vod_playback_pacing(
@@ -869,7 +875,12 @@ class MpvOutput:
         return lead >= resume_threshold
 
     def reset_buffer(self, progress_s: float) -> None:
-        """Reset translated coverage after a VOD seek."""
+        """Reset translated coverage after a VOD seek.
+        
+        Clears all pending speech, resets the watermark, and prepares for
+        fresh translation coverage at the new seek position. The seek-buffering
+        state is managed by _restart_audio_at() which calls this method.
+        """
         with self._buffer_condition:
             self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
             self._coverage.reset(progress_s)
@@ -877,7 +888,8 @@ class MpvOutput:
             self._speech_id_map.clear()
             # Authoritative generation reset — new callbacks must match this.
             self._pending_generation = 0
-            # Reset pause state after seek
+            # Reset pause state after seek — _restart_audio_at() will set
+            # the appropriate state (seek-buffering or manual pause preserved).
             self._vod_auto_paused = False
             self._buffer_condition.notify_all()
 
@@ -1216,7 +1228,7 @@ class MpvOutput:
                     "waiting for the translation buffer"
                 )
 
-            if (paused and should_unpause and not getattr(self, "_user_paused", False)
+            if (paused and should_unpause and self._pause_owner != "user"
                     and self._player_command("set_property", "pause", False)):
 
                 paused = False
@@ -1228,20 +1240,43 @@ class MpvOutput:
                     fmt_hms(self._session_start),
                 )
 
-            if not paused and isinstance(mpv_paused, bool):
-                self._user_paused = mpv_paused
-            self._manually_paused = (
-                (not paused or getattr(self, "_user_paused", False)) and mpv_paused is True
-            )
+            # Update manual pause tracking: only reflect user-initiated pauses.
+            # Never infer user pause from MPV's raw pause property — that would
+            # incorrectly treat auto-pauses as user pauses and block auto-resume.
+            if self._pause_owner == "user":
+                self._manually_paused = mpv_paused is True
+            elif self._pause_owner == "auto":
+                self._manually_paused = False
+            else:
+                self._manually_paused = False
+
+            # Seek-buffering auto-resume: after a seek, resume when sufficient
+            # contiguous translated coverage is available. Use a lower threshold
+            # (5s) for seek-resume vs steady-state recovery (8s).
+            if self._seek_buffering and self._now is not None:
+                tu = self._coverage.translated_until
+                seek_lead = tu - self._now
+                seek_resume_threshold = getattr(self.cfg, "vod_seek_resume_threshold_s", self.PAUSE_LEAD_SECONDS)
+                if seek_lead >= seek_resume_threshold and self._player_command("set_property", "pause", False):
+                    self._seek_buffering = False
+                    self._pause_owner = "none"
+                    self._vod_auto_paused = False
+                    log.info(
+                        "Seek-buffering resume: translation lead %.1fs >= %.1fs threshold "
+                        "(now=%.1fs translated_until=%.1fs)",
+                        seek_lead, seek_resume_threshold,
+                        self._now, tu,
+                    )
 
             # Adaptive VOD sync: pause when translation lead is too low,
             # resume when it recovers (hysteresis prevents oscillation).
             # User manual pause/play controls remain authoritative.
-            if not paused and not self.ingest.source.live and not self._user_paused:
+            if not paused and not self.ingest.source.live and self._pause_owner != "user" and not self._seek_buffering:
                 if self._vod_should_pause() and mpv_paused is not True:
                     # Translation falling behind — auto-pause MPV
                     if self._player_command("set_property", "pause", True):
                         self._vod_auto_paused = True
+                        self._pause_owner = "auto"
                         tu = self._coverage.translated_until
                         lead = tu - self._now if self._now else 0
                         pending = self._coverage.pending_count()
@@ -1255,6 +1290,7 @@ class MpvOutput:
                 elif self._vod_auto_paused and self._vod_should_resume() and self._player_command("set_property", "pause", False):
                     # Translation caught up — resume MPV
                     self._vod_auto_paused = False
+                    self._pause_owner = "none"
                     tu = self._coverage.translated_until
                     lead = tu - self._now if self._now else 0
                     log.info(
@@ -1482,10 +1518,23 @@ class MpvOutput:
             self._jump(delta, gui=True)
 
     def _toggle_user_pause(self):
+        """Toggle user-initiated pause/play via GUI or keyboard.
+        
+        Sets _pause_owner to "user" when pausing, "none" when playing.
+        This distinguishes user intent from automatic VOD buffer pauses.
+        """
         paused = self.ipc.get("pause")
-        if isinstance(paused, bool) and self._player_command("set_property", "pause", not paused):
-            self._user_paused = not paused
-        log.debug("User pause intent=%s", getattr(self, "_user_paused", False))
+        if isinstance(paused, bool):
+            new_paused = not paused
+            if self._player_command("set_property", "pause", new_paused):
+                if new_paused:
+                    self._pause_owner = "user"
+                    self._vod_auto_paused = False
+                else:
+                    self._pause_owner = "none"
+                    self._vod_auto_paused = False
+                    self._seek_buffering = False
+            log.debug("User pause owner=%s", self._pause_owner)
 
     def _read_player_events(self) -> tuple[bool, float]:
         """Consume each IPC event once, including events arriving during a seek."""
@@ -1695,7 +1744,17 @@ class MpvOutput:
                 and target <= self._coverage.translated_until <= end + 0.02)
 
     def _restart_audio_at(self, target: float) -> None:
-        """Buffer translation at the confirmed video position."""
+        """Buffer translation at the confirmed video position.
+        
+        Enters seek-buffering state so playback auto-resumes when sufficient
+        contiguous translated coverage is available. Preserves manual pause
+        intent: if the user deliberately paused before seeking, playback
+        remains paused after the seek.
+        """
+        # Preserve manual pause intent across seeks. If the user paused
+        # before seeking, keep them paused after the seek completes.
+        was_manually_paused = self._pause_owner == "user"
+        
         self._player_command("set_property", "pause", True)
         self._now = None
         cleared = self._player_command(
@@ -1720,6 +1779,17 @@ class MpvOutput:
         # The queued reset marker may arrive after the MPV thread restarts.
         self.reset_buffer(target)
         self.ingest.go()
+
+        # Enter seek-buffering state for auto-resume, unless user was manually paused
+        if was_manually_paused:
+            self._pause_owner = "user"
+            self._seek_buffering = False
+            log.info("Seek completed while manually paused; remaining paused")
+        else:
+            self._seek_buffering = True
+            self._pause_owner = "none"
+            self._vod_auto_paused = False
+            log.info("Seek completed; entering seek-buffering for auto-resume")
 
         # Previously translated captions should be visible immediately, even
         # while FFmpeg restarts audio extraction for uncached sections.

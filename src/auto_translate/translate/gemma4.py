@@ -11,10 +11,21 @@ import httpx
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
-from ..llama_server import LlamaServer, LlamaServerError, detect_device, gguf_block_count, require_gguf, resolve_executable
+from ..llama_server import (
+    LlamaServer,
+    LlamaServerError,
+    detect_device,
+    gguf_block_count,
+    require_gguf,
+    resolve_executable,
+)
 from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..stream_context import StreamContext
-from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup, looks_like_prompt_echo
+from ..subtitle_clean import (
+    english_output_issue,
+    looks_like_prompt_echo,
+    unmatched_double_quote_cleanup,
+)
 from ..windows_subprocess import check_running
 from .base import TranslatorUnavailable
 
@@ -36,7 +47,7 @@ _SYSTEM_PROMPT = (
 )
 
 _DIALOGUE = "直前の会話："
-_ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION|Translate)\s*[:：]\s*", re.I)
+_ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION|Translate)\s*[:：]\s*", re.IGNORECASE)
 _MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)\*(?=\S)(.+?)(?<=\S)\*(?!\w)")
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
@@ -64,7 +75,7 @@ _EXPLANATORY = re.compile(
     r"|This\s+means\s*[:：]"
     r"|(?:I would translate|I believe)\s"
     r")",
-    re.I,
+    re.IGNORECASE,
 )
 
 _SYSTEM_ECHO = re.compile(
@@ -78,7 +89,7 @@ _SYSTEM_ECHO = re.compile(
     r"|prioritize meaning and natural flow"
     r"|preserve japanese names"
     r")",
-    re.I,
+    re.IGNORECASE,
 )
 
 _PROMPT_ECHO = re.compile(
@@ -89,7 +100,7 @@ _PROMPT_ECHO = re.compile(
     r"|translation style\s*[:：]"
     r"|直前の会話"
     r")",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -143,7 +154,7 @@ def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
     for _, name in names:
         tokens = re.split(r"[- ]+", name)
         pattern = r"(?<!\w)" + r"[\s\-‐‑–—]+".join(re.escape(token) for token in tokens) + r"(?!\w)"
-        if not re.search(pattern, english, re.I):
+        if not re.search(pattern, english, re.IGNORECASE):
             missing.append(name)
     return missing
 
@@ -402,7 +413,7 @@ class Gemma4Translator:
                              english=self.cfg.context_english)
 
     def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        source_context = "\n".join((context, ja))
+        source_context = f"{context}\n{ja}"
         names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
         found = self.glossary.find(ja, context=source_context)
         extra = [term for term in found if term not in names]

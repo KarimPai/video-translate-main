@@ -1,8 +1,8 @@
 """Win32 job ownership. All handles are non-inheritable by default."""
 import ctypes as c
-from ctypes import wintypes as w
 import os
 import uuid
+from ctypes import wintypes as w
 
 _job = None
 _console_handler = None

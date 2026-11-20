@@ -8,8 +8,9 @@ pipeline can validate compatibility before loading.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -299,8 +300,8 @@ def _firered_vad_factory(config: Any, **kwargs: Any) -> Any:
 
 def _haas_asr_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Haas-ja-v1.0 ASR."""
-    from .config import AsrConfig
     from .asr.haas import HaasASR
+    from .config import AsrConfig
     if isinstance(config, dict):
         config = AsrConfig(**config)
     context = kwargs.pop("context", "")
@@ -308,14 +309,14 @@ def _haas_asr_factory(config: Any, **kwargs: Any) -> Any:
     if isinstance(context, str):
         return HaasASR(config, context=context)
     # If context was passed as positional (old signature), use kwargs
-    glossary = kwargs.pop("glossary", None)
+    kwargs.pop("glossary", None)
     return HaasASR(config, context=context)
 
 
 def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Qwen3-ASR."""
-    from .config import AsrConfig
     from .asr.qwen3_asr import Qwen3ASR
+    from .config import AsrConfig
     if isinstance(config, dict):
         config = AsrConfig(**config)
     context = kwargs.pop("context", "")
@@ -324,8 +325,8 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
 
 def _whisper_asr_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Whisper Large-v3 Turbo."""
-    from .config import AsrConfig
     from .asr.whisper_turbo import WhisperASR
+    from .config import AsrConfig
     if isinstance(config, dict):
         config = AsrConfig(**config)
     context = kwargs.pop("context", "")

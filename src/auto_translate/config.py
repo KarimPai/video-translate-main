@@ -10,7 +10,6 @@ import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -270,15 +269,15 @@ class AsrConfig:
         for name in ("model_path", "server_path"):
             value = getattr(self, name)
             if not isinstance(value, str):
-                raise ValueError(f"asr.{name} must be a string")
+                raise TypeError(f"asr.{name} must be a string")
         if not isinstance(self.speech_server_path, str):
-            raise ValueError("asr.speech_server_path must be a string")
+            raise TypeError("asr.speech_server_path must be a string")
         if self.speech_server_path and not self.speech_server_path.strip():
             raise ValueError("asr.speech_server_path must be a nonempty path or empty")
         if not isinstance(self.mmproj_path, str):
-            raise ValueError("asr.mmproj_path must be a string")
+            raise TypeError("asr.mmproj_path must be a string")
         if not isinstance(self.context, str):
-            raise ValueError("asr.context must be a string")
+            raise TypeError("asr.context must be a string")
         if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 8000:
             raise ValueError("asr.max_context_chars must be an integer in 0..8000")
         if type(self.recent_context_lines) is not int or not 0 <= self.recent_context_lines <= 4:
@@ -407,7 +406,7 @@ class HolodexConfig:
 
     def __post_init__(self):
         if not isinstance(self.api_key, str):
-            raise ValueError("holodex.api_key must be a string")
+            raise TypeError("holodex.api_key must be a string")
         if type(self.timeout_s) not in (int, float) or not 0.5 <= self.timeout_s <= 30:
             raise ValueError("holodex.timeout_s must be in 0.5..30")
 
@@ -553,23 +552,23 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str) -> dic
 
 
 __all__ = [
-    "Config",
-    "ModelsConfig",
-    "IngestConfig",
-    "SeparationConfig",
-    "DeepFilterConfig",
-    "VadConfig",
     "AsrConfig",
-    "TranslateConfig",
-    "OutputConfig",
-    "MpvConfig",
-    "SafePlaybackConfig",
+    "Config",
+    "DeepFilterConfig",
     "DiagnosticsConfig",
-    "HolodexConfig",
-    "LanguageFilterConfig",
     "GpuBudgetConfig",
-    "load_config",
-    "vad_for_source",
+    "HolodexConfig",
+    "IngestConfig",
+    "LanguageFilterConfig",
+    "ModelsConfig",
+    "MpvConfig",
+    "OutputConfig",
+    "SafePlaybackConfig",
+    "SeparationConfig",
+    "TranslateConfig",
+    "VadConfig",
     "get_backend_config",
+    "load_config",
     "mpv_youtube_format",
+    "vad_for_source",
 ]

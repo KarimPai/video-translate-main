@@ -11,15 +11,14 @@ A scheduler polls mpv's time-pos over JSON IPC (~10x/s) and draws subtitles
 using osd-overlay.
 """
 import ctypes
-import os
 import json
 import logging
 import math
+import os
 import queue
 import shutil
 import socket
 import subprocess
-from ..windows_subprocess import owned_popen
 import sys
 import threading
 import time
@@ -30,15 +29,20 @@ from typing import Any
 from uuid import uuid4
 
 from ..config import MpvConfig
-from ..windows_subprocess import hidden_console_flags
-from ..gui_control import emit_event, FULLSCREEN_MESSAGE, EXIT_FULLSCREEN_MESSAGE
-from ..runtime_diagnostics import update_metrics, increment_counter, record_event, rotate_log
+from ..gui_control import EXIT_FULLSCREEN_MESSAGE, FULLSCREEN_MESSAGE, emit_event
 from ..ingest import Ingest, fmt_hms
-from ..types import Subtitle
+from ..runtime_diagnostics import (
+    increment_counter,
+    record_event,
+    rotate_log,
+    update_metrics,
+)
 from ..session_cache import SessionSubtitleCache
-from ..timeline import record_session_anchor
 from ..subtitle_clean import sanitize_english_output
 from ..subtitle_layout import chunk_at, display_until, split_cue, wrap_lines
+from ..timeline import record_session_anchor
+from ..types import Subtitle
+from ..windows_subprocess import hidden_console_flags, owned_popen
 
 log = logging.getLogger(__name__)
 
@@ -306,7 +310,7 @@ class MpvIpc:
                     self.events.put(msg)
                 elif "request_id" in msg:
                     self._responses.put(msg)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._reader_failure = exc
             self._responses.put({"_reader_error": str(exc)})
 
@@ -1224,18 +1228,17 @@ class MpvOutput:
                             self._now if self._now else -1,
                             self._translated_until, pending,
                         )
-                elif self._vod_auto_paused and self._vod_should_resume():
+                elif self._vod_auto_paused and self._vod_should_resume() and self._player_command("set_property", "pause", False):
                     # Translation caught up — resume MPV
-                    if self._player_command("set_property", "pause", False):
-                        self._vod_auto_paused = False
-                        lead = self._translated_until - self._now if self._now else 0
-                        log.info(
-                            "VOD auto-resume: translation lead %.1fs >= %.1fs threshold "
-                            "(now=%.1fs translated_until=%.1fs)",
-                            lead, getattr(self.cfg, "vod_resume_threshold_s", 8.0),
-                            self._now if self._now else -1,
-                            self._translated_until,
-                        )
+                    self._vod_auto_paused = False
+                    lead = self._translated_until - self._now if self._now else 0
+                    log.info(
+                        "VOD auto-resume: translation lead %.1fs >= %.1fs threshold "
+                        "(now=%.1fs translated_until=%.1fs)",
+                        lead, getattr(self.cfg, "vod_resume_threshold_s", 8.0),
+                        self._now if self._now else -1,
+                        self._translated_until,
+                    )
 
             replay, delta = self._read_player_events()
             if replay and self._now is not None and self.ipc.get("eof-reached"):

@@ -10,8 +10,8 @@ from dataclasses import replace
 from math import floor
 from threading import RLock
 
-from .types import Subtitle
 from .subtitle_clean import sanitize_english_output
+from .types import Subtitle
 
 
 class SessionSubtitleCache:

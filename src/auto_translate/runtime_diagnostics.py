@@ -7,13 +7,10 @@ No application logger can run after a complete operating-system freeze.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
 import json
 import logging
 import math
-from logging.handlers import RotatingFileHandler
 import os
-from pathlib import Path
 import queue
 import re
 import subprocess
@@ -22,6 +19,9 @@ import threading
 import time
 import uuid
 import zipfile
+from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 _ACTIVE = None
@@ -69,12 +69,12 @@ class _Capture(logging.Handler):
             # Application logs only: HTTP libraries may carry request secrets.
             if not record.name.startswith("auto_translate"):
                 return
-            data = dict(level=record.levelname, logger=record.name,
-                        message=_redact(record.getMessage())[:4096])
+            data = {"level": record.levelname, "logger": record.name,
+                    "message": _redact(record.getMessage())[:4096]}
             if record.exc_info and record.exc_info[0]:
                 data["exception"] = record.exc_info[0].__name__
             self.owner.record("application_log", **data)
-        except Exception:
+        except Exception:  # noqa: S110, BLE001
             # Logging failure must never affect the operation being diagnosed.
             pass
 
@@ -148,7 +148,7 @@ class RuntimeDiagnostics:
         if not self.enabled or self._closed:
             return
         try:
-            item = {"time_utc": datetime.now(timezone.utc).isoformat(),
+            item = {"time_utc": datetime.now(UTC).isoformat(),
                     "monotonic_s": round(time.monotonic(), 6),
                     "session": self.session, "event": str(event)[:96],
                     **_json_value(data)}
@@ -198,7 +198,7 @@ class RuntimeDiagnostics:
                         return
                     self._sink.emit(logging.LogRecord("diagnostics", logging.INFO, "", 0,
                                                       item, (), None))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     # A failed disk remains a diagnostic failure, not a pipeline failure.
                     with self._lock:
                         self._dropped += 1
@@ -336,6 +336,7 @@ $wer=Get-WinEvent -FilterHashtable @{LogName='Application';ProviderName='Windows
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=10,
+            check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if completed.returncode:
@@ -360,7 +361,7 @@ def export_diagnostics(destination: Path, log_dir: Path = Path("logs"), *,
     """
     destination, log_dir = Path(destination), Path(log_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    manifest = {"created_utc": datetime.now(timezone.utc).isoformat(), "files": [],
+    manifest = {"created_utc": datetime.now(UTC).isoformat(), "files": [],
                 "windows_events_requested": bool(include_windows_events),
                 "limits": {"files": _MAX_EXPORT_FILES, "bytes_per_file": _EXPORT_FILE_BYTES,
                            "total_log_bytes": _MAX_EXPORT_BYTES},

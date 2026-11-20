@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
-import math
 import logging
+import math
 import socket
 import sys
 import threading
@@ -77,8 +77,8 @@ def read_control_socket(port: int, token: str, queue_command, *, connected=None,
     """Read only validated commands from the authenticated GUI connection."""
     log = logging.getLogger(__name__)
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-            with sock.makefile("rb") as incoming:
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock, \
+             sock.makefile("rb") as incoming:
                 if connected:
                     connected(sock)
                 sock.sendall(token.encode("ascii") + b"\n")
@@ -113,7 +113,7 @@ class BackendControl:
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=read_control_socket,
             args=(port, token, self.command),
-            kwargs=dict(connected=self._connected, disconnected=self.request_stop),
+            kwargs={"connected": self._connected, "disconnected": self.request_stop},
             name="gui-command-reader", daemon=True)
         self.thread.start()
 

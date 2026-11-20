@@ -15,8 +15,8 @@ from dataclasses import asdict, dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from ..types import Subtitle
 from ..subtitle_clean import sanitize_english_output
+from ..types import Subtitle
 
 log = logging.getLogger(__name__)
 

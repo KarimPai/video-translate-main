@@ -16,7 +16,12 @@ from pathlib import Path
 import httpx
 
 from .runtime_diagnostics import rotate_log
-from .windows_subprocess import check_running, hidden_console_flags, owned_popen, stopping
+from .windows_subprocess import (
+    check_running,
+    hidden_console_flags,
+    owned_popen,
+    stopping,
+)
 
 log = logging.getLogger(__name__)
 

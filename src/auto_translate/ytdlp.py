@@ -21,6 +21,7 @@ def extract(cfg, url, options, *, check=True):
     result = subprocess.run(
         [*command, "--", url], stdin=subprocess.DEVNULL, capture_output=True,
         text=True, encoding="utf-8", errors="replace", timeout=90,
+        check=False,
         creationflags=hidden_console_flags(),
     )
     if check and result.returncode:

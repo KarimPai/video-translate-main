@@ -14,7 +14,6 @@ Tests cover:
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
@@ -22,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 def test_pipeline_imports():
     """Pipeline module imports all required components."""
-    from auto_translate.pipeline import run, run_asr, run_translate, Stats
+    from auto_translate.pipeline import Stats, run, run_asr, run_translate
     assert callable(run)
     assert callable(run_asr)
     assert callable(run_translate)
@@ -47,7 +46,10 @@ def test_haas_adapter_import():
 def test_gemma4_adapter_import():
     """Gemma4 translator imports correctly."""
     from auto_translate.translate.gemma4 import (
-        Gemma4Translator, build_prompt, clean_output, useful_context
+        Gemma4Translator,
+        build_prompt,
+        clean_output,
+        useful_context,
     )
     assert Gemma4Translator is not None
     assert callable(build_prompt)
@@ -58,7 +60,11 @@ def test_gemma4_adapter_import():
 def test_plamo_adapter_import():
     """PLaMo translator imports correctly."""
     from auto_translate.translate.plamo import (
-        PlamoTranslator, build_plamo_prompt, clean_output, useful_context, PLAMO_STOP_TOKENS
+        PLAMO_STOP_TOKENS,
+        PlamoTranslator,
+        build_plamo_prompt,
+        clean_output,
+        useful_context,
     )
     assert PlamoTranslator is not None
     assert callable(build_plamo_prompt)
@@ -187,7 +193,7 @@ def test_ingest_import():
 
 def test_vad_import():
     """VAD module imports correctly."""
-    from auto_translate.vad import run_segmenter, Segmenter
+    from auto_translate.vad import Segmenter, run_segmenter
     assert callable(run_segmenter)
     assert Segmenter is not None
 
@@ -233,7 +239,9 @@ def test_windows_subprocess_import():
 def test_runtime_diagnostics_import():
     """Runtime diagnostics module imports correctly."""
     from auto_translate.runtime_diagnostics import (
-        increment_counter, record_event, update_metrics
+        increment_counter,
+        record_event,
+        update_metrics,
     )
     assert callable(increment_counter)
     assert callable(record_event)
@@ -250,9 +258,8 @@ def test_subtitle_clean_functions():
     """Subtitle clean module functions work correctly."""
     from auto_translate.subtitle_clean import (
         clean_english_output,
-        looks_like_prompt_echo,
         has_generation_loop,
-        has_special_token_flood,
+        looks_like_prompt_echo,
     )
 
     # clean_english_output should return cleaned text (string)
@@ -302,7 +309,7 @@ def test_registry_list_backends():
     from auto_translate.registry import get_default_registry
 
     registry = get_default_registry()
-    backends = registry.list_backends()
+    registry.list_backends()
 
     # Check ASR backends
     asr_backends = registry.list_backends("asr")
@@ -388,8 +395,9 @@ def test_config_vad_device_validation():
 
 def test_gemma4_reload_lock():
     """Gemma4 uses separate _reload_lock to prevent deadlock."""
-    from auto_translate.translate.gemma4 import Gemma4Translator
     import inspect
+
+    from auto_translate.translate.gemma4 import Gemma4Translator
 
     # Check that _reload_lock is defined in __init__
     source = inspect.getsource(Gemma4Translator.__init__)
@@ -398,8 +406,9 @@ def test_gemma4_reload_lock():
 
 def test_plamo_reload_lock():
     """PLaMo uses separate _reload_lock to prevent deadlock."""
-    from auto_translate.translate.plamo import PlamoTranslator
     import inspect
+
+    from auto_translate.translate.plamo import PlamoTranslator
 
     # Check that _reload_lock is defined in __init__
     source = inspect.getsource(PlamoTranslator.__init__)
@@ -528,10 +537,16 @@ def test_qwen3_asr_config_default():
 
 def test_types_dataclasses():
     """All types dataclasses are properly defined."""
-    from auto_translate.types import (
-        AudioChunk, AudioProgress, Subtitle, Timings, Transcript, Utterance, SourceEOF,
-    )
     import numpy as np
+
+    from auto_translate.types import (
+        AudioChunk,
+        SourceEOF,
+        Subtitle,
+        Timings,
+        Transcript,
+        Utterance,
+    )
 
     # Test Timings
     t = Timings()
@@ -580,8 +595,9 @@ def test_gemma4_vs_plamo_prompt_isolation():
 
 def test_safe_playback_class():
     """SafeInferenceGate class is defined with correct signature."""
-    from auto_translate.safe_playback import SafeInferenceGate
     import inspect
+
+    from auto_translate.safe_playback import SafeInferenceGate
 
     sig = inspect.signature(SafeInferenceGate.__init__)
     params = list(sig.parameters.keys())
@@ -612,6 +628,7 @@ def test_speech_server_class():
 def test_gui_runner_backend_params():
     """build_backend_command accepts asr_backend and translate_backend params."""
     import inspect
+
     from auto_translate.gui_runner import build_backend_command
     sig = inspect.signature(build_backend_command)
     params = list(sig.parameters.keys())
@@ -621,10 +638,10 @@ def test_gui_runner_backend_params():
 
 def test_gui_runner_backend_args_in_command():
     """build_backend_command includes --asr-backend and --translate-backend in args."""
-    from auto_translate.gui_runner import build_backend_command
-    from pathlib import Path
     import tempfile
-    import os
+    from pathlib import Path
+
+    from auto_translate.gui_runner import build_backend_command
     # Create a minimal project structure
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -656,9 +673,10 @@ def test_gui_runner_backend_args_in_command():
 
 def test_gui_runner_backend_validation():
     """build_backend_command rejects invalid backend names."""
-    from auto_translate.gui_runner import build_backend_command
-    from pathlib import Path
     import tempfile
+    from pathlib import Path
+
+    from auto_translate.gui_runner import build_backend_command
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         (root / "pyproject.toml").write_text("")
@@ -688,7 +706,7 @@ def test_cli_args_asr_backend():
     import subprocess
     result = subprocess.run(
         [sys.executable, "-m", "auto_translate", "--help"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
         cwd=str(Path(__file__).parent.parent),
         env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")},
     )
@@ -700,7 +718,7 @@ def test_cli_args_translate_backend():
     import subprocess
     result = subprocess.run(
         [sys.executable, "-m", "auto_translate", "--help"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
         cwd=str(Path(__file__).parent.parent),
         env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")},
     )
@@ -726,7 +744,11 @@ def test_registry_backend_list_for_gui():
 
 def test_hymt_import():
     """HymtTranslator and build_hymt_prompt can be imported."""
-    from auto_translate.translate.hymt import HymtTranslator, build_hymt_prompt, build_prompt
+    from auto_translate.translate.hymt import (
+        HymtTranslator,
+        build_hymt_prompt,
+        build_prompt,
+    )
     assert HymtTranslator is not None
     assert build_hymt_prompt is not None
     assert build_hymt_prompt is build_prompt
@@ -790,8 +812,9 @@ def test_hymt_useful_context():
 
 def test_hymt_reload_lock():
     """HY-MT2 uses separate _reload_lock to prevent deadlock."""
-    from auto_translate.translate.hymt import HymtTranslator
     import inspect
+
+    from auto_translate.translate.hymt import HymtTranslator
 
     source = inspect.getsource(HymtTranslator.__init__)
     assert "_reload_lock" in source
@@ -799,8 +822,8 @@ def test_hymt_reload_lock():
 
 def test_mpv_available():
     """MPV player is accessible via shutil.which or known path."""
-    import shutil
     import os
+    import shutil
     mpv = shutil.which("mpv")
     if mpv is None:
         # Check known installation path

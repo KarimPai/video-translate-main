@@ -21,7 +21,6 @@ import numpy as np
 from ..config import AsrConfig
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
-from .base import ASRBackend
 from .context_echo import speech_key
 from .quality_guard import transcript_problem
 
@@ -201,7 +200,7 @@ class WhisperASR:
             return ""
         try:
             text = self._transcribe_impl(audio, probe, no_context=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("Whisper context echo recovery failed: %s", exc)
             return ""
         text = " ".join(unicodedata.normalize("NFC", text).split())
@@ -235,7 +234,7 @@ class WhisperASR:
                 recent = list(self._recent)
                 initial_prompt = " ".join(recent[-3:])[:256]
 
-        segments, info = self._model.transcribe(
+        segments, _info = self._model.transcribe(
             samples,
             language="ja",
             task="transcribe",

@@ -57,10 +57,10 @@ import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import CancelledError
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
@@ -78,9 +78,9 @@ class StreamingFireRedVAD:
     WINDOW_SAMPLES = 400  # 25 ms model window
 
     def __init__(self, speech_threshold: float, device: str = "cpu", model_dir: str = "") -> None:
-        from huggingface_hub import snapshot_download
         import torch
         from fireredvad import FireRedStreamVad, FireRedStreamVadConfig
+        from huggingface_hub import snapshot_download
 
         if device not in ("cpu", "cuda"):
             raise ValueError("FireRedVAD device must be cpu or cuda")
@@ -95,8 +95,8 @@ class StreamingFireRedVAD:
             if model_dir:
                 raise FileNotFoundError(f"Incomplete FireRedVAD model directory: {directory}")
             from huggingface_hub.errors import LocalEntryNotFoundError
-            options = dict(repo_id="FireRedTeam/FireRedVAD", revision=revision,
-                           allow_patterns=[f"Stream-VAD/{filename}" for filename in required])
+            options = {"repo_id": "FireRedTeam/FireRedVAD", "revision": revision,
+                       "allow_patterns": [f"Stream-VAD/{filename}" for filename in required]}
             try:
                 directory = Path(snapshot_download(**options, local_files_only=True)) / "Stream-VAD"
             except LocalEntryNotFoundError:

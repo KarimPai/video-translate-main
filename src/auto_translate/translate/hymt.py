@@ -20,7 +20,14 @@ import httpx
 
 from ..config import TranslateConfig
 from ..glossary import Glossary
-from ..llama_server import LlamaServer, LlamaServerError, detect_device, gguf_block_count, require_gguf, resolve_executable
+from ..llama_server import (
+    LlamaServer,
+    LlamaServerError,
+    detect_device,
+    gguf_block_count,
+    require_gguf,
+    resolve_executable,
+)
 from ..runtime_diagnostics import increment_counter, record_event, update_metrics
 from ..stream_context import StreamContext
 from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup
@@ -38,7 +45,7 @@ _CONTEXT = "请结合背景信息将以下文本翻译为英语，注意只需�
 _STYLE_PLAIN = "请将以下文本翻译为 英语。\n注意翻译的风格要严格符合【{style}】\n\n{text}"
 _STYLE_CONTEXT = "请结合背景信息将以下文本翻译为 英语。\n注意翻译的风格要严格符合【{style}】\n\n【待翻译文本】\n{text}"
 _DIALOGUE = "直前の会話："
-_ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION)\s*[:：]\s*", re.I)
+_ROLE = re.compile(r"^(?:EN|ENGLISH|TRANSLATION)\s*[:：]\s*", re.IGNORECASE)
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z]*(?:[-‐‑][A-Za-z]+)*")
 _HONORIFICS = {"chan", "san", "sama", "kun", "senpai", "sensei", "tan"}
 
@@ -85,7 +92,7 @@ def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
     for _, name in names:
         tokens = re.split(r"[- ]+", name)
         pattern = r"(?<!\w)" + r"[\s\-‐‑–—]+".join(re.escape(token) for token in tokens) + r"(?!\w)"
-        if not re.search(pattern, english, re.I):
+        if not re.search(pattern, english, re.IGNORECASE):
             missing.append(name)
     return missing
 
@@ -279,7 +286,7 @@ class HymtTranslator:
                              english=self.cfg.context_english)
 
     def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        source_context = "\n".join((context, ja))
+        source_context = f"{context}\n{ja}"
         names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
         found = self.glossary.find(ja, context=source_context)
         extra = [term for term in found if term not in names]

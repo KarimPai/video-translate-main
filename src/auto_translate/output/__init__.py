@@ -5,4 +5,4 @@ from .mpv import MpvOutput
 from .terminal import TerminalOutput
 from .web import WebOutput
 
-__all__ = ["Output", "MpvOutput", "TerminalOutput", "WebOutput"]
+__all__ = ["MpvOutput", "Output", "TerminalOutput", "WebOutput"]

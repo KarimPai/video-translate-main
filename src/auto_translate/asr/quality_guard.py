@@ -10,7 +10,7 @@ from ..text_filter import rejection_reason
 
 _JA = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _WORD = re.compile(r"[A-Za-z]{2,}")
-_PHANTOM = re.compile(r"^(?:thank you for watching|subtitles? by .+|please subscribe|ご視聴ありがとうございました)(?:[.!。！ ]*)$", re.I)
+_PHANTOM = re.compile(r"^(?:thank you for watching|subtitles? by .+|please subscribe|ご視聴ありがとうございました)(?:[.!。！ ]*)$", re.IGNORECASE)
 
 
 def transcript_problem(text: str, duration_s: float) -> str | None:

@@ -7,32 +7,65 @@ import codecs
 import json
 import logging
 import os
-import uuid
 import secrets
 import select
 import socket
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QCursor, QFont, QTextCursor, QShortcut, QKeySequence
+from PySide6.QtGui import (
+    QCloseEvent,
+    QCursor,
+    QFont,
+    QKeySequence,
+    QShortcut,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-    QScrollArea, QSlider, QSpinBox, QStyle, QStyleOptionSlider, QTabWidget, QVBoxLayout, QWidget,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QStyle,
+    QStyleOptionSlider,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from auto_translate.config import load_config
-from auto_translate.gui_control import parse_event, GUI_SHUTDOWN_MS
+from auto_translate.gui_control import GUI_SHUTDOWN_MS, parse_event
+from auto_translate.gui_runner import (
+    QUALITY_OPTIONS,
+    READY_MARKER,
+    build_backend_command,
+    diagnostic_rows,
+    discover_project_root,
+    prepare_project,
+    session_launcher,
+    subprocess_environment,
+    valid_youtube_url,
+)
 from auto_translate.runtime_diagnostics import open_rotating_log
 from auto_translate.windows_job import WindowsJob, bind_process_tree
-from auto_translate.gui_runner import (
-    QUALITY_OPTIONS, READY_MARKER, build_backend_command, discover_project_root,
-    diagnostic_rows, prepare_project, session_launcher, subprocess_environment, valid_youtube_url,
-)
 
 log = logging.getLogger(__name__)
 
@@ -467,7 +500,7 @@ class VideoTranslateWindow(QMainWindow):
                 from auto_translate.runtime_diagnostics import export_diagnostics
                 result = export_diagnostics(Path(destination), log_dir=self.root / "logs",
                                             include_windows_events=include_events)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if not self._closing:
                     self.diagnosticsExported.emit("", str(exc))
             else:
@@ -650,7 +683,7 @@ class VideoTranslateWindow(QMainWindow):
             if self._job:
                 self._job.close()
                 self._job = None
-            logging.exception("session=%s launch/containment failed", self._session)
+            logging.exception("session=%s launch/containment failed", self._session)  # noqa: LOG015
             if (self.root / "logs").is_dir():
                 with open_rotating_log(self.root / "logs" / "run.log") as stream:
                     print(f"session={self._session} launch/containment failed: {exc}", file=stream)

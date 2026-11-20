@@ -6,7 +6,6 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-
 _PARTICLE = re.compile(r"(?:が|は|を|に|も|の|と|で)(?=$|[^ぁ-ん]|いる|いた|きた|どこ|いっしょ)")
 _FOLLOW = re.compile(r"来[たてるな]|いた|いる|すご[いく]|かわいい|おはよう|どこ|って|だよ|です|だね|だ[。！？!?]?$")
 _SHIP = re.compile(r"海賊船|船員|乗組員|乗客|出航|航海|操舵|操縦|甲板|港|この船|船の|フェリー")
@@ -174,7 +173,7 @@ class Glossary:
         return frozenset(self._identity(term, en) for term, en in self._matches(context, "")
                          if en[:1].isupper())
 
-    @lru_cache(maxsize=256)
+    @lru_cache(maxsize=256)  # noqa: B019
     def _matches(self, ja: str, context: str) -> tuple[tuple[str, str], ...]:
         source = ja
         talents = self._talents(context) if context else frozenset()
@@ -211,7 +210,7 @@ class Glossary:
                     repeated = kana_key(source.strip("。！？!? ")) == key * 2
                     marine_title = key == "船長" and source[:m.start()].endswith("マリン")
                     following = kana_key(source[m.end():])
-                    joined_names = any(following.startswith(other) or following.startswith("と" + other)
+                    joined_names = any(following.startswith((other, "と" + other))
                                        for other in self._nickname_keys)
                     if key == "みこ" and following.startswith("と") and not joined_names:
                         continue

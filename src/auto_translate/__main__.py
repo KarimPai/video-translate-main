@@ -1,13 +1,13 @@
 """CLI entry point: uv run video-translate <youtube-url | audio file> [options]."""
 
 import argparse
-from contextlib import ExitStack
 import logging
 import math
 import os
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 from . import cuda_dlls
@@ -184,6 +184,7 @@ def _main(resources: ExitStack) -> None:
     gate = SafeInferenceGate(cfg.safe_playback, stop)
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
         import shutil
+
         from .output.mpv import find_mpv
         for tool in ("ffmpeg", "yt-dlp", "deno"):
             if not shutil.which(tool):
@@ -235,13 +236,14 @@ def _main(resources: ExitStack) -> None:
         )
 
     # Video metadata biases ASR spellings and gives translation scene context.
-    from .stream_context import describe_stream
+    from dataclasses import replace
+
+    from .config import vad_for_source
 
     # Load models before starting ingest: ASR first (fixed size), then size
     # translation offload from measured free memory.
     from .gpu_budget import GpuBudget
-    from dataclasses import replace
-    from .config import vad_for_source
+    from .stream_context import describe_stream
     from .vad import Segmenter
     check_running()
     segmenter = Segmenter(vad_for_source(cfg.vad, live=bool(source.live)))
@@ -335,7 +337,7 @@ def _main(resources: ExitStack) -> None:
         try:
             from .language_filter import LanguageFilter
             language_filter = LanguageFilter(cfg.language_filter)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "Spoken-language filter unavailable; continuing without "
                 "English/Indonesian filtering: %s", exc,

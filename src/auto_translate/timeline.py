@@ -9,10 +9,10 @@ different timestamp origins.
 import json
 import logging
 import os
-from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .config import IngestConfig
 from .ytdlp import cache_key, extract
@@ -77,7 +77,7 @@ def load_vod_metadata(url: str, cfg: IngestConfig) -> dict[str, Any]:
         "live_status": live_status,
         "chapters": chapters,
         "formats": formats,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(UTC).isoformat(),
     }
 
     video_id = metadata["video_id"]
@@ -131,7 +131,7 @@ def record_session_anchor(
             "source_start_s": round(float(source_start_s), 6),
             "mpv_time_pos_s": round(float(mpv_time_pos_s), 6),
             "reason": str(reason),
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat(),
         })
         del sessions[:-64]
         temporary = path.with_suffix(f".{uuid4().hex}.tmp")

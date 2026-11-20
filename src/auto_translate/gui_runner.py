@@ -3,13 +3,12 @@
 A packaged GUI is a frontend for the established project environment. Models,
 MPV and llama-server remain externally installed/shared.
 """
-import os
 import math
+import os
 import shutil
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-
 
 READY_MARKER = "VIDEO_TRANSLATE_GUI_READY"
 QUALITY_OPTIONS = (360, 480, 720, 1080)
@@ -193,9 +192,9 @@ def diagnostic_rows(event: dict) -> dict[str, str]:
                         for name, value in list(workers.items())[:12]
                         if name not in ("threads", "processes"))
     worker_text = "; ".join(worker_parts) or "unknown"
-    return dict(gpu=gpu_text, activity=gpu_activity, stages=stage_text,
-                subtitles=subtitle_text, queues=queue_text,
-                playback=playback_text, workers=worker_text)
+    return {"gpu": gpu_text, "activity": gpu_activity, "stages": stage_text,
+            "subtitles": subtitle_text, "queues": queue_text,
+            "playback": playback_text, "workers": worker_text}
 
 
 def prepare_project(root: Path):

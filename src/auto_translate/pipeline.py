@@ -19,7 +19,6 @@ from .config import Config, vad_for_source
 from .gui_control import emit_event
 from .ingest import Ingest
 from .output.base import Output
-
 from .runtime_diagnostics import increment_counter, record_event, update_metrics
 from .session_cache import SessionSubtitleCache
 from .subtitle_clean import (
@@ -1116,9 +1115,8 @@ def run(
                     if getattr(out, "_vod_auto_paused", False):
                         auto_paused = True
                         break
-                if auto_paused and backlog:
+                if auto_paused and backlog and ingest.generation == observed_generation:
                     # Check if this is the current generation (not a stale seek)
-                    if ingest.generation == observed_generation:
                         # Attempt recovery: log diagnostics and try to resume
                         record_event(
                             "vod_deadlock_recovery",
@@ -1214,7 +1212,7 @@ def run(
         for output in outputs:
             failure = getattr(output, "scheduler_failure", None)
             if isinstance(failure, Exception):
-                raise RuntimeError("MPV scheduler crashed") from failure
+                raise RuntimeError("MPV scheduler crashed") from failure  # noqa: TRY004
     except KeyboardInterrupt:
         log.info("stopping (Ctrl+C)")
 

@@ -2,7 +2,6 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
@@ -10,10 +9,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 def test_types_import():
     """Types module imports and dataclasses are usable."""
-    from auto_translate.types import (
-        AudioChunk, AudioProgress, Subtitle, Timings, Transcript, Utterance, SourceEOF,
-    )
     import numpy as np
+
+    from auto_translate.types import (
+        AudioChunk,
+        SourceEOF,
+        Subtitle,
+        Timings,
+        Transcript,
+        Utterance,
+    )
 
     timings = Timings()
     assert timings.audio_read == 0.0
@@ -37,7 +42,7 @@ def test_types_import():
 
 def test_config_defaults():
     """Config loads with defaults when no config file exists."""
-    from auto_translate.config import load_config, Config
+    from auto_translate.config import Config, load_config
 
     cfg = load_config(Path("/nonexistent/config.toml"))
     assert isinstance(cfg, Config)
@@ -61,7 +66,7 @@ def test_config_example():
 
 def test_registry_creation():
     """ModelRegistry creates and lists backends."""
-    from auto_translate.registry import ModelRegistry, BackendCapabilities
+    from auto_translate.registry import ModelRegistry
 
     registry = ModelRegistry()
     backends = registry.list_backends()
@@ -121,7 +126,7 @@ def test_translate_interface():
 
 def test_vad_interface():
     """VADBackend protocol is defined."""
-    from auto_translate.vad.base import VADBackend, VADSegment
+    from auto_translate.vad.base import VADBackend
     assert hasattr(VADBackend, "feed")
     assert hasattr(VADBackend, "flush")
     assert hasattr(VADBackend, "reset")

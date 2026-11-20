@@ -20,12 +20,15 @@ import numpy as np
 
 from ..config import AsrConfig
 from ..runtime_diagnostics import update_metrics
+from ..speech_server import (
+    SpeechCppServer,
+    SpeechServerError,
+    resolve_speech_executable,
+)
 from ..text_filter import trim_repetition_tail
 from ..windows_subprocess import check_running
-from .base import ASRBackend
-from .quality_guard import transcript_problem
 from .context_echo import speech_key
-from ..speech_server import SpeechCppServer, SpeechServerError, resolve_speech_executable
+from .quality_guard import transcript_problem
 
 log = logging.getLogger(__name__)
 

@@ -36,7 +36,7 @@ def show_error(message: str) -> None:
         ctypes.windll.user32.MessageBoxW(
             None, message, "Video Translate - Startup Error", 0x10 | 0x00040000
         )
-    except Exception:
+    except Exception:  # noqa: S110, BLE001
         pass
 
 
@@ -49,6 +49,7 @@ def main() -> int:
         if "--smoke-test" in sys.argv:
             from PySide6.QtCore import QTimer
             from PySide6.QtWidgets import QApplication
+
             from auto_translate.gui import VideoTranslateWindow
             from auto_translate.gui_runner import discover_project_root
             app = QApplication([])
@@ -62,7 +63,7 @@ def main() -> int:
             result = start_gui()
         record(f"Qt application exited: {result}")
         return int(result)
-    except BaseException:
+    except BaseException:  # noqa: BLE001
         tb = traceback.format_exc()
         record("STARTUP FAILURE\n" + tb)
         show_error(

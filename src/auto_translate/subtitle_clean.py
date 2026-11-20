@@ -74,7 +74,7 @@ _LEAD_FILLER = re.compile(
     r"(?i)^(?:(?:um+|uh+|erm+|hmm+)(?:\s*[,;:.!?…]+\s*|\s+))+"
 )
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'“‘])")
-_WORD = re.compile(r"[a-z0-9]+(?:['’][a-z0-9]+)?", re.I)
+_WORD = re.compile(r"[a-z0-9]+(?:['’][a-z0-9]+)?", re.IGNORECASE)
 
 
 
@@ -232,10 +232,7 @@ def has_special_token_flood(text: str) -> bool:
 
     # Check for dominance: special tokens > 50% of all non-whitespace tokens
     all_tokens = text.split()
-    if len(all_tokens) >= 4 and len(matches) / len(all_tokens) > _DOMINANCE_THRESHOLD:
-        return True
-
-    return False
+    return bool(len(all_tokens) >= 4 and len(matches) / len(all_tokens) > _DOMINANCE_THRESHOLD)
 
 
 def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | None:

@@ -4,8 +4,8 @@ No artificial device-wide VRAM ceiling: Windows/NVIDIA own allocation limits.
 Use actual NVIDIA memory.total and memory.used to keep modest reserve for MPV
 and transient CUDA allocations; never abort playback due to a fixed cap.
 """
-import logging
 import importlib
+import logging
 import math
 import subprocess
 import threading
@@ -35,18 +35,18 @@ def _nvml_metrics():
                 module.nvmlInit()
                 handle = module.nvmlDeviceGetHandleByIndex(0)
                 _NVML, _NVML_HANDLE = module, handle
-            except Exception:
+            except Exception:  # noqa: BLE001
                 _NVML = None
         if _NVML is None:
             return None
-        metrics = dict(source="nvml", used_gb=None, total_gb=None, free_gb=None,
-                       utilization_pct=None, temperature_c=None, power_w=None)
+        metrics = {"source": "nvml", "used_gb": None, "total_gb": None, "free_gb": None,
+                   "utilization_pct": None, "temperature_c": None, "power_w": None}
         try:
             memory = _NVML.nvmlDeviceGetMemoryInfo(_NVML_HANDLE)
             used, total = memory.used / 1e9, memory.total / 1e9
             if math.isfinite(used) and math.isfinite(total) and 0 <= used <= total and total > 0:
                 metrics.update(used_gb=used, total_gb=total, free_gb=total - used)
-        except Exception:
+        except Exception:  # noqa: S110, BLE001
             pass
         for field, getter in (
             ("utilization_pct", lambda: _NVML.nvmlDeviceGetUtilizationRates(_NVML_HANDLE).gpu),
@@ -58,7 +58,7 @@ def _nvml_metrics():
                 value = float(getter())
                 if math.isfinite(value) and value >= 0 and (field != "utilization_pct" or value <= 100):
                     metrics[field] = value
-            except Exception:
+            except Exception:  # noqa: S110, BLE001
                 pass
         return metrics
 
@@ -75,8 +75,8 @@ def _read_gpu_memory_gb():
     if measured is not None and measured["used_gb"] is not None:
         _LAST_METRICS = measured
         return measured["used_gb"], measured["total_gb"]
-    _LAST_METRICS = measured or dict(source="unavailable", utilization_pct=None,
-                                   temperature_c=None, power_w=None)
+    _LAST_METRICS = measured or {"source": "unavailable", "utilization_pct": None,
+                                 "temperature_c": None, "power_w": None}
     try:
         output = subprocess.check_output(
             ["nvidia-smi", "--id=0", "--query-gpu=memory.used,memory.total",

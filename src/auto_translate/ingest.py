@@ -11,21 +11,19 @@ MPV video/audio stream-copy output is kept separate from audio processing.
 """
 
 import functools
-from concurrent.futures import CancelledError
 import http.server
 import logging
 import math
 import os
-import shutil
 import queue
 import re
+import shutil
 import subprocess
-from .windows_subprocess import owned_popen, stopping
-
-from .windows_subprocess import hidden_console_flags
 import tempfile
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import CancelledError
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
@@ -33,11 +31,12 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from .config import IngestConfig, SeparationConfig, DeepFilterConfig
-from .types import SAMPLE_RATE, AudioChunk, SourceEOF
-from .timeline import load_vod_metadata
-from .ytdlp import extract
+from .config import DeepFilterConfig, IngestConfig, SeparationConfig
 from .runtime_diagnostics import record_event, update_metrics
+from .timeline import load_vod_metadata
+from .types import SAMPLE_RATE, AudioChunk, SourceEOF
+from .windows_subprocess import hidden_console_flags, owned_popen, stopping
+from .ytdlp import extract
 
 log = logging.getLogger(__name__)
 
@@ -330,7 +329,7 @@ class Ingest:
         self._vod_pacing_waiting_generation: int | None = None
         # Optional callback that returns True when MPV is auto-paused (not manually paused).
         # When auto-paused, the read-ahead cap is relaxed so audio continues flowing.
-        self._is_auto_paused_cb: "Callable[[], bool] | None" = None
+        self._is_auto_paused_cb: Callable[[], bool] | None = None
 
     def _new_video_playlist(self, source_start_s: float) -> Path:
         """Create a new HLS event playlist while retaining prior session fragments."""
@@ -526,7 +525,7 @@ class Ingest:
                 if self._is_auto_paused_cb is not None:
                     try:
                         is_auto_paused = self._is_auto_paused_cb()
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         is_auto_paused = False
                 effective_lead = lead * 2.0 if is_auto_paused and lead > 0 else lead
                 if lead <= 0 or sample / SAMPLE_RATE <= self._playback_position_s + effective_lead:
@@ -1591,9 +1590,8 @@ class Ingest:
                 "no audio received from FFmpeg; check the source and audio stream"
             )
 
-        elif sample == first and not (worker or deepfilter_worker):
-            if self.source.start_s and self._restart_at is None:
-                log.error(
+        elif sample == first and not (worker or deepfilter_worker) and self.source.start_s and self._restart_at is None:
+            log.error(
                     "no audio after %s: is the start time past the end of the video?",
                     fmt_hms(self.source.start_s),
                 )

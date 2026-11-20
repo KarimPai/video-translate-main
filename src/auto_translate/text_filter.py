@@ -86,9 +86,8 @@ def rejection_reason(text: str) -> str | None:
     # Filter long outputs containing no Japanese text only when they are
     # mostly punctuation/symbol noise. Legitimate English names are retained.
     visible = [ch for ch in compact if ch.isalnum()]
-    if len(visible) >= 8 and not _JAPANESE.search(compact):
-        if sum(ch.isalpha() for ch in visible) / len(visible) < 0.5:
-            return "symbol_noise"
+    if len(visible) >= 8 and not _JAPANESE.search(compact) and sum(ch.isalpha() for ch in visible) / len(visible) < 0.5:
+        return "symbol_noise"
 
     return None
 

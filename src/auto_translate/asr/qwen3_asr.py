@@ -17,7 +17,6 @@ import threading
 import time
 import unicodedata
 from collections import deque
-from pathlib import Path
 
 import httpx
 import numpy as np
@@ -26,7 +25,6 @@ from ..asr.haas import wav_bytes
 from ..config import AsrConfig
 from ..llama_server import (
     LlamaServer,
-    LlamaServerError,
     detect_device,
     require_gguf,
     resolve_executable,
@@ -34,7 +32,6 @@ from ..llama_server import (
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
 from ..windows_subprocess import check_running
-from .base import ASRBackend
 from .context_echo import speech_key
 from .quality_guard import transcript_problem
 
@@ -140,7 +137,7 @@ class Qwen3ASR:
                     try:
                         self._restart()
                         text = self._transcribe_impl(audio, probe)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         raise Qwen3ASRError(f"Qwen3-ASR restart failed: {exc}") from exc
                 else:
                     raise Qwen3ASRError(f"Qwen3-ASR transcription failed: {exc}") from exc
@@ -209,7 +206,7 @@ class Qwen3ASR:
         silent = np.zeros(int(16000 * warmup_s), dtype=np.float32)
         try:
             self._transcribe_impl(silent, probe=False)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("Qwen3-ASR warmup failed (may still work): %s", exc)
 
     def _transcribe_impl(

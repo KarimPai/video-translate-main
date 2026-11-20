@@ -527,8 +527,11 @@ def run_translate(
 
         # Record this speech region as pending translation so the watermark
         # knows not to advance past it until the subtitle is published.
+        speech_id = None
         if record_speech_cb is not None:
-            record_speech_cb(tr.start_s, tr.end_s, tr.generation)
+            result = record_speech_cb(tr.start_s, tr.end_s, tr.generation)
+            if result is not None:
+                speech_id = result
 
         if translator is not None:
             try:
@@ -663,7 +666,7 @@ def run_translate(
             )
             # Clear pending speech so the watermark can advance past the suppressed region
             if complete_speech_cb is not None:
-                complete_speech_cb(tr.start_s, tr.end_s, tr.generation)
+                complete_speech_cb(tr.start_s, tr.end_s, tr.generation, speech_id=speech_id)
             continue
 
         # Japanese fallback is no longer used; translation failures are suppressed.
@@ -677,6 +680,7 @@ def run_translate(
                 tr.timings,
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
+                speech_id=speech_id,
             )
         )
 
@@ -1115,7 +1119,7 @@ def run(
                     # Advance the translation watermark to cover this published subtitle
                     advance_to_sub = getattr(out, "advance_to_subtitle", None)
                     if advance_to_sub is not None:
-                        advance_to_sub(item.end_s, item.generation)
+                        advance_to_sub(item.end_s, item.generation, speech_id=item.speech_id)
 
             except queue.Empty:
                 pass

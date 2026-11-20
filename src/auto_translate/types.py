@@ -77,3 +77,4 @@ class Subtitle:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None
+    speech_id: int | None = None  # stable utterance identity from CoverageTracker

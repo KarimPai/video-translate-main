@@ -141,6 +141,7 @@ class CoverageTracker:
         via set_generation() after calling reset().
         """
         with self._lock:
+            self._start_s = progress_s
             self._vad_progress = progress_s
             self._translated_until = progress_s
             self._pending.clear()
@@ -297,13 +298,23 @@ class CoverageTracker:
         # block. If any pending interval starts behind the frontier, the watermark
         # must respect it. Otherwise, the frontier prevents compaction from erasing
         # previously achieved coverage.
+        #
+        # Critical: when late pending speech is registered behind the frontier,
+        # the walk from _start_s may not reach the pending speech because the
+        # completed intervals that bridged the gap were compacted. In this case,
+        # the frontier represents verified contiguous coverage, so the watermark
+        # should be min(frontier, earliest_pending_start) — not min(walk_result,
+        # earliest_pending_start) which would incorrectly drop the watermark to
+        # the VAD progress instead of the pending speech start.
         earliest_pending = min(
             (iv.start_s for iv in self._pending.values()), default=float('inf')
         )
 
         if earliest_pending < float('inf') and earliest_pending < self._frontier:
-            # Pending speech behind the frontier — retroactively block
-            self._translated_until = min(watermark, earliest_pending)
+            # Pending speech behind the frontier — retroactively block.
+            # Use the frontier as the base (verified coverage), not the walk
+            # result (which may be lower due to compacted intervals).
+            self._translated_until = min(self._frontier, earliest_pending)
         else:
             # No pending speech behind the frontier — use the frontier to
             # prevent compaction from erasing coverage

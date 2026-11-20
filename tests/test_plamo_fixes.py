@@ -861,13 +861,14 @@ class TestCoverageTracker:
     def test_compaction_does_not_lower_watermark(self):
         """After compaction removes completed intervals, watermark must not drop.
 
-        This is the key regression test for the checkpoint fix.
+        This is the key regression test for the frontier fix.
         1. VAD confirms silence through 5s.
         2. Speech at 5-10s is completed.
         3. Speech at 12-14s remains pending.
-        4. Watermark reaches 10s.
+        4. Watermark reaches 12s (blocked by sid2).
         5. Compaction removes 5-10s interval.
-        6. Watermark must remain at 10s, not drop to 5s.
+        6. Trigger recomputation via VAD advance.
+        7. Watermark must remain at 12s, not drop to 5s.
         """
         ct = self._make()
         ct.advance_vad(20.0)
@@ -878,7 +879,9 @@ class TestCoverageTracker:
         assert ct.translated_until == 12.0
         # Force compaction
         ct.compact_completed()
-        # Watermark must NOT drop after compaction
+        # Trigger recomputation: VAD advance forces _advance_through_silence_locked()
+        ct.advance_vad(25.0)
+        # Watermark must NOT drop after compaction + recomputation
         assert ct.translated_until == 12.0
 
     def test_compaction_then_new_speech_advances(self):
@@ -921,6 +924,95 @@ class TestCoverageTracker:
         ct.complete_speech(sid2)
         # Watermark should advance back to 50.0
         assert ct.translated_until == 50.0
+
+    def test_late_speech_overlapping_compacted_interval(self):
+        """Exact issue scenario: completed 5-10s, compacted, late pending at 9-9.5s.
+
+        The watermark must be 9s (blocked by late speech), not 5s (VAD progress).
+        After compaction removes the completed 5-10s interval, the walk from
+        _start_s can only reach VAD progress (5s), but the frontier preserves
+        the verified coverage (10s). Late speech at 9-9.5s should block at 9s.
+        """
+        ct = self._make()
+        # VAD confirms only through 5s — not through the speech interval
+        ct.advance_vad(5.0)
+        # Speech 5-10s is recorded and completed
+        sid1 = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(sid1)
+        # Watermark: 0→5 (VAD silence) → 10 (completed speech)
+        # But VAD only at 5s, so after completed speech, pending is empty
+        # and watermark = max(10, 5) = 10
+        assert ct.translated_until == 10.0
+        # Compaction removes the completed 5-10s interval
+        ct.compact_completed()
+        assert ct.translated_until == 10.0  # frontier preserves it
+        # Late pending speech at 9-9.5s (overlaps where completed speech was)
+        sid2 = ct.record_speech(9.0, 9.5)
+        # Watermark should be 9.0 (blocked by late speech start)
+        # NOT 5.0 (VAD progress) — the frontier says we covered up to 10s
+        assert ct.translated_until == 9.0
+        # Complete the late speech
+        ct.complete_speech(sid2)
+        # Watermark should advance back to 10.0 (frontier)
+        # VAD is only at 5s, but the completed late speech bridges 9-9.5
+        # The frontier preserves the verified coverage
+        assert ct.translated_until == 10.0
+
+    def test_late_speech_at_7_after_compacted_5_10(self):
+        """Late pending at 7-8s after compacted completed 5-10s with VAD at 5s."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        sid1 = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 10.0
+        ct.compact_completed()
+        assert ct.translated_until == 10.0
+        # Late pending at 7-8s
+        sid2 = ct.record_speech(7.0, 8.0)
+        # Watermark should be 7.0 (blocked by late speech)
+        assert ct.translated_until == 7.0
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 10.0
+
+    def test_late_speech_at_10_11_after_compacted_5_10(self):
+        """Late pending at 10-11s after compacted completed 5-10s with VAD at 5s.
+
+        The late speech starts exactly at the frontier boundary.
+        """
+        ct = self._make()
+        ct.advance_vad(5.0)
+        sid1 = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 10.0
+        ct.compact_completed()
+        assert ct.translated_until == 10.0
+        # Late pending at 10-11s (starts at frontier boundary)
+        sid2 = ct.record_speech(10.0, 11.0)
+        # Watermark should be 10.0 (blocked by late speech at frontier)
+        assert ct.translated_until == 10.0
+        ct.advance_vad(15.0)
+        ct.complete_speech(sid2)
+        # Now VAD confirms through 15s, and late speech is completed
+        assert ct.translated_until == 15.0
+
+    def test_multiple_overlapping_late_intervals(self):
+        """Multiple overlapping late pending intervals after compaction."""
+        ct = self._make()
+        ct.advance_vad(5.0)
+        sid1 = ct.record_speech(5.0, 10.0)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 10.0
+        ct.compact_completed()
+        # Multiple late pending intervals
+        sid2 = ct.record_speech(6.0, 7.0)
+        assert ct.translated_until == 6.0  # blocked by earliest late speech
+        sid3 = ct.record_speech(8.0, 8.5)
+        assert ct.translated_until == 6.0  # still blocked by sid2
+        ct.complete_speech(sid2)
+        # After completing sid2, blocked by sid3 at 8.0
+        assert ct.translated_until == 8.0
+        ct.complete_speech(sid3)
+        assert ct.translated_until == 10.0
 
     def test_compaction_with_pending_ahead(self):
         """Compaction with pending speech ahead of watermark must preserve state."""
@@ -971,7 +1063,9 @@ class TestCoverageTracker:
         ct.complete_speech(sid_a)
         assert ct.translated_until == 50.0
         ct.compact_completed()
-        assert ct.translated_until == 50.0
+        # Trigger recomputation to verify compaction didn't erase coverage
+        ct.advance_vad(60.0)
+        assert ct.translated_until == 60.0
 
     def test_compaction_completed_speech_beyond_vad_gap(self):
         """Completed speech spanning a gap beyond VAD progress must not advance watermark."""
@@ -1016,7 +1110,9 @@ class TestCoverageTracker:
         ct.complete_speech(sid2)
         assert ct.translated_until == 50.0
         ct.compact_completed()
-        assert ct.translated_until == 50.0
+        # Trigger recomputation to verify compaction didn't erase coverage
+        ct.advance_vad(60.0)
+        assert ct.translated_until == 60.0
 
     def test_compaction_eof(self):
         """EOF after compaction must still respect pending speech."""
@@ -1060,10 +1156,12 @@ class TestCoverageTracker:
         ct.complete_speech(sid1)
         wm = ct.translated_until
         assert wm == 50.0
-        # Multiple compaction calls should not change watermark
+        # Multiple compaction calls followed by recomputation should not change watermark
         for _ in range(5):
             ct.compact_completed()
-        assert ct.translated_until == wm
+        # Trigger recomputation to verify watermark is still correct
+        ct.advance_vad(60.0)
+        assert ct.translated_until == 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -1154,7 +1252,11 @@ class TestPlamoTokenBudgeting:
         assert call_index[0] == 1
 
     def test_very_long_utterance_budget_calculation(self):
-        """Verify the budget calculation: context_size - max_tokens - 256."""
+        """Verify the budget calculation: context_size - max_tokens - 256.
+
+        The new formula accounts for the full prompt:
+        ja_tokens + glossary_tokens + context_tokens + template_overhead
+        """
         from auto_translate.config import TranslateConfig
 
         cfg = TranslateConfig(
@@ -1180,22 +1282,44 @@ class TestPlamoTokenBudgeting:
         context_budget = cfg.context_size - cfg.max_tokens - 256
         assert context_budget == 7424
 
-        # 4000 char Japanese text: 4000 * 1.8 + 150 = 7350 tokens
-        # 7350 < 7424, so full prompt is still used
+        # 4000 char Japanese text with new formula:
+        # ja_tokens = 4000 * 1.8 = 7200, glossary = 0, context = 0, overhead = 50
+        # Total = 7250 < 7424, so full prompt is still used
         ja = "あ" * 4000
-        estimated_input_tokens = int(len(ja) * 1.8) + 150
+        ja_tokens = int(len(ja) * 1.8)
+        template_overhead = 50
+        estimated_input_tokens = ja_tokens + 0 + 0 + template_overhead
         assert estimated_input_tokens < context_budget
 
     def test_extremely_long_utterance_skips_full_prompt(self):
         """Only extremely long text (>4000 chars) should skip full prompt."""
         translator, call_index = self._make_translator(context_size=8192, max_tokens=512)
         from auto_translate.translate.plamo import PlamoTranslator
-        # 5000 character Japanese text: 5000 * 1.8 + 150 = 9150 tokens
-        # 9150 > 7424, so skip_full_prompt=True
+        # 5000 character Japanese text with new formula:
+        # ja_tokens = 5000 * 1.8 = 9000, overhead = 50, total = 9050
+        # 9050 > 7424, so skip_full_prompt=True
         ja = "あ" * 5000
         PlamoTranslator.translate.__get__(translator, type(translator))(ja, [])
         # Should succeed (simplified prompt first)
         assert call_index[0] >= 1
+
+    def test_glossary_and_context_accounted_in_budget(self):
+        """Glossary terms and context should be included in the token estimate."""
+        translator, call_index = self._make_translator(context_size=8192, max_tokens=512)
+        from auto_translate.translate.plamo import PlamoTranslator
+        # Set up glossary terms and context
+        translator._terms_for = mock.MagicMock(
+            return_value=([("田中", "Tanaka"), ("鈴木", "Suzuki"), ("高橋", "Takahashi")], [])
+        )
+        translator._context = mock.MagicMock(
+            return_value="直前の会話：こんにちは（英訳：Hello）"
+        )
+        ja = "今日は" * 50  # 200 chars
+        PlamoTranslator.translate.__get__(translator, type(translator))(ja, [])
+        # Should succeed on first attempt with full prompt
+        # The estimate: ja=360 + glossary=21 + context=~90 + overhead=50 = ~521
+        # 521 < 7424, so full prompt is used
+        assert call_index[0] == 1
 
     def test_old_bug_would_skip_full_prompt_for_200_chars(self):
         """Verify the old bug: max_tokens=512 as budget would skip full prompt for 200 chars.
@@ -1206,8 +1330,9 @@ class TestPlamoTokenBudgeting:
         skip_full_prompt = 1 < 80 → True (WRONG)
 
         New code: context_budget = context_size - max_tokens - 256 = 7424
-        estimated_input_tokens = 511
-        skip_full_prompt = 511 > 7424 → False (CORRECT)
+        estimated_input_tokens = ja_tokens + glossary + context + overhead
+        For 201 chars with no glossary/context: 361 + 0 + 0 + 50 = 411
+        skip_full_prompt = 411 > 7424 → False (CORRECT)
         """
         from auto_translate.config import TranslateConfig
 
@@ -1231,19 +1356,21 @@ class TestPlamoTokenBudgeting:
             context_english=False,
         )
         ja = "今日は" * 67  # 201 chars
-        estimated_input_tokens = int(len(ja) * 1.8) + 150  # 511
+        ja_tokens = int(len(ja) * 1.8)  # 361
+        template_overhead = 50
+        estimated_input_tokens = ja_tokens + 0 + 0 + template_overhead  # 411
 
         # Old buggy calculation: used max_tokens as the budget
-        old_max_output = cfg.max_tokens - estimated_input_tokens  # 512 - 511 = 1
+        old_estimated = int(len(ja) * 1.8) + 150  # 511
+        old_max_output = cfg.max_tokens - old_estimated  # 512 - 511 = 1
         old_skip = old_max_output < 80  # 1 < 80 → True (BUG)
 
         # New correct calculation: uses context_size as the budget
         context_budget = cfg.context_size - cfg.max_tokens - 256  # 7424
-        new_skip = estimated_input_tokens > context_budget  # 511 > 7424 → False
+        new_skip = estimated_input_tokens > context_budget  # 411 > 7424 → False
 
         assert old_skip is True  # Old code incorrectly skips full prompt
         assert new_skip is False  # New code correctly uses full prompt
-
 
 # ---------------------------------------------------------------------------
 # 3b. MpvOutput generation sync tests

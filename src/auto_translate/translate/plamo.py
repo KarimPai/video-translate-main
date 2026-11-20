@@ -536,15 +536,23 @@ class PlamoTranslator:
                 # Reserved output tokens = max_tokens (e.g. 512). Safety margin = 256.
                 # Usable input budget = context_size - max_tokens - safety_margin.
                 # For context_size=8192, max_tokens=512: budget = 7424 input tokens.
-                # Japanese text: ~1.5-2x characters in tokens. Full prompt overhead:
-                # ~100-200 tokens (glossary + context + template).
-                # Only skip the full prompt if input alone would exceed the context budget.
+                # Estimate the full prompt's input tokens:
+                #   - Japanese text: ~1.5-2x characters in tokens
+                #   - Glossary terms: ~5-8 tokens per term (source + target + JSON overhead)
+                #   - Context (conversation history): ~1.5-2x characters in tokens
+                #   - Chat template overhead: ~30-50 tokens (system, role, kwargs)
+                # Only skip the full prompt if the estimated total exceeds the context budget.
                 simplified_prompt = build_plamo_prompt(ja, [], "", simplified=True)
-                estimated_input_tokens = int(len(ja) * 1.8) + 150
+                # Estimate full prompt token count including glossary and context
+                ja_tokens = int(len(ja) * 1.8)
+                glossary_tokens = len(terms) * 7  # ~7 tokens per glossary entry
+                context_tokens = int(len(context) * 1.8) if context else 0
+                template_overhead = 50  # chat template, role markers, kwargs
+                estimated_input_tokens = ja_tokens + glossary_tokens + context_tokens + template_overhead
                 context_budget = self.cfg.context_size - self.cfg.max_tokens - 256
-                # Only skip full prompt if input alone exceeds the context budget.
-                # With context_size=8192, this means input > ~7424 tokens, which is
-                # extremely rare (4000+ Japanese characters). Most utterances fit.
+                # Only skip full prompt if estimated total exceeds the context budget.
+                # With context_size=8192, this means total > ~7424 tokens, which is
+                # extremely rare. Most utterances with glossary and context fit easily.
                 skip_full_prompt = estimated_input_tokens > context_budget
 
                 try:

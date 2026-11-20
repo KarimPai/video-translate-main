@@ -303,6 +303,13 @@ def _haas_asr_factory(config: Any, **kwargs: Any) -> Any:
     from .asr.haas import HaasASR
     from .config import AsrConfig
     if isinstance(config, dict):
+        config = dict(config)
+        # Haas is the default ASR backend — if model_path is missing, the
+        # dataclass default "haas-ja-v1.0" is compatible. But if it was
+        # explicitly cleared (empty string), keep it empty so the backend
+        # constructor raises a clear missing-model error.
+        if "model_path" not in config:
+            config["model_path"] = AsrConfig.model_path.default
         config = AsrConfig(**config)
     context = kwargs.pop("context", "")
     # Support both positional and keyword args for context
@@ -314,10 +321,22 @@ def _haas_asr_factory(config: Any, **kwargs: Any) -> Any:
 
 
 def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
-    """Factory for Qwen3-ASR."""
+    """Factory for Qwen3-ASR.
+
+    Qwen3-ASR must never inherit Haas's model path from dataclass defaults.
+    If model_path is missing, the backend constructor will raise a clear error.
+    """
     from .asr.qwen3_asr import Qwen3ASR
     from .config import AsrConfig
     if isinstance(config, dict):
+        config = dict(config)
+        # Qwen3-ASR is NOT the default ASR — do NOT inherit Haas model path.
+        # If model_path is missing from config, set it empty so the backend
+        # constructor raises a clear missing-model error.
+        if "model_path" not in config:
+            config["model_path"] = ""
+        if "mmproj_path" not in config:
+            config["mmproj_path"] = ""
         config = AsrConfig(**config)
     context = kwargs.pop("context", "")
     return Qwen3ASR(config, context=context)
@@ -329,12 +348,21 @@ def _whisper_asr_factory(config: Any, **kwargs: Any) -> Any:
     Passes is_explicit flag so Whisper knows whether the model path was
     explicitly configured (GUI/CLI override or backend profile) vs inherited
     from common config (e.g., Haas default).
+
+    Whisper must never inherit Haas's model path from dataclass defaults.
     """
     from .asr.whisper_turbo import WhisperASR
     from .config import AsrConfig
     if isinstance(config, dict):
+        config = dict(config)
         # Determine if model_path was explicitly set for this backend
         is_explicit = kwargs.pop("_whisper_is_explicit", False)
+        # Whisper is NOT the default ASR — do NOT inherit Haas model path.
+        # If model_path is present in config (even empty), use it as-is.
+        # If absent, set empty so Whisper searches its own HF cache.
+        if "model_path" not in config:
+            config["model_path"] = ""
+            is_explicit = False
         config = AsrConfig(**config)
     else:
         is_explicit = False
@@ -349,6 +377,11 @@ def _gemma4_translate_factory(config: Any, **kwargs: Any) -> Any:
     from .stream_context import StreamContext
     from .translate.gemma4 import Gemma4Translator
     if isinstance(config, dict):
+        config = dict(config)
+        # Gemma4 is the default translation backend — if model_path is missing,
+        # the dataclass default is compatible. But if explicitly cleared, keep it.
+        if "model_path" not in config:
+            config["model_path"] = TranslateConfig.model_path.default
         config = TranslateConfig(**config)
     glossary = kwargs.get("glossary", Glossary({}))
     stream = kwargs.get("stream", StreamContext())
@@ -357,12 +390,19 @@ def _gemma4_translate_factory(config: Any, **kwargs: Any) -> Any:
 
 
 def _plamo_translate_factory(config: Any, **kwargs: Any) -> Any:
-    """Factory for PLaMo 3 Translate translation."""
+    """Factory for PLaMo 3 Translate translation.
+
+    PLaMo must never inherit Gemma4's model path from dataclass defaults.
+    """
     from .config import TranslateConfig
     from .glossary import Glossary
     from .stream_context import StreamContext
     from .translate.plamo import PlamoTranslator
     if isinstance(config, dict):
+        config = dict(config)
+        # PLaMo is NOT the default translation backend — do NOT inherit Gemma4 path.
+        if "model_path" not in config:
+            config["model_path"] = ""
         config = TranslateConfig(**config)
     glossary = kwargs.get("glossary", Glossary({}))
     stream = kwargs.get("stream", StreamContext())
@@ -371,12 +411,19 @@ def _plamo_translate_factory(config: Any, **kwargs: Any) -> Any:
 
 
 def _hymt_translate_factory(config: Any, **kwargs: Any) -> Any:
-    """Factory for Hy-MT2 7B translation."""
+    """Factory for Hy-MT2 7B translation.
+
+    Hy-MT2 must never inherit Gemma4's model path from dataclass defaults.
+    """
     from .config import TranslateConfig
     from .glossary import Glossary
     from .stream_context import StreamContext
     from .translate.hymt import HymtTranslator
     if isinstance(config, dict):
+        config = dict(config)
+        # Hy-MT2 is NOT the default translation backend — do NOT inherit Gemma4 path.
+        if "model_path" not in config:
+            config["model_path"] = ""
         config = TranslateConfig(**config)
     glossary = kwargs.get("glossary", Glossary({}))
     stream = kwargs.get("stream", StreamContext())

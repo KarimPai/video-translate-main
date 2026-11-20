@@ -1088,7 +1088,7 @@ def test_resolve_model_identity():
     identity = resolve_model_identity(cfg, "asr", "unknown")
     assert identity["model_path"] == ""
     assert identity["mmproj_path"] == ""
-    assert identity["server_path"] == ""
+    # server_path is no longer model identity — it's a shared runtime dependency
 
     # Haas IS the default ASR — common config value IS compatible
     identity = resolve_model_identity(cfg, "asr", "haas")
@@ -1473,6 +1473,174 @@ def test_backend_startup_receives_correct_model_identity():
     whisper_merged = get_backend_config(cfg, "asr", "whisper")
     whisper_identity = resolve_model_identity(cfg, "asr", "whisper")
     assert whisper_merged.get("model_path", "") == whisper_identity["model_path"] == ""
+
+
+# ---------------------------------------------------------------------------
+# P0 — Registry factory prevents dataclass default fallback
+# ---------------------------------------------------------------------------
+
+def test_registry_plamo_does_not_inherit_gemma_model():
+    """PLaMo factory must not inherit Gemma4's model path from dataclass defaults."""
+    from auto_translate.config import Config, get_backend_config
+    from auto_translate.registry import get_default_registry
+
+    cfg = Config()
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+    # No PLaMo profile — model_path should be empty
+    merged = get_backend_config(cfg, "translate", "plamo")
+    assert merged.get("model_path", "") == "", \
+        "PLaMo should not inherit Gemma4's model_path"
+
+    # Verify the factory receives empty model_path
+    registry = get_default_registry()
+    entry = registry.get_entry("translate", "plamo")
+    assert entry is not None
+
+    # The factory should construct TranslateConfig with model_path=""
+    # We can't actually load the model, but we can verify the config dict
+    # passed to the factory has empty model_path
+    config_dict = dict(merged)
+    assert config_dict.get("model_path", "") == ""
+
+
+def test_registry_hymt_does_not_inherit_gemma_model():
+    """Hy-MT2 factory must not inherit Gemma4's model path from dataclass defaults."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+    merged = get_backend_config(cfg, "translate", "hymt")
+    assert merged.get("model_path", "") == "", \
+        "Hy-MT2 should not inherit Gemma4's model_path"
+
+
+def test_registry_qwen3_does_not_inherit_haas_model():
+    """Qwen3-ASR factory must not inherit Haas's model path from dataclass defaults."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    merged = get_backend_config(cfg, "asr", "qwen3-asr")
+    assert merged.get("model_path", "") == "", \
+        "Qwen3-ASR should not inherit Haas's model_path"
+    assert merged.get("mmproj_path", "") == "", \
+        "Qwen3-ASR should not inherit Haas's mmproj_path"
+
+
+def test_registry_whisper_does_not_inherit_haas_model():
+    """Whisper factory must not inherit Haas's model path from dataclass defaults."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    merged = get_backend_config(cfg, "asr", "whisper")
+    assert merged.get("model_path", "") == "", \
+        "Whisper should not inherit Haas's model_path"
+
+
+def test_registry_haas_retains_default_model():
+    """Haas (default ASR) should retain its configured model path."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.asr.model_path = "haas-ja-v1.0"
+    merged = get_backend_config(cfg, "asr", "haas")
+    assert merged.get("model_path") == "haas-ja-v1.0", \
+        "Haas should retain its configured model_path"
+
+
+def test_registry_gemma4_retains_default_model():
+    """Gemma4 (default translation) should retain its configured model path."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.translate.model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
+    merged = get_backend_config(cfg, "translate", "gemma4")
+    assert merged.get("model_path") == "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf", \
+        "Gemma4 should retain its configured model_path"
+
+
+def test_server_path_shared_across_backends():
+    """server_path should be shared across translation backends, not treated as identity."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.translate.server_path = ".runtime/llama-server.exe"
+    # PLaMo without profile should still get server_path from common config
+    merged = get_backend_config(cfg, "translate", "plamo")
+    assert merged.get("server_path") == ".runtime/llama-server.exe", \
+        "server_path should be shared across backends"
+
+
+def test_translate_config_allows_empty_model_path():
+    """TranslateConfig must allow empty model_path for non-default backends."""
+    from auto_translate.config import TranslateConfig
+
+    # This should not raise — empty model_path is valid for non-default backends
+    cfg = TranslateConfig(model_path="", server_path=".runtime/llama-server.exe")
+    assert cfg.model_path == ""
+
+
+def test_whisper_explicit_hf_repo_id_cached():
+    """Explicit HF repo ID that is cached should resolve correctly."""
+    import tempfile
+
+    from auto_translate.asr.whisper_turbo import WhisperASR
+    from auto_translate.config import AsrConfig
+
+    with tempfile.TemporaryDirectory() as td:
+        # Create a complete cached Whisper model
+        cached_dir = Path(td) / "cached"
+        cached_dir.mkdir()
+        (cached_dir / "model.bin").write_bytes(b"")
+        (cached_dir / "config.json").write_bytes(b"{}")
+        (cached_dir / "tokenizer.json").write_bytes(b"{}")
+
+        cfg = AsrConfig(model_path="Systran/faster-whisper-large-v3-turbo", cuda_device=-1)
+        with mock.patch.object(WhisperASR, "_find_cached_model", return_value=cached_dir):
+            resolved = WhisperASR._resolve_model_path(cfg, is_explicit=True)
+        assert resolved == str(cached_dir)
+
+
+def test_whisper_explicit_hf_repo_id_not_cached():
+    """Explicit HF repo ID that is NOT cached should raise clear error."""
+    from auto_translate.asr.whisper_turbo import WhisperASR, WhisperError
+    from auto_translate.config import AsrConfig
+
+    cfg = AsrConfig(model_path="Systran/faster-whisper-large-v3-turbo", cuda_device=-1)
+    with mock.patch.object(WhisperASR, "_find_cached_model", return_value=None):
+        try:
+            WhisperASR._resolve_model_path(cfg, is_explicit=True)
+            raise AssertionError("expected WhisperError for uncached HF repo ID")
+        except WhisperError as exc:
+            assert "not present in the local cache" in str(exc) or "cache" in str(exc).lower()
+
+
+def test_effective_translation_settings_reach_pipeline():
+    """Backend profile settings should reach the effective config."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.translate.context_lines = 6
+    cfg.translate_profiles["gemma4"] = {"context_lines": 10, "temperature": 0.2}
+    merged = get_backend_config(cfg, "translate", "gemma4")
+    assert merged["context_lines"] == 10
+    assert merged["temperature"] == 0.2
+
+
+def test_backend_profile_runtime_only_no_model_inheritance():
+    """Backend profile with only runtime settings should not inherit another backend's model."""
+    from auto_translate.config import Config, get_backend_config
+
+    cfg = Config()
+    cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+    cfg.translate_profiles["plamo"] = {"temperature": 0.1, "context_lines": 4}
+    # PLaMo profile has runtime settings but no model_path
+    merged = get_backend_config(cfg, "translate", "plamo")
+    assert merged.get("model_path", "") == "", \
+        "PLaMo with runtime-only profile should not inherit Gemma4's model"
+    assert merged["temperature"] == 0.1
+    assert merged["context_lines"] == 4
 
 
 if __name__ == "__main__":

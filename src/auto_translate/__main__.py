@@ -455,11 +455,18 @@ def _load_translator(cfg, glossary, stream_context, budget, log, registry,
     if auto and budget.free is not None:
         layers = 0
         if budget.free > headroom:
-            model = require_gguf(translate_profile.get("model_path", cfg.translate.model_path), "Translation model")
-            layer_count = gguf_block_count(model) or 32
-            per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
-            available = budget.free - headroom - .25
-            layers = max(0, min(layer_count, math.floor(available / per_layer_gb)))
+            model_path = translate_profile.get("model_path")
+            # Only compute GPU layers if we have a valid model path.
+            # For non-default backends without a configured model, skip
+            # the auto-layer calculation — the backend constructor will
+            # raise a clear missing-model error instead of loading the
+            # wrong model from cfg.translate.model_path.
+            if model_path:
+                model = require_gguf(model_path, "Translation model")
+                layer_count = gguf_block_count(model) or 32
+                per_layer_gb = os.path.getsize(model) / (layer_count + 2) / 1e9
+                available = budget.free - headroom - .25
+                layers = max(0, min(layer_count, math.floor(available / per_layer_gb)))
     while True:
         try:
             translator = registry.create_backend("translate", translate_backend_name,

@@ -194,10 +194,15 @@ class TranslateConfig:
     vod_merge_timeout_s: float = 5.0
 
     def __post_init__(self):
-        for name in ("model_path", "server_path", "glossary"):
+        # model_path may be empty for non-default backends (PLaMo, Hy-MT2) —
+        # the backend factory or constructor will raise a clear error if needed.
+        for name in ("server_path", "glossary"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"translate.{name} must be a nonempty path")
+        # model_path must be a string but may be empty
+        if not isinstance(self.model_path, str):
+            raise TypeError("translate.model_path must be a string")
         if type(self.gpu_layers) is not int or self.gpu_layers < -1:
             raise ValueError("translate.gpu_layers must be -1 (auto) or a nonnegative integer")
         if type(self.context_size) is not int or not 512 <= self.context_size <= 32768:
@@ -524,8 +529,10 @@ def load_config(path: Path) -> Config:
 
 # Model-identity fields that must never be inherited from common config
 # when the backend profile is absent. These are backend-specific, not shared.
-_MODEL_IDENTITY_ASR = {"model_path", "mmproj_path", "server_path"}
-_MODEL_IDENTITY_TRANSLATE = {"model_path", "server_path"}
+# server_path (llama-server executable) is NOT model identity — it is a shared
+# runtime dependency that may be compatible across backends.
+_MODEL_IDENTITY_ASR = {"model_path", "mmproj_path"}
+_MODEL_IDENTITY_TRANSLATE = {"model_path"}
 
 # Backends that are compatible with each other for model-identity inheritance.
 # Haas is the default ASR; its model identity may be used by haas backend only.

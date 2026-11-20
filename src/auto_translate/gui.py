@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from auto_translate.config import get_backend_config, load_config
+from auto_translate.config import load_config, resolve_model_identity
 from auto_translate.gui_control import GUI_SHUTDOWN_MS, parse_event
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS,
@@ -453,12 +453,12 @@ class VideoTranslateWindow(QMainWindow):
                     break
             else:
                 self.mt_backend.setCurrentIndex(0)
-            # Model path overrides: use backend-specific profile paths when available
-            from auto_translate.config import get_backend_config
-            asr_profile = get_backend_config(cfg, "asr", asr_backend_name)
-            mt_profile = get_backend_config(cfg, "translate", mt_backend_name)
-            self.asr_model.setText(asr_profile.get("model_path", cfg.asr.model_path))
-            self.mt_model.setText(mt_profile.get("model_path", cfg.translate.model_path))
+            # Model paths: use resolve_model_identity for accurate per-backend resolution.
+            # Never fall back to another backend's default (e.g., Haas path for Whisper).
+            asr_identity = resolve_model_identity(cfg, "asr", asr_backend_name)
+            mt_identity = resolve_model_identity(cfg, "translate", mt_backend_name)
+            self.asr_model.setText(asr_identity.get("model_path", ""))
+            self.mt_model.setText(mt_identity.get("model_path", ""))
             self.context_lines.setValue(cfg.translate.context_lines)
             self.safe_playback_checkbox.setChecked(cfg.safe_playback.enabled)
             self.diagnostics_checkbox.setChecked(cfg.diagnostics.enabled)
@@ -494,13 +494,9 @@ class VideoTranslateWindow(QMainWindow):
         """Update ASR model path when backend selection changes.
 
         Stores the current backend's model path before switching, then loads
-        the new backend's profile path. Distinguishes defaults from user
-        overrides so only explicit overrides are forwarded to the backend.
-
-        Uses _last_asr_backend to track the previous backend explicitly,
-        since currentData() returns the NEW selection after the signal fires.
+        the new backend's resolved model identity. Uses resolve_model_identity
+        so unconfigured backends show empty path, not another backend's model.
         """
-        # The new backend is already selected; get it from itemData(index)
         new_backend = self.asr_backend.itemData(index)
 
         # Save the PREVIOUS backend's model path before switching
@@ -508,8 +504,8 @@ class VideoTranslateWindow(QMainWindow):
         if old_backend is not None:
             current_text = self.asr_model.text().strip()
             if current_text:
-                old_profile = get_backend_config(self._cfg, "asr", old_backend)
-                old_default = old_profile.get("model_path", self._cfg.asr.model_path)
+                old_identity = resolve_model_identity(self._cfg, "asr", old_backend)
+                old_default = old_identity.get("model_path", "")
                 if current_text != old_default:
                     self._asr_model_overrides[str(old_backend)] = current_text
                 else:
@@ -518,9 +514,9 @@ class VideoTranslateWindow(QMainWindow):
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):
-            profile = get_backend_config(self._cfg, "asr", new_backend)
-            model_path = profile.get("model_path", self._cfg.asr.model_path)
-            # Use stored override if available, otherwise use default
+            identity = resolve_model_identity(self._cfg, "asr", new_backend)
+            model_path = identity.get("model_path", "")
+            # Use stored override if available, otherwise use resolved identity
             stored = self._asr_model_overrides.get(str(new_backend))
             if stored:
                 model_path = stored
@@ -533,13 +529,9 @@ class VideoTranslateWindow(QMainWindow):
         """Update translation model path when backend selection changes.
 
         Stores the current backend's model path before switching, then loads
-        the new backend's profile path. Distinguishes defaults from user
-        overrides so only explicit overrides are forwarded to the backend.
-
-        Uses _last_mt_backend to track the previous backend explicitly,
-        since currentData() returns the NEW selection after the signal fires.
+        the new backend's resolved model identity. Uses resolve_model_identity
+        so unconfigured backends show empty path, not another backend's model.
         """
-        # The new backend is already selected; get it from itemData(index)
         new_backend = self.mt_backend.itemData(index)
 
         # Save the PREVIOUS backend's model path before switching
@@ -547,8 +539,8 @@ class VideoTranslateWindow(QMainWindow):
         if old_backend is not None:
             current_text = self.mt_model.text().strip()
             if current_text:
-                old_profile = get_backend_config(self._cfg, "translate", old_backend)
-                old_default = old_profile.get("model_path", self._cfg.translate.model_path)
+                old_identity = resolve_model_identity(self._cfg, "translate", old_backend)
+                old_default = old_identity.get("model_path", "")
                 if current_text != old_default:
                     self._mt_model_overrides[str(old_backend)] = current_text
                 else:
@@ -557,9 +549,9 @@ class VideoTranslateWindow(QMainWindow):
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):
-            profile = get_backend_config(self._cfg, "translate", new_backend)
-            model_path = profile.get("model_path", self._cfg.translate.model_path)
-            # Use stored override if available, otherwise use default
+            identity = resolve_model_identity(self._cfg, "translate", new_backend)
+            model_path = identity.get("model_path", "")
+            # Use stored override if available, otherwise use resolved identity
             stored = self._mt_model_overrides.get(str(new_backend))
             if stored:
                 model_path = stored
@@ -569,31 +561,31 @@ class VideoTranslateWindow(QMainWindow):
         self._last_mt_backend = new_backend
 
     def _get_asr_model_override(self) -> str | None:
-        """Return the ASR model path only if it differs from the backend default."""
+        """Return the ASR model path only if it differs from the backend resolved identity."""
         backend_name = self.asr_backend.currentData()
         if not backend_name or not hasattr(self, "_cfg"):
             return None
         current_text = self.asr_model.text().strip()
         if not current_text:
             return None
-        profile = get_backend_config(self._cfg, "asr", backend_name)
-        default_path = profile.get("model_path", self._cfg.asr.model_path)
+        identity = resolve_model_identity(self._cfg, "asr", backend_name)
+        default_path = identity.get("model_path", "")
         if current_text == default_path:
-            return None  # using default, no override needed
+            return None  # using resolved default, no override needed
         return current_text
 
     def _get_mt_model_override(self) -> str | None:
-        """Return the MT model path only if it differs from the backend default."""
+        """Return the MT model path only if it differs from the backend resolved identity."""
         backend_name = self.mt_backend.currentData()
         if not backend_name or not hasattr(self, "_cfg"):
             return None
         current_text = self.mt_model.text().strip()
         if not current_text:
             return None
-        profile = get_backend_config(self._cfg, "translate", backend_name)
-        default_path = profile.get("model_path", self._cfg.translate.model_path)
+        identity = resolve_model_identity(self._cfg, "translate", backend_name)
+        default_path = identity.get("model_path", "")
         if current_text == default_path:
-            return None  # using default, no override needed
+            return None  # using resolved default, no override needed
         return current_text
 
 

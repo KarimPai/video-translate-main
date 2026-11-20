@@ -123,36 +123,59 @@ class WhisperASR:
         When ``is_explicit=True`` and the path is invalid, raises a clear
         error. When ``is_explicit=False`` (inherited), falls through to HF
         cache search so Whisper can find its own cached model.
+
+        Distinguishes:
+        1. Valid explicit local model directory.
+        2. Invalid explicit local directory.
+        3. Valid Hugging Face repository identifier already present in cache.
+        4. Missing or incomplete cached repository.
+        5. Inherited unrelated Haas model path.
         """
         model_path = (cfg.model_path or "").strip()
 
-        candidate = None
         if model_path:
-            candidate = Path(model_path).expanduser()
-            if candidate.exists():
-                if cls._looks_like_whisper_model(candidate):
-                    return str(candidate.resolve())
-                # Configured path exists but is not a Whisper model.
-                if is_explicit:
-                    # User explicitly set this path — reject with clear error.
-                    raise WhisperError(
-                        f"Explicitly configured model path is not a valid Whisper model: "
-                        f"{candidate}. Expected a CTranslate2 Whisper directory "
-                        f"containing model.bin, config.json, etc."
+            # Check if this looks like an HF repo ID (contains a slash and no path separators)
+            looks_like_repo_id = "/" in model_path and "\\" not in model_path and ":" not in model_path
+
+            if not looks_like_repo_id:
+                # Treat as a local path
+                candidate = Path(model_path).expanduser()
+                if candidate.exists():
+                    if cls._looks_like_whisper_model(candidate):
+                        return str(candidate.resolve())
+                    # Configured path exists but is not a Whisper model.
+                    if is_explicit:
+                        raise WhisperError(
+                            f"Explicitly configured model path is not a valid Whisper model: "
+                            f"{candidate}. Expected a CTranslate2 Whisper directory "
+                            f"containing model.bin, config.json, etc."
+                        )
+                    # Inherited path (e.g., Haas default) — fall through to cache search.
+                    log.warning(
+                        "Configured ASR model path is not a Whisper model: %s — "
+                        "falling back to Hugging Face cache search",
+                        candidate,
                     )
-                # Inherited path (e.g., Haas default) — fall through to cache search.
-                log.warning(
-                    "Configured ASR model path is not a Whisper model: %s — "
-                    "falling back to Hugging Face cache search",
-                    candidate,
-                )
+                else:
+                    # Path doesn't exist as a local directory.
+                    if is_explicit:
+                        raise WhisperError(
+                            f"Explicitly configured model path does not exist: {candidate}"
+                        )
+                    # Inherited non-existent path — fall through to cache search.
             else:
-                # Path doesn't exist.
+                # Looks like an HF repo ID — check if it's cached
                 if is_explicit:
+                    # Explicit HF repo ID — check cache directly
+                    cached = cls._find_cached_model(model_path)
+                    if cached is not None:
+                        return str(cached)
                     raise WhisperError(
-                        f"Explicitly configured model path does not exist: {candidate}"
+                        f"Explicitly configured Hugging Face repository '{model_path}' "
+                        f"is not present in the local cache. Cache it manually first; "
+                        f"auto-download is disabled."
                     )
-                # Inherited non-existent path — fall through to cache search.
+                # Non-explicit repo ID (inherited) — fall through to cache search below
 
         # Search for cached Whisper model in Hugging Face cache.
         # Try the configured path as a repo id first, then the default model.

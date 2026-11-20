@@ -247,10 +247,23 @@ def _main(resources: ExitStack) -> None:
     # Load models before starting ingest: ASR first (fixed size), then size
     # translation offload from measured free memory.
     from .gpu_budget import GpuBudget
+    from .registry import get_default_registry
     from .stream_context import describe_stream
-    from .vad import Segmenter
     check_running()
-    segmenter = Segmenter(vad_for_source(cfg.vad, live=bool(source.live)))
+    vad_backend_name = cfg.models.vad_backend
+    vad_cfg = vad_for_source(cfg.vad, live=bool(source.live))
+    registry = get_default_registry()
+    try:
+        segmenter = registry.create_vad(vad_backend_name, {"threshold": vad_cfg.threshold,
+            "min_speech_ms": vad_cfg.min_speech_ms, "min_silence_ms": vad_cfg.min_silence_ms,
+            "speech_pad_ms": vad_cfg.speech_pad_ms, "onset_ms": vad_cfg.onset_ms,
+            "max_utterance_s": vad_cfg.max_utterance_s,
+            "max_split_extension_s": vad_cfg.max_split_extension_s,
+            "fallback_s": vad_cfg.fallback_s})
+        log.info("VAD backend '%s' created via registry", vad_backend_name)
+    except ValueError as exc:
+        log.error("Failed to create VAD backend '%s': %s", vad_backend_name, exc)
+        raise SystemExit(f"VAD backend '{vad_backend_name}' is not available: {exc}") from exc
     budget = GpuBudget(cfg.gpu_budget)
     resources.callback(budget.close)
     budget.operation = gate.operation

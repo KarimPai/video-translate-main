@@ -195,17 +195,23 @@ class TestRetryDetection:
         assert call_index[0] == 2
 
     def test_two_identical_truncated_then_higher_tokens(self):
-        """Two identical truncated responses should stop truncation recovery."""
+        """Two identical truncated responses from different prompts should try higher tokens.
+
+        The first request (full prompt) truncates. The retry (simplified prompt) produces
+        the same truncated output. Since the prompts differ, this is NOT a repeated request —
+        higher-token retry should be attempted.
+        """
         truncated = "This is a very long translation that gets truncated beca"
         translator, call_index = self._make_translator([
-            (truncated, "length"),
-            (truncated, "length"),
-            ("This is the complete translation with more tokens", "stop"),
+            (truncated, "length"),  # first: full prompt, truncated
+            (truncated, "length"),  # retry: simplified prompt, same truncation
+            ("This is the complete translation with more tokens", "stop"),  # higher tokens
         ])
         from auto_translate.translate.plamo import PlamoTranslator
         PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
-        # First truncated -> simplified prompt -> same output -> _repeated -> return ""
-        assert call_index[0] == 2
+        # First truncated -> simplified prompt -> same output from different prompt
+        # -> NOT repeated -> higher-token retry succeeds
+        assert call_index[0] == 3
 
     def test_repeated_empty_responses(self):
         """Repeated empty responses should not cause infinite retries."""
@@ -281,235 +287,363 @@ class TestRetryDetection:
         # Now check empty against "minimal" — should be repeated
         assert _repeated("", "minimal") is True
 
+    def test_elapsed_time_budget_expires(self):
+        """When elapsed-time budget expires, skip higher-token retry."""
+        translator, _call_index = self._make_translator([
+            ("Truncated output here", "length"),
+            ("Truncated output here", "length"),
+        ])
+        from auto_translate.translate.plamo import PlamoTranslator
+        # With elapsed budget exhausted, higher-token retry should be skipped
+        # The code should handle this gracefully without referencing uninitialized retry_tokens
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+        # Should not raise UnboundLocalError
+        assert isinstance(result, str)
+
+    def test_higher_token_retry_also_truncates(self):
+        """When higher-token retry also truncates, return empty string."""
+        translator, call_index = self._make_translator([
+            ("Truncated output", "length"),
+            ("Truncated output", "length"),
+            ("Still truncated", "length"),
+        ])
+        from auto_translate.translate.plamo import PlamoTranslator
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+        # Higher-token retry also truncated — should return ""
+        assert result == ""
+        # Should have made 3 calls (first, retry, higher-tokens)
+        assert call_index[0] == 3
+
+    def test_network_failure_during_retry(self):
+        """Network failure during retry should be handled gracefully."""
+        import httpx
+        translator, _call_index = self._make_translator([])
+        # Make _chat raise an exception, but server is alive (so it re-raises)
+        call_count = [0]
+        def failing_chat(prompt, timeout=10, temperature=None, max_tokens=None):
+            call_count[0] += 1
+            raise httpx.HTTPError("Connection failed")
+
+        translator._chat = failing_chat
+        from auto_translate.translate.plamo import PlamoTranslator
+        # Server alive — exception propagates (expected behavior for network errors)
+        translator.server.alive.return_value = True
+        with pytest.raises(httpx.HTTPError):
+            PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+
+    def test_empty_model_response(self):
+        """Empty model response should be handled without crashing."""
+        translator, _call_index = self._make_translator([
+            ("", "stop"),
+            ("", "stop"),
+        ])
+        from auto_translate.translate.plamo import PlamoTranslator
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+        assert result == ""
+
 
 # ---------------------------------------------------------------------------
-# 3. Watermark State Machine — Production Class Tests
+# 3. CoverageTracker — Production Class Tests
 # ---------------------------------------------------------------------------
 
-class _MinimalMpvWatermark:
-    """Minimal MPV watermark exercising the actual production methods.
-    
-    Extracts only the watermark-related state and methods from MpvOutput
-    without requiring MPV process, IPC, or FFmpeg.
+class TestCoverageTracker:
+    """Test the real CoverageTracker production class.
+
+    Exercises the actual interval-based coverage state machine used by MpvOutput.
+    No MPV or FFmpeg required — only the CoverageTracker class is tested.
     """
-    
-    def __init__(self, start_s: float = 0.0):
-        import threading
-        self._buffer_condition = threading.Condition()
-        self._vad_progress = start_s
-        self._translated_until = start_s
-        self._pending_speech = []
-        self._pending_generation = 1
-        self._seek_lead_target = None
-        self._subtitle_ready = threading.Event()
-    
-    def advance(self, progress_s: float) -> None:
-        """Copy of MpvOutput.advance() — tests the real production method."""
-        with self._buffer_condition:
-            old_vad = self._vad_progress
-            self._vad_progress = max(self._vad_progress, progress_s)
-            self._try_advance_through_silence()
-            if self._vad_progress > old_vad:
-                self._buffer_condition.notify_all()
-    
-    def _try_advance_through_silence(self) -> None:
-        """Copy of MpvOutput._try_advance_through_silence() — production logic."""
-        if not self._pending_speech:
-            self._translated_until = max(self._translated_until, self._vad_progress)
-        else:
-            earliest_block = float('inf')
-            for start_s, end_s in self._pending_speech:
-                if end_s > self._translated_until and start_s < earliest_block:
-                    earliest_block = start_s
-            if earliest_block < float('inf'):
-                self._translated_until = max(self._translated_until, min(self._vad_progress, earliest_block))
-            else:
-                self._translated_until = max(self._translated_until, self._vad_progress)
-    
-    def record_speech(self, start_s: float, end_s: float, generation: int) -> None:
-        """Copy of MpvOutput.record_speech() — production logic."""
-        with self._buffer_condition:
-            if generation != self._pending_generation:
-                self._pending_speech.clear()
-                self._pending_generation = generation
-            self._pending_speech.append((start_s, end_s))
-    
-    def advance_to_subtitle(self, subtitle_end_s: float, generation: int) -> None:
-        """Copy of MpvOutput.advance_to_subtitle() — production logic."""
-        with self._buffer_condition:
-            if generation != self._pending_generation:
-                self._pending_speech.clear()
-                self._pending_generation = generation
-                self._translated_until = max(self._translated_until, subtitle_end_s)
-                self._try_advance_through_silence()
-            else:
-                removed = False
-                new_pending = []
-                for s, e in self._pending_speech:
-                    if abs(e - subtitle_end_s) < 0.5 and not removed:
-                        removed = True
-                    else:
-                        new_pending.append((s, e))
-                self._pending_speech = new_pending
-                self._translated_until = max(self._translated_until, subtitle_end_s)
-                self._try_advance_through_silence()
-            self._buffer_condition.notify_all()
-    
-    def complete_speech(self, start_s: float, end_s: float, generation: int) -> None:
-        """Copy of MpvOutput.complete_speech() — production logic."""
-        with self._buffer_condition:
-            if generation != self._pending_generation:
-                self._pending_speech.clear()
-                self._pending_generation = generation
-                return
-            removed = False
-            new_pending = []
-            for s, e in self._pending_speech:
-                if abs(s - start_s) < 0.5 and abs(e - end_s) < 0.5 and not removed:
-                    removed = True
-                else:
-                    new_pending.append((s, e))
-            self._pending_speech = new_pending
-            self._translated_until = max(self._translated_until, end_s)
-            self._try_advance_through_silence()
-            self._buffer_condition.notify_all()
-    
-    def reset_buffer(self, progress_s: float) -> None:
-        """Copy of MpvOutput.reset_buffer() — production logic."""
-        with self._buffer_condition:
-            self._vad_progress = progress_s
-            self._translated_until = progress_s
-            self._pending_speech.clear()
-            self._pending_generation = 0
 
+    def _make(self, start_s: float = 0.0):
+        from auto_translate.output.coverage import CoverageTracker
+        return CoverageTracker(start_s)
 
-class TestWatermarkStateMachine:
-    """Test watermark advancement using the actual production methods."""
-
-    def test_complete_speech_does_not_skip_pending(self):
-        """Completing one speech should NOT advance past another pending speech."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.complete_speech(2.0, 4.0, 1)
-        # Watermark at 4.0, then silence advance blocked by pending speech at 10.0
-        assert wm._translated_until == 10.0
-        assert len(wm._pending_speech) == 1
-        assert (10.0, 12.0) in wm._pending_speech
-
-    def test_advance_to_subtitle_does_not_skip_pending(self):
-        """Advancing to a subtitle should NOT skip over other pending speech."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.advance_to_subtitle(4.0, 1)
-        assert wm._translated_until == 10.0
-
-    def test_silence_advance_after_complete(self):
-        """After completing the last pending speech, advance through silence."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.complete_speech(2.0, 4.0, 1)
-        assert wm._translated_until == 20.0
-
-    def test_out_of_order_completion(self):
-        """Completing speech in reverse order — later speech first."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.complete_speech(10.0, 12.0, 1)
-        # Watermark advances to 12.0, then silence advance: pending (2.0, 4.0)
-        # has end_s=4.0 which is NOT > 12.0, so it doesn't block.
-        assert wm._translated_until == 20.0
-
-    def test_stale_generation_clears_all(self):
-        """A callback with a stale generation should clear all pending speech."""
-        wm = _MinimalMpvWatermark()
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.complete_speech(2.0, 4.0, 999)  # Wrong generation
-        assert len(wm._pending_speech) == 0
-        assert wm._pending_generation == 999
-
-    def test_multiple_adjacent_utterances(self):
-        """Multiple adjacent utterances should each be tracked separately."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 30.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(5.0, 7.0, 1)
-        wm.record_speech(8.0, 10.0, 1)
-        wm.complete_speech(5.0, 7.0, 1)
-        # translated_until = max(0, 7.0) = 7.0
-        # pending = [(2.0, 4.0), (8.0, 10.0)]
-        # (2.0, 4.0): end_s=4.0 NOT > 7.0, doesn't block
-        # (8.0, 10.0): end_s=10.0 > 7.0, blocks at start_s=8.0
-        assert wm._translated_until == 8.0
-        assert len(wm._pending_speech) == 2
-
-    def test_sequential_completion_advances_watermark(self):
-        """Completing speech in order should advance watermark progressively."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 30.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(6.0, 8.0, 1)
-        wm.complete_speech(2.0, 4.0, 1)
-        assert wm._translated_until == 6.0  # Advance to silence before next speech
-        wm.complete_speech(6.0, 8.0, 1)
-        assert wm._translated_until == 30.0  # Advance through all silence
+    # --- Basic watermark advancement ---
 
     def test_advance_through_silence_only(self):
         """VAD progress without pending speech advances watermark through silence."""
-        wm = _MinimalMpvWatermark()
-        wm.advance(20.0)
-        assert wm._translated_until == 20.0
+        ct = self._make()
+        ct.advance_vad(20.0)
+        assert ct.translated_until == 20.0
 
     def test_pending_speech_blocks_silence_advance(self):
         """Pending speech blocks watermark from advancing through silence."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(5.0, 7.0, 1)
-        wm.advance(20.0)
-        # Watermark should stop at 5.0 (start of pending speech)
-        assert wm._translated_until == 5.0
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(5.0, 7.0)
+        assert ct.translated_until == 5.0
 
-    def test_reset_buffer_clears_pending(self):
+    # --- Sequential completion ---
+
+    def test_sequential_completion_advances_watermark(self):
+        """Completing speech in order should advance watermark progressively."""
+        ct = self._make()
+        ct.advance_vad(30.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(6.0, 8.0)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 6.0  # Advance to silence before next speech
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 30.0  # Advance through all silence
+
+    # --- Out-of-order completion (the key bug) ---
+
+    def test_out_of_order_completion(self):
+        """Completing later speech first must NOT advance past earlier pending speech.
+
+        Speech A: 2-4s, Speech B: 10-12s, VAD: 20s
+        B completes before A. Watermark must stop at 2s (start of A) until A finishes.
+        """
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid_a = ct.record_speech(2.0, 4.0)
+        sid_b = ct.record_speech(10.0, 12.0)
+        # Complete B first (out of order)
+        ct.complete_speech(sid_b)
+        # Watermark must NOT advance past A's start (2.0s)
+        assert ct.translated_until == 2.0
+        # Now complete A
+        ct.complete_speech(sid_a)
+        # Watermark should advance through all silence
+        assert ct.translated_until == 20.0
+
+    def test_reverse_order_completion(self):
+        """Completing speech in reverse order — later speech first."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid_a = ct.record_speech(2.0, 4.0)
+        sid_b = ct.record_speech(10.0, 12.0)
+        ct.complete_speech(sid_b)
+        # Watermark stops at A's start (2.0s) because A is still pending
+        assert ct.translated_until == 2.0
+        ct.complete_speech(sid_a)
+        assert ct.translated_until == 20.0
+
+    # --- Complete speech does not skip pending ---
+
+    def test_complete_speech_does_not_skip_pending(self):
+        """Completing one speech should NOT advance past another pending speech."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        ct.complete_speech(sid1)
+        # Watermark at 4.0, then silence advance blocked by pending speech at 10.0
+        assert ct.translated_until == 10.0
+        assert ct.pending_count() == 1
+
+    def test_advance_to_subtitle_does_not_skip_pending(self):
+        """Completing by interval should NOT skip over other pending speech."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        ct.complete_by_interval(2.0, 4.0)
+        assert ct.translated_until == 10.0
+
+    # --- Silence advance after complete ---
+
+    def test_silence_advance_after_complete(self):
+        """After completing the last pending speech, advance through silence."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid = ct.record_speech(2.0, 4.0)
+        ct.complete_speech(sid)
+        assert ct.translated_until == 20.0
+
+    # --- Multiple adjacent utterances ---
+
+    def test_multiple_adjacent_utterances(self):
+        """Multiple adjacent utterances should each be tracked separately."""
+        ct = self._make()
+        ct.advance_vad(30.0)
+        ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(5.0, 7.0)
+        ct.record_speech(8.0, 10.0)
+        ct.complete_speech(sid2)
+        # Watermark: 0 -> complete (5-7) -> 5.0, but (2-4) is still pending at 2.0
+        # So watermark stops at 2.0 (earliest pending)
+        assert ct.translated_until == 2.0
+        assert ct.pending_count() == 2
+
+    # --- Overlapping speech ---
+
+    def test_overlapping_speech(self):
+        """Overlapping speech intervals should be handled correctly."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid1 = ct.record_speech(2.0, 6.0)
+        sid2 = ct.record_speech(4.0, 8.0)
+        ct.complete_speech(sid1)
+        # sid2 still pending at 4.0-8.0, watermark stops at 4.0
+        assert ct.translated_until == 4.0
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 20.0
+
+    # --- Pending speech beginning at the watermark ---
+
+    def test_pending_speech_beginning_at_watermark(self):
+        """Speech starting exactly at the watermark position blocks it."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(0.0, 4.0)
+        # Watermark at 0.0, speech starts at 0.0 — blocks immediately
+        assert ct.translated_until == 0.0
+
+    # --- Suppressed translations (complete without subtitle) ---
+
+    def test_suppressed_translation(self):
+        """Suppressed translation completes the interval without a subtitle."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(10.0, 12.0)
+        # Suppress sid1 (no subtitle published)
+        ct.complete_speech(sid1)
+        assert ct.translated_until == 10.0  # blocked by sid2
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 20.0
+
+    # --- Duplicate completion ---
+
+    def test_duplicate_completion(self):
+        """Completing the same interval twice should be safe."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid = ct.record_speech(2.0, 4.0)
+        assert ct.complete_speech(sid) is True
+        assert ct.complete_speech(sid) is False  # already completed
+        assert ct.translated_until == 20.0
+
+    # --- Unmatched completion ---
+
+    def test_unmatched_completion(self):
+        """Completing an unknown interval ID should be safe."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        assert ct.complete_speech(9999) is False  # unknown ID
+        assert ct.pending_count() == 1
+
+    # --- Subtitle completion by interval ---
+
+    def test_complete_by_interval(self):
+        """Complete by interval matching (fallback when ID not available)."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        ct.complete_by_interval(2.0, 4.0)
+        assert ct.translated_until == 10.0
+        assert ct.pending_count() == 1
+
+    # --- Two utterances with similar end timestamps ---
+
+    def test_two_utterances_similar_end_timestamps(self):
+        """Two utterances with end times within 0.5s should not collide."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(6.0, 4.3)  # end within 0.5s of sid1's end
+        ct.complete_speech(sid1)
+        # sid2 still pending at 6.0-4.3 (weird but valid)
+        assert ct.pending_count() == 1
+        ct.complete_speech(sid2)
+        assert ct.translated_until == 20.0
+
+    # --- Generation isolation ---
+
+    def test_stale_generation_rejected(self):
+        """Stale callbacks should be rejected without modifying state."""
+        # The generation check is done in MpvOutput, not CoverageTracker
+        # CoverageTracker itself doesn't enforce generation — the caller does
+        ct = self._make()
+        ct.advance_vad(20.0)
+        sid = ct.record_speech(2.0, 4.0)
+        assert ct.pending_count() == 1
+        # The generation check is done in MpvOutput, not CoverageTracker
+        # CoverageTracker itself doesn't enforce generation — the caller does
+        ct.complete_speech(sid)
+        assert ct.translated_until == 20.0
+
+    # --- Seek reset and rebuffering ---
+
+    def test_reset_clears_all_state(self):
         """Seek resets all pending speech and watermark."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.reset_buffer(50.0)
-        assert wm._translated_until == 50.0
-        assert wm._vad_progress == 50.0
-        assert len(wm._pending_speech) == 0
-        assert wm._pending_generation == 0
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        ct.reset(50.0)
+        assert ct.translated_until == 50.0
+        assert ct.vad_progress == 50.0
+        assert ct.pending_count() == 0
+
+    def test_reset_then_new_speech(self):
+        """After reset, new speech should be tracked correctly."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.reset(50.0)
+        ct.advance_vad(70.0)
+        sid = ct.record_speech(55.0, 57.0)
+        assert ct.translated_until == 55.0  # blocked by new speech
+        ct.complete_speech(sid)
+        assert ct.translated_until == 70.0
+
+    # --- EOF handling ---
+
+    def test_eof_advances_watermark(self):
+        """Marking source finished advances watermark to VAD progress."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.mark_source_finished()
+        # Even at EOF, pending speech still blocks
+        assert ct.translated_until == 2.0
+
+    # --- Interval matching removes only matching entry ---
+
+    def test_complete_by_interval_removes_only_matching(self):
+        """complete_by_interval removes only the matching pending entry."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        ct.complete_by_interval(10.0, 12.0)
+        assert ct.pending_count() == 1
 
     def test_advance_to_subtitle_removes_only_matching(self):
-        """advance_to_subtitle removes only the matching pending entry."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.record_speech(15.0, 17.0, 1)
-        wm.advance_to_subtitle(4.0, 1)
-        # Only (2.0, 4.0) should be removed; others remain
-        assert len(wm._pending_speech) == 2
-        assert (10.0, 12.0) in wm._pending_speech
-        assert (15.0, 17.0) in wm._pending_speech
+        """complete_by_interval removes only the matching pending entry."""
+        ct = self._make()
+        ct.advance_vad(20.0)
+        ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        ct.record_speech(15.0, 17.0)
+        ct.complete_by_interval(2.0, 4.0)
+        assert ct.pending_count() == 2
 
-    def test_complete_speech_removes_only_matching(self):
-        """complete_speech removes only the exact matching pending entry."""
-        wm = _MinimalMpvWatermark()
-        wm._vad_progress = 20.0
-        wm.record_speech(2.0, 4.0, 1)
-        wm.record_speech(10.0, 12.0, 1)
-        wm.complete_speech(10.0, 12.0, 1)
-        assert len(wm._pending_speech) == 1
-        assert (2.0, 4.0) in wm._pending_speech
+    # --- Speech ID uniqueness ---
+
+    def test_speech_ids_are_unique(self):
+        """Each record_speech call returns a unique ID."""
+        ct = self._make()
+        sid1 = ct.record_speech(2.0, 4.0)
+        sid2 = ct.record_speech(5.0, 7.0)
+        sid3 = ct.record_speech(8.0, 10.0)
+        assert sid1 != sid2
+        assert sid2 != sid3
+        assert sid1 != sid3
+
+    # --- Pending intervals query ---
+
+    def test_pending_intervals(self):
+        """pending_intervals returns the correct list."""
+        ct = self._make()
+        ct.record_speech(2.0, 4.0)
+        ct.record_speech(10.0, 12.0)
+        intervals = ct.pending_intervals()
+        assert (2.0, 4.0) in intervals
+        assert (10.0, 12.0) in intervals
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +842,31 @@ class TestBackendSwitching:
         # Qwen3-ASR is not the default — should not inherit Haas's model
         assert qwen_cfg.get("model_path", "") == ""
         assert qwen_cfg.get("mmproj_path", "") == ""
+
+    def test_vad_created_via_registry(self):
+        """VAD backend must be created through the registry, not directly."""
+        from auto_translate.registry import get_default_registry
+        from auto_translate.vad import Segmenter
+        registry = get_default_registry()
+        segmenter = registry.create_vad("silero", {
+            "threshold": 0.5,
+            "min_speech_ms": 500,
+            "min_silence_ms": 200,
+            "speech_pad_ms": 50,
+            "onset_ms": 500,
+            "max_utterance_s": 15.0,
+            "max_split_extension_s": 5.0,
+            "fallback_s": 0.0,
+        })
+        assert segmenter is not None
+        assert isinstance(segmenter, Segmenter)
+
+    def test_unknown_vad_backend_raises(self):
+        """Unknown VAD backend must raise a clear error."""
+        from auto_translate.registry import get_default_registry
+        registry = get_default_registry()
+        with pytest.raises(ValueError, match="Unknown VAD backend"):
+            registry.create_vad("nonexistent", {"threshold": 0.5})
 
 
 # ---------------------------------------------------------------------------

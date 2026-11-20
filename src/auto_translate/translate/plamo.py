@@ -547,6 +547,7 @@ class PlamoTranslator:
                     if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES and _elapsed_ok():
                         retries_left -= 1
                         truncation_retries += 1
+                        retry_key = "retry"
                         if long_text:
                             # Already tried simplified — retry with full prompt (glossary/context)
                             # which may produce a different, complete result with more context
@@ -561,19 +562,20 @@ class PlamoTranslator:
 
                         if finish_reason == "length":
                             # Check for deterministic repetition BEFORE recording the retry output.
-                            # Compare against the first attempt's key so we detect if the
-                            # retry produced the same truncated output.
-                            if _repeated(english, first_key):
+                            # Use the retry's own key so we compare against the same request,
+                            # not the first attempt's key (different prompts can produce the
+                            # same truncated output without meaning higher tokens are futile).
+                            if _repeated(english, retry_key):
                                 record_event("mt_truncation_failed", max_tokens=self.cfg.max_tokens)
                                 increment_counter("mt_rejected")
                                 return ""
                             # Record the retry output so subsequent retries can detect repetition
-                            _record(english, "retry")
+                            _record(english, retry_key)
                             # Second retry: increase token limit
+                            retry_tokens = max(self.cfg.max_tokens * 2, 512)
                             if retries_left > 0 and _elapsed_ok():
                                 retries_left -= 1
                                 truncation_retries += 1
-                                retry_tokens = max(self.cfg.max_tokens * 2, 512)
                                 record_event("mt_truncation_retry", strategy="increased_tokens", max_tokens=retry_tokens)
                                 increment_counter("mt_retries")
                                 retry_prompt = prompt if long_text else simplified_prompt

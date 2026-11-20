@@ -31,6 +31,7 @@ from uuid import uuid4
 from ..config import MpvConfig
 from ..gui_control import EXIT_FULLSCREEN_MESSAGE, FULLSCREEN_MESSAGE, emit_event
 from ..ingest import Ingest, fmt_hms
+from ..output.coverage import CoverageTracker
 from ..runtime_diagnostics import (
     increment_counter,
     record_event,
@@ -461,16 +462,14 @@ class MpvOutput:
         self._shown = ""
         self._session_start = ingest.source.start_s
         self._buffer_condition = threading.Condition()
-        # Two-track watermark:
-        # _vad_progress — audio position confirmed speech-free by VAD (silence/music)
-        # _translated_until — contiguous translation coverage (speech translated OR silence confirmed)
-        self._vad_progress = ingest.source.start_s
-        self._translated_until = ingest.source.start_s
+        # Coverage tracker manages the contiguous translation watermark.
+        self._coverage = CoverageTracker(ingest.source.start_s)
         self._source_finished = False
-        # Track pending speech regions: speech that VAD processed but not yet translated
-        # Each entry is (start_s, end_s) — the watermark cannot advance past start_s
-        self._pending_speech: list[tuple[float, float]] = []
-        self._pending_generation = 0  # generation of pending speech regions
+        # Map from speech interval ID to pending entry for reliable identity
+        self._speech_id_map: dict[int, tuple[float, float]] = {}
+        # Generation tracking: authoritative generation for callbacks.
+        # Reset only through reset_buffer(). Stale callbacks are rejected.
+        self._pending_generation = 0
         self._job = None
         self._closed = False
         self._gui_ready_emitted = False
@@ -718,148 +717,97 @@ class MpvOutput:
 
     def advance(self, progress_s: float) -> None:
         """Record the latest VAD progress position.
-        
-        This advances _vad_progress (VAD-confirmed silence) but NOT _translated_until.
-        The translation watermark advances only when subtitles are published or
-        when silence is contiguous with the current watermark position.
-        """
-        with self._buffer_condition:
-            old_vad = self._vad_progress
-            self._vad_progress = max(self._vad_progress, progress_s)
-            # If VAD advanced past confirmed silence and there's no pending speech
-            # blocking the watermark, advance the translation watermark through silence
-            self._try_advance_through_silence()
-            if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
-                log.info("translation lead ready at %.3fs", self._seek_lead_target)
-                self._seek_lead_target = None
-                self._subtitle_ready.set()
-            if self._vad_progress > old_vad:
-                self._buffer_condition.notify_all()
-    
-    def _try_advance_through_silence(self) -> None:
-        """Advance _translated_until through VAD-confirmed silence if contiguous.
-        
-        The watermark can advance through silence only if there's no pending
-        (untranslated) speech between the current watermark and VAD progress.
-        Must be called with _buffer_condition held.
-        """
-        if not self._pending_speech:
-            # No pending speech — advance through all confirmed silence
-            self._translated_until = max(self._translated_until, self._vad_progress)
-        else:
-            # Find the earliest pending speech region that blocks the watermark.
-            # A pending speech blocks if its start is after the current watermark
-            # AND its end is after the current watermark (it overlaps the gap ahead).
-            earliest_block = float('inf')
-            for start_s, end_s in self._pending_speech:
-                # Only consider speech regions that actually block advancement:
-                # their end must be after the watermark, so they overlap the gap ahead.
-                if end_s > self._translated_until and start_s < earliest_block:
-                    earliest_block = start_s
-            # Advance through silence up to the earliest blocking speech
-            if earliest_block < float('inf'):
-                self._translated_until = max(self._translated_until, min(self._vad_progress, earliest_block))
-            else:
-                # All pending speech is entirely before the watermark — advance through silence
-                self._translated_until = max(self._translated_until, self._vad_progress)
-    
-    def record_speech(self, start_s: float, end_s: float, generation: int) -> None:
-        """Record a speech region that VAD has processed but not yet translated.
-        
-        This blocks the watermark from advancing past start_s until the speech
-        is translated (via advance_to_subtitle()).
-        """
-        with self._buffer_condition:
-            if generation != self._pending_generation:
-                # Generation changed — clear all pending speech
-                self._pending_speech.clear()
-                self._pending_generation = generation
-            self._pending_speech.append((start_s, end_s))
-    
-    def _find_earliest_pending_after(self, after: float) -> float:
-        """Find the earliest pending speech start after the given position.
-        
-        Returns float('inf') if no pending speech blocks advancement.
-        Must be called with _buffer_condition held.
-        """
-        earliest = float('inf')
-        for start_s, _end_s in self._pending_speech:
-            if start_s > after and start_s < earliest:
-                earliest = start_s
-        return earliest
 
-    def advance_to_subtitle(self, subtitle_end_s: float, generation: int) -> None:
-        """Advance the watermark to cover a published subtitle.
-        
-        When a subtitle is published, the watermark can advance to its end_s,
-        including any contiguous VAD-confirmed silence between the current
-        watermark and the subtitle. Will NOT skip over other pending speech.
-        
-        Uses exact interval matching: removes the pending entry whose end matches
-        the subtitle's end (within a small tolerance), rather than approximate
-        timestamp matching that could delete unrelated entries.
+        This advances VAD progress in the coverage tracker. The translation
+        watermark advances only when subtitles are published or when silence
+        is contiguous with the current watermark position.
         """
         with self._buffer_condition:
-            if generation != self._pending_generation:
-                self._pending_speech.clear()
-                self._pending_generation = generation
-                self._translated_until = max(self._translated_until, subtitle_end_s)
-                self._try_advance_through_silence()
-            else:
-                # Remove the pending speech entry whose end matches this subtitle's end.
-                # Use exact end matching (within 0.5s tolerance) to avoid deleting
-                # unrelated pending entries.
-                removed = False
-                new_pending = []
-                for s, e in self._pending_speech:
-                    if abs(e - subtitle_end_s) < 0.5 and not removed:
-                        removed = True  # remove only the first match
-                    else:
-                        new_pending.append((s, e))
-                self._pending_speech = new_pending
-                # Advance watermark to the subtitle's end, but NOT past other pending speech.
-                self._translated_until = max(self._translated_until, subtitle_end_s)
-                # Then try to advance further through now-unblocked silence
-                self._try_advance_through_silence()
-            if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
+            self._coverage.advance_vad(progress_s)
+            translated_until = self._coverage.translated_until
+            if self._seek_lead_target is not None and translated_until >= self._seek_lead_target:
                 log.info("translation lead ready at %.3fs", self._seek_lead_target)
                 self._seek_lead_target = None
                 self._subtitle_ready.set()
             self._buffer_condition.notify_all()
 
-    def complete_speech(self, start_s: float, end_s: float, generation: int) -> None:
-        """Clear pending speech and advance the watermark for a suppressed translation.
-        
-        When a translation is suppressed (empty output, prompt echo, untranslated Japanese),
-        no subtitle is published, but the pending speech entry must still be cleared so
-        the watermark can advance. This prevents VOD playback from stalling.
-        
-        Will NOT advance the watermark past other pending (untranslated) speech regions.
-        Only the suppressed region's own entry is cleared.
-        
-        Uses exact interval matching (both start and end within 0.5s tolerance) to
-        remove only the matching pending entry, preserving unrelated entries.
+    def record_speech(self, start_s: float, end_s: float, generation: int) -> int | None:
+        """Record a speech region that VAD has processed but not yet translated.
+
+        Returns the speech interval ID, or None if the callback is stale.
+        Stale callbacks (wrong generation) are rejected without modifying state.
         """
         with self._buffer_condition:
             if generation != self._pending_generation:
-                self._pending_speech.clear()
-                self._pending_generation = generation
+                # Stale callback — reject without modifying state
+                return None
+            sid = self._coverage.record_speech(start_s, end_s)
+            self._speech_id_map[sid] = (start_s, end_s)
+            return sid
+
+    def advance_to_subtitle(self, subtitle_end_s: float, generation: int, speech_id: int | None = None) -> None:
+        """Advance the watermark to cover a published subtitle.
+
+        When a subtitle is published, the watermark can advance to its end_s,
+        including any contiguous VAD-confirmed silence. Will NOT skip over
+        other pending speech.
+
+        If `speech_id` is provided, uses it for reliable identity matching.
+        Otherwise falls back to interval matching by timestamps.
+
+        Stale callbacks (wrong generation) are rejected without modifying state.
+        """
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                # Stale callback — reject without modifying state
                 return
-            # Remove ONLY the matching pending speech entry — use exact interval matching
-            # to avoid deleting unrelated entries. Match by both start and end.
-            removed = False
-            new_pending = []
-            for s, e in self._pending_speech:
-                if abs(s - start_s) < 0.5 and abs(e - end_s) < 0.5 and not removed:
-                    removed = True  # remove only the first exact match
-                else:
-                    new_pending.append((s, e))
-            self._pending_speech = new_pending
-            # Advance watermark past the suppressed region, but NOT past other pending speech.
-            self._translated_until = max(self._translated_until, end_s)
-            # Then try to advance further through now-unblocked silence
-            self._try_advance_through_silence()
-            if self._seek_lead_target is not None and self._translated_until >= self._seek_lead_target:
+            # Complete the speech interval using reliable identity
+            if speech_id is not None:
+                completed = self._coverage.complete_speech(speech_id)
+                self._speech_id_map.pop(speech_id, None)
+            else:
+                # Fallback: match by interval timestamps
+                completed = self._coverage.complete_by_interval(
+                    subtitle_end_s - 2.0, subtitle_end_s, tolerance=0.5
+                )
+            if not completed:
+                log.debug(
+                    "advance_to_subtitle: no matching pending speech at end_s=%.3f",
+                    subtitle_end_s,
+                )
+            if self._seek_lead_target is not None and self._coverage.translated_until >= self._seek_lead_target:
+                log.info("translation lead ready at %.3fs", self._seek_lead_target)
+                self._seek_lead_target = None
+                self._subtitle_ready.set()
+            self._buffer_condition.notify_all()
+
+    def complete_speech(self, start_s: float, end_s: float, generation: int, speech_id: int | None = None) -> None:
+        """Clear pending speech and advance the watermark for a suppressed translation.
+
+        When a translation is suppressed (empty output, prompt echo, untranslated
+        Japanese), no subtitle is published, but the pending speech entry must
+        still be cleared so the watermark can advance.
+
+        If `speech_id` is provided, uses it for reliable identity matching.
+        Otherwise falls back to interval matching.
+
+        Stale callbacks (wrong generation) are rejected without modifying state.
+        """
+        with self._buffer_condition:
+            if generation != self._pending_generation:
+                # Stale callback — reject without modifying state
+                return
+            if speech_id is not None:
+                completed = self._coverage.complete_speech(speech_id)
+                self._speech_id_map.pop(speech_id, None)
+            else:
+                completed = self._coverage.complete_by_interval(start_s, end_s, tolerance=0.5)
+            if not completed:
+                log.debug(
+                    "complete_speech: no matching pending speech (%.3f-%.3f)",
+                    start_s, end_s,
+                )
+            if self._seek_lead_target is not None and self._coverage.translated_until >= self._seek_lead_target:
                 log.info("translation lead ready at %.3fs (after suppressed translation)", self._seek_lead_target)
                 self._seek_lead_target = None
                 self._subtitle_ready.set()
@@ -872,9 +820,10 @@ class MpvOutput:
     def _translation_ready(self) -> bool:
         """Start after a 5s lead from new work or previously cached audio."""
         with self._buffer_condition:
+            translated_until = self._coverage.translated_until
             ready = self._source_finished or (
                 self._now is not None
-                and self._translated_until >= self._now + self.PAUSE_LEAD_SECONDS
+                and translated_until >= self._now + self.PAUSE_LEAD_SECONDS
             )
         if ready:
             return True
@@ -884,10 +833,10 @@ class MpvOutput:
             cache is not None and now is not None
             and cache.covered_until(now) >= now + self.PAUSE_LEAD_SECONDS
         )
-    
+
     def _vod_should_pause(self) -> bool:
         """Check if MPV should pause due to low translation lead (VOD only).
-        
+
         Returns True when the translation lead falls below the pause threshold
         and the user has not manually paused.
         """
@@ -898,14 +847,14 @@ class MpvOutput:
         now = self._now
         if now is None:
             return False
-        with self._buffer_condition:
-            lead = self._translated_until - now
+        translated_until = self._coverage.translated_until
+        lead = translated_until - now
         pause_threshold = getattr(self.cfg, "vod_pause_threshold_s", 2.0)
         return lead < pause_threshold
-    
+
     def _vod_should_resume(self) -> bool:
         """Check if MPV should resume after auto-pause (VOD only).
-        
+
         Returns True when the translation lead exceeds the resume threshold
         (hysteresis prevents oscillation).
         """
@@ -914,8 +863,8 @@ class MpvOutput:
         now = self._now
         if now is None:
             return False
-        with self._buffer_condition:
-            lead = self._translated_until - now
+        translated_until = self._coverage.translated_until
+        lead = translated_until - now
         resume_threshold = getattr(self.cfg, "vod_resume_threshold_s", 8.0)
         return lead >= resume_threshold
 
@@ -923,10 +872,10 @@ class MpvOutput:
         """Reset translated coverage after a VOD seek."""
         with self._buffer_condition:
             self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
-            self._vad_progress = progress_s
-            self._translated_until = progress_s
+            self._coverage.reset(progress_s)
             self._source_finished = False
-            self._pending_speech.clear()
+            self._speech_id_map.clear()
+            # Authoritative generation reset — new callbacks must match this.
             self._pending_generation = 0
             # Reset pause state after seek
             self._vod_auto_paused = False
@@ -937,6 +886,7 @@ class MpvOutput:
             if generation is not None and generation != self.ingest.generation:
                 return
             self._source_finished = True
+            self._coverage.mark_source_finished()
             self._buffer_condition.notify_all()
 
     def drain(self) -> None:
@@ -1292,26 +1242,27 @@ class MpvOutput:
                     # Translation falling behind — auto-pause MPV
                     if self._player_command("set_property", "pause", True):
                         self._vod_auto_paused = True
-                        lead = self._translated_until - self._now if self._now else 0
-                        with self._buffer_condition:
-                            pending = len(self._pending_speech)
+                        tu = self._coverage.translated_until
+                        lead = tu - self._now if self._now else 0
+                        pending = self._coverage.pending_count()
                         log.info(
                             "VOD auto-pause: translation lead %.1fs < %.1fs threshold "
                             "(now=%.1fs translated_until=%.1fs pending_speech=%d)",
                             lead, getattr(self.cfg, "vod_pause_threshold_s", 2.0),
                             self._now if self._now else -1,
-                            self._translated_until, pending,
+                            tu, pending,
                         )
                 elif self._vod_auto_paused and self._vod_should_resume() and self._player_command("set_property", "pause", False):
                     # Translation caught up — resume MPV
                     self._vod_auto_paused = False
-                    lead = self._translated_until - self._now if self._now else 0
+                    tu = self._coverage.translated_until
+                    lead = tu - self._now if self._now else 0
                     log.info(
                         "VOD auto-resume: translation lead %.1fs >= %.1fs threshold "
                         "(now=%.1fs translated_until=%.1fs)",
                         lead, getattr(self.cfg, "vod_resume_threshold_s", 8.0),
                         self._now if self._now else -1,
-                        self._translated_until,
+                        tu,
                     )
 
             replay, delta = self._read_player_events()
@@ -1741,7 +1692,7 @@ class MpvOutput:
         # audio reader could otherwise keep processing a different part of the VOD.
         return (end >= target + self.PAUSE_LEAD_SECONDS
                 and self.ingest.source.start_s <= end
-                and target <= self._translated_until <= end + 0.02)
+                and target <= self._coverage.translated_until <= end + 0.02)
 
     def _restart_audio_at(self, target: float) -> None:
         """Buffer translation at the confirmed video position."""

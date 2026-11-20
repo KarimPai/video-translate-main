@@ -1304,7 +1304,7 @@ def test_manual_pause_protects_vod_idle():
 
 
 def test_mpv_auto_pause_hysteresis():
-    mpv = object.__new__(type("MpvOutput", (), {}))
+    from auto_translate.output.coverage import CoverageTracker
     from auto_translate.output.mpv import MpvOutput
     mpv = MpvOutput.__new__(MpvOutput)
     mpv.ingest = type("I", (), {"source": type("S", (), {"live": False})()})()
@@ -1313,11 +1313,15 @@ def test_mpv_auto_pause_hysteresis():
     mpv._buffer_condition = threading.Lock()
     mpv.cfg = type("C", (), {"vod_pause_threshold_s": 0.5, "vod_resume_threshold_s": 3.0})()
 
-    mpv._translated_until = 100.4  # lead 0.4 < 0.5 -> auto-pause
+    # Use CoverageTracker instead of direct _translated_until
+    mpv._coverage = CoverageTracker(0.0)
+    mpv._coverage._translated_until = 100.4  # lead 0.4 < 0.5 -> auto-pause
+    mpv._coverage._vad_progress = 100.4
     assert mpv._vod_should_pause() is True
     assert mpv._vod_should_resume() is False
 
-    mpv._translated_until = 103.0  # lead 3.0 >= 3.0 -> resume (hysteresis)
+    mpv._coverage._translated_until = 103.0  # lead 3.0 >= 3.0 -> resume (hysteresis)
+    mpv._coverage._vad_progress = 103.0
     assert mpv._vod_should_resume() is True
     assert mpv._vod_should_pause() is False
 

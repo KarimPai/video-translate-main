@@ -283,7 +283,7 @@ def _register_builtin_backends(registry: ModelRegistry) -> None:
             device="cuda",
             source_lang="ja",
             target_lang="en",
-            vram_gb=3.5,
+            vram_gb=4.5,
             description="PLaMo 3 Translate 8B via llama.cpp (CUDA GPU)",
         ),
     )

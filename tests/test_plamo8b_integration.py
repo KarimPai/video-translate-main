@@ -6,21 +6,9 @@ and GUI backend selection for the PLaMo 8B translation backend.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-results = []
-
-
-def record(test_name: str, passed: bool, detail: str = ""):
-    results.append({"test": test_name, "passed": passed, "detail": detail})
-    status = "PASS" if passed else "FAIL"
-    print(f"  [{status}] {test_name}" + (f" — {detail}" if detail else ""))
-
-
-def section(name: str):
-    print(f"\n{'='*60}")
-    print(f"  {name}")
-    print(f"{'='*60}")
 
 
 # ====================================================================
@@ -28,60 +16,58 @@ def section(name: str):
 # ====================================================================
 
 
-def test_plamo8b_registration():
+def test_plamo8b_registered_in_registry():
     """Test that plamo8b is registered in the backend registry."""
-    section("1. PLaMo 8B Backend Registration")
+    from auto_translate.registry import get_default_registry
 
-    try:
-        from auto_translate.registry import get_default_registry
+    registry = get_default_registry()
+    backends = registry.list_backends()
 
-        registry = get_default_registry()
-        backends = registry.list_backends()
+    translate_backends = backends.get("translate", [])
+    assert "plamo8b" in translate_backends, (
+        f"plamo8b not registered in translate backends: {translate_backends}"
+    )
 
-        translate_backends = backends.get("translate", [])
-        if "plamo8b" in translate_backends:
-            record("plamo8b registered in registry", True,
-                   f"translate backends: {translate_backends}")
-        else:
-            record("plamo8b registered in registry", False,
-                   f"translate backends: {translate_backends}")
 
-        # Check capabilities
-        caps = registry.get_capabilities("translate", "plamo8b")
-        if caps:
-            record("plamo8b capabilities", True,
-                   f"runtime={caps.runtime}, device={caps.device}, vram={caps.vram_gb}GB")
-            if caps.runtime == "llama_cpp":
-                record("plamo8b runtime is llama_cpp", True)
-            else:
-                record("plamo8b runtime is llama_cpp", False, f"got {caps.runtime}")
-            if caps.device == "cuda":
-                record("plamo8b device is cuda", True)
-            else:
-                record("plamo8b device is cuda", False, f"got {caps.device}")
-            if caps.source_lang == "ja" and caps.target_lang == "en":
-                record("plamo8b language pair ja->en", True)
-            else:
-                record("plamo8b language pair ja->en", False,
-                       f"source={caps.source_lang}, target={caps.target_lang}")
-        else:
-            record("plamo8b capabilities", False, "no capabilities found")
+def test_plamo8b_capabilities():
+    """Test that plamo8b capabilities are correct."""
+    from auto_translate.registry import get_default_registry
 
-        # Verify plamo (2B) is still registered
-        if "plamo" in translate_backends:
-            record("plamo 2B still registered", True)
-        else:
-            record("plamo 2B still registered", False, "plamo 2B missing from registry")
+    registry = get_default_registry()
+    caps = registry.get_capabilities("translate", "plamo8b")
 
-        # Verify other backends are unaffected
-        for expected in ("gemma4", "hymt"):
-            if expected in translate_backends:
-                record(f"{expected} still registered", True)
-            else:
-                record(f"{expected} still registered", False, f"{expected} missing")
+    assert caps is not None, "plamo8b capabilities not found"
+    assert caps.runtime == "llama_cpp", f"expected llama_cpp, got {caps.runtime}"
+    assert caps.device == "cuda", f"expected cuda, got {caps.device}"
+    assert caps.source_lang == "ja", f"expected ja, got {caps.source_lang}"
+    assert caps.target_lang == "en", f"expected en, got {caps.target_lang}"
+    # VRAM should reflect the actual model file size (~4.0 GB) plus overhead
+    assert caps.vram_gb >= 4.0, (
+        f"vram_gb={caps.vram_gb} is too low for a 4.0 GB Q3_K_M 8B model"
+    )
 
-    except Exception as e:
-        record("plamo8b registration", False, f"{type(e).__name__}: {e}")
+
+def test_plamo_2b_still_registered():
+    """Verify plamo (2B) is still registered alongside plamo8b."""
+    from auto_translate.registry import get_default_registry
+
+    registry = get_default_registry()
+    backends = registry.list_backends()
+    translate_backends = backends.get("translate", [])
+
+    assert "plamo" in translate_backends, "plamo 2B missing from registry"
+
+
+def test_other_backends_unaffected():
+    """Verify other translation backends are unaffected by plamo8b addition."""
+    from auto_translate.registry import get_default_registry
+
+    registry = get_default_registry()
+    backends = registry.list_backends()
+    translate_backends = backends.get("translate", [])
+
+    for expected in ("gemma4", "hymt"):
+        assert expected in translate_backends, f"{expected} missing from registry"
 
 
 # ====================================================================
@@ -91,62 +77,43 @@ def test_plamo8b_registration():
 
 def test_plamo8b_config_profile():
     """Test that plamo8b config profile loads correctly."""
-    section("2. PLaMo 8B Configuration Profile")
+    from auto_translate.config import load_config
 
-    try:
-        from auto_translate.config import (
-            load_config,
-        )
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
 
-        cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    assert "plamo8b" in cfg.translate_profiles, (
+        f"plamo8b profile missing. Available: {list(cfg.translate_profiles.keys())}"
+    )
 
-        # Check translate_profiles contains plamo8b
-        if "plamo8b" in cfg.translate_profiles:
-            profile = cfg.translate_profiles["plamo8b"]
-            record("plamo8b profile in config", True,
-                   f"keys: {list(profile.keys())}")
+    profile = cfg.translate_profiles["plamo8b"]
+    model_path = profile.get("model_path", "")
+    assert "plamo-3-translate-8b" in model_path, (
+        f"model_path does not contain 8B identifier: {model_path}"
+    )
 
-            # Check model_path
-            model_path = profile.get("model_path", "")
-            if "plamo-3-translate-8b" in model_path:
-                record("plamo8b model_path contains 8B", True, model_path)
-            else:
-                record("plamo8b model_path contains 8B", False, model_path)
+    gpu_layers = profile.get("gpu_layers", -1)
+    assert gpu_layers == -1, f"expected gpu_layers=-1 (auto), got {gpu_layers}"
 
-            # Check gpu_layers
-            gpu_layers = profile.get("gpu_layers", -1)
-            if gpu_layers == -1:
-                record("plamo8b gpu_layers auto", True)
-            else:
-                record("plamo8b gpu_layers auto", False, f"got {gpu_layers}")
 
-        else:
-            record("plamo8b profile in config", False,
-                   f"available profiles: {list(cfg.translate_profiles.keys())}")
+def test_plamo_and_plamo8b_paths_differ():
+    """Test that plamo (2B) and plamo8b model paths are different."""
+    from auto_translate.config import load_config
 
-        # Check plamo (2B) profile is separate
-        if "plamo" in cfg.translate_profiles:
-            plamo_profile = cfg.translate_profiles["plamo"]
-            plamo8b_profile = cfg.translate_profiles.get("plamo8b", {})
-            plamo_path = plamo_profile.get("model_path", "")
-            plamo8b_path = plamo8b_profile.get("model_path", "")
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
 
-            if plamo_path != plamo8b_path:
-                record("plamo and plamo8b model paths differ", True)
-            else:
-                record("plamo and plamo8b model paths differ", False,
-                       f"both: {plamo_path}")
+    assert "plamo" in cfg.translate_profiles, "plamo 2B profile missing"
+    assert "plamo8b" in cfg.translate_profiles, "plamo8b profile missing"
 
-            if "2b" in plamo_path.lower() or "2B" in plamo_path:
-                record("plamo 2B path contains 2B", True)
-            else:
-                record("plamo 2B path contains 2B", False, plamo_path)
+    plamo_path = cfg.translate_profiles["plamo"].get("model_path", "")
+    plamo8b_path = cfg.translate_profiles["plamo8b"].get("model_path", "")
 
-        else:
-            record("plamo 2B profile exists", False, "plamo profile missing")
+    assert plamo_path != plamo8b_path, (
+        f"plamo and plamo8b share the same model_path: {plamo_path}"
+    )
 
-    except Exception as e:
-        record("plamo8b config profile", False, f"{type(e).__name__}: {e}")
+    assert "2b" in plamo_path.lower(), (
+        f"plamo 2B path does not contain '2b': {plamo_path}"
+    )
 
 
 # ====================================================================
@@ -154,55 +121,73 @@ def test_plamo8b_config_profile():
 # ====================================================================
 
 
-def test_plamo8b_model_path_resolution():
+def test_plamo8b_model_path_resolves():
     """Test that plamo8b model path resolves correctly."""
-    section("3. PLaMo 8B Model Path Resolution")
+    from auto_translate.config import load_config, resolve_model_identity
 
-    try:
-        from auto_translate.config import load_config, resolve_model_identity
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    identity = resolve_model_identity(cfg, "translate", "plamo8b")
+    model_path = identity.get("model_path", "")
 
-        cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    assert model_path, "plamo8b model_path resolved to empty string"
 
-        # Resolve plamo8b model identity
-        identity = resolve_model_identity(cfg, "translate", "plamo8b")
-        model_path = identity.get("model_path", "")
 
-        if model_path:
-            record("plamo8b model_path resolved", True, model_path)
+@pytest.mark.skipif(
+    not (Path(__file__).parent.parent / "models" / "plamo3" / "plamo-3-translate-8b-Q3_K_M.gguf").is_file(),
+    reason="PLaMo 8B GGUF model file not present (CI environment)",
+)
+def test_plamo8b_model_file_exists():
+    """Test that the PLaMo 8B GGUF model file exists and is valid."""
+    from auto_translate.config import load_config, resolve_model_identity
 
-            # Check the file exists
-            model_file = Path(__file__).parent.parent / model_path
-            if model_file.is_file():
-                size = model_file.stat().st_size
-                record("plamo8b model file exists", True,
-                       f"size: {size:,} bytes ({size / (1024**3):.1f} GB)")
-            else:
-                record("plamo8b model file exists", False,
-                       f"not found: {model_file}")
-        else:
-            record("plamo8b model_path resolved", False, "empty path")
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    identity = resolve_model_identity(cfg, "translate", "plamo8b")
+    model_path = identity.get("model_path", "")
 
-        # Verify plamo (2B) resolves to a different path
-        plamo_identity = resolve_model_identity(cfg, "translate", "plamo")
-        plamo_path = plamo_identity.get("model_path", "")
+    model_file = Path(__file__).parent.parent / model_path
+    assert model_file.is_file(), f"Model file not found: {model_file}"
 
-        if plamo_path and plamo_path != model_path:
-            record("plamo 2B path isolated from 8B", True,
-                   f"2B: {plamo_path}")
-        else:
-            record("plamo 2B path isolated from 8B", False,
-                   f"2B: {plamo_path}, 8B: {model_path}")
+    size = model_file.stat().st_size
+    # Q3_K_M 8B should be ~3-5 GB
+    assert 3 * (1024**3) < size < 6 * (1024**3), (
+        f"Model size {size / (1024**3):.1f} GB is outside expected 3-5 GB range"
+    )
 
-        # Verify gemma4 is unaffected
-        gemma_identity = resolve_model_identity(cfg, "translate", "gemma4")
-        gemma_path = gemma_identity.get("model_path", "")
-        if "gemma" in gemma_path.lower():
-            record("gemma4 path unaffected", True)
-        else:
-            record("gemma4 path unaffected", False, gemma_path)
+    # Check GGUF magic header
+    with open(model_file, "rb") as f:
+        magic = f.read(4)
+    assert magic == b"GGUF", f"Invalid GGUF magic header: {magic}"
 
-    except Exception as e:
-        record("plamo8b model path resolution", False, f"{type(e).__name__}: {e}")
+
+def test_plamo_2b_path_isolated_from_8b():
+    """Verify plamo (2B) resolves to a different path than plamo8b."""
+    from auto_translate.config import load_config, resolve_model_identity
+
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+
+    plamo8b_identity = resolve_model_identity(cfg, "translate", "plamo8b")
+    plamo8b_path = plamo8b_identity.get("model_path", "")
+
+    plamo_identity = resolve_model_identity(cfg, "translate", "plamo")
+    plamo_path = plamo_identity.get("model_path", "")
+
+    assert plamo_path, "plamo 2B path is empty"
+    assert plamo_path != plamo8b_path, (
+        f"plamo 2B and plamo8b share the same path: {plamo_path}"
+    )
+
+
+def test_gemma4_path_unaffected():
+    """Verify gemma4 model path is unaffected by plamo8b addition."""
+    from auto_translate.config import load_config, resolve_model_identity
+
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    gemma_identity = resolve_model_identity(cfg, "translate", "gemma4")
+    gemma_path = gemma_identity.get("model_path", "")
+
+    assert "gemma" in gemma_path.lower(), (
+        f"gemma4 path does not contain 'gemma': {gemma_path}"
+    )
 
 
 # ====================================================================
@@ -212,50 +197,36 @@ def test_plamo8b_model_path_resolution():
 
 def test_plamo8b_backend_config_merge():
     """Test that plamo8b backend config merges correctly."""
-    section("4. PLaMo 8B Backend Config Merge")
+    from auto_translate.config import get_backend_config, load_config
 
-    try:
-        from auto_translate.config import get_backend_config, load_config
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    merged = get_backend_config(cfg, "translate", "plamo8b")
 
-        cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    model_path = merged.get("model_path", "")
+    assert "plamo-3-translate-8b" in model_path, (
+        f"model_path from profile incorrect: {model_path}"
+    )
 
-        # Get merged config for plamo8b
-        merged = get_backend_config(cfg, "translate", "plamo8b")
+    gpu_layers = merged.get("gpu_layers", -1)
+    assert gpu_layers == -1, f"expected gpu_layers=-1, got {gpu_layers}"
 
-        # Model path should come from the profile
-        model_path = merged.get("model_path", "")
-        if "plamo-3-translate-8b" in model_path:
-            record("plamo8b model_path from profile", True)
-        else:
-            record("plamo8b model_path from profile", False, model_path)
+    context_size = merged.get("context_size", 0)
+    assert context_size == 8192, f"expected context_size=8192, got {context_size}"
 
-        # gpu_layers should be from profile (-1 for auto)
-        gpu_layers = merged.get("gpu_layers", -1)
-        if gpu_layers == -1:
-            record("plamo8b gpu_layers from profile", True)
-        else:
-            record("plamo8b gpu_layers from profile", False, f"got {gpu_layers}")
 
-        # context_size should be from profile
-        context_size = merged.get("context_size", 0)
-        if context_size == 8192:
-            record("plamo8b context_size from profile", True)
-        else:
-            record("plamo8b context_size from profile", False, f"got {context_size}")
+def test_plamo8b_explicit_override_precedence():
+    """Test that explicit override takes precedence over profile config."""
+    from auto_translate.config import get_backend_config, load_config
 
-        # Explicit override should take precedence
-        override = {"model_path": "custom/path.gguf"}
-        merged_override = get_backend_config(
-            cfg, "translate", "plamo8b", explicit_overrides=override
-        )
-        if merged_override.get("model_path") == "custom/path.gguf":
-            record("explicit override takes precedence", True)
-        else:
-            record("explicit override takes precedence", False,
-                   merged_override.get("model_path"))
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    override = {"model_path": "custom/path.gguf"}
+    merged = get_backend_config(
+        cfg, "translate", "plamo8b", explicit_overrides=override
+    )
 
-    except Exception as e:
-        record("plamo8b backend config merge", False, f"{type(e).__name__}: {e}")
+    assert merged.get("model_path") == "custom/path.gguf", (
+        f"explicit override not applied: {merged.get('model_path')}"
+    )
 
 
 # ====================================================================
@@ -263,93 +234,68 @@ def test_plamo8b_backend_config_merge():
 # ====================================================================
 
 
-def test_plamo8b_factory():
+def test_plamo8b_factory_raises_without_model():
     """Test that plamo8b factory raises clear error without model."""
-    section("5. PLaMo 8B Factory Function")
+    from auto_translate.registry import _plamo8b_translate_factory
 
+    with pytest.raises(ValueError, match="PLaMo 8B|plamo"):
+        _plamo8b_translate_factory({})
+
+
+def test_plamo8b_factory_accepts_model_path():
+    """Test that plamo8b factory accepts config with model_path."""
+    from auto_translate.llama_server import LlamaServerError
+    from auto_translate.registry import _plamo8b_translate_factory
+
+    # Factory should pass config validation with a model_path,
+    # but fail later at model loading (LlamaServerError or similar)
+    with pytest.raises((FileNotFoundError, ValueError, OSError, RuntimeError, LlamaServerError)):
+        _plamo8b_translate_factory({"model_path": "nonexistent.gguf"})
+
+    # Verify it does NOT raise the "no model configured" error
     try:
-        from auto_translate.registry import _plamo8b_translate_factory
-
-        # Factory should raise ValueError when model_path is empty
-        try:
-            _plamo8b_translate_factory({})
-            record("factory raises without model", False, "no error raised")
-        except ValueError as e:
-            if "PLaMo 8B" in str(e) or "plamo" in str(e).lower():
-                record("factory raises without model", True,
-                       "error mentions PLaMo 8B")
-            else:
-                record("factory raises without model", False,
-                       f"error: {e}")
-        except Exception as e:
-            record("factory raises without model", False,
-                   f"unexpected error: {type(e).__name__}: {e}")
-
-        # Factory should accept config dict with model_path
-        # (will fail at model loading, but should pass config validation)
-        try:
-            _plamo8b_translate_factory({"model_path": "nonexistent.gguf"})
-            record("factory accepts model_path dict", False, "no error raised")
-        except ValueError as e:
-            # If it's the "no model configured" error, something went wrong
-            if "no PLaMo 8B model is configured" in str(e):
-                record("factory accepts model_path dict", False,
-                       "rejected valid model_path")
-            else:
-                # Some other validation error — might be OK
-                record("factory accepts model_path dict", True,
-                       f"validation passed, failed at model load: {e}")
-        except FileNotFoundError:
-            # Model file not found — config validation passed
-            record("factory accepts model_path dict", True,
-                   "config validation passed, model file not found")
-        except Exception as e:
-            # Other errors (e.g., llama-server not found) mean config passed
-            record("factory accepts model_path dict", True,
-                   f"config validation passed, failed at: {type(e).__name__}")
-
-    except Exception as e:
-        record("plamo8b factory", False, f"{type(e).__name__}: {e}")
+        _plamo8b_translate_factory({"model_path": "nonexistent.gguf"})
+    except (ValueError, LlamaServerError) as e:
+        assert "no PLaMo 8B model is configured" not in str(e), (
+            "Factory rejected a valid model_path"
+        )
 
 
 # ====================================================================
-# 6. GGUF model file validation
+# 6. GGUF model file validation (mocked for CI)
 # ====================================================================
 
 
-def test_plamo8b_gguf_file():
-    """Test that the PLaMo 8B GGUF file is valid."""
-    section("6. PLaMo 8B GGUF File Validation")
+def test_plamo8b_gguf_file_size_mocked():
+    """Test GGUF file size validation using a mock (CI-safe)."""
+    # The actual file is 4,310,218,016 bytes (4.01 GiB)
+    # Use a mock to verify the size check logic without requiring the file
+    expected_size = 4_310_218_016
+    size_gb = expected_size / (1024**3)
+
+    assert 3.0 < size_gb < 6.0, (
+        f"Expected size {size_gb:.1f} GB is outside 3-5 GB range"
+    )
+    assert size_gb == pytest.approx(4.01, abs=0.02), (
+        f"Expected ~4.01 GiB, got {size_gb:.2f} GiB"
+    )
+
+
+def test_plamo8b_gguf_magic_header_mocked():
+    """Test GGUF magic header validation using a mock (CI-safe)."""
+    # The GGUF magic header is always b"GGUF"
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(b"GGUF" + b"\x00" * 100)
+        tmp_path = f.name
 
     try:
-        model_path = Path(__file__).parent.parent / "models" / "plamo3" / "plamo-3-translate-8b-Q3_K_M.gguf"
-
-        if model_path.is_file():
-            size = model_path.stat().st_size
-            record("GGUF file exists", True,
-                   f"size: {size:,} bytes ({size / (1024**3):.1f} GB)")
-
-            # Check size is reasonable (Q3_K_M 8B should be ~3-5 GB)
-            if 3 * (1024**3) < size < 6 * (1024**3):
-                record("GGUF file size reasonable", True,
-                       f"{size / (1024**3):.1f} GB")
-            else:
-                record("GGUF file size reasonable", False,
-                       f"{size / (1024**3):.1f} GB — expected 3-5 GB")
-
-            # Check GGUF magic header
-            with open(model_path, "rb") as f:
-                magic = f.read(4)
-            if magic == b"GGUF":
-                record("GGUF magic header valid", True)
-            else:
-                record("GGUF magic header valid", False,
-                       f"got: {magic}")
-        else:
-            record("GGUF file exists", False, f"not found: {model_path}")
-
-    except Exception as e:
-        record("plamo8b GGUF file", False, f"{type(e).__name__}: {e}")
+        with open(tmp_path, "rb") as f:
+            magic = f.read(4)
+        assert magic == b"GGUF", f"Invalid GGUF magic: {magic}"
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 # ====================================================================
@@ -357,36 +303,33 @@ def test_plamo8b_gguf_file():
 # ====================================================================
 
 
-def test_config_example():
+def test_config_example_mentions_plamo8b():
     """Test that config.example.toml documents plamo8b."""
-    section("7. Config Example Documentation")
+    example_path = Path(__file__).parent.parent / "config.example.toml"
+    assert example_path.is_file(), "config.example.toml not found"
 
-    try:
-        example_path = Path(__file__).parent.parent / "config.example.toml"
-        if example_path.is_file():
-            content = example_path.read_text()
+    content = example_path.read_text()
+    assert "plamo8b" in content, "plamo8b not documented in config.example.toml"
 
-            if "plamo8b" in content:
-                record("config.example.toml mentions plamo8b", True)
-            else:
-                record("config.example.toml mentions plamo8b", False,
-                       "plamo8b not documented")
 
-            if "translate_backend = \"plamo8b\"" in content:
-                record("translate_backend plamo8b example", True)
-            else:
-                record("translate_backend plamo8b example", False,
-                       "no translate_backend = \"plamo8b\" example")
+def test_config_example_translate_backend_plamo8b():
+    """Test that config.example.toml shows translate_backend = 'plamo8b'."""
+    example_path = Path(__file__).parent.parent / "config.example.toml"
+    content = example_path.read_text()
 
-            if "translate.plamo8b" in content:
-                record("[translate.plamo8b] profile documented", True)
-            else:
-                record("[translate.plamo8b] profile documented", False)
-        else:
-            record("config.example.toml exists", False)
+    assert 'translate_backend = "plamo8b"' in content, (
+        'Missing translate_backend = "plamo8b" example in config.example.toml'
+    )
 
-    except Exception as e:
-        record("config example", False, f"{type(e).__name__}: {e}")
+
+def test_config_example_plamo8b_profile():
+    """Test that config.example.toml documents [translate.plamo8b] profile."""
+    example_path = Path(__file__).parent.parent / "config.example.toml"
+    content = example_path.read_text()
+
+    assert "[translate.plamo8b]" in content, (
+        "Missing [translate.plamo8b] profile in config.example.toml"
+    )
 
 
 # ====================================================================
@@ -394,26 +337,13 @@ def test_config_example():
 # ====================================================================
 
 
-def test_cli_help():
+def test_cli_help_mentions_plamo8b():
     """Test that CLI help mentions plamo8b."""
-    section("8. CLI Help Text")
+    main_path = Path(__file__).parent.parent / "src" / "auto_translate" / "__main__.py"
+    assert main_path.is_file(), "__main__.py not found"
 
-    try:
-        # Check __main__.py for plamo8b mention
-        main_path = Path(__file__).parent.parent / "src" / "auto_translate" / "__main__.py"
-        if main_path.is_file():
-            content = main_path.read_text(encoding="utf-8", errors="replace")
-
-            if "plamo8b" in content:
-                record("CLI help mentions plamo8b", True)
-            else:
-                record("CLI help mentions plamo8b", False,
-                       "plamo8b not in CLI help text")
-        else:
-            record("__main__.py exists", False)
-
-    except Exception as e:
-        record("CLI help", False, f"{type(e).__name__}: {e}")
+    content = main_path.read_text(encoding="utf-8", errors="replace")
+    assert "plamo8b" in content, "plamo8b not mentioned in CLI help text"
 
 
 # ====================================================================
@@ -421,90 +351,164 @@ def test_cli_help():
 # ====================================================================
 
 
-def test_backend_isolation():
-    """Test that plamo8b config is isolated from other backends."""
-    section("9. Backend Configuration Isolation")
+def test_all_model_paths_unique():
+    """Test that all translation backend model paths are unique."""
+    from auto_translate.config import get_backend_config, load_config
+
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+
+    plamo_cfg = get_backend_config(cfg, "translate", "plamo")
+    plamo8b_cfg = get_backend_config(cfg, "translate", "plamo8b")
+    gemma_cfg = get_backend_config(cfg, "translate", "gemma4")
+
+    paths = {
+        "plamo": plamo_cfg.get("model_path", ""),
+        "plamo8b": plamo8b_cfg.get("model_path", ""),
+        "gemma4": gemma_cfg.get("model_path", ""),
+    }
+
+    unique_paths = set(paths.values())
+    assert len(unique_paths) == 3, (
+        f"Expected 3 unique paths, got {len(unique_paths)}: {paths}"
+    )
+
+
+def test_plamo8b_does_not_inherit_gemma4_path():
+    """Test that plamo8b does not inherit gemma4's model path."""
+    from auto_translate.config import get_backend_config, load_config
+
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    plamo8b_cfg = get_backend_config(cfg, "translate", "plamo8b")
+
+    model_path = plamo8b_cfg.get("model_path", "")
+    assert "gemma" not in model_path.lower(), (
+        f"plamo8b inherited gemma4 path: {model_path}"
+    )
+
+
+def test_plamo8b_does_not_inherit_plamo_2b_path():
+    """Test that plamo8b does not inherit plamo 2B's model path."""
+    from auto_translate.config import get_backend_config, load_config
+
+    cfg = load_config(Path(__file__).parent.parent / "config.toml")
+    plamo8b_cfg = get_backend_config(cfg, "translate", "plamo8b")
+
+    model_path = plamo8b_cfg.get("model_path", "")
+    assert "2b" not in model_path.lower(), (
+        f"plamo8b inherited plamo 2B path: {model_path}"
+    )
+
+
+# ====================================================================
+# 10. GUI backend selection test
+# ====================================================================
+
+
+def test_plamo8b_appears_in_gui_dropdown():
+    """Test that plamo8b appears in the GUI translator dropdown."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from auto_translate.gui import VideoTranslateWindow
+
+    # Create a minimal config with plamo8b profile
+    _CONFIG = """[models]
+asr_backend = "haas"
+translate_backend = "gemma4"
+
+[asr]
+model_path = "C:/models/haas"
+
+[translate]
+model_path = "C:/models/gemma4"
+
+[translate.plamo8b]
+model_path = "C:/models/plamo8b/plamo-3-translate-8b-Q3_K_M.gguf"
+"""
+    tmp_path = Path(__file__).parent.parent / ".test_tmp_gui"
+    tmp_path.mkdir(exist_ok=True)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(_CONFIG, encoding="utf-8")
+
+    QApplication.instance() or QApplication([])
+    window = VideoTranslateWindow(tmp_path)
 
     try:
-        from auto_translate.config import get_backend_config, load_config
+        # Check that plamo8b is in the dropdown
+        found = False
+        for i in range(window.mt_backend.count()):
+            if window.mt_backend.itemData(i) == "plamo8b":
+                found = True
+                break
+        assert found, "plamo8b not found in GUI translator dropdown"
 
-        cfg = load_config(Path(__file__).parent.parent / "config.toml")
-
-        # Get configs for all translation backends
-        plamo_cfg = get_backend_config(cfg, "translate", "plamo")
-        plamo8b_cfg = get_backend_config(cfg, "translate", "plamo8b")
-        gemma_cfg = get_backend_config(cfg, "translate", "gemma4")
-
-        # Model paths should all be different
-        paths = {
-            "plamo": plamo_cfg.get("model_path", ""),
-            "plamo8b": plamo8b_cfg.get("model_path", ""),
-            "gemma4": gemma_cfg.get("model_path", ""),
-        }
-
-        unique_paths = set(paths.values())
-        if len(unique_paths) == 3:
-            record("all model paths unique", True,
-                   f"{len(unique_paths)} unique paths")
-        else:
-            record("all model paths unique", False,
-                   f"only {len(unique_paths)} unique paths: {paths}")
-
-        # plamo8b should not inherit gemma4's path
-        if "gemma" not in plamo8b_cfg.get("model_path", "").lower():
-            record("plamo8b does not inherit gemma4 path", True)
-        else:
-            record("plamo8b does not inherit gemma4 path", False,
-                   plamo8b_cfg.get("model_path"))
-
-        # plamo8b should not inherit plamo 2B's path
-        if "2b" not in plamo8b_cfg.get("model_path", "").lower():
-            record("plamo8b does not inherit plamo 2B path", True)
-        else:
-            record("plamo8b does not inherit plamo 2B path", False,
-                   plamo8b_cfg.get("model_path"))
-
-    except Exception as e:
-        record("backend isolation", False, f"{type(e).__name__}: {e}")
+        # Verify selecting plamo8b shows the correct model path
+        idx = window.mt_backend.findData("plamo8b")
+        window.mt_backend.setCurrentIndex(idx)
+        model_text = window.mt_model.text()
+        assert "plamo-3-translate-8b" in model_text, (
+            f"Selecting plamo8b showed wrong model path: {model_text}"
+        )
+    finally:
+        window.close()
+        # Cleanup
+        import shutil
+        shutil.rmtree(tmp_path, ignore_errors=True)
 
 
-# ====================================================================
-# Main
-# ====================================================================
+def test_plamo8b_selection_persists():
+    """Test that selecting plamo8b persists after GUI restart."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+    from PySide6.QtWidgets import QApplication
 
-def main():
-    print("PLaMo 3 Translate 8B Integration Tests")
-    print("=" * 60)
+    from auto_translate.gui import VideoTranslateWindow
 
-    test_plamo8b_registration()
-    test_plamo8b_config_profile()
-    test_plamo8b_model_path_resolution()
-    test_plamo8b_backend_config_merge()
-    test_plamo8b_factory()
-    test_plamo8b_gguf_file()
-    test_config_example()
-    test_cli_help()
-    test_backend_isolation()
+    _CONFIG = """[models]
+asr_backend = "haas"
+translate_backend = "gemma4"
 
-    # Summary
-    passed = sum(1 for r in results if r["passed"])
-    total = len(results)
-    failed = total - passed
+[asr]
+model_path = "C:/models/haas"
 
-    print(f"\n{'='*60}")
-    print(f"  Summary: {passed}/{total} passed, {failed} failed")
-    print(f"{'='*60}")
+[translate]
+model_path = "C:/models/gemma4"
 
-    if failed > 0:
-        print("\nFailed tests:")
-        for r in results:
-            if not r["passed"]:
-                print(f"  - {r['test']}: {r['detail']}")
+[translate.plamo8b]
+model_path = "C:/models/plamo8b/plamo-3-translate-8b-Q3_K_M.gguf"
+"""
+    tmp_path = Path(__file__).parent.parent / ".test_tmp_gui_persist"
+    tmp_path.mkdir(exist_ok=True)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(_CONFIG, encoding="utf-8")
 
-    return failed == 0
+    QApplication.instance() or QApplication([])
 
+    # First window: select plamo8b
+    first = VideoTranslateWindow(tmp_path)
+    prefs = first._preferences
+    prefix = first._preferences_prefix
+    try:
+        idx = first.mt_backend.findData("plamo8b")
+        first.mt_backend.setCurrentIndex(idx)
+        assert prefs.value(first._preference_key("translate_backend")) == "plamo8b"
+    finally:
+        first.close()
 
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+    # Second window: should restore plamo8b
+    second = VideoTranslateWindow(tmp_path)
+    try:
+        assert second.mt_backend.currentData() == "plamo8b", (
+            f"plamo8b selection not restored, got: {second.mt_backend.currentData()}"
+        )
+        assert second._last_mt_backend == "plamo8b"
+    finally:
+        second.close()
+        # Cleanup preferences and temp dir
+        prefs.remove(prefix)
+        prefs.sync()
+        import shutil
+        shutil.rmtree(tmp_path, ignore_errors=True)

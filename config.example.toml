@@ -78,7 +78,7 @@ vod_merge_timeout_s = 5.0
 # max_tokens = 256
 # load_timeout_s = 180
 
-# PLaMo 3 Translate 8B profile — larger model for better translation quality, ~3.5GB VRAM
+# PLaMo 3 Translate 8B profile — larger model for better translation quality, ~4.5GB VRAM
 # Same chat template and tokenizer as PLaMo 2B, but significantly more parameters
 # for improved accuracy on complex Japanese sentences and proper names.
 # To use PLaMo 8B, set translate_backend = "plamo8b" in [models] and uncomment:

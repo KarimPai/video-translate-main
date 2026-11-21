@@ -1,0 +1,22 @@
+name: Universal branch checks
+
+on:
+  push:
+    branches:
+      - video-translate-universal
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lint tool
+        run: python -m pip install ruff
+      - name: Check changed source and regression tests
+        run: |
+          ruff check src/auto_translate/pipeline.py src/auto_translate/output/mpv.py src/auto_translate/output/coverage.py tests/test_regression.py
+          python -m compileall -q src tests

@@ -58,7 +58,7 @@ a = Analysis(
         'PySide6.QtPdf', 'PySide6.QtPdfWidgets',
 
         # Build tools and unused transitive dependencies.
-        'setuptools', 'distutils', 'pip', 'wheel', 'cython',
+        'setuptools', 'pip', 'wheel', 'cython',
         'altgraph', 'pefile', 'pywin32-ctypes',
         'mpmath', 'sympy', 'networkx',
         'joblib', 'threadpoolctl', 'lazy_loader',

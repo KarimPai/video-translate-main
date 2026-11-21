@@ -13,7 +13,6 @@ from auto_translate.name_fusion import NameFusion
 from auto_translate.pipeline import run_asr
 from auto_translate.types import AudioProgress, Transcript, Utterance
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

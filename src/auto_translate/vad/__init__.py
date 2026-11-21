@@ -375,6 +375,15 @@ class Segmenter:
         if not self._idle:
             self._idle_start = self._next_frame_sample
         self._idle.append(frame)
+        # Bound the idle buffer: after emitting a probe, _idle is truncated.
+        # But if _emit_probe skips (silence), frames still accumulate.
+        # Cap at 2x fallback interval to prevent unbounded memory growth.
+        max_idle = self.fallback_frames * 3
+        if len(self._idle) >= max_idle:
+            # Drop oldest frames and emit a probe from what remains
+            excess = len(self._idle) - self.fallback_frames
+            self._idle = self._idle[excess:]
+            self._idle_start += excess * FRAME
         if len(self._idle) >= self.fallback_frames:
             # Cut at the quietest frame in the last ~2 s, so a word is less likely to be split.
             lo = max(self.fallback_min, len(self._idle) - self.split_search)

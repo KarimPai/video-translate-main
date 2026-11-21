@@ -151,6 +151,23 @@ class CoverageTracker:
             self._frontier = progress_s
             # Do NOT reset _generation here — caller sets it via set_generation()
 
+    def abandon_pending_before(self, cutoff_s: float) -> int:
+        """Abandon pending speech intervals that start before the cutoff.
+
+        Used when a generation changes or when pending speech has been
+        stuck for too long. Returns the number of intervals abandoned.
+        """
+        with self._lock:
+            to_abandon = [
+                sid for sid, iv in self._pending.items()
+                if iv.start_s < cutoff_s
+            ]
+            for sid in to_abandon:
+                del self._pending[sid]
+            if to_abandon:
+                self._advance_through_silence_locked()
+            return len(to_abandon)
+
     def set_generation(self, generation: int) -> None:
         """Set the authoritative generation. Called during seek/reset."""
         with self._lock:

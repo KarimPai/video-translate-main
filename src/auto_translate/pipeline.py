@@ -975,6 +975,7 @@ def run(
     next_stats = started + cfg.stats_interval_s
     next_diagnostics = started
     last_activity = started
+    last_subtitle_at = started  # tracks last published subtitle, independent of AudioProgress
     last_warning = started
     last_guard_key = ""
     last_guard_start = -float("inf")
@@ -1000,6 +1001,7 @@ def run(
                 last_guard_generation = None
                 identical_count = 0
                 last_subtitle_generation = None
+                last_subtitle_at = time.monotonic()
                 record_event("inference_generation_reset", generation=observed_generation)
                 record_event("seek_reset", generation=observed_generation)
             _raise_worker_failure(failures)
@@ -1148,6 +1150,7 @@ def run(
                     item.generation, item.start_s, item.end_s,
                     item.ja[:80], item.en[:80],
                 )
+                last_subtitle_at = time.monotonic()
 
                 for out in outputs:
                     out.show(item)
@@ -1177,28 +1180,49 @@ def run(
                     last_warning = now
                     log.warning("ASR/translation pipeline waiting with queued work: %s", backlog)
 
+            # Subtitle starvation watchdog: detect when audio keeps flowing but
+            # no subtitle has been published for too long. This catches stalls
+            # that last_activity misses because AudioProgress keeps updating it.
+            if not ingest.source.live and now - last_subtitle_at > 30.0:
+                subtitle_backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
+                if subtitle_backlog and ingest.generation == observed_generation:
+                    # Audio is flowing but subtitles stopped — log and warn
+                    record_event(
+                        "subtitle_starvation",
+                        queues=subtitle_backlog,
+                        no_subtitle_for_s=round(now - last_subtitle_at, 1),
+                        generation=ingest.generation,
+                    )
+                    if now - last_warning > 30.0:
+                        last_warning = now
+                        log.warning(
+                            "Subtitle starvation: no subtitle published for %.0fs "
+                            "with queued work %s; audio may be processed but ASR/MT "
+                            "is not producing output",
+                            now - last_subtitle_at, subtitle_backlog,
+                        )
+
             # Recovery watchdog: detect VOD deadlock and attempt recovery
             # when no subtitle published for 15s with pending work and auto-pause active.
-            if not ingest.source.live and now - last_activity > 15.0:
+            if not ingest.source.live and now - last_subtitle_at > 15.0:
                 # Check if any output is auto-paused
                 auto_paused = False
                 for out in outputs:
                     if getattr(out, "_vod_auto_paused", False):
                         auto_paused = True
                         break
-                if auto_paused and backlog and ingest.generation == observed_generation:
-                    # Check if this is the current generation (not a stale seek)
+                if auto_paused and subtitle_backlog and ingest.generation == observed_generation:
                         # Attempt recovery: log diagnostics and try to resume
                         record_event(
                             "vod_deadlock_recovery",
-                            queues=backlog,
-                            elapsed_s=now - last_activity,
+                            queues=subtitle_backlog,
+                            elapsed_s=now - last_subtitle_at,
                             generation=ingest.generation,
                         )
                         log.warning(
                             "VOD deadlock detected: no subtitle for %.0fs with "
                             "pending work %s and auto-pause active; attempting recovery",
-                            now - last_activity, backlog,
+                            now - last_subtitle_at, subtitle_backlog,
                         )
                         # Try to resume MPV to break the circular wait
                         for out in outputs:
@@ -1214,34 +1238,47 @@ def run(
                                         log.info("Recovery: forced MPV resume")
                                     except Exception:
                                         log.exception("Recovery: failed to resume MPV")
-                        last_activity = now
+                        last_subtitle_at = now
                         last_warning = now
 
             # Watermark diagnostics: log translation progress every 10s during VOD
-            if not ingest.source.live:
-                if now - last_vod_diag > 10.0:
-                    last_vod_diag = now
-                    # Collect watermark positions from outputs
-                    tu = None
-                    vp = None
-                    ps = None
-                    for out in outputs:
-                        tu = getattr(out, "_translated_until", None)
-                        vp = getattr(out, "_vad_progress", None)
-                        pspeech = getattr(out, "_pending_speech", None)
-                        try:
-                            ps = len(pspeech) if pspeech else None
-                        except TypeError:
-                            ps = None
-                    depths = {name: q.qsize() for name, q in queues.items()}
-                    log.info(
-                        "VOD diagnostics: translated_until=%.1fs vad_progress=%.1fs "
-                        "pending_speech=%d queues=%s",
-                        tu if tu is not None else -1,
-                        vp if vp is not None else -1,
-                        ps if ps is not None else -1,
-                        depths,
-                    )
+            if not ingest.source.live and now - last_vod_diag > 10.0:
+                last_vod_diag = now
+                # Collect watermark positions from outputs
+                tu = None
+                vp = None
+                ps = None
+                for out in outputs:
+                    tu = getattr(out, "_translated_until", None)
+                    vp = getattr(out, "_vad_progress", None)
+                    pspeech = getattr(out, "_pending_speech", None)
+                    try:
+                        ps = len(pspeech) if pspeech else None
+                    except TypeError:
+                        ps = None
+                depths = {name: q.qsize() for name, q in queues.items()}
+                log.info(
+                    "VOD diagnostics: translated_until=%.1fs vad_progress=%.1fs "
+                    "pending_speech=%d queues=%s",
+                    tu if tu is not None else -1,
+                    vp if vp is not None else -1,
+                    ps if ps is not None else -1,
+                    depths,
+                )
+                # Abandon stale pending speech that is far behind playback
+                # to prevent watermark from being permanently blocked
+                for out in outputs:
+                    abandon = getattr(out, "abandon_stale_pending_speech", None)
+                    if callable(abandon) and tu is not None and tu > 0:
+                        # Abandon pending speech more than 60s behind the watermark
+                        cutoff = tu - 60.0
+                        abandoned = abandon(cutoff)
+                        if abandoned > 0:
+                            log.info(
+                                "Abandoned %d stale pending speech intervals "
+                                "before %.1fs (watermark=%.1fs)",
+                                abandoned, cutoff, tu,
+                            )
 
             for name, q in queues.items():
                 stats.max_q[name] = max(

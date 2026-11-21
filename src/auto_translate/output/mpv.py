@@ -887,11 +887,11 @@ class MpvOutput:
 
     def reset_buffer(self, progress_s: float) -> None:
         """Reset translated coverage after a VOD seek.
-        
+
         Clears all pending speech, resets the watermark, and prepares for
         fresh translation coverage at the new seek position. The seek-buffering
         state is managed by _restart_audio_at() which calls this method.
-        
+
         Synchronizes _pending_generation with the current ingest.generation
         so that valid callbacks are not rejected after seeking.
         """
@@ -910,6 +910,25 @@ class MpvOutput:
             # the appropriate state (seek-buffering or manual pause preserved).
             self._vod_auto_paused = False
             self._buffer_condition.notify_all()
+
+    def abandon_stale_pending_speech(self, cutoff_s: float) -> int:
+        """Abandon pending speech intervals that are too far behind playback.
+
+        Called periodically by the pipeline watchdog to prevent unbounded
+        pending speech accumulation from blocking the watermark.
+        Returns the number of intervals abandoned.
+        """
+        with self._buffer_condition:
+            abandoned = self._coverage.abandon_pending_before(cutoff_s)
+            # Also clean up the speech_id_map for abandoned intervals
+            if abandoned > 0:
+                # Remove IDs whose intervals were before the cutoff
+                self._speech_id_map = {
+                    sid: interval for sid, interval in self._speech_id_map.items()
+                    if interval[0] >= cutoff_s
+                }
+                self._buffer_condition.notify_all()
+            return abandoned
 
     def finish(self, generation: int | None = None) -> None:
         with self._buffer_condition:
@@ -1223,8 +1242,16 @@ class MpvOutput:
 
             self._subtitle_ready.clear()
             if self.ingest.video_failed.is_set():
-                self._recover_video_stream()
-                return
+                recovered = self._recover_video_stream()
+                if not recovered:
+                    # Recovery gave up (max retries) — stop the scheduler
+                    return
+                # Recovery succeeded: reset state and continue the loop
+                # to wait for the new fMP4 session to become ready.
+                paused = True
+                unpause_at = None
+                vod_wait_until = time.monotonic() + lead * 3
+                continue
 
             should_unpause = (
                 unpause_at is not None
@@ -1336,8 +1363,13 @@ class MpvOutput:
                 health = live_health.sample(pos, paused or mpv_paused is True, time.monotonic())
                 if health == "stalled":
                     log.error("Live MPV clock stalled for 60s; restarting shared session")
-                    self._recover_video_stream()
-                    return
+                    recovered = self._recover_video_stream()
+                    if not recovered:
+                        return
+                    paused = True
+                    unpause_at = None
+                    vod_wait_until = time.monotonic() + lead * 3
+                    continue
                 if health == "healthy" and self._video_retries:
                     log.info("Live playback healthy for 60s; resetting recovery attempts")
                     self._video_retries = 0
@@ -1345,8 +1377,13 @@ class MpvOutput:
                 if self.ingest.source.live:
                     aligned = self._sample_live_clock(float(pos), time.monotonic())
                     if self._live_clock_discontinuity:
-                        self._recover_video_stream()
-                        return
+                        recovered = self._recover_video_stream()
+                        if not recovered:
+                            return
+                        paused = True
+                        unpause_at = None
+                        vod_wait_until = time.monotonic() + lead * 3
+                        continue
                 else:
                     aligned = True
                 if self._mpv_anchor is None and not self.ingest.source.live:

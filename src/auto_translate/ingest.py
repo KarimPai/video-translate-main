@@ -1089,6 +1089,11 @@ class Ingest:
                 # all ASR without ever refreshing it.
                 self._vod_resume_s = None
                 retries = 0
+                give_up = False
+                fmp4_vod = (
+                    not self.source.live
+                    and self.video_out is not None
+                )
                 while True:
                     try:
                         read_failed = self._read_session(out_q)
@@ -1107,21 +1112,34 @@ class Ingest:
                             not self._stopped and self._restart_at is None
                             and generation == self._generation
                         )
-                        refresh = remote_vod and current and read_failed and retries < 2
-                        if refresh:
+                        # In fMP4 mode (video_out set), FFmpeg audio reader can fail
+                        # due to HLS segment gaps, expired URLs, or network blips.
+                        # Retry the entire session (video + audio) instead of dying.
+                        should_retry = current and read_failed and retries < 2
+                        if remote_vod and should_retry:
                             self._vod_audio_url = None
-                            # Attempt 1: fresh default URL; attempt 2:
-                            # alternative player client for persistent HTTP 403.
                             self._audio_client_fallback = retries >= 1
-                        give_up = remote_vod and current and read_failed and not refresh
-                    if not refresh:
+                        elif fmp4_vod and should_retry:
+                            # Refresh signed URLs for the fMP4 cache writer too
+                            self._vod_audio_url = None
+                            self._inputs = None
+                            self._audio_client_fallback = retries >= 1
+                        give_up = current and read_failed and not should_retry
+                    if not should_retry:
                         break
                     retries += 1
-                    log.warning(
-                        "YouTube VOD audio interrupted at %.3fs; refreshing signed URL "
-                        "(retry %d/2, alternate client=%s)",
-                        self._audio_start_s(), retries, self._audio_client_fallback,
-                    )
+                    if fmp4_vod:
+                        log.warning(
+                            "VOD fMP4 audio reader failed at %.3fs; retrying session "
+                            "(retry %d/2, alternate client=%s)",
+                            self._audio_start_s(), retries, self._audio_client_fallback,
+                        )
+                    else:
+                        log.warning(
+                            "YouTube VOD audio interrupted at %.3fs; refreshing signed URL "
+                            "(retry %d/2, alternate client=%s)",
+                            self._audio_start_s(), retries, self._audio_client_fallback,
+                        )
                     time.sleep(0.5)
                 if give_up:
                     raise RuntimeError(

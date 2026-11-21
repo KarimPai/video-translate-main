@@ -48,7 +48,7 @@ live_adaptive_split_s = 4.0
 adaptive_pause_ms = 180
 split_pause_min_ms = 120
 split_context_ms = 160
-fallback_s = 0.0
+fallback_s = 12.0
 
 [name_fusion]
 # Experimental OverlaySubs-style names: uses title/cast/topic source hints
@@ -151,7 +151,7 @@ background_opacity = 0.3
 # Adaptive VOD sync: pause when translation lead drops below threshold,
 # resume when it exceeds the higher threshold (hysteresis prevents oscillation).
 vod_pause_threshold_s = 0.5
-vod_resume_threshold_s = 3.0
+vod_resume_threshold_s = 8.0
 
 [holodex]
 # Optional: a Holodex API key (holodex.net > Account Settings) adds the

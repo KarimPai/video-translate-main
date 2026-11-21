@@ -2145,6 +2145,30 @@ def test_mpv_vod_wait_timeout_is_3x_lead():
     )
 
 
+def test_vad_fallback_enabled_by_default():
+    """Livestream speech detection: VAD fallback probe must be enabled by default.
+
+    When VAD fails to detect speech in livestreams (low volume, background music,
+    inconsistent encoding), the fallback probe mechanism sends periodic ASR probes
+    during VAD-silence periods to catch speech that VAD missed.
+
+    Previously, fallback_s defaulted to 0.0 (disabled), meaning livestreams with
+    audio that VAD classified as silence would produce no subtitles at all.
+    Now it defaults to 12.0s, probing every 12 seconds of VAD-silence.
+    """
+    from auto_translate.config import VadConfig
+    cfg = VadConfig()
+    assert cfg.fallback_s > 0, (
+        f"fallback_s must be > 0 to enable fallback probing, got {cfg.fallback_s}"
+    )
+    assert cfg.fallback_s >= 10.0, (
+        f"fallback_s should be >= 10s to avoid excessive ASR probes, got {cfg.fallback_s}"
+    )
+    assert cfg.fallback_s <= 15.0, (
+        f"fallback_s should be <= 15s to catch speech in a timely manner, got {cfg.fallback_s}"
+    )
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

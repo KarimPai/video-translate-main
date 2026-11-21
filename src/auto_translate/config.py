@@ -81,7 +81,7 @@ class VadConfig:
     adaptive_pause_ms: int = 180
     split_pause_min_ms: int = 120
     split_context_ms: int = 160
-    fallback_s: float = 0.0
+    fallback_s: float = 12.0
     fallback_min_s: float = 1.5
     fallback_min_db: float = -50.0
     model_dir: str = ""

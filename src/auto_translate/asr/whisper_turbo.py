@@ -306,6 +306,11 @@ class WhisperASR:
         )
         return text
 
+    def set_context(self, context: str) -> None:
+        """Atomically replace the short, optional ASR hint prompt."""
+        with self._state_lock:
+            self.context = context.strip()[: self.cfg.max_context_chars]
+
     def cancel_pending(self) -> None:
         """Invalidate in-flight transcription requests."""
         with self._state_lock:

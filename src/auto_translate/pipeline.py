@@ -562,6 +562,9 @@ def run_asr(
             # Japanese dialogue ('yes'/'yeah' are common sound-effect errors).
             detected_language = "und"
         if detected_language != "ja":
+            # Keep audible English as context, but it is not a Japanese
+            # subtitle. Mixed EN/JA segments may also contain a Japanese
+            # streamer masked by a louder English game character.
             if detected_language != "none" and _credible_foreign_context(utt, text):
                 out_q.put(Transcript(
                     utt.start_s, utt.end_s, text, utt.timings,
@@ -575,6 +578,69 @@ def run_asr(
                 record_event("foreign_noise_rejected", language=detected_language,
                              generation=utt.generation, source_start_s=utt.start_s,
                              source_end_s=utt.end_s)
+
+            # A second automatic-language pass on short slices can reveal
+            # Japanese that a dominant-language, full-segment decode missed.
+            # Never force Japanese on English: that recreates the original
+            # game-noise hallucination problem. Only run on VAD-positive
+            # speech, not speculative probes or weak sound-effect detections.
+            rescue = getattr(asr, "recover_japanese_from_mixed_audio", None)
+            recovery_allowed = (
+                detected_language in ("en", "id", "ms", "und")
+                and callable(rescue)
+                and not utt.probe
+                and utt.vad_confidence is not None
+                and utt.vad_confidence >= 0.55
+                and utt.end_s - utt.start_s >= 2.2
+                and not cancelled(utt.generation)
+                and not (live and _expired_live_cue(
+                    utt, playback_position, live_late_window_s
+                ))
+            )
+            if recovery_allowed:
+                if worker_state is not None:
+                    worker_state.enter_inference(id(utt), utt.generation)
+                candidates = []
+                try:
+                    candidates = rescue(utt.audio, utt.probe)
+                except Exception as exc:  # noqa: BLE001
+                    # Extra mixed-language recovery must never shut down the
+                    # underlying ASR worker; the original English still exists
+                    # as context and playback can proceed.
+                    log.warning("Mixed-language Japanese recovery failed: %s", exc)
+                    record_event("mixed_language_recovery_failed",
+                                 generation=utt.generation, error=str(exc)[:120])
+                finally:
+                    if worker_state is not None:
+                        worker_state.leave_inference(success=bool(candidates))
+                if not cancelled(utt.generation) and not (
+                    live and _expired_live_cue(
+                        utt, playback_position, live_late_window_s
+                    )
+                ):
+                    for start_offset, end_offset, japanese in candidates:
+                        # Guard separately even if the adapter is mocked.
+                        if not re.search(r"[\u3040-\u30ff]", japanese):
+                            continue
+                        start_s = max(utt.start_s, utt.start_s + start_offset)
+                        end_s = min(utt.end_s, utt.start_s + end_offset)
+                        if end_s <= start_s:
+                            continue
+                        if transcript_problem(japanese, end_s - start_s):
+                            continue
+                        accepted(japanese, end_s, vad_confidence=utt.vad_confidence,
+                                 probe=True)  # never seed speculative name hints
+                        out_q.put(Transcript(
+                            start_s, end_s, japanese, replace(utt.timings),
+                            generation=utt.generation,
+                            speech_start_s=max(start_s, min(
+                                end_s, utt.speech_start_s or start_s
+                            )), language="ja",
+                        ))
+                        record_event("mixed_language_japanese_recovered",
+                                     generation=utt.generation,
+                                     source_start_s=start_s, source_end_s=end_s,
+                                     ja=japanese[:100])
             continue
         if language_filter is not None:
             duration_s = utt.end_s - utt.start_s

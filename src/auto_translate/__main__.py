@@ -252,6 +252,15 @@ def _main(resources: ExitStack) -> None:
     check_running()
     vad_backend_name = cfg.models.vad_backend
     vad_cfg = vad_for_source(cfg.vad, live=bool(source.live))
+    if cfg.models.asr_backend == "haas":
+        from .config import vad_for_haas_game_audio
+        original_threshold = vad_cfg.threshold
+        vad_cfg = vad_for_haas_game_audio(vad_cfg)
+        log.info(
+            "Haas game-audio guard: VAD threshold %.2f -> %.2f; "
+            "VAD-negative probing disabled; short Japanese replies preserved",
+            original_threshold, vad_cfg.threshold,
+        )
     if cfg.models.asr_backend == "whisper" and vad_cfg.fallback_s > 0:
         # Forced-Japanese Whisper tends to invent text on speech-negative
         # game audio/music. Preserve ordinary VAD and short-speech recovery,

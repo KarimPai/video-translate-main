@@ -99,12 +99,10 @@ vod_merge_timeout_s = 5.0
 # max_tokens = 128
 # load_timeout_s = 300
 
-# Whisper Large-v3 Turbo profile — multilingual ASR via faster-whisper (~1.7GB VRAM on CUDA)
-# Runs in-process (no server needed), supports CPU and CUDA
-# Uses h2oai/faster-whisper-large-v3-turbo (CTranslate2 format)
-# Auto-detects Japanese and English speech; Japanese goes to translation,
-# English is kept as context. Mixed-language recovery catches Japanese
-# masked by louder English game dialogue.
+# Whisper Large-v3 Turbo profile — Japanese-only decoding via faster-whisper
+# Uses h2oai/faster-whisper-large-v3-turbo (CTranslate2 format).
+# English game dialogue may cause false Japanese hypotheses under forced-language
+# decoding; use acoustic and repetition guards. No auto-language rescue.
 # To use Whisper, set asr_backend = "whisper" in [models] and uncomment:
 # [asr.whisper]
 # model_path = "models/whisper-large-v3-turbo"

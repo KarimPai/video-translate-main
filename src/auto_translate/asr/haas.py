@@ -34,9 +34,13 @@ log = logging.getLogger(__name__)
 
 _JAPANESE_SCRIPT = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 
-# Haas is Japanese-only, yet engine revs can elicit a standalone Latin
-# "yeah"/"yeaaah". Do not send these hypotheses to Japanese translation.
-_ENGINE_REV_LATIN = re.compile(r"(?:ye+a+h+|ye+a+|ya+h+)", re.IGNORECASE)
+# Haas is Japanese-only, yet engine revs can elicit short English noise
+# words such as "ugh yeah", "phew", or elongated "yeaaah". These standalone
+# phonetic guesses are not Japanese subtitles. Preserve mixed Japanese text.
+_ENGINE_REV_LATIN = re.compile(
+    r"(?:ye+a+h+|ye+a+|ya+h+|u+g+h+|u+h+|p+h+e+w+|w+h+e+w+|o+o+f+)",
+    re.IGNORECASE,
+)
 # A standalone katakana cheer may be genuine speech. Use VAD evidence and
 # repetition timing before rejecting it; do not blanket-ban イェー.
 _ENGINE_REV_KATAKANA = re.compile(r"(?:イ[ェエ](?:ー{1,3}イ?|イ)){1,5}")
@@ -71,7 +75,7 @@ def wav_bytes(audio: np.ndarray, *, normalize: bool = True) -> bytes:
 
 
 def is_english_engine_interjection(text: str) -> bool:
-    """Only whole-utterance 'yeah' variants, never words inside a sentence."""
+    """Only whole-utterance engine-like interjections, never Japanese dialogue."""
     normalized = unicodedata.normalize("NFKC", text).casefold()
     normalized = re.sub(r"[!！?？.,。、…〜～\s]+", " ", normalized).strip()
     words = normalized.split()

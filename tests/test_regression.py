@@ -3218,6 +3218,205 @@ def test_join_fragments_never_merges_english_and_japanese():
     assert items[1].ja == "行こう"
 
 
+# ---------------------------------------------------------------------------
+# Issue 4: Truncation retry token limits (Gemma4 / Hy-MT2)
+# ---------------------------------------------------------------------------
+
+class TestTruncationRetryTokens:
+    """Verify that truncation retry uses a LARGER max_tokens, not smaller.
+
+    The bug: `retry_tokens = min(self.cfg.max_tokens * 2, 256)` caps the retry
+    at 256 tokens — smaller than the original max_tokens (e.g. 512). This means
+    the retry is guaranteed to truncate again. The fix uses `max` instead of `min`.
+    """
+
+    def _make_gemma4_translator(self, chat_responses, max_tokens=512):
+        """Create a Gemma4Translator mock with configurable max_tokens."""
+        from auto_translate.config import TranslateConfig
+        from auto_translate.glossary import Glossary
+        from auto_translate.stream_context import StreamContext
+        from auto_translate.translate.gemma4 import Gemma4Translator
+
+        cfg = TranslateConfig(
+            model_path=str(Path(__file__).parent / "dummy.gguf"),
+            server_path="llama-server",
+            glossary=str(Path(__file__).parent / "glossary.toml"),
+            max_tokens=max_tokens,
+            timeout_s=10,
+            temperature=0.0,
+            top_k=20,
+            top_p=0.6,
+            repeat_penalty=1.05,
+            context_size=4096,
+            parallel_slots=1,
+            threads=4,
+            gpu_layers=-1,
+            load_timeout_s=60,
+            context_lines=3,
+            max_context_chars=500,
+            context_english=False,
+        )
+        glossary = Glossary({})
+        translator = mock.MagicMock()
+        translator.cfg = cfg
+        translator.glossary = glossary
+        translator.stream = StreamContext()
+        translator._closed = False
+        translator._relief = mock.MagicMock()
+        translator._relief.is_set.return_value = False
+        translator._lock = threading.Lock()
+        translator._MAX_RETRIES = 3
+        translator._MAX_TRUNCATION_RETRIES = 1
+        translator._best = Gemma4Translator._best
+        translator.server = mock.MagicMock()
+        translator.server.alive.return_value = True
+        translator._context = mock.MagicMock(return_value="")
+        translator._terms_for = mock.MagicMock(return_value=([], []))
+
+        call_log = []
+        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
+            call_log.append(max_tokens)
+            idx = len(call_log) - 1
+            if idx < len(chat_responses):
+                return chat_responses[idx]
+            return ("", "stop")
+
+        translator._chat = mock_chat
+        return translator, call_log
+
+    def _make_hymt_translator(self, chat_responses, max_tokens=512):
+        """Create an HymtTranslator mock with configurable max_tokens."""
+        from auto_translate.config import TranslateConfig
+        from auto_translate.glossary import Glossary
+        from auto_translate.stream_context import StreamContext
+        from auto_translate.translate.hymt import HymtTranslator
+
+        cfg = TranslateConfig(
+            model_path=str(Path(__file__).parent / "dummy.gguf"),
+            server_path="llama-server",
+            glossary=str(Path(__file__).parent / "glossary.toml"),
+            max_tokens=max_tokens,
+            timeout_s=10,
+            temperature=0.0,
+            top_k=20,
+            top_p=0.6,
+            repeat_penalty=1.05,
+            context_size=4096,
+            parallel_slots=1,
+            threads=4,
+            gpu_layers=-1,
+            load_timeout_s=60,
+            context_lines=3,
+            max_context_chars=500,
+            context_english=False,
+        )
+        glossary = Glossary({})
+        translator = mock.MagicMock()
+        translator.cfg = cfg
+        translator.glossary = glossary
+        translator.stream = StreamContext()
+        translator._closed = False
+        translator._relief = mock.MagicMock()
+        translator._relief.is_set.return_value = False
+        translator._lock = threading.Lock()
+        translator._MAX_RETRIES = 3
+        translator._MAX_TRUNCATION_RETRIES = 1
+        translator._best = HymtTranslator._best
+        translator.server = mock.MagicMock()
+        translator.server.alive.return_value = True
+        translator._context = mock.MagicMock(return_value="")
+        translator._terms_for = mock.MagicMock(return_value=([], []))
+
+        call_log = []
+        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
+            call_log.append(max_tokens)
+            idx = len(call_log) - 1
+            if idx < len(chat_responses):
+                return chat_responses[idx]
+            return ("", "stop")
+
+        translator._chat = mock_chat
+        return translator, call_log
+
+    def test_gemma4_truncation_retry_uses_larger_tokens(self):
+        """Gemma4 truncation retry must request MORE tokens than the original."""
+        from auto_translate.translate.gemma4 import Gemma4Translator
+
+        translator, call_log = self._make_gemma4_translator(
+            max_tokens=512,
+            chat_responses=[
+                ("truncated output", "length"),   # first call: uses cfg.max_tokens (None in log)
+                ("complete translation", "stop"),  # retry call: should be > 512
+            ]
+        )
+        Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
+        assert len(call_log) == 2, f"Expected 2 calls, got {len(call_log)}"
+        # First call uses cfg.max_tokens directly (not passed as kwarg), so log shows None
+        retry_tokens = call_log[1]
+        assert retry_tokens is not None and retry_tokens > 512, (
+            f"Retry tokens ({retry_tokens}) must be > cfg.max_tokens (512), "
+            f"but min(cfg.max_tokens*2, 256) caps at 256"
+        )
+
+    def test_hymt_truncation_retry_uses_larger_tokens(self):
+        """Hy-MT2 truncation retry must request MORE tokens than the original."""
+        from auto_translate.translate.hymt import HymtTranslator
+
+        translator, call_log = self._make_hymt_translator(
+            max_tokens=512,
+            chat_responses=[
+                ("truncated output", "length"),   # first call: uses cfg.max_tokens (None in log)
+                ("complete translation", "stop"),  # retry call: should be > 512
+            ]
+        )
+        HymtTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+        assert len(call_log) == 2, f"Expected 2 calls, got {len(call_log)}"
+        # First call uses cfg.max_tokens directly (not passed as kwarg), so log shows None
+        retry_tokens = call_log[1]
+        assert retry_tokens is not None and retry_tokens > 512, (
+            f"Retry tokens ({retry_tokens}) must be > cfg.max_tokens (512), "
+            f"but min(cfg.max_tokens*2, 256) caps at 256"
+        )
+
+    def test_gemma4_retry_tokens_at_least_512(self):
+        """Even with small max_tokens, retry should not be capped below 512."""
+        from auto_translate.translate.gemma4 import Gemma4Translator
+
+        translator, call_log = self._make_gemma4_translator(
+            max_tokens=128,
+            chat_responses=[
+                ("truncated", "length"),
+                ("complete", "stop"),
+            ]
+        )
+        Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
+        assert len(call_log) == 2
+        retry_tokens = call_log[1]
+        assert retry_tokens >= 512, (
+            f"Retry tokens ({retry_tokens}) should be at least 512, "
+            f"not capped by min(..., 256)"
+        )
+
+    def test_hymt_retry_tokens_at_least_512(self):
+        """Even with small max_tokens, retry should not be capped below 512."""
+        from auto_translate.translate.hymt import HymtTranslator
+
+        translator, call_log = self._make_hymt_translator(
+            max_tokens=128,
+            chat_responses=[
+                ("truncated", "length"),
+                ("complete", "stop"),
+            ]
+        )
+        HymtTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+        assert len(call_log) == 2
+        retry_tokens = call_log[1]
+        assert retry_tokens >= 512, (
+            f"Retry tokens ({retry_tokens}) should be at least 512, "
+            f"not capped by min(..., 256)"
+        )
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

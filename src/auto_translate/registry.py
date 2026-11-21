@@ -275,6 +275,11 @@ def _register_builtin_backends(registry: ModelRegistry) -> None:
     )
 
     # PLaMo 3 Translate 8B
+    # VRAM breakdown for Q3_K_M 8B with context_size=8192, parallel_slots=2:
+    #   - Model weights: ~4.0 GB (Q3_K_M quantization)
+    #   - KV cache: ~1.0 GB (8192 context × 2 slots × ~64B per token)
+    #   - Compute buffers: ~0.5 GB (FP16 intermediate activations)
+    #   - Total: ~5.5 GB
     registry.register_translate(
         "plamo8b",
         factory=_plamo8b_translate_factory,
@@ -283,7 +288,7 @@ def _register_builtin_backends(registry: ModelRegistry) -> None:
             device="cuda",
             source_lang="ja",
             target_lang="en",
-            vram_gb=4.5,
+            vram_gb=5.5,
             description="PLaMo 3 Translate 8B via llama.cpp (CUDA GPU)",
         ),
     )

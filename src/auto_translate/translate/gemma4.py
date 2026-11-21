@@ -453,7 +453,7 @@ class Gemma4Translator:
                     if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
                         retries_left -= 1
                         truncation_retries += 1
-                        retry_tokens = min(self.cfg.max_tokens * 2, 256)
+                        retry_tokens = max(self.cfg.max_tokens * 2, 512)
                         record_event("mt_truncation_retry", max_tokens=retry_tokens)
                         increment_counter("mt_retries")
                         english, finish_reason = self._chat(

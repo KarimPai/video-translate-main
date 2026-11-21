@@ -4,8 +4,9 @@ Whisper is a multilingual speech recognition model. The Large-v3 Turbo variant
 is optimized for speed while maintaining accuracy. Runs in-process via the
 faster-whisper library with CTranslate2 backend, supporting both CPU and CUDA.
 
-For Japanese transcription, the model is configured with ``language="ja"`` and
-``task="transcribe"`` to force Japanese output.
+Japanese and English are identified without forced-language decoding. Short
+uncertain foreign-language windows can be rechecked without prompts, but
+language detection is not speaker separation.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import threading
 import time
 import unicodedata
 from collections import deque
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +25,7 @@ from huggingface_hub import try_to_load_from_cache
 from ..config import AsrConfig
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
-from .context_echo import speech_key
+from .context_echo import context_match, speech_key
 from .quality_guard import transcript_problem
 
 log = logging.getLogger(__name__)
@@ -31,6 +33,8 @@ log = logging.getLogger(__name__)
 _WHISPER_MODEL = "h2oai/faster-whisper-large-v3-turbo"
 
 _DEFAULT_BEAM_SIZE = 5
+# A zero-byte or header-only download is not a usable CTranslate2 checkpoint.
+_MIN_MODEL_BYTES = 1024 * 1024
 
 _CT2_MODEL_FILES = {"model.bin", "config.json", "tokenizer.json", "vocabulary.json"}
 # Minimum required files for a valid CTranslate2 Whisper model directory.
@@ -65,8 +69,10 @@ class WhisperASR:
         self._closed = False
         self._failures = 0
         self.last_timing: dict | None = None
-        self.last_detected_language: str = "ja"
-        self.last_detected_language_probability: float = 1.0
+        self.last_detected_language: str = "und"
+        self.last_detected_language_probability: float = 0.0
+        self.last_language_spans: list[tuple[float, float, str, str]] = []
+        self._last_decode_prompt = ""
 
         if cfg.cuda_device < 0:
             device = "cpu"
@@ -243,8 +249,14 @@ class WhisperASR:
         # Must have both core files
         if not _CT2_REQUIRED_CORE.issubset(names):
             return False
-        # Must have at least one tokenizer/vocab file
-        return bool(names & _CT2_REQUIRED_TOKENIZER)
+        # Must have at least one tokenizer/vocab file and real model weights.
+        # The loader performs the final format/integrity verification.
+        if not names & _CT2_REQUIRED_TOKENIZER:
+            return False
+        try:
+            return (path / "model.bin").stat().st_size >= _MIN_MODEL_BYTES
+        except OSError:
+            return False
 
     # ------------------------------------------------------------------ #
     # ASRBackend protocol
@@ -256,6 +268,10 @@ class WhisperASR:
             generation = self._generation
             self.last_raw_transcript = ""
             self.last_rejection = None
+            self.last_detected_language = "und"
+            self.last_detected_language_probability = 0.0
+            self.last_language_spans = []
+            self.last_match_score = 0.0
 
         duration_s = len(audio) / 16000
         if duration_s < 0.05:
@@ -294,6 +310,19 @@ class WhisperASR:
             log.debug("Discarding ASR output (%s): %s", reason, " ".join(text[:200].split()))
             return ""
 
+        # A long verbatim reproduction of the supplied decoder prompt is
+        # suspicious, not automatically proof of speech. Require a fresh
+        # context-free decode through the pipeline instead of displaying it.
+        prompt = getattr(self, "_last_decode_prompt", "")
+        if prompt and len(speech_key(text)) >= 24:
+            score = context_match(text, prompt)
+            if score >= 0.97:
+                self.last_match_score = score
+                self.last_rejection = "context_echo"
+                self.last_language_spans = []
+                log.info("Whisper suspected prompt echo (score=%.2f)", score)
+                return ""
+
         # Accept
         with self._state_lock:
             key = speech_key(text)
@@ -322,6 +351,9 @@ class WhisperASR:
             self.last_raw_transcript = ""
             self._recent.clear()
             self._accepted_keys.clear()
+            self.last_language_spans = []
+            self.last_detected_language = "und"
+            self.last_detected_language_probability = 0.0
 
     def close(self) -> None:
         """Release the model and free GPU memory."""
@@ -344,12 +376,16 @@ class WhisperASR:
                 self._accepted_keys.append(key)
             self._recent.append(text)
 
-    def forget(self, n: int = 1) -> None:
-        """Remove recent accepted transcripts (e.g. after seek)."""
+    def forget(self, n: int | None = None) -> None:
+        """Clear history after seek, or remove a specified number of entries."""
         with self._state_lock:
-            for _ in range(n):
-                if self._recent:
-                    self._recent.pop()
+            if n is None:
+                self._recent.clear()
+                self._accepted_keys.clear()
+            else:
+                for _ in range(n):
+                    if self._recent:
+                        self._recent.pop()
 
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
                               vad_confidence: float | None = None,
@@ -377,7 +413,10 @@ class WhisperASR:
             return ""
         deadline = time.monotonic() + timeout
         try:
-            text = self._transcribe_impl(audio, probe, no_context=True)
+            with self._inference_lock:
+                if gen != self._generation or self._closed:
+                    return ""
+                text = self._transcribe_impl(audio, probe, no_context=True)
         except Exception as exc:  # noqa: BLE001
             log.warning("Whisper context echo recovery failed: %s", exc)
             return ""
@@ -387,35 +426,130 @@ class WhisperASR:
             return ""
         text = " ".join(unicodedata.normalize("NFC", text).split())
         text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
-        if not text:
-            self.last_rejection = "no_speech"
+        reason = transcript_problem(text, len(audio) / 16000)
+        if reason:
+            self.last_rejection = reason
             return ""
+        self.last_match_score = 0.0
+        self.last_rejection = None
         return text
 
     # ------------------------------------------------------------------ #
-    # Language detection helpers
+    # Language detection and acoustic evidence
     # ------------------------------------------------------------------ #
 
     _JA_CHARS = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+    _JA_KANA = re.compile(r"[\u3040-\u30ff]")
     _EN_CHARS = re.compile(r"[A-Za-z]")
+    _EN_WORDS = re.compile(r"[A-Za-z]{2,}(?:['’][A-Za-z]+)?")
 
-    def _detect_language(self, text: str) -> str:
-        """Detect the dominant language of a transcript.
+    @classmethod
+    def _detect_language(cls, text: str) -> str:
+        """Classify written content, not the actual audio speaker's identity.
 
-        Returns 'ja' for Japanese, 'en' for English, 'none' for silence,
-        or 'mixed' when both scripts are present.
+        One embedded romanized name (Jasonが来た) is still Japanese; a
+        whitespace-separated English clause plus Japanese is mixed.
         """
-        if not text or not text.strip():
+        if not isinstance(text, str) or not text.strip():
             return "none"
-        has_ja = bool(self._JA_CHARS.search(text))
-        has_en = bool(self._EN_CHARS.search(text))
-        if has_ja and has_en:
-            return "mixed"
-        if has_ja:
+        japanese = bool(cls._JA_CHARS.search(text))
+        english = bool(cls._EN_CHARS.search(text))
+        if japanese and english:
+            separated = bool(
+                re.search(r"[A-Za-z][.!?]\s*[\u3040-\u30ff\u3400-\u9fff]", text)
+                or re.search(r"[A-Za-z]\s+[\u3040-\u30ff\u3400-\u9fff]", text)
+                or re.search(r"[\u3040-\u30ff\u3400-\u9fff][.!?。！？]?\s+[A-Za-z]", text)
+            )
+            return "mixed" if separated else "ja"
+        if japanese:
             return "ja"
-        if has_en:
+        if english:
             return "en"
         return "none"
+
+    @staticmethod
+    def _reject_segment(segment) -> bool:
+        """Require multiple bad decoder signals before discarding real speech.
+
+        No single RMS threshold or poor logprob may suppress a quiet Japanese
+        reaction. This gate targets no-speech and decoder-loop combinations.
+        """
+        no_speech = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
+        logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
+        ratio = float(getattr(segment, "compression_ratio", 0.0) or 0.0)
+        return (
+            (no_speech > 0.75 and logprob < -0.75)
+            or (no_speech > 0.90 and logprob < -0.40)
+            or (ratio > 2.8 and logprob < -0.70)
+            or (no_speech > 0.40 and logprob < -1.35)
+        )
+
+    @classmethod
+    def _split_text_languages(cls, text: str) -> list[tuple[str, str]]:
+        """Separate clear English clauses from Japanese without splitting names.
+
+        Only split where script/sentence boundaries provide evidence. Ambiguous
+        text stays Japanese to avoid dropping a streamer's genuine reaction.
+        This is text routing, NOT source separation of overlapping speakers.
+        """
+        text = text.strip()
+        if not text:
+            return []
+        if cls._detect_language(text) != "mixed":
+            return [(cls._detect_language(text), text)]
+
+        # Whisper often produces a single segment for several short sentences.
+        # Split at strong punctuation first; preserve each clause's meaning.
+        clauses = re.split(r"(?<=[.!?。！？])\s+|(?<=[。！？])", text)
+        output: list[tuple[str, str]] = []
+        for clause in clauses:
+            clause = clause.strip()
+            if not clause:
+                continue
+            kind = cls._detect_language(clause)
+            if kind == "mixed":
+                # A separate English phrase preceding Japanese can be hidden
+                # from subtitles while still supplying conversational context.
+                prefix = re.match(
+                    r"^([A-Za-z][A-Za-z0-9'’ ,.!?\-]*?)([\u3040-\u30ff\u3400-\u9fff].*)$",
+                    clause,
+                )
+                if prefix and (
+                    len(cls._EN_WORDS.findall(prefix.group(1))) >= 2
+                    or bool(re.search(r"[.!?]\s*$", prefix.group(1)))
+                ):
+                    output.extend([("en", prefix.group(1).strip()),
+                                   ("ja", prefix.group(2).strip())])
+                    continue
+                # If the Japanese text comes first, only split a clearly
+                # separate English phrase following sentence punctuation.
+                suffix = re.match(
+                    r"^(.*?[\u3040-\u30ff\u3400-\u9fff][^.!?。！？]*[。！？])\s+([A-Za-z].+)$",
+                    clause,
+                )
+                if suffix and len(cls._EN_WORDS.findall(suffix.group(2))) >= 2:
+                    output.extend([("ja", suffix.group(1).strip()),
+                                   ("en", suffix.group(2).strip())])
+                    continue
+                kind = "ja"
+            output.append((kind, clause))
+        return output
+
+    @classmethod
+    def _classify_segment(cls, text: str, detected_lang: str) -> list[tuple[str, str]]:
+        parts = cls._split_text_languages(text)
+        result = []
+        for lang, part in parts:
+            if lang == "none":
+                continue
+            # Do not relabel Spanish/other Latin-script speech as English
+            # solely because its transcript uses the Latin alphabet.
+            if lang == "en" and detected_lang not in ("ja", "en"):
+                lang = detected_lang
+            if lang == "ja" and detected_lang not in ("ja", "en") and not cls._JA_KANA.search(part):
+                lang = detected_lang
+            result.append((lang, part))
+        return result
 
     def _transcribe_impl(
         self,
@@ -423,44 +557,30 @@ class WhisperASR:
         probe: bool = False,
         no_context: bool = False,
     ) -> str:
-        """Transcribe audio using the Whisper model with language auto-detection.
-
-        Uses automatic language detection per utterance so Japanese and English
-        speech are correctly identified. Sets ``last_detected_language`` for the
-        pipeline's language-aware routing.
-        """
-        samples = np.asarray(audio, dtype=np.float32)
-        samples = np.ascontiguousarray(np.clip(samples, -1, 1))
-
-        # Early exit for silence: if the entire clip has negligible energy,
-        # skip inference entirely. This prevents Whisper from hallucinating
-        # "Thank you" / "Obrigado" on silence or near-silence.
-        audio_rms = float(np.sqrt(np.mean(samples ** 2)))
-        if audio_rms < 0.003:
+        """Auto-detect language, retain segment timing, and suppress weak noise."""
+        samples = np.ascontiguousarray(
+            np.clip(np.asarray(audio, dtype=np.float32), -1, 1)
+        )
+        # Only bypass truly digital silence; absolute RMS such as 0.003 can
+        # erase soft-spoken Japanese and does not distinguish game noises.
+        if not len(samples) or float(np.max(np.abs(samples))) <= 1e-6:
             self.last_raw_transcript = ""
-            self._failures = 0
-            with self._state_lock:
-                self.last_detected_language = "none"
-                self.last_detected_language_probability = 1.0
+            self.last_language_spans = []
+            self.last_detected_language = "none"
+            self.last_detected_language_probability = 1.0
+            self._last_decode_prompt = ""
             return ""
 
-        # Build decode options
-        initial_prompt = None
         with self._state_lock:
+            initial_prompt = None
             if not no_context and getattr(self, "_name_hint_override", False):
-                # Fusion supplies names only. Never fall back to previously
-                # accepted free-form dialogue when no name candidate exists.
                 initial_prompt = self.context[:160] or None
             elif self.context and not no_context:
                 initial_prompt = self.context[:256]
             elif not no_context and self._recent:
-                # Legacy mode: use recent transcripts for continuity.
-                recent = list(self._recent)
-                initial_prompt = " ".join(recent[-3:])[:256]
+                initial_prompt = " ".join(list(self._recent)[-3:])[:256]
+            self._last_decode_prompt = initial_prompt or ""
 
-            # Auto-detect language — do not force Japanese.
-            # When a name hint is active, Whisper may still detect the true
-            # spoken language from audio content.
             segments, info = self._model.transcribe(
                 samples,
                 language=None,
@@ -481,73 +601,54 @@ class WhisperASR:
                 without_timestamps=False,
                 initial_prompt=initial_prompt,
             )
-
-        # Record the detected language from Whisper's info object
-        detected_lang = getattr(info, "language", None) or "ja"
-        detected_lang_prob = getattr(info, "language_probability", 0.0)
-        with self._state_lock:
-            self.last_detected_language = detected_lang
-            self.last_detected_language_probability = detected_lang_prob
-
-        # Collect segments, filtering out no-speech
-        # With auto-detect (language=None), no_speech_prob is less reliable.
-        # Use a combination of no_speech_prob, avg_logprob, and audio energy
-        # to reject hallucinations from silence and noise.
-        audio_rms = float(np.sqrt(np.mean(samples ** 2)))
+        detected = (getattr(info, "language", None) or "und").lower()
+        probability = float(getattr(info, "language_probability", 0.0) or 0.0)
         phrases = []
+        spans: list[tuple[float, float, str, str]] = []
+        duration_s = len(samples) / 16000.0
+        # Generator decoding can be lazy; consume before handing back the lock
+        # held by transcribe() / recover_context_echo().
         for segment in segments:
-            no_speech_prob = getattr(segment, "no_speech_prob", 0.0)
-            avg_logprob = getattr(segment, "avg_logprob", 0.0)
-            # Reject segments with high no-speech probability and poor logprob
-            if no_speech_prob > 0.75 and avg_logprob < -0.75:
+            if self._reject_segment(segment):
                 continue
-            # Extra guard for silence/noise: if audio energy is very low,
-            # require strong evidence (high no_speech_prob threshold lowered)
-            if audio_rms < 0.005 and no_speech_prob > 0.5:
+            text = trim_repetition_tail(str(getattr(segment, "text", "")).strip())
+            if not text or transcript_problem(text, max(0.1, float(getattr(segment, "end", duration_s))
+                                                        - float(getattr(segment, "start", 0.0)))):
                 continue
-            # Reject very poor logprob segments regardless of no_speech_prob
-            if avg_logprob < -1.0 and audio_rms < 0.01:
+            start = max(0.0, min(duration_s, float(getattr(segment, "start", 0.0))))
+            end = max(start, min(duration_s, float(getattr(segment, "end", duration_s))))
+            parts = self._classify_segment(text, detected)
+            if not parts:
                 continue
-            text = segment.text.strip()
-            if text:
-                phrases.append(trim_repetition_tail(text))
+            phrases.append(text)
+            length = sum(max(1, len(part)) for _, part in parts)
+            at = start
+            for i, (lang, part) in enumerate(parts):
+                fraction = max(1, len(part)) / max(1, length)
+                next_at = end if i == len(parts) - 1 else at + (end - start) * fraction
+                spans.append((at, next_at, lang, part))
+                at = next_at
 
         transcript = " ".join(phrases).strip()
-
-        # Cross-validate: if Whisper reports Japanese but the output contains
-        # no Japanese characters, trust the text content over the model's
-        # language tag (common with short English interjections).
-        text_lang = self._detect_language(transcript)
-        if text_lang != "none" and text_lang != detected_lang:
-            # Prefer text-based detection when it contradicts the model tag
-            if text_lang == "en" and detected_lang == "ja":
-                # Whisper claimed Japanese but output is pure English —
-                # likely a false positive on the language detector.
-                with self._state_lock:
-                    self.last_detected_language = "en"
-            elif text_lang == "ja" and detected_lang == "en":
-                with self._state_lock:
-                    self.last_detected_language = "ja"
-            elif text_lang == "mixed":
-                with self._state_lock:
-                    self.last_detected_language = "mixed"
-
-        # Clean up
         transcript = " ".join(unicodedata.normalize("NFC", transcript).split())
         transcript = trim_repetition_tail(
             "".join(c for c in transcript if unicodedata.category(c) != "Cc")
         )
-        transcript = re.sub(r"\s+", " ", transcript).strip()
-
+        langs = {kind for _, _, kind, _ in spans}
+        if not transcript:
+            label = "none"
+        elif "ja" in langs and len(langs) > 1:
+            label = "mixed"
+        elif len(langs) == 1:
+            label = next(iter(langs))
+        else:
+            label = detected
+        self.last_detected_language = label
+        self.last_detected_language_probability = probability
+        self.last_language_spans = spans
         self.last_raw_transcript = transcript
-        self._failures = 0
-
-        duration_s = len(audio) / 16000
-        log.debug(
-            "Whisper: %.1fs audio -> lang=%s (prob=%.2f) text_lang=%s -> %s",
-            duration_s, detected_lang, detected_lang_prob, text_lang, transcript[:60],
-        )
-
+        log.debug("Whisper: %.1fs audio -> %s (p=%.2f) %s",
+                  duration_s, label, probability, transcript[:80])
         return transcript
 
     # ------------------------------------------------------------------ #
@@ -557,78 +658,78 @@ class WhisperASR:
     def recover_japanese_from_mixed_audio(
         self, audio: np.ndarray, probe: bool = False
     ) -> list[tuple[float, float, str]]:
-        """Recover Japanese segments from mixed-language audio.
+        """Bounded auto-language rechecks; never force English audio to Japanese.
 
-        When the primary pass detects dominant English (e.g., GTA character
-        dialogue), re-transcribe short windows with forced Japanese to catch
-        the streamer's Japanese speech that was masked.
-
-        Returns a list of (start_offset_s, end_offset_s, japanese_text).
+        Returns only short Japanese windows independently labeled Japanese by
+        Whisper with sufficient language confidence. This cannot isolate
+        simultaneous voices occupying the same acoustic window.
         """
         samples = np.asarray(audio, dtype=np.float32)
-        duration_s = len(samples) / 16000
-        if duration_s < 2.0:
+        duration_s = len(samples) / 16000.0
+        if probe or duration_s < 2.2 or self._closed:
             return []
-
-        candidates: list[tuple[float, float, str]] = []
-        # Slide 3-second windows with 50% overlap
-        window_s = 3.0
-        step_s = 1.5
-        offset = 0.0
-        while offset + window_s <= duration_s:
-            start_sample = int(offset * 16000)
-            end_sample = int((offset + window_s) * 16000)
-            window = samples[start_sample:end_sample]
-            if len(window) < 1600:  # skip tiny windows
-                offset += step_s
-                continue
-            try:
-                with self._inference_lock:
-                    segments, _info = self._model.transcribe(
-                        np.ascontiguousarray(np.clip(window, -1, 1)),
-                        language="ja",
+        generation = self._generation
+        deadline = time.monotonic() + min(10.0, float(self.cfg.response_timeout_s))
+        windows = 2 if duration_s <= 4.5 else (3 if duration_s <= 9 else 4)
+        step = duration_s / windows
+        found: list[tuple[float, float, str, float]] = []
+        with self._inference_lock:
+            for i in range(windows):
+                if self._closed or generation != self._generation or time.monotonic() >= deadline:
+                    break
+                start = max(0.0, i * step - (0.2 if i else 0))
+                end = min(duration_s, (i + 1) * step + (0.2 if i < windows - 1 else 0))
+                window = np.ascontiguousarray(np.clip(
+                    samples[round(start * 16000):round(end * 16000)], -1, 1
+                ))
+                if len(window) < 16000 or float(np.max(np.abs(window))) <= 1e-6:
+                    continue
+                try:
+                    segments, info = self._model.transcribe(
+                        window,
+                        language=None,  # never force ja on English/game noise
                         task="transcribe",
                         beam_size=_DEFAULT_BEAM_SIZE,
                         temperature=0.0,
-                        no_speech_threshold=0.5,
-                        log_prob_threshold=-0.5,
+                        no_speech_threshold=0.6,
+                        log_prob_threshold=-1.0,
                         compression_ratio_threshold=2.4,
-                        suppress_tokens=[-1],
-                        word_timestamps=False,
                         condition_on_previous_text=False,
                         vad_filter=False,
-                        without_timestamps=False,
+                        initial_prompt=None,
                     )
-                for seg in segments:
-                    no_speech_prob = getattr(seg, "no_speech_prob", 0.0)
-                    avg_logprob = getattr(seg, "avg_logprob", 0.0)
-                    if no_speech_prob > 0.75 and avg_logprob < -0.75:
+                    if (getattr(info, "language", None) != "ja"
+                            or float(getattr(info, "language_probability", 0.0) or 0.0) < 0.70):
                         continue
-                    text = seg.text.strip()
-                    if not text:
-                        continue
-                    text = trim_repetition_tail(text)
-                    if not self._JA_CHARS.search(text):
-                        continue
-                    # Segment timestamps are relative to the window
-                    seg_start = offset + getattr(seg, "start", 0.0)
-                    seg_end = offset + getattr(seg, "end", seg_start + 1.0)
-                    candidates.append((seg_start, seg_end, text))
-            except Exception as exc:
-                log.debug("Mixed-language recovery window failed: %s", exc)
-            offset += step_s
+                    # Consume the generator before starting another inference.
+                    for seg in segments:
+                        if self._reject_segment(seg):
+                            continue
+                        txt = trim_repetition_tail(str(getattr(seg, "text", "")).strip())
+                        if len(self._JA_KANA.findall(txt)) < 2:
+                            continue
+                        seg_start = max(0.0, start + float(getattr(seg, "start", 0.0)))
+                        seg_end = min(duration_s, start + float(getattr(seg, "end", end - start)))
+                        if seg_end <= seg_start or transcript_problem(txt, seg_end - seg_start):
+                            continue
+                        found.append((seg_start, seg_end, txt,
+                                      float(getattr(seg, "avg_logprob", -1.0) or -1.0)))
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("Whisper mixed-language recheck unavailable: %s", exc)
+                if self._closed or generation != self._generation or time.monotonic() >= deadline:
+                    return []
 
-        # Deduplicate overlapping segments — keep the one with better logprob
-        if not candidates:
-            return []
-        candidates.sort(key=lambda x: x[0])
-        merged: list[tuple[float, float, str]] = [candidates[0]]
-        for start, end, text in candidates[1:]:
-            last = merged[-1]
-            if start < last[1]:
-                # Overlapping — keep the longer text
-                if len(text) > len(last[2]):
-                    merged[-1] = (min(last[0], start), max(last[1], end), text)
-            else:
-                merged.append((start, end, text))
-        return merged
+        # Keep distinct utterances even when timestamps overlap; only remove
+        # near-identical hypotheses, preferring better ASR confidence.
+        deduped: list[tuple[float, float, str, float]] = []
+        for candidate in sorted(found, key=lambda x: (x[0], -x[3])):
+            start, end, txt, score = candidate
+            match = next((i for i, prev in enumerate(deduped)
+                          if start < prev[1] and prev[0] < end
+                          and SequenceMatcher(None, speech_key(txt), speech_key(prev[2]),
+                                              autojunk=False).ratio() >= 0.90), None)
+            if match is None:
+                deduped.append(candidate)
+            elif score > deduped[match][3]:
+                deduped[match] = candidate
+        return [(start, end, txt) for start, end, txt, _ in sorted(deduped)]

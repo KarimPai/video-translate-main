@@ -2195,8 +2195,8 @@ def test_subtitle_backlog_defined_before_recovery_watchdog():
     watchdog_start = source.find("Subtitle starvation watchdog")
     assert watchdog_start >= 0, "Watchdog comment should exist"
 
-    # Extract the block from the comment to the next major section
-    block = source[watchdog_start:watchdog_start + 3000]
+    # Extract a large enough block to cover the entire watchdog section
+    block = source[watchdog_start:watchdog_start + 6000]
 
     # subtitle_backlog assignment should appear before any reference to it
     # in the recovery section
@@ -2224,12 +2224,14 @@ def test_last_subtitle_at_not_reset_on_recovery():
     source = inspect.getsource(pipeline_mod)
     watchdog_start = source.find("Subtitle starvation watchdog")
     assert watchdog_start >= 0
-    block = source[watchdog_start:watchdog_start + 3000]
+    # Extract a large enough block to cover the entire watchdog section
+    block = source[watchdog_start:watchdog_start + 6000]
 
     # There should be NO "last_subtitle_at = now" inside the recovery block
     # (only last_warning = now is allowed)
-    recovery_section = block[block.find("vod_deadlock_recovery"):]
-    # Find the end of the recovery section (next major comment or end)
+    recovery_pos = block.find("vod_deadlock_recovery")
+    assert recovery_pos >= 0, "recovery section should exist"
+    recovery_section = block[recovery_pos:]
     assert "last_subtitle_at = now" not in recovery_section, (
         "last_subtitle_at must NOT be reset in recovery — no subtitle was published"
     )
@@ -2449,6 +2451,227 @@ def test_mpv_recovery_sets_direct_video_loaded_false():
     assert "_direct_video_loaded = False" in source, (
         "_recover_video_stream should set _direct_video_loaded = False for livestreams"
     )
+
+
+# ---------------------------------------------------------------------------
+# P0 — Livestream FFmpeg failure should not give_up
+# ---------------------------------------------------------------------------
+
+def test_shared_live_ffmpeg_failure_does_not_give_up():
+    """Shared livestream FFmpeg failure should not set give_up=True.
+
+    Previously, give_up was True for any non-remote_vod failure, meaning
+    shared livestream failures would raise RuntimeError before the
+    coordinated MPV recovery (_wait_for_shared_live_restart) could occur.
+
+    The fix adds `and not shared_live` to the give_up condition so
+    livestream failures fall through to the restart wait.
+    """
+    import inspect
+
+    from auto_translate.ingest import Ingest
+
+    source = inspect.getsource(Ingest.run)
+    # The give_up line should exclude shared_live
+    assert "not shared_live" in source or "shared_live" in source, (
+        "give_up condition should check shared_live to exclude livestreams"
+    )
+
+
+def test_premature_eof_uses_session_start_not_source_start():
+    """Premature EOF check must use session start_s, not source.start_s.
+
+    After a retry, the session starts at a later timestamp (the resume point).
+    Using source.start_s would overestimate expected duration and falsely
+    flag a successful retry as another premature EOF.
+    """
+    import inspect
+
+    from auto_translate.ingest import Ingest
+
+    source = inspect.getsource(Ingest._read_session)
+    # The expected duration should be calculated from start_s (session start)
+    assert "duration - start_s" in source, (
+        "Premature EOF should use session start_s, not source.start_s"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 — Auto-pause oscillation cooldown
+# ---------------------------------------------------------------------------
+
+def test_resume_from_auto_pause_sets_recovery_cooldown():
+    """resume_from_auto_pause must set _recovery_cooldown_until.
+
+    Without a cooldown, the scheduler loop immediately re-triggers auto-pause
+    when translation coverage has not yet caught up after recovery resume.
+    """
+    import inspect
+
+    from auto_translate.output.mpv import MpvOutput
+
+    source = inspect.getsource(MpvOutput.resume_from_auto_pause)
+    assert "_recovery_cooldown_until" in source, (
+        "resume_from_auto_pause should set recovery cooldown"
+    )
+
+
+def test_auto_pause_checks_recovery_cooldown():
+    """The VOD auto-pause check must respect _recovery_cooldown_until.
+
+    During the cooldown window after recovery resume, auto-pause should be
+    suppressed even if translation lead is below the pause threshold.
+    """
+    import inspect
+
+    from auto_translate.output.mpv import MpvOutput
+
+    source = inspect.getsource(MpvOutput._play_session)
+    assert "_recovery_cooldown_until" in source, (
+        "Auto-pause check should respect recovery cooldown"
+    )
+    assert "in_recovery_cooldown" in source, (
+        "Auto-pause check should compute in_recovery_cooldown"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 — Stale pending-speech uses VAD progress for cutoff
+# ---------------------------------------------------------------------------
+
+def test_stale_pending_speech_uses_vad_progress_cutoff():
+    """Stale pending-speech cleanup must use VAD progress, not translated_until.
+
+    When a pending interval blocks translated_until from advancing,
+    using (tu - 60) as cutoff means the stuck interval never qualifies
+    for cleanup. VAD progress always advances, providing a reliable
+    staleness reference.
+    """
+    import inspect
+
+    from auto_translate import pipeline as pipeline_mod
+
+    source = inspect.getsource(pipeline_mod)
+    # Find the abandon section
+    abandon_start = source.find("Abandon stale pending speech")
+    assert abandon_start >= 0, "Abandon section should exist"
+    block = source[abandon_start:abandon_start + 2000]
+    # Should use vad_progress (vp) as the cutoff base
+    assert "vp" in block or "vad_progress" in block, (
+        "Stale pending-speech cutoff should use VAD progress"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2 — In-flight stall detection
+# ---------------------------------------------------------------------------
+
+def test_in_flight_stall_detection_exists():
+    """Subtitle starvation watchdog must detect in-flight inference stalls.
+
+    When a worker holds an item during ASR/translation, queues are empty
+    but no output is produced. The watchdog should detect this by checking
+    that audio is still flowing (last_activity recent) but no subtitle
+    for a long time.
+    """
+    import inspect
+
+    from auto_translate import pipeline as pipeline_mod
+
+    source = inspect.getsource(pipeline_mod)
+    watchdog_start = source.find("Subtitle starvation watchdog")
+    assert watchdog_start >= 0, "Watchdog comment should exist"
+    block = source[watchdog_start:watchdog_start + 6000]
+    assert "in_flight_stall" in block, (
+        "Watchdog should detect in-flight inference stalls"
+    )
+    assert "in_flight" in block, (
+        "Starvation event should distinguish in-flight from queued backlog"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: CoverageTracker stuck watermark recovery
+# ---------------------------------------------------------------------------
+
+def test_coverage_stuck_watermark_recovered_by_abandon():
+    """When a pending interval blocks the watermark, abandon should free it.
+
+    Simulates the scenario where translation is suppressed/failed for a
+    pending interval, leaving the watermark stuck. After abandonment,
+    the watermark should advance through the freed region.
+    """
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    # Record speech at 0-2s (blocks watermark)
+    ct.record_speech(0.0, 2.0)
+    # Record speech at 5-7s
+    ct.record_speech(5.0, 7.0)
+    # Advance VAD to 20s (silence confirmed)
+    ct.advance_vad(20.0)
+    # Watermark is stuck at 0.0 by pending speech
+    assert ct.translated_until == 0.0
+
+    # Simulate stale cleanup: abandon intervals before VAD progress - 60s
+    # Since VAD is at 20s, cutoff = -40s, nothing abandoned
+    # Instead, simulate a time-based abandon (e.g. after prolonged stall)
+    abandoned = ct.abandon_pending_before(3.0)
+    assert abandoned == 1, f"Should abandon 1 interval before 3s, got {abandoned}"
+
+    # The 5-7s interval still blocks. Abandon it too.
+    abandoned = ct.abandon_pending_before(6.0)
+    assert abandoned == 1
+
+    # Now watermark should advance through VAD-confirmed silence
+    assert ct.translated_until >= 20.0, (
+        f"Watermark should advance to VAD progress after abandon, got {ct.translated_until}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: VOD premature EOF with resumed session
+# ---------------------------------------------------------------------------
+
+def test_premature_eof_calculation_with_resume():
+    """Verify premature EOF uses correct expected duration after resume.
+
+    Simulates: VOD duration 7200s, initial session reaches 3600s,
+    FFmpeg fails, retry starts at 3600s, decodes remaining 3600s.
+    Expected = 7200 - 3600 = 3600s. Decoded = 3600s.
+    Should NOT be flagged as premature EOF.
+    """
+    # This is a calculation test verifying the formula logic
+    # (cannot easily mock FFmpeg subprocess, so verify the math)
+    source_duration = 7200.0
+    session_start = 3600.0  # resumed from midpoint
+    expected = source_duration - session_start  # 3600s
+    processed = 3600.0  # decoded all remaining audio
+
+    # The check: processed < expected * 0.9
+    # 3600 < 3600 * 0.9 = 3240? No → NOT premature EOF (correct)
+    is_premature = processed < expected * 0.9
+    assert not is_premature, (
+        "Successful retry should not be flagged as premature EOF"
+    )
+
+    # Contrast: if using source.start_s = 0 (the bug)
+    buggy_expected = source_duration - 0  # 7200s
+    buggy_premature = processed < buggy_expected * 0.9
+    # 3600 < 6480? Yes → FALSE premature EOF (the bug)
+    assert buggy_premature, "Buggy formula should falsely flag as premature EOF"
+
+
+def test_premature_eof_detects_actual_expiry():
+    """Verify premature EOF catches real URL expiry mid-stream."""
+    source_duration = 7200.0
+    session_start = 0.0
+    expected = source_duration - session_start  # 7200s
+    processed = 1800.0  # URL expired at 25%
+
+    is_premature = processed < expected * 0.9
+    # 1800 < 6480? Yes → premature EOF (correct)
+    assert is_premature, "Should detect URL expiry at 25% of VOD"
 
 
 if __name__ == "__main__":

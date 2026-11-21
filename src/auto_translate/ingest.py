@@ -1104,6 +1104,7 @@ class Ingest:
                             not self.source.live and not self.video_out
                             and not Path(self.source.location).exists()
                         )
+                        shared_live = self.source.live and self.video_out
                         current = (
                             not self._stopped and self._restart_at is None
                             and generation == self._generation
@@ -1115,7 +1116,11 @@ class Ingest:
                         if should_retry:
                             self._vod_audio_url = None
                             self._audio_client_fallback = retries >= 1
-                        give_up = current and read_failed and not should_retry
+                        # Shared livestream FFmpeg failures should NOT give_up
+                        # here — they need coordinated MPV recovery via
+                        # _wait_for_shared_live_restart(). Only direct VOD should
+                        # give up after retry exhaustion.
+                        give_up = current and read_failed and not should_retry and not shared_live
                     if not should_retry:
                         break
                     retries += 1
@@ -1425,9 +1430,13 @@ class Ingest:
         # If the source has a known duration and we decoded significantly less,
         # the signed URL likely expired mid-stream — treat it as a failure so
         # the retry loop can refresh the URL and resume.
+        # Use `start_s` (the actual session start, which may include a resume
+        # offset) instead of `self.source.start_s` (the original video start).
+        # After a retry, the session starts later, so the expected remaining
+        # audio is shorter than the full source duration.
         premature_eof = False
         if not failed and not self.source.live and self.source.duration is not None:
-            expected = self.source.duration - self.source.start_s
+            expected = self.source.duration - start_s
             if expected > 60.0 and processed_seconds < expected * 0.9:
                 # Decoded less than 90% of remaining VOD — likely expired URL
                 premature_eof = True

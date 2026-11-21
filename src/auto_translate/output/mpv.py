@@ -500,6 +500,10 @@ class MpvOutput:
         # Seek-buffering: True while waiting for translation coverage after a seek.
         # Auto-resumes when sufficient contiguous coverage is available.
         self._seek_buffering = False
+        # Recovery cooldown: after the pipeline watchdog resumes from auto-pause,
+        # suppress auto-pause for a short window to prevent immediate re-trigger
+        # when translation coverage has not yet caught up.
+        self._recovery_cooldown_until: float = 0.0
         if not ingest.source.live:
             ingest.enable_vod_restart()
             ingest.enable_vod_playback_pacing(
@@ -645,11 +649,17 @@ class MpvOutput:
 
         Called by the pipeline recovery watchdog when no subtitle has been
         published for 15+ seconds with pending work and auto-pause active.
+
+        Sets a cooldown window (10s) to prevent immediate re-trigger of
+        auto-pause when translation coverage has not yet caught up.
         """
         if self._vod_auto_paused and self._player_command("set_property", "pause", False):
             self._vod_auto_paused = False
             self._pause_owner = "none"
-            log.info("Resumed from auto-pause via recovery request")
+            # Cooldown prevents the scheduler loop from immediately re-pausing
+            # when translation lead is still insufficient after recovery resume.
+            self._recovery_cooldown_until = time.monotonic() + 10.0
+            log.info("Resumed from auto-pause via recovery request (cooldown 10s)")
 
     def show(self, sub: Subtitle) -> None:
         if sub.end_s < self._session_start:
@@ -1319,7 +1329,11 @@ class MpvOutput:
             # Adaptive VOD sync: pause when translation lead is too low,
             # resume when it recovers (hysteresis prevents oscillation).
             # User manual pause/play controls remain authoritative.
-            if not paused and not self.ingest.source.live and self._pause_owner != "user" and not self._seek_buffering:
+            # After recovery resume, suppress auto-pause for a cooldown window
+            # to prevent immediate re-trigger when translation has not caught up.
+            in_recovery_cooldown = time.monotonic() < self._recovery_cooldown_until
+            if not paused and not self.ingest.source.live and self._pause_owner != "user" \
+                    and not self._seek_buffering and not in_recovery_cooldown:
                 if self._vod_should_pause() and mpv_paused is not True:
                     # Translation falling behind — auto-pause MPV
                     if self._player_command("set_property", "pause", True):

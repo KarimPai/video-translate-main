@@ -1183,28 +1183,59 @@ def run(
             # Subtitle starvation watchdog: detect when audio keeps flowing but
             # no subtitle has been published for too long. This catches stalls
             # that last_activity misses because AudioProgress keeps updating it.
+            # Also catches in-flight inference stalls: a worker holds an item
+            # during ASR/translation, leaving queues empty but producing nothing.
             if not ingest.source.live and now - last_subtitle_at > 15.0:
                 # Compute backlog once for both the starvation warning and recovery.
                 subtitle_backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
-                if now - last_subtitle_at > 30.0 and subtitle_backlog and ingest.generation == observed_generation:
-                    # Audio is flowing but subtitles stopped — log and warn
-                    record_event(
-                        "subtitle_starvation",
-                        queues=subtitle_backlog,
-                        no_subtitle_for_s=round(now - last_subtitle_at, 1),
-                        generation=ingest.generation,
-                    )
+                has_backlog = bool(subtitle_backlog)
+                # Detect in-flight stall: audio is flowing (last_activity recent)
+                # but no subtitle for a long time and queues are empty — meaning
+                # a worker is stuck during inference on an in-flight item.
+                in_flight_stall = (
+                    not has_backlog
+                    and ingest.generation == observed_generation
+                    and now - last_activity < 30.0  # audio still flowing
+                    and now - last_subtitle_at > 60.0  # but no subtitle for 60s
+                )
+                if now - last_subtitle_at > 30.0 and ingest.generation == observed_generation:
+                    if has_backlog:
+                        # Queued work but no output — ASR/MT not consuming
+                        record_event(
+                            "subtitle_starvation",
+                            queues=subtitle_backlog,
+                            no_subtitle_for_s=round(now - last_subtitle_at, 1),
+                            generation=ingest.generation,
+                            in_flight=False,
+                        )
+                    elif in_flight_stall:
+                        # Empty queues but audio flowing — inference stuck in-flight
+                        record_event(
+                            "subtitle_starvation",
+                            queues={},
+                            no_subtitle_for_s=round(now - last_subtitle_at, 1),
+                            generation=ingest.generation,
+                            in_flight=True,
+                        )
                     if now - last_warning > 30.0:
                         last_warning = now
-                        log.warning(
-                            "Subtitle starvation: no subtitle published for %.0fs "
-                            "with queued work %s; audio may be processed but ASR/MT "
-                            "is not producing output",
-                            now - last_subtitle_at, subtitle_backlog,
-                        )
+                        if has_backlog:
+                            log.warning(
+                                "Subtitle starvation: no subtitle published for %.0fs "
+                                "with queued work %s; audio may be processed but ASR/MT "
+                                "is not producing output",
+                                now - last_subtitle_at, subtitle_backlog,
+                            )
+                        elif in_flight_stall:
+                            log.warning(
+                                "Subtitle starvation (in-flight stall): no subtitle "
+                                "for %.0fs with empty queues but audio still flowing; "
+                                "ASR or translation inference may be stuck",
+                                now - last_subtitle_at,
+                            )
                 # Recovery watchdog: detect VOD deadlock and attempt recovery
                 # when no subtitle published for 15s with pending work and auto-pause active.
-                if subtitle_backlog and ingest.generation == observed_generation:
+                if (has_backlog or in_flight_stall) and ingest.generation == observed_generation:
                     # Check if any output is auto-paused
                     auto_paused = False
                     for out in outputs:
@@ -1266,19 +1297,29 @@ def run(
                     depths,
                 )
                 # Abandon stale pending speech that is far behind playback
-                # to prevent watermark from being permanently blocked
+                # to prevent watermark from being permanently blocked.
+                # Use VAD progress as the cutoff base when the watermark is
+                # stuck — a pending interval can block translated_until from
+                # advancing, making (tu - 60) unable to reach the stuck interval.
+                # VAD progress always moves forward, so it provides a reliable
+                # reference for staleness even when the watermark is blocked.
                 for out in outputs:
                     abandon = getattr(out, "abandon_stale_pending_speech", None)
-                    if callable(abandon) and tu is not None and tu > 0:
-                        # Abandon pending speech more than 60s behind the watermark
-                        cutoff = tu - 60.0
-                        abandoned = abandon(cutoff)
-                        if abandoned > 0:
-                            log.info(
-                                "Abandoned %d stale pending speech intervals "
-                                "before %.1fs (watermark=%.1fs)",
-                                abandoned, cutoff, tu,
-                            )
+                    if callable(abandon):
+                        # Prefer VAD progress as the cutoff base: it always
+                        # advances and is not blocked by pending speech.
+                        base = vp if vp is not None else tu
+                        if base is not None and base > 0:
+                            cutoff = base - 60.0
+                            abandoned = abandon(cutoff)
+                            if abandoned > 0:
+                                log.info(
+                                    "Abandoned %d stale pending speech intervals "
+                                    "before %.1fs (vad_progress=%.1fs watermark=%.1fs)",
+                                    abandoned, cutoff,
+                                    vp if vp is not None else -1,
+                                    tu if tu is not None else -1,
+                                )
 
             for name, q in queues.items():
                 stats.max_q[name] = max(

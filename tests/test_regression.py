@@ -404,7 +404,7 @@ def _make_whisper_dir(tmp_path, whisper_like=True):
     d = tmp_path / "model"
     d.mkdir(parents=True)
     if whisper_like:
-        (d / "model.bin").write_bytes(b"")
+        (d / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (d / "config.json").write_bytes(b"{}")
         (d / "tokenizer.json").write_bytes(b"{}")
         (d / "vocabulary.json").write_bytes(b"{}")
@@ -469,7 +469,7 @@ def test_whisper_falls_back_to_cache_on_haas_path():
         # Mock HF cache to return a valid Whisper model (with all required files)
         cached_dir = Path(td) / "cached_whisper"
         cached_dir.mkdir()
-        (cached_dir / "model.bin").write_bytes(b"")
+        (cached_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (cached_dir / "config.json").write_bytes(b"{}")
         (cached_dir / "tokenizer.json").write_bytes(b"{}")
 
@@ -1215,7 +1215,7 @@ def test_whisper_inherited_haas_path_ignored():
         # Mock HF cache to return a valid Whisper model (with all required files)
         cached_dir = Path(td) / "cached_whisper"
         cached_dir.mkdir()
-        (cached_dir / "model.bin").write_bytes(b"")
+        (cached_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (cached_dir / "config.json").write_bytes(b"{}")
         (cached_dir / "tokenizer.json").write_bytes(b"{}")
 
@@ -1336,7 +1336,7 @@ def test_whisper_rejects_incomplete_model_missing_tokenizer():
     with tempfile.TemporaryDirectory() as td:
         d = Path(td) / "incomplete"
         d.mkdir()
-        (d / "model.bin").write_bytes(b"")
+        (d / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (d / "config.json").write_bytes(b"{}")
         # Missing tokenizer.json and vocabulary.json
         assert WhisperASR._looks_like_whisper_model(d) is False
@@ -1348,7 +1348,21 @@ def test_whisper_rejects_incomplete_model_single_file():
     with tempfile.TemporaryDirectory() as td:
         d = Path(td) / "single_file"
         d.mkdir()
+        (d / "model.bin").write_bytes(b"0" * (1024 * 1024))
+        assert WhisperASR._looks_like_whisper_model(d) is False
+
+
+def test_whisper_rejects_zero_byte_and_truncated_weights():
+    """Reject the exact 0-byte cache failure observed on Windows."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "truncated"
+        d.mkdir()
         (d / "model.bin").write_bytes(b"")
+        (d / "config.json").write_bytes(b"{}")
+        (d / "tokenizer.json").write_bytes(b"{}")
+        assert WhisperASR._looks_like_whisper_model(d) is False
+        (d / "model.bin").write_bytes(b"truncated")
         assert WhisperASR._looks_like_whisper_model(d) is False
 
 
@@ -1358,7 +1372,7 @@ def test_whisper_accepts_complete_model():
     with tempfile.TemporaryDirectory() as td:
         d = Path(td) / "complete"
         d.mkdir()
-        (d / "model.bin").write_bytes(b"")
+        (d / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (d / "config.json").write_bytes(b"{}")
         (d / "tokenizer.json").write_bytes(b"{}")
         assert WhisperASR._looks_like_whisper_model(d) is True
@@ -1370,7 +1384,7 @@ def test_whisper_accepts_complete_model_with_vocabulary():
     with tempfile.TemporaryDirectory() as td:
         d = Path(td) / "complete_vocab"
         d.mkdir()
-        (d / "model.bin").write_bytes(b"")
+        (d / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (d / "config.json").write_bytes(b"{}")
         (d / "vocabulary.json").write_bytes(b"{}")
         assert WhisperASR._looks_like_whisper_model(d) is True
@@ -1383,7 +1397,7 @@ def test_whisper_find_cached_model_rejects_incomplete():
         # Create an incomplete snapshot
         incomplete_dir = Path(td) / "incomplete_snapshot"
         incomplete_dir.mkdir()
-        (incomplete_dir / "model.bin").write_bytes(b"")
+        (incomplete_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (incomplete_dir / "config.json").write_bytes(b"{}")
         # Missing tokenizer
 
@@ -1399,7 +1413,7 @@ def test_whisper_find_cached_model_accepts_complete():
     with tempfile.TemporaryDirectory() as td:
         complete_dir = Path(td) / "complete_snapshot"
         complete_dir.mkdir()
-        (complete_dir / "model.bin").write_bytes(b"")
+        (complete_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (complete_dir / "config.json").write_bytes(b"{}")
         (complete_dir / "tokenizer.json").write_bytes(b"{}")
 
@@ -1680,7 +1694,7 @@ def test_whisper_resolves_forward_slash_local_path():
         # Create a complete Whisper model directory
         model_dir = Path(td) / "models" / "whisper-large-v3-turbo"
         model_dir.mkdir(parents=True)
-        (model_dir / "model.bin").write_bytes(b"")
+        (model_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (model_dir / "config.json").write_bytes(b"{}")
         (model_dir / "tokenizer.json").write_bytes(b"{}")
 
@@ -1733,7 +1747,7 @@ def test_whisper_absolute_windows_path():
     with tempfile.TemporaryDirectory() as td:
         model_dir = Path(td) / "whisper"
         model_dir.mkdir()
-        (model_dir / "model.bin").write_bytes(b"")
+        (model_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (model_dir / "config.json").write_bytes(b"{}")
         (model_dir / "vocabulary.json").write_bytes(b"{}")
 
@@ -1753,7 +1767,7 @@ def test_whisper_explicit_hf_repo_id_cached():
         # Create a complete cached Whisper model
         cached_dir = Path(td) / "cached"
         cached_dir.mkdir()
-        (cached_dir / "model.bin").write_bytes(b"")
+        (cached_dir / "model.bin").write_bytes(b"0" * (1024 * 1024))
         (cached_dir / "config.json").write_bytes(b"{}")
         (cached_dir / "tokenizer.json").write_bytes(b"{}")
 

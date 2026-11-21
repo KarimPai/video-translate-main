@@ -69,7 +69,12 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
                 return "und", ""  # malformed metadata cannot enter subtitles
             language = match.group(1).strip().lower()
             if language in _NON_SPEECH:
-                return "none", ""
+                # Qwen's 'language None' normally signals nonspeech. In the
+                # unusual case where it also provides actual words, preserve
+                # the text as uncertain rather than silently discarding it.
+                language = "und" if text.strip() else "none"
+                if language == "none":
+                    return "none", ""
             language = {
                 "japanese": "ja", "ja": "ja",
                 "english": "en", "en": "en",

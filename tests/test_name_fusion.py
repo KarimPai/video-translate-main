@@ -158,10 +158,11 @@ class FakeASR:
         pass
 
 
-def _speech(start, generation=0):
+def _speech(start, generation=0, vad_confidence=0.9, probe=False):
     return Utterance(
         start_s=float(start), end_s=float(start + 2),
         audio=np.zeros(16000 * 2, dtype=np.float32), generation=generation,
+        vad_confidence=vad_confidence, probe=probe,
     )
 
 
@@ -192,6 +193,32 @@ def test_run_asr_seek_clears_confirmed_name_memory():
     incoming.put(_speech(3))
     incoming.put(AudioProgress(0, reset=True, generation=1))
     incoming.put(_speech(100, generation=1))
+    incoming.put(None)
+    run_asr(asr, incoming, outgoing, name_fusion=fusion)
+    assert "ルシア" in asr.prompts
+    assert asr.prompts[-1] == ""
+    assert fusion.prompt() == ""
+
+def test_run_asr_does_not_promote_low_confidence_or_probe_names():
+    fusion = NameFusion(Glossary({"ルシア": "Lucia"}), "", "")
+    asr = FakeASR(["ルシアだよ", "ルシアがいる", "ルシアはどこ"])
+    incoming, outgoing = queue.Queue(), queue.Queue()
+    incoming.put(_speech(0, vad_confidence=0.2))
+    incoming.put(_speech(3, probe=True, vad_confidence=None))
+    incoming.put(_speech(6, vad_confidence=0.9))
+    incoming.put(None)
+    run_asr(asr, incoming, outgoing, name_fusion=fusion)
+    # Only the last utterance counts as an acoustic observation.
+    assert fusion.prompt() == ""
+
+
+def test_run_asr_gap_discards_dynamic_name_memory():
+    fusion = NameFusion(Glossary({"ルシア": "Lucia"}), "", "")
+    asr = FakeASR(["ルシアが来た", "ルシアはどこ", "天気がいいですね"])
+    incoming, outgoing = queue.Queue(), queue.Queue()
+    incoming.put(_speech(0))
+    incoming.put(_speech(3))
+    incoming.put(_speech(40))  # More than 15s ASR context gap.
     incoming.put(None)
     run_asr(asr, incoming, outgoing, name_fusion=fusion)
     assert "ルシア" in asr.prompts

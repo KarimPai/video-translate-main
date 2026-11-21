@@ -407,7 +407,7 @@ class WhisperASR:
         # Build decode options
         initial_prompt = None
         with self._state_lock:
-            if not no_context and self._name_hint_override:
+            if not no_context and getattr(self, "_name_hint_override", False):
                 # Fusion supplies names only. Never fall back to previously
                 # accepted free-form dialogue when no name candidate exists.
                 initial_prompt = self.context[:160] or None

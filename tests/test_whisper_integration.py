@@ -1,4 +1,4 @@
-"""Whisper Large-v3 Turbo integration tests.
+"""Whisper Large-v3 Turbo unit checks and manually invoked local smoke tests.
 
 Tests model loading, language detection, mixed-language recovery,
 and hallucination prevention for the faster-whisper backend.
@@ -14,11 +14,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 results = []
 
+# Smoke tests require a local CUDA model and are not collected by pytest.
+# Running this file directly now fails on the first unsuccessful check.
+
 
 def record(test_name: str, passed: bool, detail: str = ""):
     results.append({"test": test_name, "passed": passed, "detail": detail})
     status = "PASS" if passed else "FAIL"
     print(f"  [{status}] {test_name}" + (f" — {detail}" if detail else ""))
+    if not passed:
+        raise AssertionError(f"{test_name} failed: {detail}")
 
 
 def section(name: str):
@@ -32,7 +37,7 @@ def section(name: str):
 # ====================================================================
 
 
-def test_model_path_resolution():
+def smoke_model_path_resolution():
     """Test that Whisper resolves the local model path correctly."""
     section("1. Model Path Resolution")
 
@@ -96,7 +101,7 @@ def test_model_path_resolution():
 # ====================================================================
 
 
-def test_cuda_model_loading():
+def smoke_cuda_model_loading():
     """Test that Whisper loads on CUDA without PyTorch."""
     section("2. CUDA Model Loading")
 
@@ -176,7 +181,7 @@ def test_cuda_model_loading():
 # ====================================================================
 
 
-def test_silence_transcription():
+def smoke_silence_transcription():
     """Test that silence/noise produces no hallucinated output."""
     section("3. Silence Transcription")
 
@@ -226,7 +231,7 @@ def test_silence_transcription():
 # ====================================================================
 
 
-def test_cancel_and_state():
+def smoke_cancel_and_state():
     """Test cancellation, remember, and forget operations."""
     section("4. Cancel and State Management")
 
@@ -267,7 +272,7 @@ def test_cancel_and_state():
 # ====================================================================
 
 
-def test_config_profile():
+def smoke_config_profile():
     """Test that [asr.whisper] profile loads correctly."""
     section("5. Config Profile Loading")
 
@@ -309,7 +314,7 @@ def test_config_profile():
 # ====================================================================
 
 
-def test_registry_integration():
+def smoke_registry_integration():
     """Test Whisper registration and factory creation."""
     section("6. Registry Integration")
 
@@ -505,12 +510,12 @@ def main():
     print("  Whisper Large-v3 Turbo Integration Tests")
     print("="*60)
 
-    test_model_path_resolution()
-    test_cuda_model_loading()
-    test_silence_transcription()
-    test_cancel_and_state()
-    test_config_profile()
-    test_registry_integration()
+    smoke_model_path_resolution()
+    smoke_cuda_model_loading()
+    smoke_silence_transcription()
+    smoke_cancel_and_state()
+    smoke_config_profile()
+    smoke_registry_integration()
     test_quality_guard()
     test_text_filter()
     test_language_filter()

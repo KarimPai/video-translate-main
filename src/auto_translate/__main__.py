@@ -252,6 +252,12 @@ def _main(resources: ExitStack) -> None:
     check_running()
     vad_backend_name = cfg.models.vad_backend
     vad_cfg = vad_for_source(cfg.vad, live=bool(source.live))
+    if cfg.models.asr_backend == "whisper" and vad_cfg.fallback_s > 0:
+        # Forced-Japanese Whisper tends to invent text on speech-negative
+        # game audio/music. Preserve ordinary VAD and short-speech recovery,
+        # but do not generate speculative VAD-negative probes for Whisper.
+        vad_cfg.fallback_s = 0.0
+        log.info("Whisper anti-hallucination: VAD-negative probing disabled")
     registry = get_default_registry()
     try:
         # Pass the complete VadConfig so all user-configured settings are

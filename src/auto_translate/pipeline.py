@@ -575,11 +575,27 @@ def run_translate(
         vod_merge_timeout_s = float(_vod_timeout_raw)
     items = iter(in_q.get, object())
     if merge is not None and live and playback_position is not None:
+        # A stalled/discontinuous MPV clock must not hold a translated fragment
+        # indefinitely while AudioProgress piles up behind it.
+        live_held_id: int | None = None
+        live_held_at = 0.0
+
+        def live_on_hold(held: Transcript) -> None:
+            nonlocal live_held_id, live_held_at
+            live_held_id = id(held)
+            live_held_at = time.monotonic()
+
         def due(held: Transcript) -> bool:
             position = playback_position()
             onset = held.speech_start_s if held.speech_start_s is not None else held.start_s
-            return position is None or position >= onset - live_merge_margin_s
-        items = _join_fragments(_ticking(in_q, MERGE_TICK_S), *merge, due=due)
+            if position is None or position >= onset - live_merge_margin_s:
+                return True
+            return (id(held) == live_held_id
+                    and time.monotonic() - live_held_at >= max(3.0, vod_merge_timeout_s))
+
+        items = _join_fragments(
+            _ticking(in_q, MERGE_TICK_S), *merge, due=due, on_hold=live_on_hold,
+        )
     elif merge is not None:
         # VOD mode: use ticking with a real-time timeout so held fragments
         # are released when no continuation arrives within vod_merge_timeout_s.
@@ -672,6 +688,13 @@ def run_translate(
             if result is not None:
                 speech_id = result
 
+        def release_pending() -> None:
+            """Finalize a reserved interval when this cue will not be published."""
+            if speech_id is not None and complete_speech_cb is not None:
+                complete_speech_cb(
+                    tr.start_s, tr.end_s, tr.generation, speech_id=speech_id,
+                )
+
         if translator is not None:
             # Report to watchdog: this transcript is now in-flight for translation
             if worker_state is not None:
@@ -684,6 +707,7 @@ def run_translate(
                         increment_counter("expired")
                         if worker_state is not None:
                             worker_state.leave_inference(success=False)
+                        release_pending()
                         continue
                     model_started = time.monotonic()
                     if callable(set_position):
@@ -694,10 +718,12 @@ def run_translate(
             except CancelledError:
                 if worker_state is not None:
                     worker_state.leave_inference(success=False)
+                release_pending()
                 continue
             except TranslatorUnavailable:
                 if worker_state is not None:
                     worker_state.leave_inference(success=False)
+                release_pending()
                 if ((stop is not None and stop.is_set()) or
                         (get_generation is not None and tr.generation != get_generation())):
                     continue
@@ -707,9 +733,11 @@ def run_translate(
                     worker_state.leave_inference(success=False)
                 if ((stop is not None and stop.is_set()) or
                         (get_generation is not None and tr.generation != get_generation())):
+                    release_pending()
                     continue
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
+                    release_pending()
                     raise TranslatorUnavailable(f"Translation failed on three consecutive cues: {e}") from e
                 log.error("translation failed: %s", e)
                 suppressed = True
@@ -718,11 +746,14 @@ def run_translate(
             if worker_state is not None:
                 worker_state.leave_inference(success=not suppressed)
             if get_generation is not None and tr.generation != get_generation():
+                release_pending()
                 continue
             if stop is not None and stop.is_set():
+                release_pending()
                 continue
             if live and _expired_live_cue(tr, playback_position, live_late_window_s):
                 increment_counter("expired")
+                release_pending()
                 continue
 
             # Track suppression reason for better diagnostics
@@ -1097,6 +1128,13 @@ def run(
     for thread in threads:
         thread.start()
 
+    def release_discarded_subtitle(sub: Subtitle) -> None:
+        """Avoid leaving coverage blocked when an output guard drops a cue."""
+        if sub.speech_id is not None and complete_speech_cb is not None:
+            complete_speech_cb(
+                sub.start_s, sub.end_s, sub.generation, speech_id=sub.speech_id,
+            )
+
     stats = Stats()
     last_subtitle_generation: int | None = None
     observed_generation = ingest.generation
@@ -1213,10 +1251,12 @@ def run(
                     allow_jp = tcfg is not None and getattr(tcfg, "suppress_japanese_in_english", True) is False
                     cleaned = sanitize_english_output(item.en, allow_japanese=allow_jp)
                     if not cleaned:
+                        release_discarded_subtitle(item)
                         increment_counter("dropped")
                         continue
                     item = replace(item, en=cleaned)
                 elif translator is not None:
+                    release_discarded_subtitle(item)
                     increment_counter("dropped")
                     continue
 
@@ -1246,6 +1286,7 @@ def run(
                         "Suppressed repeat subtitle: gen=%d count=%d overlap=%s text=%r",
                         item.generation, identical_count, overlap, item.en[:110],
                     )
+                    release_discarded_subtitle(item)
                     increment_counter("dropped")
                     continue
 
@@ -1297,9 +1338,9 @@ def run(
             _raise_worker_failure(failures)
             now = time.monotonic()
             if _expected_vod_idle(ingest, outputs):
-                # User pause or intentional audio lead cap is not a stall.
+                # Pacing is intentional; do not suppress independent worker-health
+                # diagnostics by constantly resetting last_warning.
                 last_activity = now
-                last_warning = now
             else:
                 backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
                 if backlog and now - last_activity > 90.0:
@@ -1334,10 +1375,8 @@ def run(
                 # 3. Stale generation — worker processing old seek position
                 # 4. Natural silence — no work, no active inference (NOT a stall)
                 is_queued_stall = has_backlog and not any_worker_active
-                is_in_flight_stall = (
-                    not has_backlog
-                    and (asr_stalled or mt_stalled)
-                )
+                # A hung inference can coexist with a full upstream queue.
+                is_in_flight_stall = asr_stalled or mt_stalled
                 is_stale_gen_stall = asr_stale_gen or mt_stale_gen
                 # Natural silence: no backlog, no active worker, audio may or may
                 # not be flowing. This is NOT a stall — do nothing.
@@ -1351,12 +1390,13 @@ def run(
                 # Rate-limit: emit diagnostics at most every 30s per stall type
                 can_diag = now - last_warning > 30.0
 
-                if no_sub_s > 30.0 and not is_natural_silence:
-                    stall_type = "queued" if is_queued_stall else (
-                        "in_flight" if is_in_flight_stall else (
-                            "stale_generation" if is_stale_gen_stall else "unknown"
-                        )
+                confirmed_stall = is_in_flight_stall or is_stale_gen_stall or is_queued_stall
+                if no_sub_s > 30.0 and confirmed_stall and can_diag:
+                    stall_type = (
+                        "in_flight" if is_in_flight_stall else
+                        "stale_generation" if is_stale_gen_stall else "queued"
                     )
+                    last_warning = now
                     record_event(
                         "subtitle_starvation",
                         queues=subtitle_backlog,
@@ -1366,21 +1406,19 @@ def run(
                         asr_state=asr_worker_state.summary(),
                         mt_state=mt_worker_state.summary(),
                     )
-                    if can_diag:
-                        last_warning = now
-                        if is_queued_stall:
+                    if is_in_flight_stall:
+                        log.warning(
+                            "Subtitle starvation (in-flight): no subtitle for %.0fs; "
+                            "ASR stalled=%s MT stalled=%s; queued=%s",
+                            no_sub_s, asr_stalled, mt_stalled, subtitle_backlog,
+                        )
+                    elif is_queued_stall:
                             log.warning(
                                 "Subtitle starvation (queued): no subtitle for %.0fs "
                                 "with queued work %s; workers idle",
                                 no_sub_s, subtitle_backlog,
                             )
-                        elif is_in_flight_stall:
-                            log.warning(
-                                "Subtitle starvation (in-flight): no subtitle for %.0fs; "
-                                "ASR stalled=%s MT stalled=%s",
-                                no_sub_s, asr_stalled, mt_stalled,
-                            )
-                        elif is_stale_gen_stall:
+                    elif is_stale_gen_stall:
                             log.warning(
                                 "Subtitle starvation (stale gen): no subtitle for %.0fs; "
                                 "ASR stale=%s MT stale=%s",
@@ -1389,9 +1427,12 @@ def run(
 
                 # Recovery watchdog: VOD deadlock recovery when auto-pause is active
                 # and there is genuine work to process (not natural silence).
+                # Unpausing MPV cannot unblock an inference call stuck inside
+                # its model/backend. Reserve the pacing escape for idle workers
+                # with queued input; never play untranslated video to mask a hang.
                 needs_recovery = (
-                    (is_queued_stall or is_in_flight_stall)
-                    and not is_natural_silence
+                    not ingest.source.live and is_queued_stall
+                    and not is_in_flight_stall and not is_natural_silence
                 )
                 if needs_recovery:
                     auto_paused = False
@@ -1449,30 +1490,9 @@ def run(
                     ps if ps is not None else -1,
                     depths,
                 )
-                # Abandon stale pending speech that is far behind playback
-                # to prevent watermark from being permanently blocked.
-                # Use VAD progress as the cutoff base when the watermark is
-                # stuck — a pending interval can block translated_until from
-                # advancing, making (tu - 60) unable to reach the stuck interval.
-                # VAD progress always moves forward, so it provides a reliable
-                # reference for staleness even when the watermark is blocked.
-                for out in outputs:
-                    abandon = getattr(out, "abandon_stale_pending_speech", None)
-                    if callable(abandon):
-                        # Prefer VAD progress as the cutoff base: it always
-                        # advances and is not blocked by pending speech.
-                        base = vp if vp is not None else tu
-                        if base is not None and base > 0:
-                            cutoff = base - 60.0
-                            abandoned = abandon(cutoff)
-                            if abandoned > 0:
-                                log.info(
-                                    "Abandoned %d stale pending speech intervals "
-                                    "before %.1fs (vad_progress=%.1fs watermark=%.1fs)",
-                                    abandoned, cutoff,
-                                    vp if vp is not None else -1,
-                                    tu if tu is not None else -1,
-                                )
+                # Pending speech is finalized by its own terminal processing path
+                # (published/suppressed/expired/cancelled) or cleared on seek.
+                # Never abandon valid speech based only on VAD media position.
 
             for name, q in queues.items():
                 stats.max_q[name] = max(

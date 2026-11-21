@@ -18,7 +18,7 @@ jobs:
         run: python -m pip install ruff
       - name: Check changed source and regression tests
         run: |
-          ruff check src/auto_translate/pipeline.py src/auto_translate/output/mpv.py src/auto_translate/output/coverage.py tests/test_regression.py
+          ruff check src/auto_translate/pipeline.py src/auto_translate/asr/qwen3_asr.py src/auto_translate/output/mpv.py src/auto_translate/output/coverage.py tests/test_regression.py tests/test_mixed_audio_recovery.py
           python -m compileall -q src tests
       - name: Install lightweight test requirements
         run: python -m pip install pytest numpy httpx huggingface-hub
@@ -27,6 +27,7 @@ jobs:
           PYTHONPATH: src
         run: |
           python -m pytest -q tests/test_regression.py -k "cancelled_translation_releases_reserved_coverage or live_cue_expired_after_reservation_releases_coverage or translation_failure_exhaustion_finalizes_all_reserved_intervals or discarded_output_releases_coverage_by_speech_identity or vad_progress_does_not_expire_legitimately_pending_translation"
+          python -m pytest -q tests/test_mixed_audio_recovery.py
 
   full-unit-tests:
     runs-on: ubuntu-latest

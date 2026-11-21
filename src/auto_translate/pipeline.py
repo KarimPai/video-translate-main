@@ -153,6 +153,29 @@ def _finalize_discarded_subtitle(
     )
 
 
+def _credible_foreign_context(utt: Utterance, transcript: str) -> bool:
+    """Keep human foreign speech, reject likely one-word noise hallucinations.
+
+    Qwen can hear footsteps/engines as 'yes' or 'yeah'. Do not remove genuine
+    longer English turns; uncertain one-word candidates need stronger VAD
+    evidence and must not originate from speculative VAD-negative probes.
+    """
+    if not transcript.strip():
+        return False
+    words = re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", transcript)
+    duration_s = max(0.0, utt.end_s - utt.start_s)
+    if len(words) <= 2 and len(transcript) <= 24:
+        return (
+            not utt.probe
+            and utt.vad_confidence is not None
+            and utt.vad_confidence >= 0.70
+            and duration_s >= 0.40
+        )
+    return not utt.probe or (
+        utt.vad_confidence is not None and utt.vad_confidence >= 0.55
+    )
+
+
 ASR_CONTEXT_GAP_S = 15.0
 _SENTENCE_END = re.compile(r"[。．.！!？?…‥」』）)】♪〜～ー]\s*$")
 MERGE_TICK_S = 0.25
@@ -313,7 +336,8 @@ def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None, on_hol
                     and item.sample / SAMPLE_RATE <= held.end_s + max_gap_s):
                 parked.append(item)
                 continue
-            if (type(item) is Transcript and item.generation == held.generation
+            if (type(item) is Transcript and item.language == "ja"
+                    and held.language == "ja" and item.generation == held.generation
                     and item.start_s - held.end_s <= max_gap_s and item.end_s - held.start_s <= max_span_s):
                 item = Transcript(held.start_s, item.end_s, held.ja + item.ja, held.timings,
                                   generation=held.generation, speech_start_s=held.speech_start_s)
@@ -323,7 +347,8 @@ def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None, on_hol
                 yield from parked
                 parked.clear()
             held = None
-        if (type(item) is Transcript and not _SENTENCE_END.search(item.ja)
+        if (type(item) is Transcript and item.language == "ja"
+                and not _SENTENCE_END.search(item.ja)
                 and not (due is not None and due(item))):
             held = item
             if on_hold is not None:
@@ -524,6 +549,30 @@ def run_asr(
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
             continue
+        # Qwen reports an audio-derived source language. Legacy Japanese-only
+        # backends have no such field and continue to use the existing path.
+        detected_language = getattr(asr, "last_detected_language", "ja")
+        if detected_language == "ja" and not re.search(
+                r"[\\u3040-\\u30ff\\u3400-\\u9fff]", text
+        ) and re.search(r"[A-Za-z]", text):
+            # A language tag alone does not justify showing English words as
+            # Japanese dialogue ('yes'/'yeah' are common sound-effect errors).
+            detected_language = "und"
+        if detected_language != "ja":
+            if detected_language != "none" and _credible_foreign_context(utt, text):
+                out_q.put(Transcript(
+                    utt.start_s, utt.end_s, text, utt.timings,
+                    generation=utt.generation, speech_start_s=utt.speech_start_s,
+                    language=detected_language,
+                ))
+                record_event("foreign_speech_context", language=detected_language,
+                             generation=utt.generation, source_start_s=utt.start_s,
+                             source_end_s=utt.end_s)
+            else:
+                record_event("foreign_noise_rejected", language=detected_language,
+                             generation=utt.generation, source_start_s=utt.start_s,
+                             source_end_s=utt.end_s)
+            continue
         if language_filter is not None:
             duration_s = utt.end_s - utt.start_s
             if not language_filter.filter(text, duration_s):
@@ -679,6 +728,23 @@ def run_translate(
         if last_speech_end_s is not None and tr.start_s - last_speech_end_s > context_max_gap_s:
             history.clear()
         last_speech_end_s = tr.end_s
+
+        # Recognized English remains conversational context, but never enters
+        # PLaMo's Japanese translation path or the on-screen subtitle queue.
+        # Tag the source language inside contextual history, so English
+        # dialogue cannot be mistaken for a prior Japanese utterance.
+        if isinstance(tr, Transcript) and tr.language != "ja":
+            if context_lines and useful_context(tr.ja):
+                label = {
+                    "en": "英語の発話",
+                    "id": "インドネシア語の発話",
+                    "ms": "マレー語の発話",
+                }.get(tr.language, "外国語の発話")
+                history.append((f"（{label}）{tr.ja}", ""))
+            record_event("foreign_speech_context_stored", language=tr.language,
+                         generation=tr.generation, source_start_s=tr.start_s,
+                         source_end_s=tr.end_s)
+            continue
 
         # A cached Subtitle already includes its Japanese transcript and
         # English translation; do not translate the same VOD cue again.

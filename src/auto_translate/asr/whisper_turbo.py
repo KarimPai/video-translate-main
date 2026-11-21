@@ -306,8 +306,8 @@ class WhisperASR:
         # Quality guard
         reason = transcript_problem(text, duration_s)
         if reason:
-            self.last_rejection = reason
-            log.debug("Discarding ASR output (%s): %s", reason, " ".join(text[:200].split()))
+            self.last_rejection = self.last_rejection or reason
+            log.debug("Discarding ASR output (%s): %s", self.last_rejection, " ".join(text[:200].split()))
             return ""
 
         # A long verbatim reproduction of the supplied decoder prompt is
@@ -612,8 +612,12 @@ class WhisperASR:
             if self._reject_segment(segment):
                 continue
             text = trim_repetition_tail(str(getattr(segment, "text", "")).strip())
-            if not text or transcript_problem(text, max(0.1, float(getattr(segment, "end", duration_s))
-                                                        - float(getattr(segment, "start", 0.0)))):
+            problem = transcript_problem(
+                text, max(0.1, float(getattr(segment, "end", duration_s))
+                               - float(getattr(segment, "start", 0.0)))
+            )
+            if problem:
+                self.last_rejection = problem
                 continue
             start = max(0.0, min(duration_s, float(getattr(segment, "start", 0.0))))
             end = max(start, min(duration_s, float(getattr(segment, "end", duration_s))))

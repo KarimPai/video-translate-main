@@ -2859,6 +2859,159 @@ def test_worker_state_with_run_asr():
     assert not ws.active, "Worker should be idle after finishing"
 
 
+
+# ---------------------------------------------------------------------------
+# Long-session reliability: end-to-end stage lifecycle and coverage
+# ---------------------------------------------------------------------------
+
+
+def test_cancelled_translation_releases_reserved_coverage():
+    """A cancelled MT call must not leave VOD coverage blocked indefinitely."""
+    from concurrent.futures import CancelledError
+
+    from auto_translate.output.coverage import CoverageTracker
+    from auto_translate.pipeline import WorkerState, run_translate
+
+    class CancelledTranslator:
+        def translate(self, japanese, history):
+            raise CancelledError()
+
+    tracker = CoverageTracker(start_s=0.0)
+    tracker.set_generation(0)
+    received = []
+
+    def record(start, end, generation):
+        return tracker.record_speech(start, end, generation)
+
+    def complete(start, end, generation, speech_id=None):
+        received.append(speech_id)
+        tracker.complete_speech(speech_id)
+
+    in_q, out_q = queue.Queue(), queue.Queue()
+    in_q.put(Transcript(0.0, 2.0, "こんにちは", generation=0))
+    in_q.put(None)
+    state = WorkerState()
+    run_translate(
+        CancelledTranslator(), 0, in_q, out_q,
+        record_speech_cb=record, complete_speech_cb=complete,
+        worker_state=state,
+    )
+    assert received == [1]
+    assert tracker.pending_count() == 0
+    assert not state.active
+    assert out_q.get_nowait() is None
+
+
+def test_live_cue_expired_after_reservation_releases_coverage():
+    """An expiration after record_speech must finalize the reserved interval."""
+    from auto_translate.output.coverage import CoverageTracker
+    from auto_translate.pipeline import WorkerState, run_translate
+
+    class ShouldNotTranslate:
+        def translate(self, japanese, history):
+            raise AssertionError("expired cue should never reach translation")
+
+    positions = iter((0.0, 30.0))
+    tracker = CoverageTracker(start_s=0.0)
+    seen = []
+
+    def record(start, end, generation):
+        return tracker.record_speech(start, end, generation)
+
+    def complete(start, end, generation, speech_id=None):
+        seen.append(speech_id)
+        tracker.complete_speech(speech_id)
+
+    in_q, out_q = queue.Queue(), queue.Queue()
+    in_q.put(Transcript(0.0, 2.0, "こんにちは", generation=0))
+    in_q.put(None)
+    state = WorkerState()
+    run_translate(
+        ShouldNotTranslate(), 0, in_q, out_q,
+        live=True, playback_position=lambda: next(positions),
+        record_speech_cb=record, complete_speech_cb=complete,
+        worker_state=state,
+    )
+    assert seen == [1]
+    assert tracker.pending_count() == 0
+    assert not state.active
+    assert out_q.get_nowait() is None
+
+
+def test_translation_failure_exhaustion_finalizes_all_reserved_intervals():
+    """The third MT failure surfaces an error without leaking the last cue."""
+    from auto_translate.output.coverage import CoverageTracker
+    from auto_translate.pipeline import run_translate
+    from auto_translate.translate.base import TranslatorUnavailable
+
+    class BrokenTranslator:
+        def translate(self, japanese, history):
+            raise ValueError("backend disconnected")
+
+    tracker = CoverageTracker(start_s=0.0)
+    completed = []
+
+    def record(start, end, generation):
+        return tracker.record_speech(start, end, generation)
+
+    def complete(start, end, generation, speech_id=None):
+        completed.append(speech_id)
+        tracker.complete_speech(speech_id)
+
+    in_q, out_q = queue.Queue(), queue.Queue()
+    for start in (0.0, 3.0, 6.0):
+        in_q.put(Transcript(start, start + 2.0, "こんにちは", generation=0))
+    in_q.put(None)
+
+    with pytest.raises(TranslatorUnavailable, match="three consecutive"):
+        run_translate(
+            BrokenTranslator(), 0, in_q, out_q,
+            record_speech_cb=record, complete_speech_cb=complete,
+        )
+    assert completed == [1, 2, 3]
+    assert tracker.pending_count() == 0
+
+
+def test_discarded_output_releases_coverage_by_speech_identity():
+    """A rejected/deduplicated translated cue must not block later playback."""
+    from auto_translate.output.coverage import CoverageTracker
+    from auto_translate.pipeline import _finalize_discarded_subtitle
+    from auto_translate.types import Subtitle
+
+    tracker = CoverageTracker(start_s=0.0)
+    sid = tracker.record_speech(0.0, 2.0)
+    tracker.advance_vad(8.0)
+    assert tracker.translated_until == 0.0
+
+    completed = []
+
+    def complete(start, end, generation, speech_id=None):
+        completed.append(speech_id)
+        tracker.complete_speech(speech_id)
+
+    _finalize_discarded_subtitle(
+        Subtitle(0.0, 2.0, "こんにちは", "", generation=0, speech_id=sid),
+        complete,
+    )
+    assert completed == [sid]
+    assert tracker.pending_count() == 0
+    assert tracker.translated_until >= 8.0
+
+
+def test_vad_progress_does_not_expire_legitimately_pending_translation():
+    """Coverage must retain a slow in-flight current-generation utterance."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    tracker = CoverageTracker(start_s=0.0)
+    tracker.set_generation(3)
+    sid = tracker.record_speech(0.0, 4.0, generation=3)
+    tracker.advance_vad(180.0)
+    assert tracker.pending_count() == 1
+    assert tracker.translated_until == 0.0
+    assert tracker.complete_speech(sid)
+    assert tracker.translated_until >= 180.0
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

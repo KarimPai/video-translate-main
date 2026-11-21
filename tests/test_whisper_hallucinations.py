@@ -378,3 +378,13 @@ def test_other_asr_backends_still_accept_optional_vad_probes():
     run_asr(other, inbound, outbound)
     assert other.probes == 1
     assert len([x for x in list(outbound.queue) if isinstance(x, Transcript)]) == 1
+
+
+def test_whisper_context_echo_recovery_cannot_publish_katakana_loop():
+    w = _whisper()
+    w._model.transcribe.return_value = _output(
+        "アイマステンソンソンソンソンソンソン", end=3.0
+    )
+    assert w.recover_context_echo(_audio(3.0), timeout=5.0) == ""
+    assert w.last_rejection == "whisper_phonetic_loop"
+    assert w._model.transcribe.call_count == 1

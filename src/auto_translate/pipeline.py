@@ -233,6 +233,7 @@ def run_asr(
     language_filter=None,
     gate=None,
     record_speech_cb: Callable[[float, float, int], int | None] | None = None,
+    name_fusion=None,
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
     import numpy as np
@@ -241,6 +242,14 @@ def run_asr(
     last_accepted_end_s: float | None = None
     remember = getattr(asr, "remember", None)
     forget = getattr(asr, "forget", None)
+    set_context = getattr(asr, "set_context", None)
+
+    def refresh_name_hints():
+        if name_fusion is not None and callable(set_context):
+            # These are candidates for decoding, not recognized transcript text.
+            set_context(name_fusion.prompt())
+
+    refresh_name_hints()
     # Relative live timestamps can be reused after reconnects. A VOD cache
     # must never supply cues for a different live generation.
     if live:
@@ -256,6 +265,9 @@ def run_asr(
         cancel = getattr(asr, "cancel_pending", None)
         if callable(cancel):
             cancel()
+        if name_fusion is not None:
+            name_fusion.reset()
+            refresh_name_hints()
         current_generation = generation
 
     def accepted(text, end_s):
@@ -263,6 +275,8 @@ def run_asr(
         last_accepted_end_s = end_s
         if callable(remember):
             remember(text)
+        if name_fusion is not None and name_fusion.observe(text):
+            refresh_name_hints()
 
     while True:
         item = in_q.get()
@@ -306,9 +320,13 @@ def run_asr(
             continue
         if cancelled(utt.generation):
             continue
-        if (last_accepted_end_s is not None and callable(forget)
+        if (last_accepted_end_s is not None
                 and utt.start_s - last_accepted_end_s > ASR_CONTEXT_GAP_S):
-            forget()
+            if callable(forget):
+                forget()
+            if name_fusion is not None:
+                name_fusion.reset()
+                refresh_name_hints()
             last_accepted_end_s = None
         # Record queue wait time: time from segmented to ASR start (waiting for inference slot)
         utt.timings.asr_queue_wait = time.monotonic() - utt.timings.segmented
@@ -824,6 +842,7 @@ def run(
     segmenter=None,
     gate=None,
     diagnostics=None,
+    name_fusion=None,
 ) -> None:
     """Run ingestion, VAD, ASR and translation."""
 
@@ -908,6 +927,7 @@ def run(
                 language_filter,
                 gate,
                 record_speech_cb,
+                name_fusion,
             ),
             name="asr",
             daemon=True,

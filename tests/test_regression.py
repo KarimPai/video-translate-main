@@ -3038,6 +3038,8 @@ def test_qwen_auto_language_metadata_is_not_displayed_and_no_forced_language():
     ("language English<asr_text>Yeah, let's go", "en", "Yeah, let's go"),
     ("language Indonesian<asr_text>Apa kabar", "id", "Apa kabar"),
     ("language None<asr_text>", "none", ""),
+    ("language None<asr_text>こんにちは", "ja", "こんにちは"),
+    ("language None<asr_text>Someone is calling.", "und", "Someone is calling."),
     ("language English\n<asr_text>Turn left", "en", "Turn left"),
     ("<asr_text>おはよう", "ja", "おはよう"),
     ("おはようございます", "ja", "おはようございます"),

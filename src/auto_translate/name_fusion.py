@@ -37,11 +37,11 @@ class NameFusion:
             _PLAIN_NAME.fullmatch(en) and len(ja) <= 24
         }
 
-        # Title/cast have higher authority than a generic game vocabulary list.
+        # Exact Japanese names in the stream title/tags outrank names inferred
+        # from broad cast metadata. Then use scoped topic names (e.g. GTA VI),
+        # followed by the profiled streamer/cast. This guarantees that a busy
+        # collaboration prompt cannot crowd out first-mention game characters.
         seeds: list[str] = []
-        for ja in glossary.recognition_names(recognition_context):
-            if ja in self._names and ja not in seeds:
-                seeds.append(ja)
         for ja, en in glossary.find(metadata_text, context=metadata_text):
             if ja in self._names and self._names[ja] == en and ja not in seeds:
                 seeds.append(ja)
@@ -49,6 +49,9 @@ class NameFusion:
         # GTA robbery terms, ordinary words and unrelated topic vocabulary
         # never enter this name-prompt channel.
         for ja in glossary.vocabulary:
+            if ja in self._names and ja not in seeds:
+                seeds.append(ja)
+        for ja in glossary.recognition_names(recognition_context):
             if ja in self._names and ja not in seeds:
                 seeds.append(ja)
 

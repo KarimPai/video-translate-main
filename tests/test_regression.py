@@ -3191,10 +3191,12 @@ def test_foreign_context_does_not_cross_seek_generation():
 
 def test_join_fragments_never_merges_english_and_japanese():
     from auto_translate.pipeline import _join_fragments
+    from auto_translate.types import SourceEOF
 
     foreign = Transcript(0.0, 1.0, "Let's go", generation=0, language="en")
     japanese = Transcript(1.1, 2.0, "行こう", generation=0, language="ja")
-    items = list(_join_fragments([foreign, japanese], 0.6, 16.0))
+    emitted = list(_join_fragments([foreign, japanese, SourceEOF(0)], 0.6, 16.0))
+    items = [item for item in emitted if isinstance(item, Transcript)]
     assert len(items) == 2
     assert items[0].language == "en"
     assert items[1].ja == "行こう"

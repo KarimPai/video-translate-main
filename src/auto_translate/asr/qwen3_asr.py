@@ -81,6 +81,10 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
                 "indonesian": "id", "id": "id",
                 "malay": "ms", "ms": "ms",
             }.get(language, "und")
+            # The language tag identifies the dominant voice, not every
+            # speaker. Retain audible Japanese text in mixed EN/JA output.
+            if language != "ja" and len(_JAPANESE_KANA.findall(text)) >= 2:
+                language = "ja"
         else:
             language = "und"
     else:
@@ -332,6 +336,72 @@ class Qwen3ASR:
             self.last_rejection = None
 
         return text
+
+    def recover_japanese_from_mixed_audio(
+        self, audio: np.ndarray, probe: bool = False,
+    ) -> list[tuple[float, float, str]]:
+        """Recheck short windows of a foreign-dominant segment for Japanese.
+
+        Auto language ID describes a dominant language for the whole audio
+        request, so simultaneous English game voices can hide a Japanese
+        streamer. Rechecking shorter slices uses the *audio* language label
+        again, not forced-Japanese decoding (which hallucinates on English).
+        Work is bounded and optional: only the pipeline's strong VAD-positive
+        foreign segments call this method.
+        """
+        duration = len(audio) / 16000.0
+        if self._closed or probe or duration < 2.2:
+            return []
+        generation = self._generation
+        budget_s = min(float(self.cfg.response_timeout_s), 12.0)
+        deadline = time.monotonic() + budget_s
+        # At most four short automatic-language requests. Overlap boundaries
+        # slightly to avoid cutting syllables; keep original media timestamps.
+        num_windows = 2 if duration <= 4.5 else (3 if duration <= 9.0 else 4)
+        step = duration / num_windows
+        found: list[tuple[float, float, str]] = []
+        original_language = self.last_detected_language
+        original_raw = self.last_raw_transcript
+        try:
+            with self._inference_lock:
+                for i in range(num_windows):
+                    if generation != self._generation or self._closed or stopping.is_set():
+                        return []
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.15:
+                        break
+                    start_s = max(0.0, i * step - (0.25 if i else 0.0))
+                    end_s = min(duration, (i + 1) * step + (0.25 if i < num_windows - 1 else 0.0))
+                    left = round(start_s * 16000)
+                    right = round(end_s * 16000)
+                    if right - left < 16000:
+                        continue
+                    try:
+                        candidate = self._transcribe_impl(
+                            audio[left:right], timeout=remaining,
+                        )
+                    except (httpx.HTTPError, Qwen3ASRError, ValueError) as exc:
+                        log.debug("Qwen mixed-language window recovery unavailable: %s", exc)
+                        break
+                    if (self.last_detected_language != "ja"
+                            or len(_JAPANESE_KANA.findall(candidate)) < 2
+                            or transcript_problem(candidate, end_s - start_s)):
+                        continue
+                    key = speech_key(candidate)
+                    if not key:
+                        continue
+                    if any(
+                        speech_key(previous) == key and start_s < previous_end
+                        for _, previous_end, previous in found
+                    ):
+                        continue
+                    found.append((start_s, end_s, candidate))
+        finally:
+            # A supplemental decode must not overwrite the primary language
+            # label or raw transcript when the pipeline inspects the cue.
+            self.last_detected_language = original_language
+            self.last_raw_transcript = original_raw
+        return found
 
     def cancel_pending(self) -> None:
         """Invalidate in-flight transcription requests."""

@@ -298,12 +298,20 @@ class Qwen3ASR:
                 self._accepted_keys.append(key)
             self._recent.append(text)
 
-    def forget(self, n: int = 1) -> None:
-        """Remove recent accepted transcripts (e.g. after seek)."""
+    def forget(self, n: int | None = None) -> None:
+        """Remove recent accepted transcripts (e.g. after seek).
+
+        When called without arguments (n=None), clears all context to match
+        the behavior of other ASR backends. When called with a specific count,
+        removes only that many recent transcripts.
+        """
         with self._state_lock:
-            for _ in range(n):
-                if self._recent:
-                    self._recent.pop()
+            if n is None:
+                self._recent.clear()
+            else:
+                for _ in range(n):
+                    if self._recent:
+                        self._recent.pop()
 
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
                              vad_confidence: float | None = None,

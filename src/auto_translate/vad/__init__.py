@@ -1,48 +1,3 @@
-"""VAD backend interface."""
-
-from dataclasses import dataclass
-from typing import Protocol
-
-
-@dataclass
-class VADSegment:
-    """A speech segment detected by VAD."""
-    start_s: float
-    end_s: float
-    audio: object  # numpy array, float32 mono 16 kHz
-    confidence: float | None = None
-
-
-class VADBackend(Protocol):
-    """Any class with these methods counts as a VAD backend."""
-
-    def feed(self, audio) -> list[VADSegment]:
-        """Feed audio samples and return completed segments.
-
-        Args:
-            audio: float32 mono 16 kHz numpy array.
-
-        Returns:
-            List of completed speech segments.
-        """
-        ...
-
-    def flush(self) -> list[VADSegment]:
-        """Flush remaining audio as a segment if any."""
-        ...
-
-    def reset(self) -> None:
-        """Reset internal state (e.g. after seek)."""
-        ...
-
-    def close(self) -> None:
-        """Release resources."""
-        ...
-
-
-__all__ = ["VADBackend", "VADSegment"]
-
-
 """Silero VAD segmenter: AudioChunk stream to timestamped ASR utterances.
 
 Loads the Silero VAD ONNX model on first use and keeps its LSTM recurrent
@@ -51,6 +6,11 @@ state across calls so it works on a live stream.
 VAD-negative probes are disabled by default to avoid hallucinating speech
 from music, laughter and game sound effects. Optional probe mode is retained.
 """
+
+# Re-export VAD interface types from base.py
+from .base import VADBackend, VADSegment
+
+__all__ = ["VADBackend", "VADSegment"]
 
 import logging
 import queue

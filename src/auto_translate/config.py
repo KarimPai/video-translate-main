@@ -346,7 +346,7 @@ class MpvConfig:
     max_cue_lines: int = 2
     background_opacity: float = 0.3
     vod_pause_threshold_s: float = 0.5
-    vod_resume_threshold_s: float = 3.0
+    vod_resume_threshold_s: float = 8.0
 
     def __post_init__(self):
         for value in (self.delay_s, self.start_wait_s, self.live_late_window_s):

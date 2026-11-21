@@ -45,12 +45,6 @@ from .vad import run_segmenter
 log = logging.getLogger(__name__)
 
 
-class _PipelineState:
-    """Holds mutable state for the run() function — avoids function attributes."""
-    _last_vod_diag: float = 0.0
-
-
-_run_state = _PipelineState()
 
 
 def _create_vad_segmenter(vad_cfg, vad_backend_name: str):
@@ -987,6 +981,7 @@ def run(
     last_guard_end = -float("inf")
     last_guard_generation: int | None = None
     identical_count = 0
+    last_vod_diag = 0.0  # Throttle VOD diagnostics logging
 
     try:
         while not stop.is_set():
@@ -1224,9 +1219,8 @@ def run(
 
             # Watermark diagnostics: log translation progress every 10s during VOD
             if not ingest.source.live:
-                last_diag = getattr(_run_state, "_last_vod_diag", 0.0)
-                if now - last_diag > 10.0:
-                    _run_state._last_vod_diag = now
+                if now - last_vod_diag > 10.0:
+                    last_vod_diag = now
                     # Collect watermark positions from outputs
                     tu = None
                     vp = None

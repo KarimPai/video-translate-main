@@ -180,11 +180,6 @@ def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> b
     return False
 
 
-def resolve_slash_alternatives(text: str) -> str:
-    """Preserve all slash-separated content without modification."""
-    return text
-
-
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning/thinking tags and their content from model output."""
     result = _REASONING_BLOCK.sub("", text)
@@ -218,7 +213,6 @@ def clean_output(text: str) -> str:
     if _EXPLANATORY.match(line):
         return ""
     line = _MARKDOWN.sub(lambda match: match[1] or match[2], line)
-    line = resolve_slash_alternatives(line)
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
 
 

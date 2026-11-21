@@ -29,11 +29,18 @@ def test_pipeline_imports():
 
 
 def test_pipeline_state_class():
-    """Pipeline uses _PipelineState instead of function attributes."""
-    from auto_translate.pipeline import _PipelineState
-    state = _PipelineState()
-    assert hasattr(state, '_last_vod_diag')
-    assert state._last_vod_diag == 0.0
+    """Pipeline no longer uses module-level _PipelineState singleton.
+
+    The _last_vod_diag variable was moved into run() as a local variable
+    to prevent stale state across pipeline restarts.
+    """
+    import auto_translate.pipeline as pipeline_mod
+    assert not hasattr(pipeline_mod, '_PipelineState'), (
+        "_PipelineState class should be removed from pipeline module"
+    )
+    assert not hasattr(pipeline_mod, '_run_state'), (
+        "_run_state singleton should be removed from pipeline module"
+    )
 
 
 def test_haas_adapter_import():
@@ -420,12 +427,18 @@ def test_plamo_reload_lock():
 
 
 def test_pipeline_no_function_attribute():
-    """Pipeline uses _PipelineState class instead of function attributes for state."""
-    from auto_translate.pipeline import _PipelineState
-    # _PipelineState exists and manages _last_vod_diag as instance state
-    state = _PipelineState()
-    assert hasattr(state, '_last_vod_diag')
-    assert state._last_vod_diag == 0.0
+    """Pipeline uses local variables instead of module-level state for diagnostics.
+
+    The _last_vod_diag variable is now a local variable inside run(),
+    not a module-level singleton.
+    """
+    import auto_translate.pipeline as pipeline_mod
+    assert not hasattr(pipeline_mod, '_PipelineState'), (
+        "_PipelineState should not exist as module-level class"
+    )
+    assert not hasattr(pipeline_mod, '_run_state'), (
+        "_run_state should not exist as module-level singleton"
+    )
 
 
 def test_asr_quality_guard():

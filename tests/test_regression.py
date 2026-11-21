@@ -2030,6 +2030,121 @@ def test_gui_cli_args_respect_override():
     window.close()
 
 
+# ---------------------------------------------------------------------------
+# Audit fixes regression tests
+# ---------------------------------------------------------------------------
+
+def test_vod_resume_threshold_default_is_8s():
+    """Issue #4: MpvConfig.vod_resume_threshold_s must default to 8.0s, not 3.0s.
+
+    The 3.0s default was dangerously close to vod_pause_threshold_s (0.5s),
+    creating a narrow hysteresis band that could cause rapid pause/resume
+    oscillation. The code fallback was 8.0s, so the config should match.
+    """
+    from auto_translate.config import MpvConfig
+    cfg = MpvConfig()
+    assert cfg.vod_resume_threshold_s == 8.0, (
+        f"vod_resume_threshold_s should default to 8.0s, got {cfg.vod_resume_threshold_s}"
+    )
+    # Ensure hysteresis gap is adequate (resume - pause >= 5s)
+    hysteresis = cfg.vod_resume_threshold_s - cfg.vod_pause_threshold_s
+    assert hysteresis >= 5.0, (
+        f"Hysteresis gap {hysteresis}s is too narrow; should be >= 5s"
+    )
+
+
+def test_qwen3_forget_clears_all_context():
+    """Issue #5: Qwen3ASR.forget() must clear all context when called without arguments.
+
+    Previously, forget(n=1) removed only the last transcript, while HaasASR.forget()
+    cleared all. The pipeline calls forget() with no args after ASR_CONTEXT_GAP_S
+    (15s) is exceeded, expecting full context reset.
+    """
+    from auto_translate.asr.qwen3_asr import Qwen3ASR
+    from unittest import mock
+
+    # Create a mock Qwen3ASR instance
+    asr = mock.MagicMock(spec=Qwen3ASR)
+    asr._recent = ["transcript1", "transcript2", "transcript3"]
+    asr._state_lock = threading.RLock()
+
+    # Call the actual forget method with no arguments
+    Qwen3ASR.forget(asr)
+    assert asr._recent == [], (
+        f"forget() with no args should clear all context, got {asr._recent}"
+    )
+
+    # Verify forget(n=2) still works for partial removal
+    asr._recent = ["a", "b", "c"]
+    Qwen3ASR.forget(asr, n=2)
+    assert asr._recent == ["a"], (
+        f"forget(n=2) should remove last 2 items, got {asr._recent}"
+    )
+
+
+def test_resolve_slash_alternatives_removed():
+    """Issue #12: resolve_slash_alternatives no-op function must be removed.
+
+    The function returned its input unchanged and was called in clean_output()
+    with no effect. It should be removed along with its call site.
+    """
+    # The function should no longer exist in the module
+    from auto_translate import translate
+    assert not hasattr(translate.gemma4, 'resolve_slash_alternatives'), (
+        "resolve_slash_alternatives should be removed from gemma4 module"
+    )
+
+
+def test_vad_segment_imported_from_base():
+    """Issue #11: VADSegment and VADBackend must be imported from base.py, not duplicated.
+
+    Previously, both vad/__init__.py and vad/base.py defined the same classes.
+    Now __init__.py imports from base.py to avoid duplication.
+    """
+    from auto_translate.vad import VADSegment, VADBackend
+    from auto_translate.vad.base import VADSegment as BaseVADSegment, VADBackend as BaseVADBackend
+
+    # They should be the same class objects
+    assert VADSegment is BaseVADSegment, (
+        "VADSegment from vad.__init__ should be the same as vad.base.VADSegment"
+    )
+    assert VADBackend is BaseVADBackend, (
+        "VADBackend from vad.__init__ should be the same as vad.base.VADBackend"
+    )
+
+
+def test_pipeline_no_module_level_run_state():
+    """Issue #7: pipeline module must not have _run_state singleton.
+
+    The module-level _run_state singleton held _last_vod_diag which persisted
+    across pipeline restarts. It should be a local variable in run().
+    """
+    import auto_translate.pipeline as pipeline_mod
+    assert not hasattr(pipeline_mod, '_run_state'), (
+        "pipeline module should not have _run_state singleton"
+    )
+    assert not hasattr(pipeline_mod, '_PipelineState'), (
+        "pipeline module should not have _PipelineState class"
+    )
+
+
+def test_mpv_vod_wait_timeout_is_3x_lead():
+    """Issue #2: VOD autoplay wait timeout must be 3x PAUSE_LEAD_SECONDS.
+
+    Previously, vod_wait_until was set to lead (5s), which was insufficient
+    for cold-start model loading. Now it's 3x lead (15s) to account for
+    model loading and first-utterance translation time.
+    """
+    import inspect
+    from auto_translate.output.mpv import MpvOutput
+
+    # Check the source code contains the 3x multiplier
+    source = inspect.getsource(MpvOutput._play_session)
+    assert "lead * 3" in source, (
+        "VOD wait timeout should use lead * 3 multiplier"
+    )
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

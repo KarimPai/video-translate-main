@@ -1214,7 +1214,10 @@ class MpvOutput:
 
         paused = True
         live_health = _LivePlaybackHealth()
-        vod_wait_until = time.monotonic() + lead
+        # Allow sufficient time for model loading and first-utterance translation.
+        # A cold-start model may take 10-30s to load; 3x the lead provides margin
+        # without blocking the user indefinitely (they can manually unpause).
+        vod_wait_until = time.monotonic() + lead * 3
 
         while not self.stop.is_set():
 

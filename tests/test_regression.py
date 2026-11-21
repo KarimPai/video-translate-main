@@ -3271,7 +3271,7 @@ class TestTruncationRetryTokens:
         translator.server = mock.MagicMock()
         translator.server.alive.return_value = True
         translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], []))
+        translator._terms_for = mock.MagicMock(return_value=([], [], []))
 
         call_log = []
         def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
@@ -3325,7 +3325,7 @@ class TestTruncationRetryTokens:
         translator.server = mock.MagicMock()
         translator.server.alive.return_value = True
         translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], []))
+        translator._terms_for = mock.MagicMock(return_value=([], [], []))
 
         call_log = []
         def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
@@ -3414,6 +3414,236 @@ class TestTruncationRetryTokens:
         assert retry_tokens >= 512, (
             f"Retry tokens ({retry_tokens}) should be at least 512, "
             f"not capped by min(..., 256)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P0 — False-positive glossary rejection
+# ---------------------------------------------------------------------------
+
+class TestHaasAudioNormalization:
+    """Verify Haas wav_bytes normalization does not over-amplify game audio noise."""
+
+    def test_quiet_engine_noise_not_amplified(self):
+        """Low-RMS engine rumble should not be amplified to speech levels."""
+        from auto_translate.asr.haas import wav_bytes
+        # Simulate quiet engine noise: low-frequency rumble at RMS ~0.003
+        sr = 16000
+        duration = 3.0
+        t = np.linspace(0, duration, int(sr * duration))
+        noise = 0.003 * np.sin(2 * np.pi * 50 * t)  # 50 Hz rumble at 0.003 amplitude
+        # active_rms will be ~0.003, below 0.006 threshold → no gain applied
+        wav = wav_bytes(noise, normalize=True)
+        # Decode back to check peak amplitude wasn't boosted
+        import wave, io
+        buf = io.BytesIO(wav)
+        with wave.open(buf, "rb") as wf:
+            frames = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").astype(np.float32) / 32767
+        # Peak should not exceed original × 2.5
+        assert np.max(np.abs(frames)) <= 0.003 * 2.5, (
+            f"Engine noise amplified too much: peak={np.max(np.abs(frames)):.4f}"
+        )
+
+    def test_quiet_speech_is_amplified(self):
+        """Genuine quiet Japanese speech should still be normalized."""
+        from auto_translate.asr.haas import wav_bytes
+        sr = 16000
+        duration = 2.0
+        t = np.linspace(0, duration, int(sr * duration))
+        # Simulate quiet speech: bursty signal with low overall RMS but
+        # active frames above 0.006 threshold. Use intermittent bursts
+        # so overall RMS < 0.02 but active frame RMS > 0.006.
+        speech = np.zeros(len(t))
+        # Two short bursts at 0.3s and 1.2s
+        for start_s in [0.3, 1.2]:
+            s = int(start_s * sr)
+            e = s + int(0.2 * sr)
+            speech[s:e] = 0.015 * np.sin(2 * np.pi * 300 * t[s:e])
+        # Overall RMS is low (~0.003), but active frame RMS is ~0.015 > 0.006
+        wav = wav_bytes(speech, normalize=True)
+        import wave, io
+        buf = io.BytesIO(wav)
+        with wave.open(buf, "rb") as wf:
+            frames = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").astype(np.float32) / 32767
+        # Should be amplified: gain = min(2.5, 0.02/0.003) = 2.5
+        # Peak of original bursts = 0.015, amplified peak = 0.015 * 2.5 = 0.0375
+        assert np.max(np.abs(frames)) >= 0.015 * 2.0, (
+            f"Quiet speech not amplified enough: peak={np.max(np.abs(frames)):.4f}"
+        )
+
+    def test_normal_speech_not_modified(self):
+        """Normal-level speech should not be amplified."""
+        from auto_translate.asr.haas import wav_bytes
+        sr = 16000
+        duration = 2.0
+        t = np.linspace(0, duration, int(sr * duration))
+        speech = 0.05 * np.sin(2 * np.pi * 300 * t)  # Normal speech level
+        wav = wav_bytes(speech, normalize=True)
+        import wave, io
+        buf = io.BytesIO(wav)
+        with wave.open(buf, "rb") as wf:
+            frames = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").astype(np.float32) / 32767
+        # RMS 0.05 > 0.02 threshold → no gain
+        assert np.max(np.abs(frames)) <= 0.05 * 1.01, (
+            f"Normal speech was amplified: peak={np.max(np.abs(frames)):.4f}"
+        )
+
+    def test_gain_capped_at_2_5(self):
+        """Gain must never exceed 2.5× even for very quiet active speech."""
+        from auto_translate.asr.haas import wav_bytes
+        sr = 16000
+        duration = 2.0
+        t = np.linspace(0, duration, int(sr * duration))
+        # Very quiet but active speech: RMS ~0.004, active_rms ~0.007
+        quiet = 0.004 * np.sin(2 * np.pi * 300 * t)
+        wav = wav_bytes(quiet, normalize=True)
+        import wave, io
+        buf = io.BytesIO(wav)
+        with wave.open(buf, "rb") as wf:
+            frames = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").astype(np.float32) / 32767
+        # Even if 0.02/rms = 5.0, gain is capped at 2.5
+        assert np.max(np.abs(frames)) <= 0.004 * 2.5 * 1.01, (
+            f"Gain exceeded 2.5× cap: peak={np.max(np.abs(frames)):.4f}"
+        )
+
+    def test_mixed_noise_and_speech(self):
+        """Mixed audio with noise floor and speech peaks should be handled."""
+        from auto_translate.asr.haas import wav_bytes
+        sr = 16000
+        duration = 3.0
+        t = np.linspace(0, duration, int(sr * duration))
+        # Noise floor + speech burst in middle second
+        noise = 0.002 * np.random.randn(len(t))
+        speech_burst = np.zeros(len(t))
+        burst_start = int(sr * 1.0)
+        burst_end = int(sr * 2.0)
+        speech_burst[burst_start:burst_end] = 0.03 * np.sin(2 * np.pi * 300 * t[burst_start:burst_end])
+        mixed = noise + speech_burst
+        wav = wav_bytes(mixed, normalize=True)
+        import wave, io
+        buf = io.BytesIO(wav)
+        with wave.open(buf, "rb") as wf:
+            frames = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").astype(np.float32) / 32767
+        # Should not clip
+        assert np.max(np.abs(frames)) <= 1.0
+
+
+class TestGarbledNameFalsePositives:
+    """Verify that common English words are not rejected as garbled VTuber names."""
+
+    def test_sure_not_garbled_subaru(self):
+        """'Sure' must not be flagged as a garbled 'Subaru'."""
+        from auto_translate.translate.plamo import garbled_name
+        # "Subaru" is missing from the translation, but "Sure" is a common word
+        assert not garbled_name(
+            "Sure, I understand.",
+            missing=["Subaru"],
+            present=[],
+            utterance_names=["Subaru"]
+        )
+
+    def test_sure_not_garbled_without_context_filter(self):
+        """'Sure' must not be flagged even without utterance_names filter."""
+        from auto_translate.translate.plamo import garbled_name
+        assert not garbled_name(
+            "Sure, I understand.",
+            missing=["Subaru"],
+            present=[]
+        )
+
+    def test_context_only_name_not_rejected(self):
+        """Context-only names should not cause garbled rejection in _best()."""
+        from auto_translate.translate.plamo import PlamoTranslator
+        # "Subaru" is a context-only name (not in utterance_names)
+        # "Sure" appears in the translation — should NOT be rejected
+        result = PlamoTranslator._best(
+            ["Sure, I understand."],
+            names=[("すばる", "Subaru")],
+            utterance_names=[]  # No utterance names — Subaru is context-only
+        )
+        assert result == "Sure, I understand.", f"Valid translation rejected: '{result}'"
+
+    def test_garbled_name_still_detected(self):
+        """A genuinely garbled name should still be detected."""
+        from auto_translate.translate.plamo import garbled_name
+        # "Subaruu" is clearly a misspelling of "Subaru"
+        assert garbled_name(
+            "Hello Subaruu!",
+            missing=["Subaru"],
+            present=[],
+            utterance_names=["Subaru"]
+        )
+
+    def test_pekora_variants(self):
+        """'Peko' should not match 'Pekora' as garbled when it's a valid nickname."""
+        from auto_translate.translate.plamo import garbled_name
+        # "Peko" is a common shortening of "Pekora" — should not be garbled
+        # because it's in the present list (correctly used)
+        assert not garbled_name(
+            "Peko says hello!",
+            missing=[],
+            present=["Peko"]
+        )
+
+    def test_marine_not_garbled(self):
+        """Common words should not match 'Marine'."""
+        from auto_translate.translate.plamo import garbled_name
+        assert not garbled_name(
+            "I'm sure about the marine biology.",
+            missing=["Marine"],
+            present=[],
+            utterance_names=["Marine"]
+        )
+
+    def test_laplus_not_garbled_lap(self):
+        """'Lap' should not be flagged as garbled 'Laplus'."""
+        from auto_translate.translate.plamo import garbled_name
+        assert not garbled_name(
+            "Take a lap around the track.",
+            missing=["Laplus"],
+            present=[],
+            utterance_names=["Laplus"]
+        )
+
+    def test_mikochi_not_garbled(self):
+        """Common words should not match 'Mikochi'."""
+        from auto_translate.translate.plamo import garbled_name
+        assert not garbled_name(
+            "I like this very much.",
+            missing=["Mikochi"],
+            present=[],
+            utterance_names=["Mikochi"]
+        )
+
+    def test_utterance_name_garbled_still_rejected(self):
+        """When a name IS in the utterance and IS garbled, it should be rejected."""
+        from auto_translate.translate.plamo import PlamoTranslator
+        # "Subaruu" is clearly garbled and Subaru is an utterance name
+        result = PlamoTranslator._best(
+            ["Hello Subaruu!"],
+            names=[("すばる", "Subaru")],
+            utterance_names=["Subaru"]
+        )
+        assert result == "", f"Garbled utterance name should be rejected, got: '{result}'"
+
+    def test_hymt_garbled_name_common_words(self):
+        """Hy-MT2 garbled_name must also protect common words."""
+        from auto_translate.translate.hymt import garbled_name
+        assert not garbled_name(
+            "Sure, I understand.",
+            missing=["Subaru"],
+            present=[],
+            utterance_names=["Subaru"]
+        )
+
+    def test_gemma4_garbled_name_common_words(self):
+        """Gemma4 garbled_name must also protect common words."""
+        from auto_translate.translate.gemma4 import garbled_name
+        assert not garbled_name(
+            "Sure, I understand.",
+            missing=["Subaru"],
+            present=[],
+            utterance_names=["Subaru"]
         )
 
 

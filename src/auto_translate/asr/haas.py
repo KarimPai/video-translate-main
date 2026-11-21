@@ -62,8 +62,11 @@ def wav_bytes(audio: np.ndarray, *, normalize: bool = True) -> bytes:
         starts = np.arange(0, value.size, 160)
         frame_power = np.add.reduceat(power, starts) / np.minimum(160, value.size - starts)
         active_rms = float(np.sqrt(np.max(frame_power)))
-        if active_rms >= 0.001 and rms < 0.02:
-            gain = max(1.0, min(8.0, 0.02 / rms, 0.95 / float(np.max(np.abs(value)))))
+        # Cap gain at 2.5× to avoid amplifying game engine noise into speech.
+        # Require active_rms >= 0.006 (not 0.001) so that very quiet rumble is
+        # not boosted.  Genuine Japanese speech typically has active_rms > 0.01.
+        if active_rms >= 0.006 and rms < 0.02:
+            gain = max(1.0, min(2.5, 0.02 / rms, 0.95 / float(np.max(np.abs(value)))))
             value = value * gain
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:

@@ -152,7 +152,7 @@ class TestRetryDetection:
         translator.server.alive.return_value = True
         # Mock context and terms — return empty so the prompt is simple
         translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], []))
+        translator._terms_for = mock.MagicMock(return_value=([], [], []))
 
         call_index = [0]
         def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
@@ -1292,7 +1292,7 @@ class TestPlamoTokenBudgeting:
         translator.server = mock.MagicMock()
         translator.server.alive.return_value = True
         translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], []))
+        translator._terms_for = mock.MagicMock(return_value=([], [], []))
 
         call_index = [0]
         def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
@@ -1386,7 +1386,7 @@ class TestPlamoTokenBudgeting:
         from auto_translate.translate.plamo import PlamoTranslator
         terms = [("田中", "Tanaka"), ("鈴木", "Suzuki"), ("高橋", "Takahashi")]
         context = "直前の会話：こんにちは（英訳：Hello）"
-        translator._terms_for = mock.MagicMock(return_value=(terms, []))
+        translator._terms_for = mock.MagicMock(return_value=(terms, [], []))
         translator._context = mock.MagicMock(return_value=context)
         requests = []
 
@@ -1410,7 +1410,7 @@ class TestPlamoTokenBudgeting:
         translator, _ = self._make_translator(context_size=2048, max_tokens=256)
         from auto_translate.translate.plamo import PlamoTranslator
         translator._context = mock.MagicMock(return_value="あ" * 1000)
-        translator._terms_for = mock.MagicMock(return_value=([("田中", "Tanaka")], []))
+        translator._terms_for = mock.MagicMock(return_value=([("田中", "Tanaka")], [], []))
         requests = []
 
         def capture(prompt, **kwargs):
@@ -1429,7 +1429,7 @@ class TestPlamoTokenBudgeting:
         """Long glossary entries cannot be counted as a fixed seven tokens."""
         translator, _ = self._make_translator(context_size=2048, max_tokens=256)
         from auto_translate.translate.plamo import PlamoTranslator
-        translator._terms_for = mock.MagicMock(return_value=([("名前" * 300, "LongName" * 300)], []))
+        translator._terms_for = mock.MagicMock(return_value=([("名前" * 300, "LongName" * 300)], [], []))
         requests = []
 
         def capture(prompt, **kwargs):

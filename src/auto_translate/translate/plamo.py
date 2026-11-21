@@ -163,24 +163,109 @@ def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
     return missing
 
 
-def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> bool:
-    """A capitalized near-miss is a wrong name, not an omission."""
+def garbled_name(english: str, missing: list[str], present: list[str] = (),
+                 *, utterance_names: list[str] | None = None) -> bool:
+    """A capitalized near-miss is a wrong name, not an omission.
+
+    Only treats a word as a garbled name when it is a clear fuzzy match for a
+    name that should appear — not for common English words that happen to
+    resemble a glossary entry (e.g. "Sure" ≠ "Subaru").
+
+    Args:
+        utterance_names: names explicitly mentioned in the current Japanese
+            utterance. When provided, only these names trigger garbled
+            rejection. Context-only names are treated as hints, not mandatory.
+    """
     from difflib import SequenceMatcher
+
+    # Common English words that should never be flagged as garbled names,
+    # even if they fuzzy-match a glossary entry.
+    _COMMON = frozenset({
+        "sure", "so", "some", "same", "see", "say", "said", "set", "sent",
+        "sentiment", "sense", "since", "site", "side", "sight", "sign",
+        "simple", "size", "skill", "skin", "skip", "small",
+        "smart", "smile", "soft", "someone", "something",
+        "son", "song", "soon", "sort", "sound", "source", "space", "span",
+        "speak", "special", "speed", "spell", "spend", "spirit", "split",
+        "sport", "spot", "spread", "spring", "square", "staff", "stage",
+        "stand", "start", "state", "stay", "step", "still", "story",
+        "straight", "strange", "street", "strong", "structure", "study",
+        "stuff", "style", "subject", "such", "sudden", "suffer", "suggest",
+        "suit", "summer", "support", "suppose", "surface", "system",
+        "table", "take", "talk", "task", "tax", "teach", "team", "tell",
+        "ten", "tend", "term", "test", "text", "than", "thank", "that",
+        "the", "their", "them", "then", "there", "these", "they", "thing",
+        "think", "this", "those", "though", "thought", "thread", "three",
+        "through", "throw", "thus", "time", "to", "today", "together",
+        "tonight", "too", "took", "top", "total", "touch", "toward",
+        "town", "track", "trade", "train", "transfer", "travel", "treat",
+        "tree", "trip", "trouble", "true", "turn", "two", "type",
+        "under", "understand", "unit", "until", "up", "upon", "us", "use",
+        "usually", "value", "various", "very", "view", "visit", "voice",
+        "wait", "walk", "wall", "want", "war", "watch", "water", "way",
+        "we", "wear", "week", "well", "west", "what", "when", "where",
+        "which", "while", "white", "who", "whole", "why", "wide", "will",
+        "win", "wind", "window", "wish", "with", "within", "without",
+        "woman", "wonder", "word", "work", "world", "worry", "would",
+        "write", "year", "yes", "yet", "you", "young", "your",
+        "i", "me", "my", "our", "he", "him",
+        "his", "she", "her", "it", "about", "above", "after", "again", "against", "all", "also",
+        "always", "among", "an", "and", "another", "any", "appear",
+        "around", "as", "ask", "at", "back", "be", "because", "been",
+        "before", "begin", "behind", "being", "below", "best", "better",
+        "between", "big", "both", "but", "by", "call", "can", "come",
+        "could", "day", "did", "different", "do", "does", "done", "during",
+        "each", "early", "end", "even", "ever", "every", "example",
+        "eye", "face", "fact", "far", "feel", "few", "find", "first",
+        "follow", "for", "from", "full", "further", "get", "give", "go",
+        "good", "great", "had", "has", "have", "here", "how", "however", "if", "important", "in", "into", "is",
+        "its", "just", "keep", "kind", "know", "last", "late", "least",
+        "less", "let", "like", "long", "look", "make", "many", "may",
+        "might", "most", "must", "need", "never", "new", "next",
+        "no", "not", "now", "number", "of", "off", "often", "oh", "ok",
+        "old", "on", "one", "only", "or", "other", "out", "over",
+        "own", "part", "people", "place", "point", "possible", "problem",
+        "put", "quite", "rather", "really", "right", "saw", "seem", "shall", "should", "show", "was", "were", # Words that previously caused false positives with VTuber names
+        "surely", "sugar", "surprise", "similar", "sincere",
+    })
+
+    # Determine which names are "mandatory" — i.e. explicitly in the utterance.
+    # When utterance_names is provided, only those names can trigger garbled
+    # rejection. Context-only names are hints; missing them is not an error.
+    if utterance_names is not None:
+        # Filter missing to only utterance names
+        utterance_set = {n.casefold() for n in utterance_names}
+        missing = [n for n in missing if n.casefold() in utterance_set]
+
+    if not missing:
+        return False
 
     known = {token.casefold() for name in present for token in re.split(r"[-‐‑ ]+", name)}
     targets = set()
     for name in missing:
         parts = [part.casefold() for part in re.split(r"[-‐‑ ]+", name)]
         targets.add("".join(parts))
-        targets.update(part for part in parts if len(part) >= 3 and part not in _HONORIFICS)
+        # Require at least 4 characters for fuzzy matching to reduce false positives
+        targets.update(part for part in parts if len(part) >= 4 and part not in _HONORIFICS)
+
     for word in _CAPITALIZED.findall(english):
         parts = [part.casefold() for part in re.split(r"[-‐‑]", word)]
         honorific = len(parts) > 1 and parts[-1] in _HONORIFICS
         candidates = ({"".join(p for p in parts if p not in _HONORIFICS)} if honorific
                       else {"".join(parts), *parts})
         for candidate in candidates - known:
+            # Skip common English words — they are not garbled names
+            if candidate in _COMMON:
+                continue
             for target in targets:
-                threshold = .6 if honorific or len(target) > 3 else .8
+                # Higher threshold for short targets to avoid false positives
+                # "su" (2 chars) matching "suba" should not trigger at 0.6
+                if len(target) <= 3:
+                    threshold = 0.85
+                elif honorific:
+                    threshold = 0.7
+                else:
+                    threshold = 0.75
                 if SequenceMatcher(None, candidate, target).ratio() >= threshold:
                     return True
     return False
@@ -453,19 +538,28 @@ class PlamoTranslator:
         return build_context(header, window, len(window), self.cfg.max_context_chars,
                              english=self.cfg.context_english)
 
-    def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+        """Return (terms, all_names, utterance_names).
+
+        `terms` — all glossary terms for the prompt.
+        `all_names` — names found in the utterance OR context (used for missing_names check).
+        `utterance_names` — names found in the utterance only (used for garbled_name check).
+        Only utterance names can trigger garbled rejection; context names are hints.
+        """
         source_context = f"{context}\n{ja}"
-        names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
+        all_names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
+        # Names found only in the current utterance (not just in prior context)
+        utterance_names = self.glossary.name_terms(ja, context="")
         found = self.glossary.find(ja, context=source_context)
-        extra = [term for term in found if term not in names]
+        extra = [term for term in found if term not in all_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
         rest = [t for t in extra if t not in exact]
-        terms = names + exact + rest
-        return terms[:MAX_TERMS], names
+        terms = all_names + exact + rest
+        return terms[:MAX_TERMS], all_names, utterance_names
 
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> dict:
         context = self._context(history)
-        terms, _ = self._terms_for(ja, context)
+        terms, _, _ = self._terms_for(ja, context)
         return build_plamo_prompt(ja, terms, context)
 
     _MAX_RETRIES = 3
@@ -496,7 +590,7 @@ class PlamoTranslator:
                 if not self.server.alive():
                     self._recover("server exited")
                 context = self._context(history)
-                terms, names = self._terms_for(ja, context)
+                terms, names, utterance_names = self._terms_for(ja, context)
                 prompt = build_plamo_prompt(ja, terms, context)
 
                 started = time.monotonic()
@@ -711,7 +805,7 @@ class PlamoTranslator:
                             candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
                             _record(candidate, req_key)
                             candidates.append(clean_output(candidate))
-                        english = self._best(candidates, names)
+                        english = self._best(candidates, names, utterance_names=[en for _, en in utterance_names])
 
                 retry_count = self._MAX_RETRIES - retries_left
                 record_event(
@@ -728,16 +822,30 @@ class PlamoTranslator:
                 raise
 
     @staticmethod
-    def _best(candidates: list[str], names: list[tuple[str, str]]) -> str:
-        """Prefer valid output, then correct names; an omitted name beats a wrong one."""
+    def _best(candidates: list[str], names: list[tuple[str, str]],
+              *, utterance_names: list[str] | None = None) -> str:
+        """Prefer valid output, then correct names; an omitted name beats a wrong one.
+
+        Only names explicitly mentioned in the current utterance can trigger
+        garbled rejection. Context-only names are hints — missing them is fine.
+        """
         scored = []
         for index, text in enumerate(candidates):
             missing = missing_names(text, names)
             present = [en for _, en in names if en not in missing]
-            scored.append((english_output_issue(text) is not None, garbled_name(text, missing, present),
+            garbled = garbled_name(text, missing, present, utterance_names=utterance_names)
+            scored.append((english_output_issue(text) is not None, garbled,
                            len(missing), index, text, missing))
         issue, garbled, _, _, text, missing = min(scored)
-        if issue or garbled:
+        # Only reject if there's a real output issue or a garbled utterance name.
+        # Context-only name garbling should not discard a valid translation.
+        if issue:
+            increment_counter("mt_rejected")
+            if missing:
+                record_event("mt_name_rejected", names=missing)
+            return ""
+        if garbled and utterance_names is not None:
+            # Garbled name in an utterance-mandated name — reject
             increment_counter("mt_rejected")
             if missing:
                 record_event("mt_name_rejected", names=missing)

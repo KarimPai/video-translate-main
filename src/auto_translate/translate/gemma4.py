@@ -159,22 +159,97 @@ def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
     return missing
 
 
-def garbled_name(english: str, missing: list[str], present: list[str] = ()) -> bool:
-    """A capitalized near-miss is a wrong name, not an omission."""
+def garbled_name(english: str, missing: list[str], present: list[str] = (),
+                 *, utterance_names: list[str] | None = None) -> bool:
+    """A capitalized near-miss is a wrong name, not an omission.
+
+    Only treats a word as a garbled name when it is a clear fuzzy match for a
+    name that should appear — not for common English words that happen to
+    resemble a glossary entry (e.g. "Sure" ≠ "Subaru").
+
+    Args:
+        utterance_names: names explicitly mentioned in the current Japanese
+            utterance. When provided, only these names trigger garbled
+            rejection. Context-only names are treated as hints, not mandatory.
+    """
+
+    _COMMON = frozenset({
+        "sure", "so", "some", "same", "see", "say", "said", "set", "sent",
+        "sentiment", "sense", "since", "site", "side", "sight", "sign",
+        "simple", "size", "skill", "skin", "skip", "small",
+        "smart", "smile", "soft", "someone", "something",
+        "son", "song", "soon", "sort", "sound", "source", "space", "span",
+        "speak", "special", "speed", "spell", "spend", "spirit", "split",
+        "sport", "spot", "spread", "spring", "square", "staff", "stage",
+        "stand", "start", "state", "stay", "step", "still", "story",
+        "straight", "strange", "street", "strong", "structure", "study",
+        "stuff", "style", "subject", "such", "sudden", "suffer", "suggest",
+        "suit", "summer", "support", "suppose", "surface", "system",
+        "table", "take", "talk", "task", "tax", "teach", "team", "tell",
+        "ten", "tend", "term", "test", "text", "than", "thank", "that",
+        "the", "their", "them", "then", "there", "these", "they", "thing",
+        "think", "this", "those", "though", "thought", "thread", "three",
+        "through", "throw", "thus", "time", "to", "today", "together",
+        "tonight", "too", "took", "top", "total", "touch", "toward",
+        "town", "track", "trade", "train", "transfer", "travel", "treat",
+        "tree", "trip", "trouble", "true", "turn", "two", "type",
+        "under", "understand", "unit", "until", "up", "upon", "us", "use",
+        "usually", "value", "various", "very", "view", "visit", "voice",
+        "wait", "walk", "wall", "want", "war", "watch", "water", "way",
+        "we", "wear", "week", "well", "west", "what", "when", "where",
+        "which", "while", "white", "who", "whole", "why", "wide", "will",
+        "win", "wind", "window", "wish", "with", "within", "without",
+        "woman", "wonder", "word", "work", "world", "worry", "would",
+        "write", "year", "yes", "yet", "you", "young", "your",
+        "i", "me", "my", "our", "he", "him",
+        "his", "she", "her", "it", "about", "above", "after", "again", "against", "all", "also",
+        "always", "among", "an", "and", "another", "any", "appear",
+        "around", "as", "ask", "at", "back", "be", "because", "been",
+        "before", "begin", "behind", "being", "below", "best", "better",
+        "between", "big", "both", "but", "by", "call", "can", "come",
+        "could", "day", "did", "different", "do", "does", "done", "during",
+        "each", "early", "end", "even", "ever", "every", "example",
+        "eye", "face", "fact", "far", "feel", "few", "find", "first",
+        "follow", "for", "from", "full", "further", "get", "give", "go",
+        "good", "great", "had", "has", "have", "here", "how", "however", "if", "important", "in", "into", "is",
+        "its", "just", "keep", "kind", "know", "last", "late", "least",
+        "less", "let", "like", "long", "look", "make", "many", "may",
+        "might", "most", "must", "need", "never", "new", "next",
+        "no", "not", "now", "number", "of", "off", "often", "oh", "ok",
+        "old", "on", "one", "only", "or", "other", "out", "over",
+        "own", "part", "people", "place", "point", "possible", "problem",
+        "put", "quite", "rather", "really", "right", "saw", "seem", "shall", "should", "show", "was", "were", "surely", "sugar", "surprise", "similar", "sincere",
+    })
+
+    if utterance_names is not None:
+        utterance_set = {n.casefold() for n in utterance_names}
+        missing = [n for n in missing if n.casefold() in utterance_set]
+
+    if not missing:
+        return False
+
     known = {token.casefold() for name in present for token in re.split(r"[-‐‑ ]+", name)}
     targets = set()
     for name in missing:
         parts = [part.casefold() for part in re.split(r"[-‐‑ ]+", name)]
         targets.add("".join(parts))
-        targets.update(part for part in parts if len(part) >= 3 and part not in _HONORIFICS)
+        targets.update(part for part in parts if len(part) >= 4 and part not in _HONORIFICS)
+
     for word in _CAPITALIZED.findall(english):
         parts = [part.casefold() for part in re.split(r"[-‐‑]", word)]
         honorific = len(parts) > 1 and parts[-1] in _HONORIFICS
         candidates = ({"".join(p for p in parts if p not in _HONORIFICS)} if honorific
                       else {"".join(parts), *parts})
         for candidate in candidates - known:
+            if candidate in _COMMON:
+                continue
             for target in targets:
-                threshold = .6 if honorific or len(target) > 3 else .8
+                if len(target) <= 3:
+                    threshold = 0.85
+                elif honorific:
+                    threshold = 0.7
+                else:
+                    threshold = 0.75
                 if SequenceMatcher(None, candidate, target).ratio() >= threshold:
                     return True
     return False
@@ -406,19 +481,20 @@ class Gemma4Translator:
         return build_context(header, window, len(window), self.cfg.max_context_chars,
                              english=self.cfg.context_english)
 
-    def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
         source_context = f"{context}\n{ja}"
-        names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
+        all_names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
+        utterance_names = self.glossary.name_terms(ja, context="")
         found = self.glossary.find(ja, context=source_context)
-        extra = [term for term in found if term not in names]
+        extra = [term for term in found if term not in all_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
         rest = [t for t in extra if t not in exact]
-        terms = names + exact + rest
-        return terms[:MAX_TERMS], names
+        terms = all_names + exact + rest
+        return terms[:MAX_TERMS], all_names, utterance_names
 
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> dict:
         context = self._context(history)
-        terms, _ = self._terms_for(ja, context)
+        terms, _, _ = self._terms_for(ja, context)
         return build_prompt(ja, terms, context, self.cfg.style)
 
     _MAX_RETRIES = 3
@@ -438,7 +514,7 @@ class Gemma4Translator:
                 if not self.server.alive():
                     self._recover("server exited")
                 context = self._context(history)
-                terms, names = self._terms_for(ja, context)
+                terms, names, utterance_names = self._terms_for(ja, context)
                 prompt = build_prompt(ja, terms, context, self.cfg.style)
 
                 started = time.monotonic()
@@ -447,6 +523,20 @@ class Gemma4Translator:
                 retries_left = self._MAX_RETRIES
                 truncation_retries = 0
 
+                # Estimate input tokens for context-budget checks
+                ja_tokens = int(len(ja) * 1.8)
+                glossary_tokens = sum(
+                    7 + int((len(source) + len(target)) * 1.8)
+                    for source, target in terms
+                )
+                context_tokens = int(len(context) * 1.8) if context else 0
+                template_overhead = 50
+                input_tokens = ja_tokens + glossary_tokens + context_tokens + template_overhead
+                slot_context_size = self.cfg.context_size // self.cfg.parallel_slots
+
+                def _fits_context(itokens: int, otokens: int) -> bool:
+                    return itokens + otokens + 256 <= slot_context_size
+
                 try:
                     english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
 
@@ -454,11 +544,39 @@ class Gemma4Translator:
                         retries_left -= 1
                         truncation_retries += 1
                         retry_tokens = max(self.cfg.max_tokens * 2, 512)
-                        record_event("mt_truncation_retry", max_tokens=retry_tokens)
-                        increment_counter("mt_retries")
-                        english, finish_reason = self._chat(
-                            prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
-                        )
+                        # Context-aware: cap retry_tokens so the request actually fits
+                        if not _fits_context(input_tokens, retry_tokens):
+                            # Reduce to the largest output budget that fits
+                            retry_tokens = max(0, slot_context_size - input_tokens - 256)
+                            if retry_tokens <= self.cfg.max_tokens:
+                                # Even the original budget was the max that fits;
+                                # retry with simplified prompt instead
+                                simplified = build_prompt(ja, [], "", self.cfg.style)
+                                simplified_input = ja_tokens + template_overhead
+                                if _fits_context(simplified_input, retry_tokens):
+                                    record_event("mt_truncation_retry", strategy="simplified",
+                                                 max_tokens=retry_tokens)
+                                    increment_counter("mt_retries")
+                                    english, finish_reason = self._chat(
+                                        simplified, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                                    )
+                                else:
+                                    record_event("mt_truncation_failed", reason="context_budget")
+                                    increment_counter("mt_rejected")
+                                    return ""
+                            else:
+                                record_event("mt_truncation_retry", max_tokens=retry_tokens,
+                                             capped=True)
+                                increment_counter("mt_retries")
+                                english, finish_reason = self._chat(
+                                    prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                                )
+                        else:
+                            record_event("mt_truncation_retry", max_tokens=retry_tokens)
+                            increment_counter("mt_retries")
+                            english, finish_reason = self._chat(
+                                prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                            )
                         if finish_reason == "length":
                             record_event("mt_truncation_failed", max_tokens=retry_tokens)
                             increment_counter("mt_rejected")
@@ -526,7 +644,7 @@ class Gemma4Translator:
                             record_event("mt_name_retry", names=missing)
                         candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
                         candidates.append(clean_output(candidate))
-                    english = self._best(candidates, names)
+                    english = self._best(candidates, names, utterance_names=[en for _, en in utterance_names])
 
                 retry_count = self._MAX_RETRIES - retries_left
                 record_event(
@@ -543,16 +661,27 @@ class Gemma4Translator:
                 raise
 
     @staticmethod
-    def _best(candidates: list[str], names: list[tuple[str, str]]) -> str:
-        """Prefer valid output, then correct names; an omitted name beats a wrong one."""
+    def _best(candidates: list[str], names: list[tuple[str, str]],
+              *, utterance_names: list[str] | None = None) -> str:
+        """Prefer valid output, then correct names; an omitted name beats a wrong one.
+
+        Only names explicitly mentioned in the current utterance can trigger
+        garbled rejection. Context-only names are hints — missing them is fine.
+        """
         scored = []
         for index, text in enumerate(candidates):
             missing = missing_names(text, names)
             present = [en for _, en in names if en not in missing]
-            scored.append((english_output_issue(text) is not None, garbled_name(text, missing, present),
+            garbled = garbled_name(text, missing, present, utterance_names=utterance_names)
+            scored.append((english_output_issue(text) is not None, garbled,
                            len(missing), index, text, missing))
         issue, garbled, _, _, text, missing = min(scored)
-        if issue or garbled:
+        if issue:
+            increment_counter("mt_rejected")
+            if missing:
+                record_event("mt_name_rejected", names=missing)
+            return ""
+        if garbled and utterance_names is not None:
             increment_counter("mt_rejected")
             if missing:
                 record_event("mt_name_rejected", names=missing)

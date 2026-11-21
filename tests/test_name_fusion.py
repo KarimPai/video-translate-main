@@ -138,6 +138,15 @@ def test_prompt_is_strictly_bounded():
     assert len(fusion.prompt()) <= 18
 
 
+def test_name_fusion_keeps_bounded_observation_memory():
+    terms = {f"名前{i:02d}": f"Name{i}" for i in range(40)}
+    fusion = NameFusion(Glossary(terms), "", "")
+    for i in range(40):
+        assert not fusion.observe(f"名前{i:02d}が来た")
+    assert len(fusion._observations) <= 32
+    assert "名前00" not in fusion._observations
+
+
 class FakeASR:
     def __init__(self, responses):
         from auto_translate.config import AsrConfig

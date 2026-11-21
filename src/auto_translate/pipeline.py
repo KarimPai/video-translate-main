@@ -563,8 +563,45 @@ def run_asr(
             # A language tag alone does not justify showing English words as
             # Japanese dialogue ('yes'/'yeah' are common sound-effect errors).
             detected_language = "und"
-        # Treat "mixed" as Japanese-containing: the segment has Japanese speech
-        # that should be translated, even if English is also present.
+        # Whisper preserves text-level language spans and approximate timestamps.
+        # Keep clear English NPC clauses only as context; translate only Japanese
+        # clauses. Do not pass the entire mixed transcript through PLaMo.
+        spans = getattr(asr, "last_language_spans", None)
+        if (detected_language == "mixed" and isinstance(spans, list)
+                and any(x[2] == "ja" for x in spans)
+                and any(x[2] != "ja" for x in spans)):
+            for offset_start, offset_end, lang, part in spans:
+                if cancelled(utt.generation):
+                    break
+                if not isinstance(part, str) or not part.strip():
+                    continue
+                start_s = max(utt.start_s, min(utt.end_s, utt.start_s + offset_start))
+                end_s = max(start_s, min(utt.end_s, utt.start_s + offset_end))
+                if end_s <= start_s:
+                    continue
+                if lang == "ja":
+                    if transcript_problem(part, end_s - start_s):
+                        continue
+                    accepted(part, end_s, vad_confidence=utt.vad_confidence,
+                             probe=utt.probe)
+                elif not _credible_foreign_context(utt, part):
+                    continue
+                out_q.put(Transcript(
+                    start_s, end_s, part, replace(utt.timings),
+                    generation=utt.generation,
+                    speech_start_s=max(start_s, min(end_s, utt.speech_start_s or start_s)),
+                    language=lang,
+                ))
+                record_event(
+                    "mixed_language_span_routed", language=lang,
+                    generation=utt.generation,
+                    source_start_s=start_s, source_end_s=end_s,
+                )
+            continue
+
+        # Mixed output without reliable spans should not be treated as a
+        # trustworthy single-language subtitle. Keep Japanese content when
+        # present, but never pretend the transcript identifies speakers.
         if detected_language not in ("ja", "mixed"):
             # Keep audible English as context, but it is not a Japanese
             # subtitle. Mixed EN/JA segments may also contain a Japanese

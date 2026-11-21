@@ -293,6 +293,26 @@ class AsrConfig:
 
 
 @dataclass
+class NameFusionConfig:
+    """Experimental, source-backed name prompts; disabled until A/B validated."""
+
+    enabled: bool = False
+    max_hints: int = 4
+    max_prompt_chars: int = 96
+    confirmations: int = 2
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("name_fusion.enabled must be boolean")
+        if type(self.max_hints) is not int or not 1 <= self.max_hints <= 6:
+            raise ValueError("name_fusion.max_hints must be 1..6")
+        if type(self.max_prompt_chars) is not int or not 24 <= self.max_prompt_chars <= 160:
+            raise ValueError("name_fusion.max_prompt_chars must be 24..160")
+        if type(self.confirmations) is not int or not 1 <= self.confirmations <= 3:
+            raise ValueError("name_fusion.confirmations must be 1..3")
+
+
+@dataclass
 class OutputConfig:
     terminal: bool = True
     web: bool = True
@@ -425,6 +445,7 @@ class Config:
     safe_playback: SafePlaybackConfig = field(default_factory=SafePlaybackConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
+    name_fusion: NameFusionConfig = field(default_factory=NameFusionConfig)
     gpu_budget: GpuBudgetConfig = field(default_factory=GpuBudgetConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     vad: VadConfig = field(default_factory=VadConfig)
@@ -498,6 +519,7 @@ def load_config(path: Path) -> Config:
         safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),
         diagnostics=DiagnosticsConfig(**data.get("diagnostics", {})),
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
+        name_fusion=NameFusionConfig(**data.get("name_fusion", {})),
         gpu_budget=GpuBudgetConfig(**data.get("gpu_budget", {})),
         ingest=IngestConfig(**data.get("ingest", {})),
         vad=VadConfig(**data.get("vad", {})),

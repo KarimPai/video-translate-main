@@ -4,6 +4,7 @@ The GUI never imports or initializes CUDA/ASR models. QProcess runs the same
 Python backend and native MPV renders into a HWND.
 """
 import codecs
+import hashlib
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QCursor,
@@ -144,6 +145,11 @@ class VideoTranslateWindow(QMainWindow):
     def __init__(self, root: Path):
         super().__init__()
         self.root = root
+        # Keep GUI-only choices per project and Windows account, not in tracked
+        # config.toml. This also works when the application is packaged as an exe.
+        self._preferences = QSettings("KarimPai", "VideoTranslate")
+        project_id = hashlib.sha256(str(root.resolve()).casefold().encode("utf-8")).hexdigest()[:24]
+        self._preferences_prefix = f"projects/{project_id}"
         self._job = None
         self._session = None
         self._shutdown_timer = QTimer(self)
@@ -411,6 +417,27 @@ class VideoTranslateWindow(QMainWindow):
         layout.addStretch(1)
         self.tabs.addTab(self.diagnostics_tab, "Settings / Diagnostics")
 
+    def _preference_key(self, name: str) -> str:
+        return f"{self._preferences_prefix}/{name}"
+
+    def _initial_backend(self, name: str, configured: str, combo: QComboBox) -> str:
+        """Use a saved installed backend, otherwise retain config.toml's default."""
+        saved = self._preferences.value(self._preference_key(name), "", type=str)
+        if saved and combo.findData(saved) >= 0:
+            return saved
+        if combo.findData(configured) >= 0:
+            return configured
+        return str(combo.itemData(0) or "")
+
+    def _remember_backend(self, name: str, backend: str | None) -> None:
+        """Persist a new GUI selection immediately, including before Start."""
+        if not backend:
+            return
+        self._preferences.setValue(self._preference_key(name), str(backend))
+        self._preferences.sync()
+        if self._preferences.status() != QSettings.Status.NoError:
+            log.warning("Could not save GUI backend preference %s", name)
+
     def _load_feature_settings(self):
         # Ensure the package source directory is on sys.path so registry can be imported.
         # When installed as an editable package from a different project location, the
@@ -438,21 +465,16 @@ class VideoTranslateWindow(QMainWindow):
                 caps = registry.get_capabilities("translate", name)
                 label = f"{name} — {caps.description}" if caps else name
                 self.mt_backend.addItem(label, name)
-            # Set current selections from config
-            asr_backend_name = cfg.models.asr_backend
-            for i in range(self.asr_backend.count()):
-                if self.asr_backend.itemData(i) == asr_backend_name:
-                    self.asr_backend.setCurrentIndex(i)
-                    break
-            else:
-                self.asr_backend.setCurrentIndex(0)
-            mt_backend_name = cfg.models.translate_backend
-            for i in range(self.mt_backend.count()):
-                if self.mt_backend.itemData(i) == mt_backend_name:
-                    self.mt_backend.setCurrentIndex(i)
-                    break
-            else:
-                self.mt_backend.setCurrentIndex(0)
+            # Restore last selected backends only if they still exist in the
+            # registry; otherwise fall back to the configured defaults.
+            asr_backend_name = self._initial_backend(
+                "asr_backend", cfg.models.asr_backend, self.asr_backend,
+            )
+            self.asr_backend.setCurrentIndex(self.asr_backend.findData(asr_backend_name))
+            mt_backend_name = self._initial_backend(
+                "translate_backend", cfg.models.translate_backend, self.mt_backend,
+            )
+            self.mt_backend.setCurrentIndex(self.mt_backend.findData(mt_backend_name))
             # Model paths: use resolve_model_identity for accurate per-backend resolution.
             # Never fall back to another backend's default (e.g., Haas path for Whisper).
             asr_identity = resolve_model_identity(cfg, "asr", asr_backend_name)
@@ -521,8 +543,9 @@ class VideoTranslateWindow(QMainWindow):
                 model_path = stored
             self.asr_model.setText(model_path)
 
-        # Update tracked backend for next switch
+        # Update tracked backend for next switch and persist the user's choice.
         self._last_asr_backend = new_backend
+        self._remember_backend("asr_backend", new_backend)
 
     def _on_mt_backend_changed(self, index: int) -> None:
         """Update translation model path when backend selection changes.
@@ -555,8 +578,9 @@ class VideoTranslateWindow(QMainWindow):
                 model_path = stored
             self.mt_model.setText(model_path)
 
-        # Update tracked backend for next switch
+        # Update tracked backend for next switch and persist the user's choice.
         self._last_mt_backend = new_backend
+        self._remember_backend("translate_backend", new_backend)
 
     def _get_asr_model_override(self) -> str | None:
         """Return the ASR model path only if it differs from the backend resolved identity."""

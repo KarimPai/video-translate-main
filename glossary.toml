@@ -495,6 +495,15 @@
 # Stream topics, enabled when the title or tags contain a "match" word.
 # "asr" words bias speech recognition toward the topic's vocabulary;
 # "terms" are added to the translation glossary for that stream only.
+[topics.gta6]
+# Only activate character-name candidates for GTA VI, not generic GTA V/HoloGTA.
+match = ["GTA6", "GTA 6", "GTA VI", "Grand Theft Auto VI", "グラセフ6", "グラセフ６"]
+asr = ["ジェイソン", "ルシア"]
+
+[topics.gta6.terms]
+"ジェイソン" = "Jason"
+"ルシア" = "Lucia"
+
 [topics.gta]
 match = ["GTA", "グラセフ", "ストグラ"]
 # The first four are broad recognition hints. Title matches take precedence.

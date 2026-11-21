@@ -27,6 +27,7 @@ class SpeechInterval:
     start_s: float
     end_s: float
     id: int  # unique within a generation
+    generation: int = 0  # generation when registered; used for stale cleanup
 
 
 class CoverageTracker:
@@ -88,16 +89,18 @@ class CoverageTracker:
             self._vad_progress = max(self._vad_progress, progress_s)
             self._advance_through_silence_locked()
 
-    def record_speech(self, start_s: float, end_s: float) -> int:
+    def record_speech(self, start_s: float, end_s: float, generation: int | None = None) -> int:
         """Record a new pending speech interval. Returns its unique ID.
 
         The interval blocks the watermark from advancing past `start_s`
-        until it is completed.
+        until it is completed. The `generation` tags the interval so stale
+        intervals from a previous generation can be safely abandoned.
         """
         with self._lock:
             sid = self._next_id
             self._next_id += 1
-            interval = SpeechInterval(start_s=start_s, end_s=end_s, id=sid)
+            gen = generation if generation is not None else self._generation
+            interval = SpeechInterval(start_s=start_s, end_s=end_s, id=sid, generation=gen)
             self._pending[sid] = interval
             # Adding pending speech might block the watermark — recompute
             self._advance_through_silence_locked()
@@ -154,13 +157,33 @@ class CoverageTracker:
     def abandon_pending_before(self, cutoff_s: float) -> int:
         """Abandon pending speech intervals that start before the cutoff.
 
-        Used when a generation changes or when pending speech has been
-        stuck for too long. Returns the number of intervals abandoned.
+        Used when pending speech has been stuck for too long.
+        Only abandons intervals from the current generation to avoid
+        discarding legitimate speech that is simply slow to translate.
+        Returns the number of intervals abandoned.
         """
         with self._lock:
             to_abandon = [
                 sid for sid, iv in self._pending.items()
-                if iv.start_s < cutoff_s
+                if iv.start_s < cutoff_s and iv.generation == self._generation
+            ]
+            for sid in to_abandon:
+                del self._pending[sid]
+            if to_abandon:
+                self._advance_through_silence_locked()
+            return len(to_abandon)
+
+    def abandon_stale_generation(self) -> int:
+        """Abandon pending speech intervals from a previous generation.
+
+        Called after a seek/generation change to clear intervals that
+        can never be completed since their generation is no longer active.
+        Returns the number of intervals abandoned.
+        """
+        with self._lock:
+            to_abandon = [
+                sid for sid, iv in self._pending.items()
+                if iv.generation != self._generation
             ]
             for sid in to_abandon:
                 del self._pending[sid]

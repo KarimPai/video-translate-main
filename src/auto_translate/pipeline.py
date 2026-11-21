@@ -137,6 +137,104 @@ MERGE_TICK_S = 0.25
 _TICK = object()
 
 
+class WorkerState:
+    """Thread-safe explicit inference state for a pipeline worker.
+
+    Replaces heuristic stall detection (inferring from queue depth and
+    last_activity timestamps) with actual worker-reported state.
+
+    Each worker (ASR, translation) has one instance. The worker calls
+    enter_inference() before starting inference and leave_inference() when
+    done. The watchdog reads the state to distinguish:
+    - Active inference within its deadline
+    - Active inference exceeding its deadline (stall)
+    - Idle worker with queued work (worker not consuming)
+    - Idle worker with no work (natural silence)
+    """
+
+    __slots__ = (
+        "_lock",
+        "active",
+        "generation",
+        "inference_start",
+        "last_completion",
+        "last_queue_get",
+        "utterance_id",
+    )
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.active = False
+        self.utterance_id: int | None = None
+        self.generation: int | None = None
+        self.inference_start: float | None = None
+        self.last_completion: float | None = None
+        self.last_queue_get: float | None = None
+
+    def enter_inference(self, utterance_id: int, generation: int) -> None:
+        """Called before the worker begins ASR or translation inference."""
+        with self._lock:
+            self.active = True
+            self.utterance_id = utterance_id
+            self.generation = generation
+            self.inference_start = time.monotonic()
+
+    def leave_inference(self, success: bool = True) -> None:
+        """Called after inference completes (success or failure)."""
+        with self._lock:
+            self.active = False
+            self.utterance_id = None
+            self.generation = None
+            self.inference_start = None
+            if success:
+                self.last_completion = time.monotonic()
+
+    def record_queue_get(self, utterance_id: int) -> None:
+        """Called when the worker dequeues an item (before inference)."""
+        with self._lock:
+            self.last_queue_get = time.monotonic()
+            self.utterance_id = utterance_id
+
+    def is_stalled(self, deadline_s: float) -> bool:
+        """Check if the worker is stuck in inference past its deadline."""
+        with self._lock:
+            if not self.active:
+                return False
+            if self.inference_start is None:
+                return False
+            elapsed = time.monotonic() - self.inference_start
+            return elapsed > deadline_s
+
+    def stale_generation(self, current_gen: int) -> bool:
+        """Check if the worker is processing a stale generation."""
+        with self._lock:
+            if not self.active:
+                return False
+            return self.generation is not None and self.generation != current_gen
+
+    def summary(self) -> dict:
+        """Return a snapshot of the current state for diagnostics."""
+        with self._lock:
+            result: dict = {
+                "active": self.active,
+                "utterance_id": self.utterance_id,
+                "generation": self.generation,
+            }
+            if self.inference_start is not None:
+                result["inference_elapsed_s"] = round(
+                    time.monotonic() - self.inference_start, 2
+                )
+            if self.last_completion is not None:
+                result["last_completion_ago_s"] = round(
+                    time.monotonic() - self.last_completion, 2
+                )
+            if self.last_queue_get is not None:
+                result["last_queue_get_ago_s"] = round(
+                    time.monotonic() - self.last_queue_get, 2
+                )
+            return result
+
+
 def _ticking(in_q: queue.Queue, interval_s: float):
     """Queue items, with a tick whenever none arrives within the interval."""
     while True:
@@ -228,6 +326,7 @@ def run_asr(
     gate=None,
     record_speech_cb: Callable[[float, float, int], int | None] | None = None,
     name_fusion=None,
+    worker_state: "WorkerState | None" = None,
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
     import numpy as np
@@ -332,6 +431,10 @@ def run_asr(
         # Record queue wait time: time from segmented to ASR start (waiting for inference slot)
         utt.timings.asr_queue_wait = time.monotonic() - utt.timings.segmented
         utt.timings.asr_start = time.monotonic()
+        # Report to watchdog: this utterance is now in-flight for ASR
+        if worker_state is not None:
+            worker_state.record_queue_get(id(utt))
+            worker_state.enter_inference(id(utt), utt.generation)
         asr_max_retries = 2
         asr_attempt = 0
         text = ""
@@ -390,7 +493,12 @@ def run_asr(
                       utt.start_s, utt.end_s, reason, _raw_transcript(asr)[:160])
             break
         if cancelled(utt.generation):
+            if worker_state is not None:
+                worker_state.leave_inference(success=False)
             continue
+        # Report to watchdog: ASR inference finished
+        if worker_state is not None:
+            worker_state.leave_inference(success=bool(text and text.strip()))
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
             continue
@@ -447,6 +555,7 @@ def run_translate(
     live_merge_margin_s: float = 1.5,
     record_speech_cb: Callable[[float, float, int], None] | None = None,
     complete_speech_cb: Callable[[float, float, int], None] | None = None,
+    worker_state: "WorkerState | None" = None,
 ) -> None:
     """Translate transcripts while retaining recent context and forwarding progress.
 
@@ -564,11 +673,17 @@ def run_translate(
                 speech_id = result
 
         if translator is not None:
+            # Report to watchdog: this transcript is now in-flight for translation
+            if worker_state is not None:
+                worker_state.record_queue_get(id(tr))
+                worker_state.enter_inference(id(tr), tr.generation)
             try:
                 with (gate.operation("mt", current=get_generation, generation=tr.generation)
                       if gate is not None else nullcontext()):
                     if live and _expired_live_cue(tr, playback_position, live_late_window_s):
                         increment_counter("expired")
+                        if worker_state is not None:
+                            worker_state.leave_inference(success=False)
                         continue
                     model_started = time.monotonic()
                     if callable(set_position):
@@ -577,13 +692,19 @@ def run_translate(
                     update_metrics(stages={"mt_s": time.monotonic() - model_started})
                 consecutive_failures = 0
             except CancelledError:
+                if worker_state is not None:
+                    worker_state.leave_inference(success=False)
                 continue
             except TranslatorUnavailable:
+                if worker_state is not None:
+                    worker_state.leave_inference(success=False)
                 if ((stop is not None and stop.is_set()) or
                         (get_generation is not None and tr.generation != get_generation())):
                     continue
                 raise
             except Exception as e:
+                if worker_state is not None:
+                    worker_state.leave_inference(success=False)
                 if ((stop is not None and stop.is_set()) or
                         (get_generation is not None and tr.generation != get_generation())):
                     continue
@@ -593,6 +714,9 @@ def run_translate(
                 log.error("translation failed: %s", e)
                 suppressed = True
 
+            # Translation inference finished (success, suppressed, or stale)
+            if worker_state is not None:
+                worker_state.leave_inference(success=not suppressed)
             if get_generation is not None and tr.generation != get_generation():
                 continue
             if stop is not None and stop.is_set():
@@ -898,6 +1022,11 @@ def run(
         if cs is not None and complete_speech_cb is None:
             complete_speech_cb = cs
 
+    # Explicit worker state tracking for ASR and translation.
+    # The watchdog reads these to distinguish active inference from idle/silence.
+    asr_worker_state = WorkerState()
+    mt_worker_state = WorkerState()
+
     threads = [
         threading.Thread(
             target=_guard_stage,
@@ -930,6 +1059,7 @@ def run(
                 gate,
                 record_speech_cb,
                 name_fusion,
+                asr_worker_state,
             ),
             name="asr",
             daemon=True,
@@ -957,6 +1087,7 @@ def run(
                 cfg.translate.live_merge_margin_s,
                 record_speech_cb,
                 complete_speech_cb,
+                mt_worker_state,
             ),
             name="translate",
             daemon=True,
@@ -1180,98 +1311,120 @@ def run(
                     last_warning = now
                     log.warning("ASR/translation pipeline waiting with queued work: %s", backlog)
 
-            # Subtitle starvation watchdog: detect when audio keeps flowing but
-            # no subtitle has been published for too long. This catches stalls
-            # that last_activity misses because AudioProgress keeps updating it.
-            # Also catches in-flight inference stalls: a worker holds an item
-            # during ASR/translation, leaving queues empty but producing nothing.
-            if not ingest.source.live and now - last_subtitle_at > 15.0:
-                # Compute backlog once for both the starvation warning and recovery.
+            # Subtitle starvation watchdog: uses explicit WorkerState to detect
+            # stalls without false positives from natural silence.
+            # Works for both VOD and livestream.
+            no_sub_s = now - last_subtitle_at
+            if no_sub_s > 15.0 and ingest.generation == observed_generation:
+                # Compute backlog once for all checks below.
                 subtitle_backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
                 has_backlog = bool(subtitle_backlog)
-                # Detect in-flight stall: audio is flowing (last_activity recent)
-                # but no subtitle for a long time and queues are empty — meaning
-                # a worker is stuck during inference on an in-flight item.
-                in_flight_stall = (
+
+                # Use explicit worker state to determine stall type.
+                # WorkerState tracks actual inference entry/exit, not heuristics.
+                asr_stalled = asr_worker_state.is_stalled(cfg.asr.response_timeout_s + 5.0)
+                mt_stalled = mt_worker_state.is_stalled(cfg.translate.timeout_s + 5.0)
+                asr_stale_gen = asr_worker_state.stale_generation(ingest.generation)
+                mt_stale_gen = mt_worker_state.stale_generation(ingest.generation)
+                any_worker_active = asr_worker_state.active or mt_worker_state.active
+
+                # Classify the stall condition:
+                # 1. Queued backlog — workers not consuming
+                # 2. In-flight stall — worker stuck during inference
+                # 3. Stale generation — worker processing old seek position
+                # 4. Natural silence — no work, no active inference (NOT a stall)
+                is_queued_stall = has_backlog and not any_worker_active
+                is_in_flight_stall = (
                     not has_backlog
-                    and ingest.generation == observed_generation
-                    and now - last_activity < 30.0  # audio still flowing
-                    and now - last_subtitle_at > 60.0  # but no subtitle for 60s
+                    and (asr_stalled or mt_stalled)
                 )
-                if now - last_subtitle_at > 30.0 and ingest.generation == observed_generation:
-                    if has_backlog:
-                        # Queued work but no output — ASR/MT not consuming
-                        record_event(
-                            "subtitle_starvation",
-                            queues=subtitle_backlog,
-                            no_subtitle_for_s=round(now - last_subtitle_at, 1),
-                            generation=ingest.generation,
-                            in_flight=False,
+                is_stale_gen_stall = asr_stale_gen or mt_stale_gen
+                # Natural silence: no backlog, no active worker, audio may or may
+                # not be flowing. This is NOT a stall — do nothing.
+                is_natural_silence = (
+                    not has_backlog
+                    and not any_worker_active
+                    and not asr_stalled
+                    and not mt_stalled
+                )
+
+                # Rate-limit: emit diagnostics at most every 30s per stall type
+                can_diag = now - last_warning > 30.0
+
+                if no_sub_s > 30.0 and not is_natural_silence:
+                    stall_type = "queued" if is_queued_stall else (
+                        "in_flight" if is_in_flight_stall else (
+                            "stale_generation" if is_stale_gen_stall else "unknown"
                         )
-                    elif in_flight_stall:
-                        # Empty queues but audio flowing — inference stuck in-flight
-                        record_event(
-                            "subtitle_starvation",
-                            queues={},
-                            no_subtitle_for_s=round(now - last_subtitle_at, 1),
-                            generation=ingest.generation,
-                            in_flight=True,
-                        )
-                    if now - last_warning > 30.0:
+                    )
+                    record_event(
+                        "subtitle_starvation",
+                        queues=subtitle_backlog,
+                        no_subtitle_for_s=round(no_sub_s, 1),
+                        generation=ingest.generation,
+                        stall_type=stall_type,
+                        asr_state=asr_worker_state.summary(),
+                        mt_state=mt_worker_state.summary(),
+                    )
+                    if can_diag:
                         last_warning = now
-                        if has_backlog:
+                        if is_queued_stall:
                             log.warning(
-                                "Subtitle starvation: no subtitle published for %.0fs "
-                                "with queued work %s; audio may be processed but ASR/MT "
-                                "is not producing output",
-                                now - last_subtitle_at, subtitle_backlog,
+                                "Subtitle starvation (queued): no subtitle for %.0fs "
+                                "with queued work %s; workers idle",
+                                no_sub_s, subtitle_backlog,
                             )
-                        elif in_flight_stall:
+                        elif is_in_flight_stall:
                             log.warning(
-                                "Subtitle starvation (in-flight stall): no subtitle "
-                                "for %.0fs with empty queues but audio still flowing; "
-                                "ASR or translation inference may be stuck",
-                                now - last_subtitle_at,
+                                "Subtitle starvation (in-flight): no subtitle for %.0fs; "
+                                "ASR stalled=%s MT stalled=%s",
+                                no_sub_s, asr_stalled, mt_stalled,
                             )
-                # Recovery watchdog: detect VOD deadlock and attempt recovery
-                # when no subtitle published for 15s with pending work and auto-pause active.
-                if (has_backlog or in_flight_stall) and ingest.generation == observed_generation:
-                    # Check if any output is auto-paused
+                        elif is_stale_gen_stall:
+                            log.warning(
+                                "Subtitle starvation (stale gen): no subtitle for %.0fs; "
+                                "ASR stale=%s MT stale=%s",
+                                no_sub_s, asr_stale_gen, mt_stale_gen,
+                            )
+
+                # Recovery watchdog: VOD deadlock recovery when auto-pause is active
+                # and there is genuine work to process (not natural silence).
+                needs_recovery = (
+                    (is_queued_stall or is_in_flight_stall)
+                    and not is_natural_silence
+                )
+                if needs_recovery:
                     auto_paused = False
                     for out in outputs:
                         if getattr(out, "_vod_auto_paused", False):
                             auto_paused = True
                             break
                     if auto_paused:
-                        # Attempt recovery: log diagnostics and try to resume
                         record_event(
                             "vod_deadlock_recovery",
                             queues=subtitle_backlog,
-                            elapsed_s=now - last_subtitle_at,
+                            elapsed_s=no_sub_s,
                             generation=ingest.generation,
+                            stall_type="queued" if is_queued_stall else "in_flight",
                         )
                         log.warning(
                             "VOD deadlock detected: no subtitle for %.0fs with "
-                            "pending work %s and auto-pause active; attempting recovery",
-                            now - last_subtitle_at, subtitle_backlog,
+                            "%s stall and auto-pause active; attempting recovery",
+                            no_sub_s,
+                            "queued" if is_queued_stall else "in-flight",
                         )
-                        # Try to resume MPV to break the circular wait
                         for out in outputs:
                             if getattr(out, "_vod_auto_paused", False):
                                 resume = getattr(out, "resume_from_auto_pause", None)
                                 if callable(resume):
                                     resume()
                                 else:
-                                    # Direct fallback: unpause via MPV command
                                     try:
                                         out._player_command("set_property", "pause", False)
                                         out._vod_auto_paused = False
                                         log.info("Recovery: forced MPV resume")
                                     except Exception:
                                         log.exception("Recovery: failed to resume MPV")
-                        # Do NOT reset last_subtitle_at here — no subtitle was
-                        # actually published. Resetting it masks repeated deadlocks
-                        # and prevents the starvation warning from firing.
                         last_warning = now
 
             # Watermark diagnostics: log translation progress every 10s during VOD

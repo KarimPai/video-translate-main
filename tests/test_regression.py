@@ -2674,6 +2674,191 @@ def test_premature_eof_detects_actual_expiry():
     assert is_premature, "Should detect URL expiry at 25% of VOD"
 
 
+# ---------------------------------------------------------------------------
+# P0 — WorkerState behavioral tests
+# ---------------------------------------------------------------------------
+
+def test_worker_state_tracks_inference_lifecycle():
+    """WorkerState must correctly track enter/leave inference."""
+    from auto_translate.pipeline import WorkerState
+
+    ws = WorkerState()
+    assert not ws.active
+    assert ws.inference_start is None
+
+    ws.enter_inference(42, 1)
+    assert ws.active
+    assert ws.utterance_id == 42
+    assert ws.generation == 1
+    assert ws.inference_start is not None
+
+    ws.leave_inference(success=True)
+    assert not ws.active
+    assert ws.utterance_id is None
+    assert ws.last_completion is not None
+
+
+def test_worker_state_detects_stalled_inference():
+    """WorkerState.is_stalled must return True when inference exceeds deadline."""
+    import time
+
+    from auto_translate.pipeline import WorkerState
+
+    ws = WorkerState()
+    ws.enter_inference(1, 1)
+    # Deadline 1s — should not be stalled yet
+    assert not ws.is_stalled(1.0)
+    # Sleep past deadline
+    time.sleep(1.1)
+    assert ws.is_stalled(1.0), "Should detect stall after deadline"
+    ws.leave_inference()
+    assert not ws.is_stalled(1.0), "Idle worker should not be stalled"
+
+
+def test_worker_state_detects_stale_generation():
+    """WorkerState must detect when processing a stale generation."""
+    from auto_translate.pipeline import WorkerState
+
+    ws = WorkerState()
+    ws.enter_inference(1, 1)
+    assert not ws.stale_generation(1), "Same gen should not be stale"
+    assert ws.stale_generation(2), "Different gen should be stale"
+    ws.leave_inference()
+    assert not ws.stale_generation(2), "Idle worker should not be stale"
+
+
+def test_worker_state_natural_silence_not_stalled():
+    """Natural silence (no active worker, no backlog) must NOT trigger stall."""
+    from auto_translate.pipeline import WorkerState
+
+    asr_ws = WorkerState()
+    mt_ws = WorkerState()
+    # Both idle, no inference active
+    assert not asr_ws.active
+    assert not mt_ws.active
+    assert not asr_ws.is_stalled(30.0)
+    assert not mt_ws.is_stalled(30.0)
+    # This is natural silence — no stall detection should fire
+
+
+# ---------------------------------------------------------------------------
+# P1 — Pending speech lifecycle behavioral tests
+# ---------------------------------------------------------------------------
+
+def test_coverage_record_speech_stores_generation():
+    """record_speech must store the generation with the interval."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    ct.set_generation(5)
+    sid = ct.record_speech(0.0, 2.0, generation=5)
+    assert sid is not None
+    # Check the interval was stored with generation 5
+    intervals = ct.pending_intervals()
+    assert len(intervals) == 1
+    # Abandon stale gen should NOT abandon it (same gen)
+    abandoned = ct.abandon_stale_generation()
+    assert abandoned == 0, "Should not abandon current generation speech"
+
+
+def test_coverage_abandon_stale_generation():
+    """abandon_stale_generation must only remove intervals from old generations."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    ct.set_generation(1)
+    ct.record_speech(0.0, 2.0, generation=1)
+    ct.record_speech(5.0, 7.0, generation=1)
+    # Simulate seek to gen 2
+    ct.set_generation(2)
+    # Now abandon stale gen
+    abandoned = ct.abandon_stale_generation()
+    assert abandoned == 2, f"Should abandon 2 stale intervals, got {abandoned}"
+    assert ct.pending_count() == 0
+
+
+def test_coverage_abandon_pending_only_current_gen():
+    """abandon_pending_before must only abandon current-gen intervals."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    ct.set_generation(2)
+    # Old gen interval (should survive abandon_pending_before)
+    ct.record_speech(0.0, 2.0, generation=1)
+    # Current gen interval (should be abandoned)
+    ct.record_speech(3.0, 5.0, generation=2)
+    ct.advance_vad(20.0)
+
+    # Abandon before 4s — should only remove gen 2 interval
+    abandoned = ct.abandon_pending_before(4.0)
+    assert abandoned == 1, f"Should abandon 1 current-gen interval, got {abandoned}"
+    # Gen 1 interval should still be pending
+    assert ct.pending_count() == 1
+
+
+def test_coverage_pending_speech_lifecycle_complete():
+    """Full lifecycle: record → complete → watermark advances."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    ct.set_generation(1)
+    sid = ct.record_speech(0.0, 2.0, generation=1)
+    ct.advance_vad(10.0)
+    # Watermark blocked by pending speech
+    assert ct.translated_until == 0.0
+    # Complete the speech
+    assert ct.complete_speech(sid)
+    # Watermark should now advance through VAD-confirmed silence
+    assert ct.translated_until >= 10.0, (
+        f"Watermark should advance after completion, got {ct.translated_until}"
+    )
+
+
+def test_coverage_suppressed_speech_clears_pending():
+    """Suppressed translation must still clear pending speech."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    ct.set_generation(1)
+    sid = ct.record_speech(0.0, 2.0, generation=1)
+    ct.advance_vad(10.0)
+    assert ct.translated_until == 0.0
+    # Simulate suppressed translation — complete_speech clears it
+    assert ct.complete_speech(sid)
+    assert ct.translated_until >= 10.0
+
+
+def test_worker_state_with_run_asr():
+    """run_asr must update WorkerState during inference."""
+    from auto_translate.pipeline import WorkerState, run_asr
+
+    ws = WorkerState()
+    in_q = queue.Queue()
+    out_q = queue.Queue()
+    stop = threading.Event()
+
+    # One utterance
+    in_q.put(Utterance(
+        start_s=0.0, end_s=1.0,
+        audio=np.zeros(16000, dtype=np.float32),
+        generation=0,
+    ))
+    in_q.put(None)
+
+    fake_asr = _make_fake_asr(["こんにちは"])
+    t = threading.Thread(
+        target=run_asr,
+        args=(fake_asr, in_q, out_q),
+        kwargs={"stop": stop, "worker_state": ws},
+    )
+    t.start()
+    t.join(timeout=10)
+
+    # Worker should have completed inference
+    assert ws.last_completion is not None, "Worker should have recorded completion"
+    assert not ws.active, "Worker should be idle after finishing"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

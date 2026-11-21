@@ -753,12 +753,14 @@ class MpvOutput:
 
         Returns the speech interval ID, or None if the callback is stale.
         Stale callbacks (wrong generation) are rejected without modifying state.
+        The generation is stored with the interval so stale-generation speech
+        can be safely abandoned after a seek.
         """
         with self._buffer_condition:
             if generation != self._pending_generation:
                 # Stale callback — reject without modifying state
                 return None
-            sid = self._coverage.record_speech(start_s, end_s)
+            sid = self._coverage.record_speech(start_s, end_s, generation=generation)
             self._speech_id_map[sid] = (start_s, end_s)
             return sid
 
@@ -905,6 +907,8 @@ class MpvOutput:
 
         Synchronizes _pending_generation with the current ingest.generation
         so that valid callbacks are not rejected after seeking.
+        Also abandons any pending speech from the previous generation that
+        survived the reset (should be none, but defensive).
         """
         with self._buffer_condition:
             self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
@@ -917,6 +921,10 @@ class MpvOutput:
             new_gen = self.ingest.generation
             self._pending_generation = new_gen
             self._coverage.set_generation(new_gen)
+            # Defensive: abandon any stale-generation pending speech
+            stale = self._coverage.abandon_stale_generation()
+            if stale > 0:
+                log.info("Abandoned %d stale-generation pending speech intervals on seek", stale)
             # Reset pause state after seek — _restart_audio_at() will set
             # the appropriate state (seek-buffering or manual pause preserved).
             self._vod_auto_paused = False

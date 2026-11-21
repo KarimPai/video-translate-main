@@ -66,6 +66,7 @@ class Transcript:
     timings: Timings = field(default_factory=Timings)
     generation: int = 0
     speech_start_s: float | None = None
+    language: str = "ja"  # Audio-derived ASR language; non-JA cues are context-only
 
 
 @dataclass

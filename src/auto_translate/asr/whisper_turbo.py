@@ -517,17 +517,26 @@ class WhisperASR:
                 if prefix and (
                     len(cls._EN_WORDS.findall(prefix.group(1))) >= 2
                     or bool(re.search(r"[.!?]\s*$", prefix.group(1)))
+                    or prefix.group(1).strip(" .,!?").casefold()
+                    in {"yes", "yeah", "no", "okay", "ok", "hello", "stop",
+                        "go", "hey", "wait"}
                 ):
                     output.extend([("en", prefix.group(1).strip()),
                                    ("ja", prefix.group(2).strip())])
                     continue
-                # If the Japanese text comes first, only split a clearly
-                # separate English phrase following sentence punctuation.
+                # Japanese first, then an independent English clause. Roman
+                # names embedded in Japanese are not separated unless this is
+                # multiword English or an isolated NPC interjection.
                 suffix = re.match(
-                    r"^(.*?[\u3040-\u30ff\u3400-\u9fff][^.!?。！？]*[。！？])\s+([A-Za-z].+)$",
+                    r"^(.*?[\u3040-\u30ff\u3400-\u9fff][^A-Za-z]*?)\s+([A-Za-z].+)$",
                     clause,
                 )
-                if suffix and len(cls._EN_WORDS.findall(suffix.group(2))) >= 2:
+                if suffix and (
+                    len(cls._EN_WORDS.findall(suffix.group(2))) >= 2
+                    or suffix.group(2).strip(" .,!?").casefold()
+                    in {"yes", "yeah", "no", "okay", "ok", "hello", "stop",
+                        "go", "hey", "wait"}
+                ):
                     output.extend([("ja", suffix.group(1).strip()),
                                    ("en", suffix.group(2).strip())])
                     continue

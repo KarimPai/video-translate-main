@@ -13,7 +13,7 @@ from collections import Counter, deque
 from .glossary import Glossary
 
 _JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
-_PLAIN_NAME = re.compile(r"^[A-Z][a-zA-Z0-9]*(?:[- ][A-Za-z][A-Za-z0-9]*)*$")
+_PLAIN_NAME = re.compile(r"^[A-Z][a-z][a-zA-Z0-9]*(?:[- ][A-Za-z][A-Za-z0-9]*)*$")
 
 
 class NameFusion:

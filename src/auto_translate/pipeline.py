@@ -1057,6 +1057,9 @@ def run(
     # The watchdog reads these to distinguish active inference from idle/silence.
     asr_worker_state = WorkerState()
     mt_worker_state = WorkerState()
+    # Backend-specific settings may override the global timeout profile.
+    asr_timeout_s = getattr(getattr(asr, "cfg", None), "response_timeout_s", cfg.asr.response_timeout_s)
+    mt_timeout_s = getattr(getattr(translator, "cfg", None), "timeout_s", cfg.translate.timeout_s)
 
     threads = [
         threading.Thread(
@@ -1146,6 +1149,7 @@ def run(
     last_activity = started
     last_subtitle_at = started  # tracks last published subtitle, independent of AudioProgress
     last_warning = started
+    last_recovery_at = -float("inf")
     last_guard_key = ""
     last_guard_start = -float("inf")
     last_guard_end = -float("inf")
@@ -1363,8 +1367,8 @@ def run(
 
                 # Use explicit worker state to determine stall type.
                 # WorkerState tracks actual inference entry/exit, not heuristics.
-                asr_stalled = asr_worker_state.is_stalled(cfg.asr.response_timeout_s + 5.0)
-                mt_stalled = mt_worker_state.is_stalled(cfg.translate.timeout_s + 5.0)
+                asr_stalled = asr_worker_state.is_stalled(asr_timeout_s + 5.0)
+                mt_stalled = mt_worker_state.is_stalled(mt_timeout_s + 5.0)
                 asr_stale_gen = asr_worker_state.stale_generation(ingest.generation)
                 mt_stale_gen = mt_worker_state.stale_generation(ingest.generation)
                 any_worker_active = asr_worker_state.active or mt_worker_state.active
@@ -1413,17 +1417,17 @@ def run(
                             no_sub_s, asr_stalled, mt_stalled, subtitle_backlog,
                         )
                     elif is_queued_stall:
-                            log.warning(
-                                "Subtitle starvation (queued): no subtitle for %.0fs "
-                                "with queued work %s; workers idle",
-                                no_sub_s, subtitle_backlog,
-                            )
+                        log.warning(
+                            "Subtitle starvation (queued): no subtitle for %.0fs "
+                            "with queued work %s; workers idle",
+                            no_sub_s, subtitle_backlog,
+                        )
                     elif is_stale_gen_stall:
-                            log.warning(
-                                "Subtitle starvation (stale gen): no subtitle for %.0fs; "
-                                "ASR stale=%s MT stale=%s",
-                                no_sub_s, asr_stale_gen, mt_stale_gen,
-                            )
+                        log.warning(
+                            "Subtitle starvation (stale gen): no subtitle for %.0fs; "
+                            "ASR stale=%s MT stale=%s",
+                            no_sub_s, asr_stale_gen, mt_stale_gen,
+                        )
 
                 # Recovery watchdog: VOD deadlock recovery when auto-pause is active
                 # and there is genuine work to process (not natural silence).
@@ -1440,7 +1444,11 @@ def run(
                         if getattr(out, "_vod_auto_paused", False):
                             auto_paused = True
                             break
-                    if auto_paused:
+                    # Rate-limit the actual recovery action independently of
+                    # starvation diagnostics. Otherwise an unchanged blocked
+                    # queue causes repeated resume/pause cycles.
+                    if auto_paused and now - last_recovery_at >= 30.0:
+                        last_recovery_at = now
                         record_event(
                             "vod_deadlock_recovery",
                             queues=subtitle_backlog,

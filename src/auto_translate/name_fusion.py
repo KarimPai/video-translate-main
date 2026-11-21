@@ -42,7 +42,11 @@ class NameFusion:
         # followed by the profiled streamer/cast. This guarantees that a busy
         # collaboration prompt cannot crowd out first-mention game characters.
         seeds: list[str] = []
-        for ja, en in glossary.find(metadata_text, context=metadata_text):
+        title_matches = sorted(
+            glossary.find(metadata_text, context=metadata_text),
+            key=lambda item: metadata_text.find(item[0]),
+        )
+        for ja, en in title_matches:
             if ja in self._names and self._names[ja] == en and ja not in seeds:
                 seeds.append(ja)
         # Topic-specific ASR hints must also match named glossary entries.
@@ -73,10 +77,14 @@ class NameFusion:
         """
         if not isinstance(transcript, str) or not transcript.strip():
             return False
-        accepted = set()
-        for ja, en in self.glossary.find(transcript, context=transcript):
-            if self._names.get(ja) == en:
-                accepted.add(ja)
+        accepted: list[str] = []
+        matches = sorted(
+            self.glossary.find(transcript, context=transcript),
+            key=lambda item: transcript.find(item[0]),
+        )
+        for ja, en in matches:
+            if self._names.get(ja) == en and ja not in accepted:
+                accepted.append(ja)
         changed = False
         for ja in accepted:
             if ja not in self._observations and len(self._observations) >= 32:

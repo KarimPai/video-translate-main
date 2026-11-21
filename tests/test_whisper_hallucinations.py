@@ -125,6 +125,23 @@ def test_whisper_japanese_nicknames_with_latin_letters_stay_japanese():
         assert WhisperASR._split_text_languages(text) == [("ja", text)]
 
 
+def test_whisper_isolates_yes_yeah_from_adjacent_japanese():
+    """Common English NPC interjections must not leak into JP subtitles."""
+    assert WhisperASR._split_text_languages("Yeah やばい！") == [
+        ("en", "Yeah"), ("ja", "やばい！"),
+    ]
+    assert WhisperASR._split_text_languages("危ない Yeah") == [
+        ("ja", "危ない"), ("en", "Yeah"),
+    ]
+    assert WhisperASR._split_text_languages("危ない Get in the car") == [
+        ("ja", "危ない"), ("en", "Get in the car"),
+    ]
+    # Spoken names remain part of the Japanese phrase.
+    assert WhisperASR._split_text_languages("Miko ちゃん") == [
+        ("ja", "Miko ちゃん"),
+    ]
+
+
 def test_whisper_explicit_mixed_clauses_have_separate_languages():
     w = _whisper()
     w._model.transcribe.return_value = _output(

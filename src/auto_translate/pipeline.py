@@ -270,12 +270,18 @@ def run_asr(
             refresh_name_hints()
         current_generation = generation
 
-    def accepted(text, end_s):
+    def accepted(text, end_s, *, vad_confidence=None, probe=False):
         nonlocal last_accepted_end_s
         last_accepted_end_s = end_s
         if callable(remember):
             remember(text)
-        if name_fusion is not None and name_fusion.observe(text):
+        # Name memory needs evidence independent of model output: only a
+        # non-probe VAD-positive utterance with adequate speech confidence
+        # may count toward the repeated-observation threshold. A cached or
+        # low-confidence ASR guess cannot seed self-reinforcing prompts.
+        if (name_fusion is not None and not probe
+                and vad_confidence is not None and vad_confidence >= 0.35
+                and name_fusion.observe(text)):
             refresh_name_hints()
 
     while True:
@@ -306,7 +312,8 @@ def run_asr(
         if cached is not None:
             if cancelled(utt.generation):
                 continue
-            accepted(cached.ja, utt.end_s)
+            accepted(cached.ja, utt.end_s, vad_confidence=utt.vad_confidence,
+                     probe=utt.probe)
             # Record this speech region as pending so the watermark knows
             # about it. The cached subtitle must complete this exact pending
             # entry, not some other utterance with similar timestamps.
@@ -424,7 +431,8 @@ def run_asr(
             continue
         if cancelled(utt.generation):
             continue
-        accepted(text, utt.end_s)
+        accepted(text, utt.end_s, vad_confidence=utt.vad_confidence,
+                 probe=utt.probe)
         out_q.put(Transcript(utt.start_s, utt.end_s, text, utt.timings,
                              generation=utt.generation, speech_start_s=utt.speech_start_s))
     out_q.put(None)

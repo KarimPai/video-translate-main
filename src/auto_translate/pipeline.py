@@ -466,6 +466,15 @@ def run_asr(
         if cached is not None:
             if cancelled(utt.generation):
                 continue
+            # Session caches must not bypass backend-specific acoustic guards.
+            check_utterance = getattr(asr, "reject_utterance", None)
+            cached_reason = check_utterance(cached.ja, utt) if callable(check_utterance) else None
+            if cached_reason:
+                record_event("asr_cached_rejected", generation=utt.generation,
+                             reason=cached_reason, source_start_s=utt.start_s,
+                             source_end_s=utt.end_s)
+                cached = None
+        if cached is not None:
             accepted(cached.ja, utt.end_s, vad_confidence=utt.vad_confidence,
                      probe=utt.probe)
             # Record this speech region as pending so the watermark knows
@@ -562,6 +571,20 @@ def run_asr(
             worker_state.leave_inference(success=bool(text and text.strip()))
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
+            continue
+        # Haas can mishear revving engines as repeated "yeah" / イェー.
+        # Call a backend-specific evidence gate before names/context/MT; no
+        # other ASR backends are changed. This does not restart or re-decode.
+        check_utterance = getattr(asr, "reject_utterance", None)
+        utterance_reason = check_utterance(text, utt) if callable(check_utterance) else None
+        if utterance_reason:
+            increment_counter("asr_rejected")
+            record_event("asr_rejected", generation=utt.generation,
+                         reason=utterance_reason, source_start_s=utt.start_s,
+                         source_end_s=utt.end_s,
+                         vad_confidence=utt.vad_confidence, probe=utt.probe)
+            log.info("ASR suppressed likely engine-rev interjection (reason=%s, text=%r)",
+                     utterance_reason, text[:80])
             continue
         # Qwen reports an audio-derived source language. Legacy Japanese-only
         # backends have no such field and continue to use the existing path.

@@ -131,6 +131,17 @@ def _raw_transcript(asr) -> str:
     return raw if isinstance(raw, str) else ""
 
 
+def _finalize_discarded_subtitle(
+    sub: Subtitle,
+    complete_speech_cb: Callable | None,
+) -> None:
+    """Release coverage when a final output guard rejects a translated cue."""
+    if sub.speech_id is not None and complete_speech_cb is not None:
+        complete_speech_cb(
+            sub.start_s, sub.end_s, sub.generation, speech_id=sub.speech_id,
+        )
+
+
 ASR_CONTEXT_GAP_S = 15.0
 _SENTENCE_END = re.compile(r"[。．.！!？?…‥」』）)】♪〜～ー]\s*$")
 MERGE_TICK_S = 0.25
@@ -1131,13 +1142,6 @@ def run(
     for thread in threads:
         thread.start()
 
-    def release_discarded_subtitle(sub: Subtitle) -> None:
-        """Avoid leaving coverage blocked when an output guard drops a cue."""
-        if sub.speech_id is not None and complete_speech_cb is not None:
-            complete_speech_cb(
-                sub.start_s, sub.end_s, sub.generation, speech_id=sub.speech_id,
-            )
-
     stats = Stats()
     last_subtitle_generation: int | None = None
     observed_generation = ingest.generation
@@ -1255,12 +1259,12 @@ def run(
                     allow_jp = tcfg is not None and getattr(tcfg, "suppress_japanese_in_english", True) is False
                     cleaned = sanitize_english_output(item.en, allow_japanese=allow_jp)
                     if not cleaned:
-                        release_discarded_subtitle(item)
+                        _finalize_discarded_subtitle(item, complete_speech_cb)
                         increment_counter("dropped")
                         continue
                     item = replace(item, en=cleaned)
                 elif translator is not None:
-                    release_discarded_subtitle(item)
+                    _finalize_discarded_subtitle(item, complete_speech_cb)
                     increment_counter("dropped")
                     continue
 
@@ -1290,7 +1294,7 @@ def run(
                         "Suppressed repeat subtitle: gen=%d count=%d overlap=%s text=%r",
                         item.generation, identical_count, overlap, item.en[:110],
                     )
-                    release_discarded_subtitle(item)
+                    _finalize_discarded_subtitle(item, complete_speech_cb)
                     increment_counter("dropped")
                     continue
 

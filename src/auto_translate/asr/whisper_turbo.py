@@ -485,7 +485,7 @@ class WhisperASR:
             return ""
         text = " ".join(unicodedata.normalize("NFC", text).split())
         text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
-        reason = transcript_problem(text, len(audio) / 16000)
+        reason = transcript_problem(text, len(audio) / 16000) or whisper_suspect_reason(text)
         if reason:
             self.last_rejection = reason
             return ""

@@ -56,10 +56,15 @@ def whisper_suspect_reason(text: str) -> str | None:
     # Remove all punctuation/spacing and detect repeated syllable groups
     # even when the ASR inserts commas between copies. Avoid marking normal
     # short emphasis such as いやいや / います、います as hallucination.
-    if len(kana) >= 14:
+    if len(kana) >= 10:
         for width in range(2, 10):
             for match in re.finditer(rf"(.{{{width}}})\1{{3,}}", kana):
-                if len(match.group()) >= 14:
+                unit = match.group(1)
+                # Normal spoken Japanese may emphasize familiar particles
+                # or reactions repeatedly; don't flag those solely as loops.
+                if unit in {"いや", "はい", "うん", "そう", "もう", "だめ", "やだ"}:
+                    continue
+                if len(match.group()) >= 14 or (width <= 3 and len(match.group()) >= 10):
                     return "whisper_phonetic_loop"
         if re.search(r"([ぁ-ゖ])\1{4,}", kana):
             return "whisper_phonetic_loop"

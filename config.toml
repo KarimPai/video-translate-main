@@ -136,6 +136,19 @@ load_timeout_s = 180
 cuda_device = 0
 threads = 4
 
+[translate.plamo8b]
+# PLaMo 3 Translate 8B Q3_K_M — larger model for better translation quality
+model_path = "C:/Games/video-translate-universal/models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"
+server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+# Auto GPU offload — gpu_budget will reduce layers if VRAM is insufficient
+gpu_layers = -1
+context_size = 8192
+max_tokens = 512
+parallel_slots = 2
+load_timeout_s = 300
+cuda_device = 0
+threads = 4
+
 [mpv]
 hwdec = "auto-safe"
 live_forward_cache_mib = 1024

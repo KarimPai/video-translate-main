@@ -10,6 +10,7 @@ may still be misheard as Japanese; post-ASR guards remain in place.
 from __future__ import annotations
 
 import logging
+from difflib import SequenceMatcher
 import re
 import threading
 import time
@@ -24,7 +25,7 @@ from ..config import AsrConfig
 from ..runtime_diagnostics import update_metrics
 from ..text_filter import trim_repetition_tail
 from .context_echo import context_match, speech_key
-from .quality_guard import transcript_problem
+from .quality_guard import transcript_problem, whisper_suspect_reason
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,11 @@ class WhisperASR:
             "Whisper Large-v3 Turbo ready: model=%s device=%s compute=%s threads=%d device_index=%s",
             model_path, device, compute_type, cfg.threads, device_index,
         )
+
+    # Whisper forced-Japanese decoding is particularly vulnerable to
+    # generating Japanese-looking text on music and game audio. Do not run it
+    # on audio that Silero explicitly marked VAD-negative.
+    supports_vad_negative_probes = False
 
     # ------------------------------------------------------------------ #
     # Model resolution
@@ -300,6 +306,61 @@ class WhisperASR:
             if generation != self._generation:
                 return ""
             self.last_raw_transcript = text
+
+        # Suspicious phonetic loops / long Katakana word-salad are NOT trusted
+        # just because they are grammatical Japanese script. Retry once with
+        # no prompt and a different temperature, and require stable evidence.
+        # This is Whisper-only; Qwen and Haas are unaffected.
+        suspect = whisper_suspect_reason(text)
+        if suspect:
+            original = text
+            retry_budget = min(
+                8.0,
+                float(self.cfg.live_response_timeout_s if duration_s <= 8
+                      else self.cfg.response_timeout_s),
+            )
+            if probe or time.monotonic() - started >= retry_budget:
+                self.last_rejection = suspect
+                self.last_raw_transcript = original
+                self.last_language_spans = []
+                log.info("Whisper rejected %s on unverified audio", suspect)
+                return ""
+            try:
+                # _transcribe_impl() is called only with the inference lock.
+                # Probe=True here selects a different temperature; it does not
+                # re-enable VAD-negative audio processing in run_asr().
+                candidate = self._transcribe_impl(audio, probe=True, no_context=True)
+            except Exception as exc:  # noqa: BLE001
+                self.last_rejection = suspect
+                self.last_raw_transcript = original
+                self.last_language_spans = []
+                log.warning("Whisper suspect recheck failed (%s): %s", suspect, exc)
+                return ""
+            # Only a clean, independently produced Japanese hypothesis may be
+            # accepted. Do not keep a looping result even when both passes
+            # repeat it; this is a known Whisper failure mode.
+            first = speech_key(original)
+            second = speech_key(candidate)
+            agreement = SequenceMatcher(None, first, second, autojunk=False).ratio()
+            stable_prefix = len(second) >= 8 and first.startswith(second[:8])
+            if (generation != self._generation or self._closed
+                    or time.monotonic() - started >= retry_budget
+                    or not candidate or whisper_suspect_reason(candidate)
+                    or transcript_problem(candidate, duration_s)
+                    or not (agreement >= 0.72 or stable_prefix)):
+                self.last_rejection = suspect
+                self.last_raw_transcript = original
+                self.last_language_spans = []
+                log.info(
+                    "Whisper rejected %s after independent recheck "
+                    "(agreement=%.2f, initial=%r, retry=%r)",
+                    suspect, agreement, original[:100], candidate[:100],
+                )
+                return ""
+            text = candidate
+            self.last_raw_transcript = text
+            log.info("Whisper corrected suspicious transcript (%s, agreement=%.2f)",
+                     suspect, agreement)
 
         # Quality guard
         reason = transcript_problem(text, duration_s)

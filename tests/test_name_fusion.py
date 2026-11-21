@@ -240,3 +240,39 @@ def test_run_asr_gap_discards_dynamic_name_memory():
     assert "ルシア" in asr.prompts
     assert asr.prompts[-1] == ""
     assert fusion.prompt() == ""
+
+def test_whisper_fusion_hint_does_not_fall_back_to_recent_dialogue():
+    """The new prompt override is bounded even when the hint list is empty."""
+    import threading
+    from collections import deque
+    from unittest import mock
+
+    from auto_translate.asr.whisper_turbo import WhisperASR
+    from auto_translate.config import AsrConfig
+
+    asr = object.__new__(WhisperASR)
+    asr.cfg = AsrConfig(recent_context_lines=3)
+    asr._state_lock = threading.Lock()
+    asr._recent = deque(["昔の長い会話を繰り返さないこと"], maxlen=3)
+    asr.context = "Legacy stream context"
+    asr._model = mock.Mock()
+    asr._model.transcribe.return_value = ([], None)
+    asr._failures = 0
+    audio = np.zeros(16000, dtype=np.float32)
+
+    asr.set_context("")
+    asr._transcribe_impl(audio)
+    assert asr._model.transcribe.call_args.kwargs["initial_prompt"] is None
+
+    asr.set_context("ジェイソン、ルシア")
+    asr._transcribe_impl(audio)
+    assert asr._model.transcribe.call_args.kwargs["initial_prompt"] == "ジェイソン、ルシア"
+
+    asr._transcribe_impl(audio, no_context=True)
+    assert asr._model.transcribe.call_args.kwargs["initial_prompt"] is None
+
+    # Legacy Whisper prompting is unchanged until the fusion opt-in setter is used.
+    asr._name_hint_override = False
+    asr.context = ""
+    asr._transcribe_impl(audio)
+    assert "昔の長い会話" in asr._model.transcribe.call_args.kwargs["initial_prompt"]

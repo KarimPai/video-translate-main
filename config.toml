@@ -50,6 +50,15 @@ split_pause_min_ms = 120
 split_context_ms = 160
 fallback_s = 0.0
 
+[name_fusion]
+# Experimental OverlaySubs-style names: uses title/cast/topic source hints
+# plus repeated accepted speech. Currently supported for Whisper ASR only.
+# Disabled until accuracy A/B checks; set true when testing with Whisper.
+enabled = false
+max_hints = 4
+max_prompt_chars = 96
+confirmations = 2
+
 [language_filter]
 # Haas ASR already identifies language; this optional CPU gate is normally off.
 enabled = false

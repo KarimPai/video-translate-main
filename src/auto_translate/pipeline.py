@@ -391,8 +391,10 @@ def run_asr(
 
     refresh_name_hints()
     # Relative live timestamps can be reused after reconnects. A VOD cache
-    # must never supply cues for a different live generation.
-    if live:
+    # must never supply cues for a different live generation. A Qwen3-ASR
+    # auto-language session must also recheck audio rather than trusting old
+    # VOD subtitle caches created with forced Japanese decoding.
+    if live or hasattr(asr, "last_detected_language"):
         session_cache = None
 
     def cancelled(generation):
@@ -553,7 +555,7 @@ def run_asr(
         # backends have no such field and continue to use the existing path.
         detected_language = getattr(asr, "last_detected_language", "ja")
         if detected_language == "ja" and not re.search(
-                r"[\\u3040-\\u30ff\\u3400-\\u9fff]", text
+                r"[\u3040-\u30ff\u3400-\u9fff]", text
         ) and re.search(r"[A-Za-z]", text):
             # A language tag alone does not justify showing English words as
             # Japanese dialogue ('yes'/'yeah' are common sound-effect errors).

@@ -18,7 +18,7 @@ from auto_translate.asr.haas import (
     is_english_engine_interjection,
     is_katakana_engine_interjection,
 )
-from auto_translate.config import AsrConfig
+from auto_translate.config import AsrConfig, VadConfig, vad_for_haas_game_audio
 from auto_translate.pipeline import run_asr
 from auto_translate.types import Transcript, Utterance
 
@@ -153,3 +153,81 @@ def test_haas_pipeline_retains_one_valid_high_confidence_katakana_cheer():
         run_asr(asr, incoming, outgoing)
     published = [x for x in list(outgoing.queue) if isinstance(x, Transcript)]
     assert [x.ja for x in published] == ["イェー！"]
+
+
+
+def test_haas_new_engine_rev_interjections_ugh_yeah_phew():
+    for text in (
+        "ugh yeah", "Ugh, Yeah!", "UGH YEAH!!", "ugh... yeaaah",
+        "Phew", "phew!", "PHEEEW...", "whew", "Wheeeew!",
+        "ugh", "uh", "Oof!", "ugh yeah phew", "phew, phew",
+    ):
+        assert is_english_engine_interjection(text), text
+
+
+def test_haas_engine_rev_words_inside_real_dialogue_are_not_blocked():
+    for text in (
+        "ああ、phew！助かった！",
+        "Ugh, yeah, that car is fast",
+        "yeah、ちょっと待って！",
+        "みこちゃん、車が来た！",
+        "Miko",
+        "Phewter",  # don't classify names merely containing similar phonemes
+    ):
+        assert not is_english_engine_interjection(text), text
+
+
+def test_haas_decoder_drops_ugh_yeah_and_phew_without_extra_inference():
+    for text in ("Ugh, Yeah!", "Phew!", "wheeew...", "Ugh! Phew!"):
+        asr = _bare_haas(text)
+        with mock.patch("auto_translate.asr.haas.check_running"):
+            assert asr.transcribe(_utterance(5).audio) == ""
+        assert asr.last_rejection == "haas_non_japanese_engine_interjection"
+        assert asr.last_raw_transcript == text
+        assert asr.server.transcribe_with_timing.call_count == 1
+
+
+def test_haas_pipeline_drops_new_engine_words_but_preserves_japanese():
+    asr = _bare_haas("Ugh, yeah!", "Phew!", "ちょっと待って！")
+    inbound, outbound = queue.Queue(), queue.Queue()
+    for start in (0, 2, 4):
+        inbound.put(_utterance(start, confidence=.88))
+    inbound.put(None)
+    with mock.patch("auto_translate.asr.haas.check_running"):
+        run_asr(asr, inbound, outbound)
+    assert [tr.ja for tr in list(outbound.queue) if isinstance(tr, Transcript)] == [
+        "ちょっと待って！"
+    ]
+    assert asr.server.transcribe_with_timing.call_count == 3
+
+
+def test_haas_vad_profile_reduces_sensitivity_without_mutating_config():
+    original = VadConfig(threshold=.24, neg_threshold=.16, fallback_s=12.0)
+    guarded = vad_for_haas_game_audio(original)
+    assert guarded is not original
+    assert guarded.threshold == .28
+    assert guarded.neg_threshold == original.neg_threshold
+    assert guarded.fallback_s == 0.0
+    assert guarded.short_reply_ms == original.short_reply_ms
+    assert guarded.short_reply_probability == original.short_reply_probability
+    assert original.threshold == .24
+    assert original.fallback_s == 12.0
+
+
+def test_haas_vad_profile_honors_custom_threshold():
+    for threshold in (.31, .35, .20):
+        cfg = VadConfig(threshold=threshold, neg_threshold=.16, fallback_s=5.0)
+        guarded = vad_for_haas_game_audio(cfg)
+        assert guarded.threshold == threshold
+        assert guarded.fallback_s == 0.0
+
+
+def test_haas_rare_short_japanese_reply_survives_sensitivity_change():
+    cfg = vad_for_haas_game_audio(VadConfig())
+    # The separate high-confidence short-reply gate stays enabled to catch
+    # genuine soft short reactions even when the main threshold is raised.
+    assert cfg.short_reply_ms == 80
+    assert cfg.short_reply_probability == .85
+    asr = _bare_haas("はい！")
+    with mock.patch("auto_translate.asr.haas.check_running"):
+        assert asr.transcribe(_utterance(10, .5, confidence=.95).audio) == "はい！"

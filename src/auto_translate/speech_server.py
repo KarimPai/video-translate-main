@@ -31,11 +31,19 @@ class SpeechServerError(RuntimeError):
 
 
 def resolve_speech_executable(path: str | None = None) -> Path:
-    """Find the speech.cpp binary, falling back to PATH."""
+    """Find the speech.cpp binary, falling back to PATH only when no explicit path is given.
+    
+    If an explicit path is provided but does not exist, raise a clear error
+    instead of silently falling back to PATH — the user configured a specific
+    location and should know if it is wrong.
+    """
     if path:
         candidate = Path(path).expanduser()
         if candidate.is_file():
             return candidate.resolve()
+        raise SpeechServerError(
+            f"Configured speech.cpp path does not exist: {candidate}"
+        )
     found = shutil.which("speech") or shutil.which("speech.exe")
     if found:
         return Path(found)

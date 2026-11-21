@@ -3010,6 +3010,196 @@ def test_vad_progress_does_not_expire_legitimately_pending_translation():
     assert tracker.translated_until >= 180.0
 
 
+
+# ---------------------------------------------------------------------------
+# Multilingual Qwen-ASR: English context without subtitle leakage
+# ---------------------------------------------------------------------------
+
+
+def test_qwen_auto_language_metadata_is_not_displayed_and_no_forced_language():
+    """Check the actual llama-server request and automatic language parser."""
+    instance = _make_qwen3_with_server({
+        "choices": [{"message": {"content": "language English<asr_text>We should go home."}}],
+    })
+    with mock.patch.object(instance.server.client, "post",
+                           wraps=instance.server.client.post) as send:
+        result = instance._transcribe_impl(np.zeros(16000, dtype=np.float32))
+    assert result == "We should go home."
+    assert instance.last_detected_language == "en"
+    request = send.call_args.kwargs["json"]
+    assert len(request["messages"]) == 1
+    assert request["messages"][0]["role"] == "user"
+    assert "language Japanese" not in str(request)
+    assert "<asr_text>" not in result
+
+
+@pytest.mark.parametrize(("raw", "language", "text"), [
+    ("language Japanese<asr_text>こんにちは", "ja", "こんにちは"),
+    ("language English<asr_text>Yeah, let's go", "en", "Yeah, let's go"),
+    ("language Indonesian<asr_text>Apa kabar", "id", "Apa kabar"),
+    ("language None<asr_text>", "none", ""),
+    ("language English\n<asr_text>Turn left", "en", "Turn left"),
+    ("<asr_text>おはよう", "ja", "おはよう"),
+    ("おはようございます", "ja", "おはようございます"),
+    ("<asr_text>Yes, I agree", "und", "Yes, I agree"),
+    ("language English", "und", ""),
+    ("language English<asr_text><|nospeech|>", "none", ""),
+])
+def test_qwen_auto_language_parser_cases(raw, language, text):
+    from auto_translate.asr.qwen3_asr import parse_qwen_asr_response
+
+    assert parse_qwen_asr_response(raw) == (language, text)
+
+
+def _run_qwen_mixed_fake(speeches):
+    """Drive the actual ASR thread routine without loading model files."""
+    class FakeQwen:
+        def __init__(self, samples):
+            self.samples = iter(samples)
+            self.cfg = AsrConfig(response_timeout_s=30.0)
+            self.last_detected_language = "und"
+            self.last_rejection = None
+            self.last_raw_transcript = ""
+            self.last_match_score = 0.0
+
+        def transcribe(self, audio, probe=False):
+            language, text = next(self.samples)
+            self.last_detected_language = language
+            self.last_raw_transcript = text
+            return text
+
+        def cancel_pending(self):
+            pass
+
+        def forget(self, n=None):
+            pass
+
+        def remember(self, text):
+            pass
+
+    asr = FakeQwen([(lang, text) for _, _, lang, text, _, _ in speeches])
+    input_queue, transcript_queue = queue.Queue(), queue.Queue()
+    for start, end, lang, text, confidence, probe in speeches:
+        input_queue.put(Utterance(
+            start_s=start, end_s=end,
+            audio=np.zeros(max(1, int((end - start) * 16000)), dtype=np.float32),
+            generation=0, vad_confidence=confidence, probe=probe,
+        ))
+    input_queue.put(None)
+    run_asr(asr, input_queue, transcript_queue)
+    result = []
+    while not transcript_queue.empty():
+        result.append(transcript_queue.get_nowait())
+    return result
+
+
+def test_qwen_english_dialogue_context_not_displayed_or_translated():
+    """English enters translation history but never becomes an MPV subtitle."""
+    from auto_translate.pipeline import run_translate
+    from auto_translate.types import Subtitle
+
+    cues = _run_qwen_mixed_fake([
+        (0.0, 2.0, "en", "We should drive to the garage.", 0.96, False),
+        (2.5, 4.5, "ja", "車でガレージに行こう", 0.90, False),
+    ])
+    transcripts = [c for c in cues if isinstance(c, Transcript)]
+    assert [c.language for c in transcripts] == ["en", "ja"]
+    assert transcripts[0].ja == "We should drive to the garage."
+
+    class FakeTranslator:
+        def __init__(self):
+            self.contexts = []
+
+        def translate(self, ja, history):
+            self.contexts.append(list(history))
+            return "Let's drive to the garage."
+
+    translator = FakeTranslator()
+    in_q, out_q = queue.Queue(), queue.Queue()
+    for cue in cues:
+        in_q.put(cue)
+    run_translate(translator, 6, in_q, out_q)
+    output = []
+    while not out_q.empty():
+        output.append(out_q.get_nowait())
+    subtitles = [item for item in output if isinstance(item, Subtitle)]
+    assert len(subtitles) == 1
+    assert subtitles[0].ja == "車でガレージに行こう"
+    assert "garage" in translator.contexts[0][0][0]
+    assert "英語の発話" in translator.contexts[0][0][0]
+    assert not any("We should drive" in sub.en for sub in subtitles)
+
+
+def test_qwen_weak_footstep_like_yes_yeah_does_not_pollute_context():
+    """Low-confidence VAD misfires should not reach MT or English history."""
+    for word in ("yes", "yeah"):
+        cues = _run_qwen_mixed_fake([
+            (0.0, 0.45, "en", word, 0.30, False),
+            (0.60, 1.00, "en", word, 0.80, True),
+        ])
+        assert [c for c in cues if isinstance(c, Transcript)] == []
+
+
+def test_qwen_clear_short_english_reply_preserved_as_context():
+    """A strongly speech-positive 'yes' is preserved, not blindly blacklisted."""
+    cues = _run_qwen_mixed_fake([
+        (0.0, 0.80, "en", "yes", 0.93, False),
+        (1.0, 2.5, "ja", "そうだね", 0.91, False),
+    ])
+    from auto_translate.pipeline import run_translate
+
+    class Translator:
+        def __init__(self):
+            self.history = []
+
+        def translate(self, ja, history):
+            self.history.append(list(history))
+            return "That's right."
+
+    translator = Translator()
+    in_q, out_q = queue.Queue(), queue.Queue()
+    for cue in cues:
+        in_q.put(cue)
+    run_translate(translator, 6, in_q, out_q)
+    assert "yes" in translator.history[0][0][0].lower()
+    from auto_translate.types import Subtitle
+    assert sum(isinstance(x, Subtitle) for x in list(out_q.queue)) == 1
+
+
+def test_foreign_context_does_not_cross_seek_generation():
+    """Seek/reset discards prior English contextual history."""
+    from auto_translate.pipeline import run_translate
+    from auto_translate.types import AudioProgress
+
+    class Translator:
+        def __init__(self):
+            self.history = []
+
+        def translate(self, ja, history):
+            self.history.append(list(history))
+            return "Let's go."
+
+    source, dest = queue.Queue(), queue.Queue()
+    source.put(Transcript(0.0, 1.0, "We are leaving.", generation=0, language="en"))
+    source.put(AudioProgress(sample=0, reset=True, generation=1))
+    source.put(Transcript(4.0, 6.0, "行こう", generation=1))
+    source.put(None)
+    translator = Translator()
+    run_translate(translator, 6, source, dest)
+    assert translator.history == [[]]
+
+
+def test_join_fragments_never_merges_english_and_japanese():
+    from auto_translate.pipeline import _join_fragments
+
+    foreign = Transcript(0.0, 1.0, "Let's go", generation=0, language="en")
+    japanese = Transcript(1.1, 2.0, "行こう", generation=0, language="ja")
+    items = list(_join_fragments([foreign, japanese], 0.6, 16.0))
+    assert len(items) == 2
+    assert items[0].language == "en"
+    assert items[1].ja == "行こう"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

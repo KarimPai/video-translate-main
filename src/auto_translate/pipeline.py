@@ -446,6 +446,18 @@ def run_asr(
         if live and _expired_live_cue(utt, playback_position, live_late_window_s):
             increment_counter("expired")
             continue
+        # Some ASRs (notably Japanese-forced Whisper) hallucinate fluent text
+        # on music or English game audio that Silero classified as non-speech.
+        # Disable speculative VAD-negative probes per backend without changing
+        # Silero timings, seek progress, or Qwen/Haas fallback behavior.
+        if utt.probe and not getattr(asr, "supports_vad_negative_probes", True):
+            record_event(
+                "asr_vad_negative_probe_skipped",
+                generation=utt.generation,
+                source_start_s=utt.start_s,
+                source_end_s=utt.end_s,
+            )
+            continue
         cached = (session_cache.match(utt.start_s, utt.end_s)
                   if session_cache is not None else None)
         if cached is not None:

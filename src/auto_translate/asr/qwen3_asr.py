@@ -46,6 +46,52 @@ _QWEN3_SYSTEM = (
 LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
 
 
+_LANGUAGE_HEADER = re.compile(r"^\s*language\s+([A-Za-z][A-Za-z ,\-]*)\s*$", re.IGNORECASE)
+_JAPANESE_KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
+_NON_SPEECH = {"none", "no speech", "no_speech", "silence", "null"}
+
+
+def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
+    """Separate audio-derived language metadata from spoken text.
+
+    Qwen3-ASR normally emits 'language English<asr_text>spoken words'.
+    An untagged response is unknown, not presumed Japanese.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return "none", ""
+    raw = raw.strip().replace("<|im_end|>", "").strip()
+    if "<asr_text>" in raw:
+        prefix, text = raw.split("<asr_text>", 1)
+        prefix = prefix.strip()
+        if prefix:
+            match = _LANGUAGE_HEADER.fullmatch(prefix)
+            if match is None:
+                return "und", ""  # malformed metadata cannot enter subtitles
+            language = match.group(1).strip().lower()
+            if language in _NON_SPEECH:
+                return "none", ""
+            language = {
+                "japanese": "ja", "ja": "ja",
+                "english": "en", "en": "en",
+                "indonesian": "id", "id": "id",
+                "malay": "ms", "ms": "ms",
+            }.get(language, "und")
+        else:
+            language = "und"
+    else:
+        if raw.lower().startswith("language "):
+            return "und", ""  # truncated metadata is not a transcript
+        language, text = "und", raw
+    text = " ".join(unicodedata.normalize("NFC", text).split())
+    text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
+    if not text or text.casefold() in {"<|nospeech|>", "<|audio_sentinel|>"}:
+        return "none", ""
+    if language == "und" and _JAPANESE_KANA.search(text):
+        language = "ja"
+    return language, text
+
+
+
 class Qwen3ASRError(RuntimeError):
     """The Qwen3-ASR server failed repeatedly; transcription cannot continue."""
 
@@ -64,6 +110,7 @@ class Qwen3ASR:
         self._accepted_keys: deque[str] = deque(maxlen=32)
         self.last_match_score = 0.0
         self.last_raw_transcript = ""
+        self.last_detected_language = "und"
         self.last_rejection: str | None = None
         self._state_lock = threading.Lock()
         self._inference_lock = threading.Lock()
@@ -136,6 +183,7 @@ class Qwen3ASR:
         exceeds the configured budget, even with retries.
         """
         gen = self._generation
+        self.last_detected_language = "und"
         duration_s = len(audio) / 16000
         if duration_s < 0.05:
             return ""
@@ -382,26 +430,16 @@ class Qwen3ASR:
         wav = wav_bytes(audio, normalize=True)
         b64 = base64.b64encode(wav).decode("ascii")
 
-        # Build messages for multimodal chat completions
+        # No forced assistant prefix: Qwen must detect the language from audio.
+        # Forcing Japanese converts English dialogue and game sounds into
+        # misleading Japanese hypotheses.
         messages = [
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "input_audio",
-                        "input_audio": {
-                            "data": b64,
-                            "format": "wav",
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "language Japanese<asr_text>",
+                        "input_audio": {"data": b64, "format": "wav"},
                     }
                 ],
             },
@@ -442,14 +480,9 @@ class Qwen3ASR:
         except (KeyError, IndexError) as exc:
             raise Qwen3ASRError(f"Unexpected response format: {body}") from exc
 
-        # Clean up protocol metadata that must never reach subtitles
-        # Remove "language Japanese" prefix (model protocol metadata, not spoken text)
-        text = re.sub(r"^language\s+japanese\s*", "", text, flags=re.IGNORECASE).strip()
-        text = re.sub(r"<asr_text>", "", text).strip()
-        text = " ".join(unicodedata.normalize("NFC", text).split())
-        text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
-        text = re.sub(r"\s+", " ", text).strip()
-
+        # Keep model-detected language metadata separate from spoken text.
+        language, text = parse_qwen_asr_response(text)
+        self.last_detected_language = language
         self.last_raw_transcript = text
         self._failures = 0
 

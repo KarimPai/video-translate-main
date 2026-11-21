@@ -112,11 +112,14 @@ def test_whisper_english_speech_stays_foreign():
     assert w.last_language_spans[0][2] == "en"
 
 
-def test_whisper_nonenglish_latin_script_not_mislabeled_english():
+def test_whisper_forced_japanese_does_not_subtitle_english_only_text():
     w = _whisper()
-    w._model.transcribe.return_value = _output("¡Hola amigo!", lang="es")
-    w.transcribe(_audio())
-    assert w.last_detected_language == "es"
+    # Text-only fallback can hide an English clause, even though the decoder
+    # was forced to Japanese and cannot identify the spoken source language.
+    w._model.transcribe.return_value = _output("Get in the car!", lang="ja")
+    assert w.transcribe(_audio()) == "Get in the car!"
+    assert w.last_detected_language == "en"
+    assert w._model.transcribe.call_args.kwargs["language"] == "ja"
 
 
 def test_whisper_japanese_nicknames_with_latin_letters_stay_japanese():
@@ -209,55 +212,15 @@ def test_whisper_mixed_pipeline_english_context_not_translated():
                for history_line in mt.calls[0][1])
 
 
-def test_whisper_recovery_uses_auto_language_not_forced_japanese():
+def test_whisper_japanese_only_decode_does_not_autodetect_or_retry_foreign_audio():
     w = _whisper()
-    w._model.transcribe.side_effect = [
-        _output("Get in the car", lang="en", end=2.2),
-        _output("危ない、逃げて！", lang="ja", probability=0.95, end=2.2),
-        _output("Let's go", lang="en", end=2.2),
-    ]
-    candidates = w.recover_japanese_from_mixed_audio(_audio(6.0))
-    assert len(candidates) == 1
-    assert candidates[0][2] == "危ない、逃げて！"
-    assert w._model.transcribe.call_count == 3
-    for call in w._model.transcribe.call_args_list:
-        assert call.kwargs["language"] is None
-        assert call.kwargs["initial_prompt"] is None
-        assert call.kwargs["condition_on_previous_text"] is False
-
-
-def test_whisper_recovery_rejects_japanese_text_with_english_audio_label():
-    w = _whisper()
-    w._model.transcribe.return_value = _output(
-        "危ない！", lang="en", probability=0.99,
-    )
-    assert w.recover_japanese_from_mixed_audio(_audio(6.0)) == []
-
-
-def test_whisper_recovery_rejects_weak_language_probability():
-    w = _whisper()
-    w._model.transcribe.return_value = _output(
-        "危ない！", lang="ja", probability=0.45,
-    )
-    assert w.recover_japanese_from_mixed_audio(_audio(6.0)) == []
-
-
-def test_whisper_recovery_skips_probes_and_short_audio():
-    w = _whisper()
-    assert w.recover_japanese_from_mixed_audio(_audio(1.0)) == []
-    assert w.recover_japanese_from_mixed_audio(_audio(6.0), probe=True) == []
-    w._model.transcribe.assert_not_called()
-
-
-def test_whisper_recovery_discards_generation_changed_during_decode():
-    w = _whisper()
-
-    def _decode(*args, **kwargs):
-        w._generation += 1
-        return _output("危ない", lang="ja", probability=0.99)
-
-    w._model.transcribe.side_effect = _decode
-    assert w.recover_japanese_from_mixed_audio(_audio(6.0)) == []
+    w._model.transcribe.return_value = _output("危ない!", lang="ja")
+    assert w.transcribe(_audio()) == "危ない!"
+    w._model.transcribe.assert_called_once()
+    assert w._model.transcribe.call_args.kwargs["language"] == "ja"
+    assert w._model.transcribe.call_args.kwargs["task"] == "transcribe"
+    assert not hasattr(w, "recover_japanese_from_mixed_audio")
+    assert w.last_detected_language_probability == 0.0
 
 
 def test_whisper_suspected_long_prompt_echo_retried_without_context():

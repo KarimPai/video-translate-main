@@ -79,6 +79,10 @@ class NameFusion:
                 accepted.add(ja)
         changed = False
         for ja in accepted:
+            if ja not in self._observations and len(self._observations) >= 32:
+                # Bound even unconfirmed unique names during very long VODs.
+                oldest = next(iter(self._observations))
+                del self._observations[oldest]
             self._observations[ja] += 1
             if self._observations[ja] >= self.confirmations and ja not in self._confirmed:
                 self._confirmed.append(ja)

@@ -253,12 +253,17 @@ def test_whisper_fusion_hint_does_not_fall_back_to_recent_dialogue():
     asr = object.__new__(WhisperASR)
     asr.cfg = AsrConfig(recent_context_lines=3)
     asr._state_lock = threading.Lock()
+    asr._inference_lock = threading.Lock()
+    asr._generation = 0
+    asr._closed = False
     asr._recent = deque(["昔の長い会話を繰り返さないこと"], maxlen=3)
     asr.context = "Legacy stream context"
+    asr._name_hint_override = False
     asr._model = mock.Mock()
     asr._model.transcribe.return_value = ([], None)
     asr._failures = 0
-    audio = np.zeros(16000, dtype=np.float32)
+    # Use non-silence audio so the early-exit guard doesn't skip inference
+    audio = np.random.randn(16000).astype(np.float32) * 0.1
 
     asr.set_context("")
     asr._transcribe_impl(audio)

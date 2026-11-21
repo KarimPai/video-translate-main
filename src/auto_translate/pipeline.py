@@ -553,6 +553,8 @@ def run_asr(
             continue
         # Qwen reports an audio-derived source language. Legacy Japanese-only
         # backends have no such field and continue to use the existing path.
+        # Whisper also sets last_detected_language with auto-detection,
+        # including "mixed" for segments containing both Japanese and English.
         language_aware = hasattr(asr, "last_detected_language")
         detected_language = getattr(asr, "last_detected_language", "ja")
         if language_aware and detected_language == "ja" and not re.search(
@@ -561,7 +563,9 @@ def run_asr(
             # A language tag alone does not justify showing English words as
             # Japanese dialogue ('yes'/'yeah' are common sound-effect errors).
             detected_language = "und"
-        if detected_language != "ja":
+        # Treat "mixed" as Japanese-containing: the segment has Japanese speech
+        # that should be translated, even if English is also present.
+        if detected_language not in ("ja", "mixed"):
             # Keep audible English as context, but it is not a Japanese
             # subtitle. Mixed EN/JA segments may also contain a Japanese
             # streamer masked by a louder English game character.

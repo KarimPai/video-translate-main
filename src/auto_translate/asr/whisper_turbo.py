@@ -28,7 +28,7 @@ from .quality_guard import transcript_problem
 
 log = logging.getLogger(__name__)
 
-_WHISPER_MODEL = "Systran/faster-whisper-large-v3-turbo"
+_WHISPER_MODEL = "h2oai/faster-whisper-large-v3-turbo"
 
 _DEFAULT_BEAM_SIZE = 5
 
@@ -65,6 +65,8 @@ class WhisperASR:
         self._closed = False
         self._failures = 0
         self.last_timing: dict | None = None
+        self.last_detected_language: str = "ja"
+        self.last_detected_language_probability: float = 1.0
 
         if cfg.cuda_device < 0:
             device = "cpu"
@@ -391,8 +393,29 @@ class WhisperASR:
         return text
 
     # ------------------------------------------------------------------ #
-    # Internal
+    # Language detection helpers
     # ------------------------------------------------------------------ #
+
+    _JA_CHARS = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+    _EN_CHARS = re.compile(r"[A-Za-z]")
+
+    def _detect_language(self, text: str) -> str:
+        """Detect the dominant language of a transcript.
+
+        Returns 'ja' for Japanese, 'en' for English, 'none' for silence,
+        or 'mixed' when both scripts are present.
+        """
+        if not text or not text.strip():
+            return "none"
+        has_ja = bool(self._JA_CHARS.search(text))
+        has_en = bool(self._EN_CHARS.search(text))
+        if has_ja and has_en:
+            return "mixed"
+        if has_ja:
+            return "ja"
+        if has_en:
+            return "en"
+        return "none"
 
     def _transcribe_impl(
         self,
@@ -400,9 +423,26 @@ class WhisperASR:
         probe: bool = False,
         no_context: bool = False,
     ) -> str:
-        """Transcribe audio using the Whisper model."""
+        """Transcribe audio using the Whisper model with language auto-detection.
+
+        Uses automatic language detection per utterance so Japanese and English
+        speech are correctly identified. Sets ``last_detected_language`` for the
+        pipeline's language-aware routing.
+        """
         samples = np.asarray(audio, dtype=np.float32)
         samples = np.ascontiguousarray(np.clip(samples, -1, 1))
+
+        # Early exit for silence: if the entire clip has negligible energy,
+        # skip inference entirely. This prevents Whisper from hallucinating
+        # "Thank you" / "Obrigado" on silence or near-silence.
+        audio_rms = float(np.sqrt(np.mean(samples ** 2)))
+        if audio_rms < 0.003:
+            self.last_raw_transcript = ""
+            self._failures = 0
+            with self._state_lock:
+                self.last_detected_language = "none"
+                self.last_detected_language_probability = 1.0
+            return ""
 
         # Build decode options
         initial_prompt = None
@@ -418,9 +458,12 @@ class WhisperASR:
                 recent = list(self._recent)
                 initial_prompt = " ".join(recent[-3:])[:256]
 
-            segments, _info = self._model.transcribe(
+            # Auto-detect language — do not force Japanese.
+            # When a name hint is active, Whisper may still detect the true
+            # spoken language from audio content.
+            segments, info = self._model.transcribe(
                 samples,
-                language="ja",
+                language=None,
                 task="transcribe",
                 beam_size=_DEFAULT_BEAM_SIZE,
                 patience=1.0,
@@ -439,18 +482,55 @@ class WhisperASR:
                 initial_prompt=initial_prompt,
             )
 
+        # Record the detected language from Whisper's info object
+        detected_lang = getattr(info, "language", None) or "ja"
+        detected_lang_prob = getattr(info, "language_probability", 0.0)
+        with self._state_lock:
+            self.last_detected_language = detected_lang
+            self.last_detected_language_probability = detected_lang_prob
+
         # Collect segments, filtering out no-speech
+        # With auto-detect (language=None), no_speech_prob is less reliable.
+        # Use a combination of no_speech_prob, avg_logprob, and audio energy
+        # to reject hallucinations from silence and noise.
+        audio_rms = float(np.sqrt(np.mean(samples ** 2)))
         phrases = []
         for segment in segments:
             no_speech_prob = getattr(segment, "no_speech_prob", 0.0)
             avg_logprob = getattr(segment, "avg_logprob", 0.0)
+            # Reject segments with high no-speech probability and poor logprob
             if no_speech_prob > 0.75 and avg_logprob < -0.75:
+                continue
+            # Extra guard for silence/noise: if audio energy is very low,
+            # require strong evidence (high no_speech_prob threshold lowered)
+            if audio_rms < 0.005 and no_speech_prob > 0.5:
+                continue
+            # Reject very poor logprob segments regardless of no_speech_prob
+            if avg_logprob < -1.0 and audio_rms < 0.01:
                 continue
             text = segment.text.strip()
             if text:
                 phrases.append(trim_repetition_tail(text))
 
         transcript = " ".join(phrases).strip()
+
+        # Cross-validate: if Whisper reports Japanese but the output contains
+        # no Japanese characters, trust the text content over the model's
+        # language tag (common with short English interjections).
+        text_lang = self._detect_language(transcript)
+        if text_lang != "none" and text_lang != detected_lang:
+            # Prefer text-based detection when it contradicts the model tag
+            if text_lang == "en" and detected_lang == "ja":
+                # Whisper claimed Japanese but output is pure English —
+                # likely a false positive on the language detector.
+                with self._state_lock:
+                    self.last_detected_language = "en"
+            elif text_lang == "ja" and detected_lang == "en":
+                with self._state_lock:
+                    self.last_detected_language = "ja"
+            elif text_lang == "mixed":
+                with self._state_lock:
+                    self.last_detected_language = "mixed"
 
         # Clean up
         transcript = " ".join(unicodedata.normalize("NFC", transcript).split())
@@ -464,8 +544,91 @@ class WhisperASR:
 
         duration_s = len(audio) / 16000
         log.debug(
-            "Whisper: %.1fs audio -> %s",
-            duration_s, transcript[:60],
+            "Whisper: %.1fs audio -> lang=%s (prob=%.2f) text_lang=%s -> %s",
+            duration_s, detected_lang, detected_lang_prob, text_lang, transcript[:60],
         )
 
         return transcript
+
+    # ------------------------------------------------------------------ #
+    # Mixed-language recovery (pipeline hook)
+    # ------------------------------------------------------------------ #
+
+    def recover_japanese_from_mixed_audio(
+        self, audio: np.ndarray, probe: bool = False
+    ) -> list[tuple[float, float, str]]:
+        """Recover Japanese segments from mixed-language audio.
+
+        When the primary pass detects dominant English (e.g., GTA character
+        dialogue), re-transcribe short windows with forced Japanese to catch
+        the streamer's Japanese speech that was masked.
+
+        Returns a list of (start_offset_s, end_offset_s, japanese_text).
+        """
+        samples = np.asarray(audio, dtype=np.float32)
+        duration_s = len(samples) / 16000
+        if duration_s < 2.0:
+            return []
+
+        candidates: list[tuple[float, float, str]] = []
+        # Slide 3-second windows with 50% overlap
+        window_s = 3.0
+        step_s = 1.5
+        offset = 0.0
+        while offset + window_s <= duration_s:
+            start_sample = int(offset * 16000)
+            end_sample = int((offset + window_s) * 16000)
+            window = samples[start_sample:end_sample]
+            if len(window) < 1600:  # skip tiny windows
+                offset += step_s
+                continue
+            try:
+                with self._inference_lock:
+                    segments, _info = self._model.transcribe(
+                        np.ascontiguousarray(np.clip(window, -1, 1)),
+                        language="ja",
+                        task="transcribe",
+                        beam_size=_DEFAULT_BEAM_SIZE,
+                        temperature=0.0,
+                        no_speech_threshold=0.5,
+                        log_prob_threshold=-0.5,
+                        compression_ratio_threshold=2.4,
+                        suppress_tokens=[-1],
+                        word_timestamps=False,
+                        condition_on_previous_text=False,
+                        vad_filter=False,
+                        without_timestamps=False,
+                    )
+                for seg in segments:
+                    no_speech_prob = getattr(seg, "no_speech_prob", 0.0)
+                    avg_logprob = getattr(seg, "avg_logprob", 0.0)
+                    if no_speech_prob > 0.75 and avg_logprob < -0.75:
+                        continue
+                    text = seg.text.strip()
+                    if not text:
+                        continue
+                    text = trim_repetition_tail(text)
+                    if not self._JA_CHARS.search(text):
+                        continue
+                    # Segment timestamps are relative to the window
+                    seg_start = offset + getattr(seg, "start", 0.0)
+                    seg_end = offset + getattr(seg, "end", seg_start + 1.0)
+                    candidates.append((seg_start, seg_end, text))
+            except Exception as exc:
+                log.debug("Mixed-language recovery window failed: %s", exc)
+            offset += step_s
+
+        # Deduplicate overlapping segments — keep the one with better logprob
+        if not candidates:
+            return []
+        candidates.sort(key=lambda x: x[0])
+        merged: list[tuple[float, float, str]] = [candidates[0]]
+        for start, end, text in candidates[1:]:
+            last = merged[-1]
+            if start < last[1]:
+                # Overlapping — keep the longer text
+                if len(text) > len(last[2]):
+                    merged[-1] = (min(last[0], start), max(last[1], end), text)
+            else:
+                merged.append((start, end, text))
+        return merged

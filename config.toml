@@ -19,6 +19,12 @@ server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 threads = 4
 cuda_device = 0
 
+[asr.whisper]
+# Faster-Whisper Large-v3 Turbo (CTranslate2) — h2oai variant
+model_path = "models/whisper-large-v3-turbo"
+cuda_device = 0
+threads = 4
+
 [gpu_budget]
 # RTX 3070 8GB: Plenty of VRAM headroom (~3.3 GB free after full GPU offload).
 # Minimal headroom — no need for conservative safety margins.

@@ -1694,7 +1694,7 @@ def test_whisper_resolves_forward_slash_local_path():
 def test_whisper_rejects_nonexistent_forward_slash_path():
     """Explicit forward-slash path that doesn't exist locally should raise.
 
-    The path 'models/whisper-large-v3-turbo' contains '/' and no ':', so it's
+    The path 'models/nonexistent-whisper' contains '/' and no ':', so it's
     classified as a potential HF repo ID. Since it doesn't exist locally and
     isn't cached, the explicit path should raise a clear cache-missing error.
     """
@@ -1704,7 +1704,7 @@ def test_whisper_rejects_nonexistent_forward_slash_path():
     # A forward-slash path that doesn't exist and looks like an HF repo ID
     # (contains '/' and no ':'). Since it's explicit and not cached, it
     # should raise a clear error about the missing cache.
-    cfg = AsrConfig(model_path="models/whisper-large-v3-turbo", cuda_device=-1)
+    cfg = AsrConfig(model_path="models/nonexistent-whisper", cuda_device=-1)
     with mock.patch.object(WhisperASR, "_find_cached_model", return_value=None), \
             pytest.raises(WhisperError, match="not present in the local cache"):
         WhisperASR._resolve_model_path(cfg, is_explicit=True)

@@ -54,6 +54,7 @@ def test_gta_vi_first_mention_names_without_gta_v_contamination():
     assert "ジェイソン" in prompt and "ルシア" in prompt
     assert "銀行強盗" not in prompt
     assert "店舗強盗" not in prompt
+    assert "救急隊" not in prompt  # EMS is an acronym, not a character name
 
     gta_v = glossary.for_stream("GTA V HoloGTA")
     assert "gta6" not in gta_v.active_topics

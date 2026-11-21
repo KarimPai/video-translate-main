@@ -553,8 +553,9 @@ def run_asr(
             continue
         # Qwen reports an audio-derived source language. Legacy Japanese-only
         # backends have no such field and continue to use the existing path.
+        language_aware = hasattr(asr, "last_detected_language")
         detected_language = getattr(asr, "last_detected_language", "ja")
-        if detected_language == "ja" and not re.search(
+        if language_aware and detected_language == "ja" and not re.search(
                 r"[\u3040-\u30ff\u3400-\u9fff]", text
         ) and re.search(r"[A-Za-z]", text):
             # A language tag alone does not justify showing English words as

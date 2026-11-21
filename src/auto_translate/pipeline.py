@@ -131,15 +131,26 @@ def _raw_transcript(asr) -> str:
     return raw if isinstance(raw, str) else ""
 
 
+def _finalize_pending_speech(
+    complete_speech_cb: Callable | None,
+    start_s: float,
+    end_s: float,
+    generation: int,
+    speech_id: int | None,
+) -> None:
+    """Finalize one reserved interval only when it has a known identity."""
+    if speech_id is not None and complete_speech_cb is not None:
+        complete_speech_cb(start_s, end_s, generation, speech_id=speech_id)
+
+
 def _finalize_discarded_subtitle(
     sub: Subtitle,
     complete_speech_cb: Callable | None,
 ) -> None:
     """Release coverage when a final output guard rejects a translated cue."""
-    if sub.speech_id is not None and complete_speech_cb is not None:
-        complete_speech_cb(
-            sub.start_s, sub.end_s, sub.generation, speech_id=sub.speech_id,
-        )
+    _finalize_pending_speech(
+        complete_speech_cb, sub.start_s, sub.end_s, sub.generation, sub.speech_id,
+    )
 
 
 ASR_CONTEXT_GAP_S = 15.0
@@ -699,13 +710,6 @@ def run_translate(
             if result is not None:
                 speech_id = result
 
-        def release_pending() -> None:
-            """Finalize a reserved interval when this cue will not be published."""
-            if speech_id is not None and complete_speech_cb is not None:
-                complete_speech_cb(
-                    tr.start_s, tr.end_s, tr.generation, speech_id=speech_id,
-                )
-
         if translator is not None:
             # Report to watchdog: this transcript is now in-flight for translation
             if worker_state is not None:
@@ -718,7 +722,7 @@ def run_translate(
                         increment_counter("expired")
                         if worker_state is not None:
                             worker_state.leave_inference(success=False)
-                        release_pending()
+                        _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                         continue
                     model_started = time.monotonic()
                     if callable(set_position):
@@ -729,12 +733,12 @@ def run_translate(
             except CancelledError:
                 if worker_state is not None:
                     worker_state.leave_inference(success=False)
-                release_pending()
+                _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                 continue
             except TranslatorUnavailable:
                 if worker_state is not None:
                     worker_state.leave_inference(success=False)
-                release_pending()
+                _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                 if ((stop is not None and stop.is_set()) or
                         (get_generation is not None and tr.generation != get_generation())):
                     continue
@@ -744,11 +748,11 @@ def run_translate(
                     worker_state.leave_inference(success=False)
                 if ((stop is not None and stop.is_set()) or
                         (get_generation is not None and tr.generation != get_generation())):
-                    release_pending()
+                    _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                     continue
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
-                    release_pending()
+                    _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                     raise TranslatorUnavailable(f"Translation failed on three consecutive cues: {e}") from e
                 log.error("translation failed: %s", e)
                 suppressed = True
@@ -757,14 +761,14 @@ def run_translate(
             if worker_state is not None:
                 worker_state.leave_inference(success=not suppressed)
             if get_generation is not None and tr.generation != get_generation():
-                release_pending()
+                _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                 continue
             if stop is not None and stop.is_set():
-                release_pending()
+                _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                 continue
             if live and _expired_live_cue(tr, playback_position, live_late_window_s):
                 increment_counter("expired")
-                release_pending()
+                _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
                 continue
 
             # Track suppression reason for better diagnostics

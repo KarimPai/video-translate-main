@@ -314,6 +314,29 @@ def _main(resources: ExitStack) -> None:
                                   context=stream_context.recognition_text(),
                                   **whisper_kwargs)
     resources.callback(asr.close)
+
+    # Optional OverlaySubs-style fusion: Whisper alone supports safe, bounded
+    # initial_prompt updates. Keep the regular stream metadata and glossary
+    # in the translator for *all* backends, including Haas and Qwen3-ASR.
+    name_fusion = None
+    if cfg.name_fusion.enabled:
+        if asr_backend_name == "whisper":
+            from .name_fusion import NameFusion
+            metadata_text = "\n".join((
+                str(meta.get("title") or ""),
+                " ".join(map(str, meta.get("tags") or [])),
+            ))
+            name_fusion = NameFusion(
+                glossary, metadata_text, stream_context.recognition_text(),
+                max_hints=cfg.name_fusion.max_hints,
+                max_chars=cfg.name_fusion.max_prompt_chars,
+                confirmations=cfg.name_fusion.confirmations,
+            )
+            log.info("Name fusion enabled (Whisper; %d scoped initial hints)",
+                     len(name_fusion.hints()))
+        else:
+            log.info("Name fusion ASR hints unavailable for %s; "
+                     "retaining normal translation glossary", asr_backend_name)
     budget.refresh()
     record_event("asr_loaded", backend=asr_backend_name, gpu=budget.snapshot())
     log.info("ASR %s ready in %.1fs (effective timeout %.1fs); measured GPU free=%s GB",
@@ -445,6 +468,7 @@ def _main(resources: ExitStack) -> None:
             language_filter=language_filter,
             gate=gate,
             diagnostics=diagnostics if cfg.diagnostics.enabled else None,
+            name_fusion=name_fusion,
         )
     finally:
         budget.close()

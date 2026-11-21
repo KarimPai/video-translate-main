@@ -1,6 +1,6 @@
 """Whisper Large-v3 Turbo unit checks and manually invoked local smoke tests.
 
-Tests model loading, language detection, mixed-language recovery,
+Tests model loading, Japanese-only decoding, and hallucination guards,
 and hallucination prevention for the faster-whisper backend.
 """
 import logging
@@ -134,11 +134,9 @@ def smoke_cuda_model_loading():
         else:
             record("last_detected_language_probability attribute", False, "missing")
 
-        # Verify mixed-language recovery method exists
-        if hasattr(asr, "recover_japanese_from_mixed_audio"):
-            record("recover_japanese_from_mixed_audio method", True)
-        else:
-            record("recover_japanese_from_mixed_audio method", False, "missing")
+        # Japanese-only mode deliberately disables auto-language recovery.
+        record("Japanese-only recovery disabled",
+               not hasattr(asr, "recover_japanese_from_mixed_audio"))
 
         # Verify _detect_language method
         if hasattr(asr, "_detect_language"):

@@ -4,9 +4,8 @@ Whisper is a multilingual speech recognition model. The Large-v3 Turbo variant
 is optimized for speed while maintaining accuracy. Runs in-process via the
 faster-whisper library with CTranslate2 backend, supporting both CPU and CUDA.
 
-Japanese and English are identified without forced-language decoding. Short
-uncertain foreign-language windows can be rechecked without prompts, but
-language detection is not speaker separation.
+Whisper is explicitly configured to decode Japanese. English game dialogue
+may still be misheard as Japanese; post-ASR guards remain in place.
 """
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ import threading
 import time
 import unicodedata
 from collections import deque
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -566,7 +564,7 @@ class WhisperASR:
         probe: bool = False,
         no_context: bool = False,
     ) -> str:
-        """Auto-detect language, retain segment timing, and suppress weak noise."""
+        """Decode Japanese, retain segment timing, and suppress weak noise."""
         samples = np.ascontiguousarray(
             np.clip(np.asarray(audio, dtype=np.float32), -1, 1)
         )
@@ -592,7 +590,7 @@ class WhisperASR:
 
             segments, info = self._model.transcribe(
                 samples,
-                language=None,
+                language="ja",
                 task="transcribe",
                 beam_size=_DEFAULT_BEAM_SIZE,
                 patience=1.0,
@@ -610,8 +608,10 @@ class WhisperASR:
                 without_timestamps=False,
                 initial_prompt=initial_prompt,
             )
-        detected = (getattr(info, "language", None) or "und").lower()
-        probability = float(getattr(info, "language_probability", 0.0) or 0.0)
+        # Language is fixed for decoding. Do not present decoder-reported
+        # language probability as independent evidence of Japanese speech.
+        detected = "ja"
+        probability = 0.0
         phrases = []
         spans: list[tuple[float, float, str, str]] = []
         duration_s = len(samples) / 16000.0
@@ -663,86 +663,3 @@ class WhisperASR:
         log.debug("Whisper: %.1fs audio -> %s (p=%.2f) %s",
                   duration_s, label, probability, transcript[:80])
         return transcript
-
-    # ------------------------------------------------------------------ #
-    # Mixed-language recovery (pipeline hook)
-    # ------------------------------------------------------------------ #
-
-    def recover_japanese_from_mixed_audio(
-        self, audio: np.ndarray, probe: bool = False
-    ) -> list[tuple[float, float, str]]:
-        """Bounded auto-language rechecks; never force English audio to Japanese.
-
-        Returns only short Japanese windows independently labeled Japanese by
-        Whisper with sufficient language confidence. This cannot isolate
-        simultaneous voices occupying the same acoustic window.
-        """
-        samples = np.asarray(audio, dtype=np.float32)
-        duration_s = len(samples) / 16000.0
-        if probe or duration_s < 2.2 or self._closed:
-            return []
-        generation = self._generation
-        deadline = time.monotonic() + min(10.0, float(self.cfg.response_timeout_s))
-        windows = 2 if duration_s <= 4.5 else (3 if duration_s <= 9 else 4)
-        step = duration_s / windows
-        found: list[tuple[float, float, str, float]] = []
-        with self._inference_lock:
-            for i in range(windows):
-                if self._closed or generation != self._generation or time.monotonic() >= deadline:
-                    break
-                start = max(0.0, i * step - (0.2 if i else 0))
-                end = min(duration_s, (i + 1) * step + (0.2 if i < windows - 1 else 0))
-                window = np.ascontiguousarray(np.clip(
-                    samples[round(start * 16000):round(end * 16000)], -1, 1
-                ))
-                if len(window) < 16000 or float(np.max(np.abs(window))) <= 1e-6:
-                    continue
-                try:
-                    segments, info = self._model.transcribe(
-                        window,
-                        language=None,  # never force ja on English/game noise
-                        task="transcribe",
-                        beam_size=_DEFAULT_BEAM_SIZE,
-                        temperature=0.0,
-                        no_speech_threshold=0.6,
-                        log_prob_threshold=-1.0,
-                        compression_ratio_threshold=2.4,
-                        condition_on_previous_text=False,
-                        vad_filter=False,
-                        initial_prompt=None,
-                    )
-                    if (getattr(info, "language", None) != "ja"
-                            or float(getattr(info, "language_probability", 0.0) or 0.0) < 0.70):
-                        continue
-                    # Consume the generator before starting another inference.
-                    for seg in segments:
-                        if self._reject_segment(seg):
-                            continue
-                        txt = trim_repetition_tail(str(getattr(seg, "text", "")).strip())
-                        if len(self._JA_KANA.findall(txt)) < 2:
-                            continue
-                        seg_start = max(0.0, start + float(getattr(seg, "start", 0.0)))
-                        seg_end = min(duration_s, start + float(getattr(seg, "end", end - start)))
-                        if seg_end <= seg_start or transcript_problem(txt, seg_end - seg_start):
-                            continue
-                        found.append((seg_start, seg_end, txt,
-                                      float(getattr(seg, "avg_logprob", -1.0) or -1.0)))
-                except Exception as exc:  # noqa: BLE001
-                    log.debug("Whisper mixed-language recheck unavailable: %s", exc)
-                if self._closed or generation != self._generation or time.monotonic() >= deadline:
-                    return []
-
-        # Keep distinct utterances even when timestamps overlap; only remove
-        # near-identical hypotheses, preferring better ASR confidence.
-        deduped: list[tuple[float, float, str, float]] = []
-        for candidate in sorted(found, key=lambda x: (x[0], -x[3])):
-            start, end, txt, score = candidate
-            match = next((i for i, prev in enumerate(deduped)
-                          if start < prev[1] and prev[0] < end
-                          and SequenceMatcher(None, speech_key(txt), speech_key(prev[2]),
-                                              autojunk=False).ratio() >= 0.90), None)
-            if match is None:
-                deduped.append(candidate)
-            elif score > deduped[match][3]:
-                deduped[match] = candidate
-        return [(start, end, txt) for start, end, txt, _ in sorted(deduped)]

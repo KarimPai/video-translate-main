@@ -1090,10 +1090,6 @@ class Ingest:
                 self._vod_resume_s = None
                 retries = 0
                 give_up = False
-                fmp4_vod = (
-                    not self.source.live
-                    and self.video_out is not None
-                )
                 while True:
                     try:
                         read_failed = self._read_session(out_q)
@@ -1112,34 +1108,22 @@ class Ingest:
                             not self._stopped and self._restart_at is None
                             and generation == self._generation
                         )
-                        # In fMP4 mode (video_out set), FFmpeg audio reader can fail
-                        # due to HLS segment gaps, expired URLs, or network blips.
-                        # Retry the entire session (video + audio) instead of dying.
-                        should_retry = current and read_failed and retries < 2
-                        if remote_vod and should_retry:
+                        # Retry remote VOD audio when FFmpeg fails (expired URL,
+                        # HTTP 403, or premature EOF). video_out is only set for
+                        # shared livestreams, so this branch covers direct VOD audio.
+                        should_retry = current and read_failed and remote_vod and retries < 2
+                        if should_retry:
                             self._vod_audio_url = None
-                            self._audio_client_fallback = retries >= 1
-                        elif fmp4_vod and should_retry:
-                            # Refresh signed URLs for the fMP4 cache writer too
-                            self._vod_audio_url = None
-                            self._inputs = None
                             self._audio_client_fallback = retries >= 1
                         give_up = current and read_failed and not should_retry
                     if not should_retry:
                         break
                     retries += 1
-                    if fmp4_vod:
-                        log.warning(
-                            "VOD fMP4 audio reader failed at %.3fs; retrying session "
-                            "(retry %d/2, alternate client=%s)",
-                            self._audio_start_s(), retries, self._audio_client_fallback,
-                        )
-                    else:
-                        log.warning(
-                            "YouTube VOD audio interrupted at %.3fs; refreshing signed URL "
-                            "(retry %d/2, alternate client=%s)",
-                            self._audio_start_s(), retries, self._audio_client_fallback,
-                        )
+                    log.warning(
+                        "YouTube VOD audio interrupted at %.3fs; refreshing signed URL "
+                        "(retry %d/2, alternate client=%s)",
+                        self._audio_start_s(), retries, self._audio_client_fallback,
+                    )
                     time.sleep(0.5)
                 if give_up:
                     raise RuntimeError(
@@ -1437,9 +1421,24 @@ class Ingest:
                 )
 
         failed = any(p.returncode for p in procs)
-        if failed and remote_vod:
+        # Detect premature VOD EOF even when FFmpeg exits cleanly (code 0).
+        # If the source has a known duration and we decoded significantly less,
+        # the signed URL likely expired mid-stream — treat it as a failure so
+        # the retry loop can refresh the URL and resume.
+        premature_eof = False
+        if not failed and not self.source.live and self.source.duration is not None:
+            expected = self.source.duration - self.source.start_s
+            if expected > 60.0 and processed_seconds < expected * 0.9:
+                # Decoded less than 90% of remaining VOD — likely expired URL
+                premature_eof = True
+                log.warning(
+                    "Premature VOD EOF: decoded %.1fs of %.1fs expected "
+                    "(FFmpeg exit code 0, likely expired URL)",
+                    processed_seconds, expected,
+                )
+        if (failed or premature_eof) and remote_vod:
             self._vod_resume_s = start_s + processed_seconds
-        return failed
+        return failed or premature_eof
 
     def _describe(self) -> str:
         src = self.source

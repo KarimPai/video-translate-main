@@ -2060,8 +2060,9 @@ def test_qwen3_forget_clears_all_context():
     cleared all. The pipeline calls forget() with no args after ASR_CONTEXT_GAP_S
     (15s) is exceeded, expecting full context reset.
     """
-    from auto_translate.asr.qwen3_asr import Qwen3ASR
     from unittest import mock
+
+    from auto_translate.asr.qwen3_asr import Qwen3ASR
 
     # Create a mock Qwen3ASR instance
     asr = mock.MagicMock(spec=Qwen3ASR)
@@ -2101,8 +2102,9 @@ def test_vad_segment_imported_from_base():
     Previously, both vad/__init__.py and vad/base.py defined the same classes.
     Now __init__.py imports from base.py to avoid duplication.
     """
-    from auto_translate.vad import VADSegment, VADBackend
-    from auto_translate.vad.base import VADSegment as BaseVADSegment, VADBackend as BaseVADBackend
+    from auto_translate.vad import VADBackend, VADSegment
+    from auto_translate.vad.base import VADBackend as BaseVADBackend
+    from auto_translate.vad.base import VADSegment as BaseVADSegment
 
     # They should be the same class objects
     assert VADSegment is BaseVADSegment, (
@@ -2136,6 +2138,7 @@ def test_mpv_vod_wait_timeout_is_3x_lead():
     model loading and first-utterance translation time.
     """
     import inspect
+
     from auto_translate.output.mpv import MpvOutput
 
     # Check the source code contains the 3x multiplier
@@ -2166,6 +2169,285 @@ def test_vad_fallback_enabled_by_default():
     )
     assert cfg.fallback_s <= 15.0, (
         f"fallback_s should be <= 15s to catch speech in a timely manner, got {cfg.fallback_s}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P0 — Subtitle starvation watchdog: UnboundLocalError fix
+# ---------------------------------------------------------------------------
+
+def test_subtitle_backlog_defined_before_recovery_watchdog():
+    """subtitle_backlog must be defined before the 15s recovery watchdog.
+
+    Previously, subtitle_backlog was initialized only inside the > 30s block,
+    but the recovery watchdog at > 15s referenced it, causing UnboundLocalError
+    when MPV was auto-paused between 15 and 30 seconds of subtitle inactivity.
+
+    The fix computes subtitle_backlog once at the top of the > 15s block,
+    shared by both the starvation warning (30s) and recovery (15s).
+    """
+    import inspect
+
+    from auto_translate import pipeline as pipeline_mod
+
+    source = inspect.getsource(pipeline_mod)
+    # Find the watchdog section
+    watchdog_start = source.find("Subtitle starvation watchdog")
+    assert watchdog_start >= 0, "Watchdog comment should exist"
+
+    # Extract the block from the comment to the next major section
+    block = source[watchdog_start:watchdog_start + 3000]
+
+    # subtitle_backlog assignment should appear before any reference to it
+    # in the recovery section
+    backlog_def = block.find("subtitle_backlog = {")
+    recovery_ref = block.find("vod_deadlock_recovery")
+    assert backlog_def >= 0, "subtitle_backlog should be defined"
+    assert recovery_ref >= 0, "recovery section should exist"
+    assert backlog_def < recovery_ref, (
+        "subtitle_backlog must be defined before recovery watchdog uses it"
+    )
+
+
+def test_last_subtitle_at_not_reset_on_recovery():
+    """last_subtitle_at must NOT be reset when recovery is attempted.
+
+    Previously, the recovery watchdog reset last_subtitle_at = now after
+    calling resume_from_auto_pause(), even though no subtitle was actually
+    published. This masked repeated deadlocks and prevented the starvation
+    warning from firing.
+    """
+    import inspect
+
+    from auto_translate import pipeline as pipeline_mod
+
+    source = inspect.getsource(pipeline_mod)
+    watchdog_start = source.find("Subtitle starvation watchdog")
+    assert watchdog_start >= 0
+    block = source[watchdog_start:watchdog_start + 3000]
+
+    # There should be NO "last_subtitle_at = now" inside the recovery block
+    # (only last_warning = now is allowed)
+    recovery_section = block[block.find("vod_deadlock_recovery"):]
+    # Find the end of the recovery section (next major comment or end)
+    assert "last_subtitle_at = now" not in recovery_section, (
+        "last_subtitle_at must NOT be reset in recovery — no subtitle was published"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P0 — Livestream MPV recovery: return instead of continue
+# ---------------------------------------------------------------------------
+
+def test_mpv_recovery_returns_from_play_session():
+    """After _recover_video_stream() succeeds, _play_session must return.
+
+    Previously, the code used 'continue' after recovery, which looped back
+    to the top of the inner while loop inside _play_session(), skipping the
+    video loading block (guarded by _direct_video_loaded). This left MPV on
+    its old media session for livestreams.
+
+    The fix uses 'return' so _run() calls _play_session() again, which
+    re-enters the video loading block and loads the new fMP4 playlist.
+    """
+    import inspect
+
+    from auto_translate.output.mpv import MpvOutput
+
+    source = inspect.getsource(MpvOutput._play_session)
+
+    # Find all _recover_video_stream calls inside _play_session
+    # After each successful recovery, there should be a 'return', not 'continue'
+    lines = source.split('\n')
+    for i, line in enumerate(lines):
+        if '_recover_video_stream()' in line:
+            # Look at the next few lines for the pattern
+            following = '\n'.join(lines[i:i+10])
+            # After "if not recovered: return", the next block should also return
+            assert 'continue' not in following, (
+                "_play_session should return after recovery, not continue"
+            )
+
+
+# ---------------------------------------------------------------------------
+# P0 — FFmpeg retry: premature EOF detection
+# ---------------------------------------------------------------------------
+
+def test_premature_vod_eof_detected_on_exit_code_0():
+    """_read_session must detect premature VOD EOF even when FFmpeg exits 0.
+
+    If FFmpeg exits with code 0 but decoded significantly less audio than
+    expected (based on source duration), the signed URL likely expired.
+    The session should be treated as failed so the retry loop can refresh.
+    """
+    import inspect
+
+    from auto_translate.ingest import Ingest
+
+    source = inspect.getsource(Ingest._read_session)
+    assert "premature_eof" in source, (
+        "_read_session should detect premature VOD EOF"
+    )
+    assert "expected * 0.9" in source or "expected*0.9" in source, (
+        "Premature EOF threshold should compare decoded vs expected duration"
+    )
+
+
+def test_fmp4_vod_branch_removed():
+    """The fmp4_vod branch in ingest retry should be removed.
+
+    video_out is only set for shared livestreams, so fmp4_vod (non-live +
+    video_out) was unreachable dead code. The retry logic should only cover
+    remote_vod (direct VOD audio) and shared live HLS.
+    """
+    import inspect
+
+    from auto_translate.ingest import Ingest
+
+    source = inspect.getsource(Ingest.run)
+    assert "fmp4_vod" not in source, (
+        "fmp4_vod branch should be removed — it was unreachable dead code"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P0 — Watermark diagnostics: use CoverageTracker API
+# ---------------------------------------------------------------------------
+
+def test_watermark_diagnostics_use_coverage_tracker():
+    """VOD diagnostics must read watermark via CoverageTracker, not _translated_until.
+
+    Previously, diagnostics read getattr(out, "_translated_until", None), which
+    always returned None because the attribute doesn't exist on MpvOutput.
+    The watermark lives inside CoverageTracker and is accessed via
+    _coverage.translated_until.
+    """
+    import inspect
+
+    from auto_translate import pipeline as pipeline_mod
+
+    source = inspect.getsource(pipeline_mod)
+    diag_section = source[source.find("Watermark diagnostics"):]
+    # Should use _coverage.translated_until, not _translated_until
+    assert "_coverage.translated_until" in diag_section or "coverage.translated_until" in diag_section, (
+        "Diagnostics should read watermark via CoverageTracker API"
+    )
+    # Should NOT use the old broken getattr pattern
+    assert '_translated_until' not in diag_section.split('VOD diagnostics:')[0] if 'VOD diagnostics:' in diag_section else True, (
+        "Diagnostics should not use getattr for _translated_until"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P0 — Auto-pause recovery: _pause_owner must be cleared
+# ---------------------------------------------------------------------------
+
+def test_resume_from_auto_pause_clears_pause_owner():
+    """resume_from_auto_pause must clear _pause_owner to 'none'.
+
+    Previously, _pause_owner remained 'auto' after recovery, so the
+    auto-pause check (_pause_owner != "user") would immediately re-trigger
+    auto-pause, causing oscillation.
+    """
+    import inspect
+
+    from auto_translate.output.mpv import MpvOutput
+
+    source = inspect.getsource(MpvOutput.resume_from_auto_pause)
+    assert '_pause_owner = "none"' in source, (
+        "resume_from_auto_pause must clear _pause_owner to 'none'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 — CoverageTracker: abandon_pending_before correctness
+# ---------------------------------------------------------------------------
+
+def test_coverage_abandon_pending_before():
+    """abandon_pending_before should remove old pending intervals and allow watermark advance."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    # Record some pending speech
+    ct.record_speech(0.0, 2.0)
+    ct.record_speech(5.0, 7.0)
+    ct.record_speech(20.0, 22.0)
+
+    # Watermark should be blocked at 0.0 by pending speech
+    assert ct.translated_until == 0.0
+
+    # Abandon intervals before 10s
+    abandoned = ct.abandon_pending_before(10.0)
+    assert abandoned == 2, f"Should abandon 2 intervals, got {abandoned}"
+
+    # Only the 20-22s interval should remain pending
+    assert ct.pending_count() == 1
+
+    # Advance VAD past the abandoned region
+    ct.advance_vad(19.0)
+    # Watermark should advance through abandoned region via VAD silence
+    assert ct.translated_until >= 19.0, (
+        f"Watermark should advance through abandoned region, got {ct.translated_until}"
+    )
+
+
+def test_coverage_abandon_does_not_delete_legitimate_speech():
+    """abandon_pending_before should not abandon intervals at or after cutoff."""
+    from auto_translate.output.coverage import CoverageTracker
+
+    ct = CoverageTracker(start_s=0.0)
+    ct.record_speech(0.0, 2.0)
+    ct.record_speech(10.0, 12.0)  # exactly at cutoff
+    ct.record_speech(15.0, 17.0)  # after cutoff
+
+    abandoned = ct.abandon_pending_before(10.0)
+    assert abandoned == 1, f"Should abandon only 1 interval (before 10s), got {abandoned}"
+    assert ct.pending_count() == 2, "Should retain intervals at and after cutoff"
+
+
+# ---------------------------------------------------------------------------
+# P1 — VAD idle buffer bounding
+# ---------------------------------------------------------------------------
+
+def test_vad_idle_buffer_bounded():
+    """VAD _idle list must be bounded when fallback probing is enabled.
+
+    Without bounding, _idle grows unbounded during long silence with
+    fallback probing, because _emit_probe may skip (silence) and frames
+    still accumulate.
+    """
+    import inspect
+
+    from auto_translate.config import VadConfig
+    from auto_translate.vad import Segmenter
+
+    cfg = VadConfig(fallback_s=12.0)
+    seg = Segmenter(cfg)
+
+    source = inspect.getsource(seg._add_idle)
+    assert "max_idle" in source or "fallback_frames * 3" in source, (
+        "_add_idle should bound the idle buffer"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 — Livestream MPV recovery reloads video
+# ---------------------------------------------------------------------------
+
+def test_mpv_recovery_sets_direct_video_loaded_false():
+    """_recover_video_stream must set _direct_video_loaded = False for livestreams.
+
+    This ensures that when _run() calls _play_session() again after recovery,
+    the video loading block (guarded by _direct_video_loaded) re-executes
+    and loads the new fMP4 playlist.
+    """
+    import inspect
+
+    from auto_translate.output.mpv import MpvOutput
+
+    source = inspect.getsource(MpvOutput._recover_video_stream)
+    assert "_direct_video_loaded = False" in source, (
+        "_recover_video_stream should set _direct_video_loaded = False for livestreams"
     )
 
 

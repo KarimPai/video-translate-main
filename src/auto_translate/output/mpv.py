@@ -648,6 +648,7 @@ class MpvOutput:
         """
         if self._vod_auto_paused and self._player_command("set_property", "pause", False):
             self._vod_auto_paused = False
+            self._pause_owner = "none"
             log.info("Resumed from auto-pause via recovery request")
 
     def show(self, sub: Subtitle) -> None:
@@ -1246,12 +1247,11 @@ class MpvOutput:
                 if not recovered:
                     # Recovery gave up (max retries) — stop the scheduler
                     return
-                # Recovery succeeded: reset state and continue the loop
-                # to wait for the new fMP4 session to become ready.
-                paused = True
-                unpause_at = None
-                vod_wait_until = time.monotonic() + lead * 3
-                continue
+                # Recovery succeeded: return from _play_session() so _run()
+                # calls it again, which re-enters the video loading block
+                # (guarded by _direct_video_loaded) and loads the new fMP4
+                # playlist for livestreams or re-opens the source for VOD.
+                return
 
             should_unpause = (
                 unpause_at is not None
@@ -1366,10 +1366,9 @@ class MpvOutput:
                     recovered = self._recover_video_stream()
                     if not recovered:
                         return
-                    paused = True
-                    unpause_at = None
-                    vod_wait_until = time.monotonic() + lead * 3
-                    continue
+                    # Return so _run() restarts _play_session() and reloads
+                    # the new fMP4 playlist with fresh clock anchors.
+                    return
                 if health == "healthy" and self._video_retries:
                     log.info("Live playback healthy for 60s; resetting recovery attempts")
                     self._video_retries = 0
@@ -1380,10 +1379,9 @@ class MpvOutput:
                         recovered = self._recover_video_stream()
                         if not recovered:
                             return
-                        paused = True
-                        unpause_at = None
-                        vod_wait_until = time.monotonic() + lead * 3
-                        continue
+                        # Return so _run() restarts _play_session() and reloads
+                        # the new fMP4 playlist with fresh clock anchors.
+                        return
                 else:
                     aligned = True
                 if self._mpv_anchor is None and not self.ingest.source.live:

@@ -1183,9 +1183,10 @@ def run(
             # Subtitle starvation watchdog: detect when audio keeps flowing but
             # no subtitle has been published for too long. This catches stalls
             # that last_activity misses because AudioProgress keeps updating it.
-            if not ingest.source.live and now - last_subtitle_at > 30.0:
+            if not ingest.source.live and now - last_subtitle_at > 15.0:
+                # Compute backlog once for both the starvation warning and recovery.
                 subtitle_backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
-                if subtitle_backlog and ingest.generation == observed_generation:
+                if now - last_subtitle_at > 30.0 and subtitle_backlog and ingest.generation == observed_generation:
                     # Audio is flowing but subtitles stopped — log and warn
                     record_event(
                         "subtitle_starvation",
@@ -1201,17 +1202,16 @@ def run(
                             "is not producing output",
                             now - last_subtitle_at, subtitle_backlog,
                         )
-
-            # Recovery watchdog: detect VOD deadlock and attempt recovery
-            # when no subtitle published for 15s with pending work and auto-pause active.
-            if not ingest.source.live and now - last_subtitle_at > 15.0:
-                # Check if any output is auto-paused
-                auto_paused = False
-                for out in outputs:
-                    if getattr(out, "_vod_auto_paused", False):
-                        auto_paused = True
-                        break
-                if auto_paused and subtitle_backlog and ingest.generation == observed_generation:
+                # Recovery watchdog: detect VOD deadlock and attempt recovery
+                # when no subtitle published for 15s with pending work and auto-pause active.
+                if subtitle_backlog and ingest.generation == observed_generation:
+                    # Check if any output is auto-paused
+                    auto_paused = False
+                    for out in outputs:
+                        if getattr(out, "_vod_auto_paused", False):
+                            auto_paused = True
+                            break
+                    if auto_paused:
                         # Attempt recovery: log diagnostics and try to resume
                         record_event(
                             "vod_deadlock_recovery",
@@ -1238,24 +1238,24 @@ def run(
                                         log.info("Recovery: forced MPV resume")
                                     except Exception:
                                         log.exception("Recovery: failed to resume MPV")
-                        last_subtitle_at = now
+                        # Do NOT reset last_subtitle_at here — no subtitle was
+                        # actually published. Resetting it masks repeated deadlocks
+                        # and prevents the starvation warning from firing.
                         last_warning = now
 
             # Watermark diagnostics: log translation progress every 10s during VOD
             if not ingest.source.live and now - last_vod_diag > 10.0:
                 last_vod_diag = now
-                # Collect watermark positions from outputs
+                # Collect watermark positions from outputs via CoverageTracker API
                 tu = None
                 vp = None
                 ps = None
                 for out in outputs:
-                    tu = getattr(out, "_translated_until", None)
-                    vp = getattr(out, "_vad_progress", None)
-                    pspeech = getattr(out, "_pending_speech", None)
-                    try:
-                        ps = len(pspeech) if pspeech else None
-                    except TypeError:
-                        ps = None
+                    coverage = getattr(out, "_coverage", None)
+                    if coverage is not None:
+                        tu = coverage.translated_until
+                        vp = coverage.vad_progress
+                        ps = coverage.pending_count()
                 depths = {name: q.qsize() for name, q in queues.items()}
                 log.info(
                     "VOD diagnostics: translated_until=%.1fs vad_progress=%.1fs "

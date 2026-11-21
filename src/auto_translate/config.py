@@ -425,6 +425,21 @@ class HolodexConfig:
             raise ValueError("holodex.timeout_s must be in 0.5..30")
 
 
+def vad_for_haas_game_audio(cfg: VadConfig) -> VadConfig:
+    """Slightly reduce VAD sensitivity to game engines when Haas is selected.
+
+    The ordinary 0.24 threshold has false-positive exposure to revving engines.
+    Respect explicit custom thresholds, and keep all other segmentation
+    parameters (notably short-reply detection) untouched. Speculative
+    VAD-negative probes are disabled: decoding silence/music with a Japanese-
+    only model invites fluent non-speech hallucinations. This is a session-only
+    copy; other ASR backends and config.toml are unaffected.
+    """
+    default_threshold = VadConfig.__dataclass_fields__["threshold"].default
+    threshold = 0.28 if abs(cfg.threshold - default_threshold) < 1e-9 else cfg.threshold
+    return replace(cfg, threshold=threshold, fallback_s=0.0)
+
+
 def vad_for_source(cfg: VadConfig, *, live: bool) -> VadConfig:
     """Use long, context-rich VOD chunks; bound live chunks for subtitle sync."""
     if not live:
@@ -685,5 +700,6 @@ __all__ = [
     "load_config",
     "mpv_youtube_format",
     "resolve_model_identity",
+    "vad_for_haas_game_audio",
     "vad_for_source",
 ]

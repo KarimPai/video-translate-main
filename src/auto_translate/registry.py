@@ -274,6 +274,20 @@ def _register_builtin_backends(registry: ModelRegistry) -> None:
         ),
     )
 
+    # PLaMo 3 Translate 8B
+    registry.register_translate(
+        "plamo8b",
+        factory=_plamo8b_translate_factory,
+        capabilities=BackendCapabilities(
+            runtime="llama_cpp",
+            device="cuda",
+            source_lang="ja",
+            target_lang="en",
+            vram_gb=3.5,
+            description="PLaMo 3 Translate 8B via llama.cpp (CUDA GPU)",
+        ),
+    )
+
     # Hy-MT2 7B translation
     registry.register_translate(
         "hymt",
@@ -460,9 +474,39 @@ def _hymt_translate_factory(config: Any, **kwargs: Any) -> Any:
     return HymtTranslator(config, glossary, stream=stream, gpu_layers=gpu_layers)
 
 
+def _plamo8b_translate_factory(config: Any, **kwargs: Any) -> Any:
+    """Factory for PLaMo 3 Translate 8B.
+
+    Reuses the same PlamoTranslator class as PLaMo 2B but with a different
+    model path. PLaMo 8B must never inherit Gemma4's or PLaMo 2B's model path.
+    """
+    from .config import TranslateConfig
+    from .glossary import Glossary
+    from .stream_context import StreamContext
+    from .translate.plamo import PlamoTranslator
+    if isinstance(config, dict):
+        config = dict(config)
+        # PLaMo 8B is NOT the default translation backend — do NOT inherit Gemma4 path.
+        if "model_path" not in config:
+            config["model_path"] = ""
+        config = TranslateConfig(**config)
+    # Validate PLaMo 8B model is configured before attempting to load it
+    if not config.model_path or not config.model_path.strip():
+        raise ValueError(
+            "PLaMo 8B translation backend selected but no PLaMo 8B model is configured. "
+            "Set translate.model_path to a PLaMo 3 Translate 8B GGUF model file, "
+            "or configure [translate.plamo8b] model_path in config.toml."
+        )
+    glossary = kwargs.get("glossary", Glossary({}))
+    stream = kwargs.get("stream", StreamContext())
+    gpu_layers = kwargs.get("gpu_layers", None)
+    return PlamoTranslator(config, glossary, stream=stream, gpu_layers=gpu_layers)
+
+
 __all__ = [
     "BackendCapabilities",
     "BackendEntry",
     "ModelRegistry",
+    "_plamo8b_translate_factory",
     "get_default_registry",
 ]

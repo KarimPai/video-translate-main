@@ -67,16 +67,27 @@ vod_merge_timeout_s = 5.0
 # max_tokens = 128
 # load_timeout_s = 300
 
-# PLaMo 3 Translate profile — lighter model, ~1.8GB VRAM
+# PLaMo 3 Translate 2B profile — lighter model, ~1.8GB VRAM
 # Requires llama.cpp 0.7.0+ for the plamo3 tokenizer
 # Place chat_template.jinja next to the model file for best results
-# To use PLaMo, set translate_backend = "plamo" in [models] and uncomment:
+# To use PLaMo 2B, set translate_backend = "plamo" in [models] and uncomment:
 # [translate.plamo]
 # model_path = "models/plamo3/plamo-3-translate-2b-Q4_K_M.gguf"
 # gpu_layers = -1
 # context_size = 8192
 # max_tokens = 256
 # load_timeout_s = 180
+
+# PLaMo 3 Translate 8B profile — larger model for better translation quality, ~3.5GB VRAM
+# Same chat template and tokenizer as PLaMo 2B, but significantly more parameters
+# for improved accuracy on complex Japanese sentences and proper names.
+# To use PLaMo 8B, set translate_backend = "plamo8b" in [models] and uncomment:
+# [translate.plamo8b]
+# model_path = "models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"
+# gpu_layers = -1
+# context_size = 8192
+# max_tokens = 512
+# load_timeout_s = 300
 
 # Qwen3-ASR profile — multimodal ASR via llama.cpp (~2GB VRAM for 1.7B model)
 # Requires both a model GGUF and an audio projector (mmproj) GGUF

@@ -53,6 +53,7 @@ class WhisperASR:
     def __init__(self, cfg: AsrConfig, context: str = "", *, is_explicit: bool = False) -> None:
         self.cfg = cfg
         self.context = context.strip()[: cfg.max_context_chars]
+        self._name_hint_override = False  # Preserve legacy ASR context unless fusion opts in.
         self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
         self._accepted_keys: deque[str] = deque(maxlen=32)
         self.last_match_score = 0.0
@@ -307,8 +308,9 @@ class WhisperASR:
         return text
 
     def set_context(self, context: str) -> None:
-        """Atomically replace the short, optional ASR hint prompt."""
+        """Opt in to bounded hints; an empty hint must NOT fall back to history."""
         with self._state_lock:
+            self._name_hint_override = True
             self.context = context.strip()[: self.cfg.max_context_chars]
 
     def cancel_pending(self) -> None:
@@ -405,10 +407,14 @@ class WhisperASR:
         # Build decode options
         initial_prompt = None
         with self._state_lock:
-            if self.context and not no_context:
+            if not no_context and self._name_hint_override:
+                # Fusion supplies names only. Never fall back to previously
+                # accepted free-form dialogue when no name candidate exists.
+                initial_prompt = self.context[:160] or None
+            elif self.context and not no_context:
                 initial_prompt = self.context[:256]
             elif not no_context and self._recent:
-                # Use recent transcripts as prompt for continuity
+                # Legacy mode: use recent transcripts for continuity.
                 recent = list(self._recent)
                 initial_prompt = " ".join(recent[-3:])[:256]
 

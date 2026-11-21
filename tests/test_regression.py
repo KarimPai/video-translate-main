@@ -2536,30 +2536,28 @@ def test_auto_pause_checks_recovery_cooldown():
 
 
 # ---------------------------------------------------------------------------
-# P1 — Stale pending-speech uses VAD progress for cutoff
+# P1 — Never expire valid pending speech from VAD position alone
 # ---------------------------------------------------------------------------
 
-def test_stale_pending_speech_uses_vad_progress_cutoff():
-    """Stale pending-speech cleanup must use VAD progress, not translated_until.
-
-    When a pending interval blocks translated_until from advancing,
-    using (tu - 60) as cutoff means the stuck interval never qualifies
-    for cleanup. VAD progress always advances, providing a reliable
-    staleness reference.
-    """
+def test_current_generation_pending_is_not_pruned_from_vad_progress():
+    """Slow translation must remain pending regardless of audio read-ahead."""
     import inspect
 
     from auto_translate import pipeline as pipeline_mod
+    from auto_translate.output.coverage import CoverageTracker
 
-    source = inspect.getsource(pipeline_mod)
-    # Find the abandon section
-    abandon_start = source.find("Abandon stale pending speech")
-    assert abandon_start >= 0, "Abandon section should exist"
-    block = source[abandon_start:abandon_start + 2000]
-    # Should use vad_progress (vp) as the cutoff base
-    assert "vp" in block or "vad_progress" in block, (
-        "Stale pending-speech cutoff should use VAD progress"
-    )
+    tracker = CoverageTracker(start_s=0.0)
+    tracker.set_generation(1)
+    sid = tracker.record_speech(1.0, 4.0, generation=1)
+    tracker.advance_vad(240.0)
+    assert tracker.pending_count() == 1
+    assert tracker.translated_until <= 1.0
+
+    # The pipeline must not silently abandon current-generation speech
+    # based only on VAD progress. Lifecycle terminal paths own completion.
+    assert "abandon_stale_pending_speech" not in inspect.getsource(pipeline_mod.run)
+    assert tracker.complete_speech(sid)
+    assert tracker.translated_until >= 240.0
 
 
 # ---------------------------------------------------------------------------

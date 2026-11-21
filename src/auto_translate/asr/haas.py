@@ -34,6 +34,13 @@ log = logging.getLogger(__name__)
 
 _JAPANESE_SCRIPT = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 
+# Haas is Japanese-only, yet engine revs can elicit a standalone Latin
+# "yeah"/"yeaaah". Do not send these hypotheses to Japanese translation.
+_ENGINE_REV_LATIN = re.compile(r"(?:ye+a+h+|ye+a+|ya+h+)", re.IGNORECASE)
+# A standalone katakana cheer may be genuine speech. Use VAD evidence and
+# repetition timing before rejecting it; do not blanket-ban イェー.
+_ENGINE_REV_KATAKANA = re.compile(r"(?:イ[ェエ](?:ー{1,3}イ?|イ)){1,5}")
+
 
 class HaasError(RuntimeError):
     """The Haas ASR server failed repeatedly; translation cannot continue."""
@@ -63,6 +70,23 @@ def wav_bytes(audio: np.ndarray, *, normalize: bool = True) -> bytes:
     return buffer.getvalue()
 
 
+def is_english_engine_interjection(text: str) -> bool:
+    """Only whole-utterance 'yeah' variants, never words inside a sentence."""
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    normalized = re.sub(r"[!！?？.,。、…〜～\s]+", " ", normalized).strip()
+    words = normalized.split()
+    return bool(words) and len(words) <= 8 and all(
+        _ENGINE_REV_LATIN.fullmatch(word) for word in words
+    )
+
+
+def is_katakana_engine_interjection(text: str) -> bool:
+    """Uncertain standalone イェー-type output, not normal dialogue."""
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = re.sub(r"[!！?？.,。、…〜～\s]+", "", normalized)
+    return bool(normalized and _ENGINE_REV_KATAKANA.fullmatch(normalized))
+
+
 def is_japanese_text(text: str) -> bool:
     """Check if text contains Japanese script characters."""
     return bool(_JAPANESE_SCRIPT.search(text))
@@ -86,6 +110,7 @@ class HaasASR:
         self._failures = 0
         self._restarts = 0
         self.last_timing: dict | None = None
+        self._recent_engine_interjections: deque[float] = deque(maxlen=8)
 
         executable = resolve_speech_executable(cfg.server_path if cfg.server_path else None)
         device = "cpu"
@@ -125,6 +150,7 @@ class HaasASR:
             self.last_raw_transcript = ""
             self._recent.clear()
             self._accepted_keys.clear()
+            self._recent_engine_interjections.clear()
 
     def remember(self, text: str) -> None:
         """Bias the next decode toward continuity with recently accepted speech."""
@@ -135,6 +161,36 @@ class HaasASR:
     def forget(self) -> None:
         with self._state_lock:
             self._recent.clear()
+            self._recent_engine_interjections.clear()
+
+    def reject_utterance(self, text: str, utt) -> str | None:
+        """Acoustic-context gate for Haas's engine-rev-as-'yeah' false positives.
+
+        Haas lacks calibrated word confidence: a text-only classifier cannot
+        identify engine audio. Never suppress an ordinary Japanese sentence;
+        reject only short isolated cheer-like hypotheses when evidence is
+        speculative or when they recur abnormally within a few seconds.
+        """
+        if is_english_engine_interjection(text):
+            return "haas_non_japanese_engine_interjection"
+        if not is_katakana_engine_interjection(text):
+            return None
+        if utt.probe or (utt.vad_confidence is not None
+                         and utt.vad_confidence < 0.65):
+            return "haas_weak_katakana_interjection"
+        now = float(utt.start_s)
+        with self._state_lock:
+            recent = self._recent_engine_interjections
+            # A reset/seek clears history. Also clear on backward timestamps.
+            if recent and now < recent[-1]:
+                recent.clear()
+            while recent and now - recent[0] > 7.0:
+                recent.popleft()
+            repeated = bool(recent and now - recent[-1] <= 7.0)
+            recent.append(now)
+        if repeated:
+            return "haas_repeated_engine_interjection"
+        return None
 
     def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
         return self._decode(audio, probe, self.cfg.response_timeout_s)
@@ -212,7 +268,9 @@ class HaasASR:
         text = " ".join(unicodedata.normalize("NFC", text).split())
         text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
 
-        problem = (("no_speech" if not text else None)
+        problem = (("haas_non_japanese_engine_interjection"
+                    if is_english_engine_interjection(text) else None)
+                   or ("no_speech" if not text else None)
                    or ("truncated" if not text and duration_s > 0.5 else None)
                    or transcript_problem(text, duration_s)
                    or ("blocklist" if any(word in text for word in self.cfg.blocklist) else None))

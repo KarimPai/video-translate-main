@@ -2,7 +2,7 @@
 
 Windows-oriented local video translation project with **interchangeable speech recognition and translation models**, English-only subtitles, and an embedded MPV player.
 
-The **`main`** branch now contains the universal implementation previously developed on `video-translate-universal`. The older Haas/PLaMo-only code is preserved on `backup/main-before-universal-20261122`.
+The **`main`** branch now contains the universal implementation previously developed on `video-translate-main`. The older Haas/PLaMo-only code is preserved on `backup/main-before-universal-20261122`.
 
 ## Features
 
@@ -40,7 +40,7 @@ uv sync --extra gui --extra diagnostics --extra asr
 
 Before launching:
 
-1. Open `config.toml`. Set model and runtime paths for the selected backends. Some committed paths refer to the original developer's `C:/Games/video-translate-universal/` folder and **must be adapted** on another machine.
+1. Open `config.toml`. Set model and runtime paths for the selected backends. Some committed paths refer to the original developer's `C:/Games/video-translate-main/` folder and **must be adapted** on another machine.
 2. Supply the Haas model and compatible speech.cpp executable if using the default ASR backend.
 3. Supply the selected translation model and a compatible CUDA `llama-server` executable (or configure another supported backend).
 4. Confirm that FFmpeg, MPV, and yt-dlp are installed and discoverable.

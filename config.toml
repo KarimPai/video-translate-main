@@ -13,8 +13,8 @@ response_timeout_s = 30
 live_response_timeout_s = 15
 
 [asr.qwen3-asr]
-model_path = "C:/Games/video-translate-universal/models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
-mmproj_path = "C:/Games/video-translate-universal/models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+model_path = "C:/Games/video-translate-main/models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
+mmproj_path = "C:/Games/video-translate-main/models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 threads = 4
 cuda_device = 0
@@ -75,7 +75,7 @@ max_japanese_probability = 0.12
 min_top_margin = 0.45
 
 [translate]
-model_path = "C:/Games/video-translate-universal/models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
+model_path = "C:/Games/video-translate-main/models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 # Force all 42 layers onto GPU: model is 5.41 GB, RTX 3070 has 3.4 GB free after ASR load.
 gpu_layers = 42
@@ -118,7 +118,7 @@ suppress_japanese_in_english = true
 vod_merge_timeout_s = 5.0
 
 [translate.hymt]
-model_path = "C:/Games/video-translate-universal/models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf"
+model_path = "C:/Games/video-translate-main/models/hy-mt/Hy-MT2-7B-Q4_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 gpu_layers = 50
 context_size = 4096
@@ -126,7 +126,7 @@ cuda_device = 0
 threads = 4
 
 [translate.plamo]
-model_path = "C:/Games/video-translate-universal/models/plamo3/plamo-3-translate-2b-Q4_K_M.gguf"
+model_path = "C:/Games/video-translate-main/models/plamo3/plamo-3-translate-2b-Q4_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 gpu_layers = -1
 context_size = 8192
@@ -138,7 +138,7 @@ threads = 4
 
 [translate.plamo8b]
 # PLaMo 3 Translate 8B Q3_K_M — larger model for better translation quality
-model_path = "C:/Games/video-translate-universal/models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"
+model_path = "C:/Games/video-translate-main/models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"
 server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
 # Auto GPU offload — gpu_budget will reduce layers if VRAM is insufficient
 gpu_layers = -1

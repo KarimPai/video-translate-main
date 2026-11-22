@@ -90,8 +90,12 @@ def log_inventory(root: Path | None = None) -> None:
 
 
 def _resolve_gguf(configured: str, root: Path) -> str:
-    if not configured or Path(configured).expanduser().is_file():
+    if not configured:
         return configured
+    explicit = Path(configured).expanduser()
+    if explicit.is_file():
+        if explicit.is_absolute() or _inside(explicit, root):
+            return configured
     if not configured.casefold().endswith(".gguf"):
         return configured
     suffix = _relative_model_path(configured)
@@ -115,7 +119,7 @@ def _resolve_gguf(configured: str, root: Path) -> str:
 def _resolve_whisper(configured: str, root: Path) -> str:
     if configured:
         original = Path(configured).expanduser()
-        if original.is_dir():
+        if original.is_dir() and (original.is_absolute() or _inside(original, root)):
             return configured  # Preserve strict validation of an explicit folder.
     suffix = _relative_model_path(configured) if configured else None
     if suffix is not None:

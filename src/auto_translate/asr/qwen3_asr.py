@@ -105,6 +105,10 @@ class Qwen3ASRError(RuntimeError):
     """The Qwen3-ASR server failed repeatedly; transcription cannot continue."""
 
 
+class Qwen3ASRTruncationError(Qwen3ASRError):
+    """A single utterance exceeded its safe output-token budget."""
+
+
 class Qwen3ASR:
     """Qwen3-ASR speech recognition via llama.cpp HTTP server.
 
@@ -269,6 +273,31 @@ class Qwen3ASR:
                     log.error("Qwen3-ASR permanent HTTP error: %s", exc)
                     # Permanent error — no retry, no restart
                     break
+                except Qwen3ASRTruncationError as exc:
+                    # A length-limited utterance is not evidence of a broken
+                    # server. Try two shorter audio windows within the original
+                    # deadline, then reject this utterance rather than killing
+                    # the entire playback session.
+                    recovered = self._recover_truncated_utterance(
+                        audio, probe=probe, deadline=deadline, generation=gen,
+                    )
+                    if recovered is not None:
+                        text = recovered
+                        self._failures = 0
+                        log.warning(
+                            "Qwen3-ASR recovered %.1fs truncated utterance from "
+                            "two shorter audio windows", duration_s,
+                        )
+                        break
+                    self.last_rejection = "token_limit"
+                    self.last_detected_language = "und"
+                    self.last_raw_transcript = ""
+                    log.warning(
+                        "Qwen3-ASR discarded one %.1fs utterance after bounded "
+                        "token-limit recovery failed; pipeline continues (%s)",
+                        duration_s, exc,
+                    )
+                    return ""
                 except Qwen3ASRError as exc:
                     last_exc = exc
                     self._failures += 1
@@ -336,6 +365,63 @@ class Qwen3ASR:
             self.last_rejection = None
 
         return text
+
+    def _recover_truncated_utterance(
+        self, audio: np.ndarray, *, probe: bool, deadline: float, generation: int,
+    ) -> str | None:
+        """Recover a long token-truncated utterance without inventing text.
+
+        A bounded two-window retry limits pathological repetitions. Do not
+        accept a partial result when one window fails, languages disagree,
+        or the original deadline expires. This avoids leaking incomplete
+        transcripts and does not restart an otherwise healthy server.
+        """
+        if len(audio) < 4 * 16000 or self._closed or stopping.is_set():
+            return None
+
+        # Place the split near the lowest-energy 80 ms window in the middle
+        # fifth of the segment to reduce the chance of cutting a spoken word.
+        center = len(audio) // 2
+        radius = len(audio) // 10
+        frame = 1280  # 80 ms at 16 kHz
+        best = center
+        best_energy = float("inf")
+        for pos in range(max(frame, center - radius), min(len(audio) - frame, center + radius) + 1, frame):
+            window = audio[pos - frame // 2:pos + frame // 2]
+            energy = float(np.mean(np.square(window.astype(np.float64))))
+            if energy < best_energy:
+                best_energy = energy
+                best = pos
+
+        parts = (audio[:best], audio[best:])
+        transcripts: list[str] = []
+        languages: list[str] = []
+        for part in parts:
+            if (self._generation != generation or self._closed or stopping.is_set()
+                    or deadline - time.monotonic() <= 0.5):
+                return None
+            try:
+                candidate = self._transcribe_impl(
+                    part, probe=probe, timeout=deadline - time.monotonic(),
+                    max_tokens=512,
+                )
+            except (Qwen3ASRTruncationError, httpx.TimeoutException, httpx.HTTPError) as exc:
+                log.warning("Qwen3-ASR shortened-audio recovery failed: %s", exc)
+                return None
+            lang = self.last_detected_language
+            if not candidate or lang in ("und", "none") or transcript_problem(candidate, len(part) / 16000):
+                return None
+            transcripts.append(candidate)
+            languages.append(lang)
+
+        if len(transcripts) != 2 or languages[0] != languages[1]:
+            return None
+        joined = ("" if languages[0] == "ja" else " ").join(transcripts)
+        if transcript_problem(joined, len(audio) / 16000):
+            return None
+        self.last_detected_language = languages[0]
+        self.last_raw_transcript = joined
+        return joined
 
     def recover_japanese_from_mixed_audio(
         self, audio: np.ndarray, probe: bool = False,
@@ -563,7 +649,7 @@ class Qwen3ASR:
                 log.warning("Qwen3-ASR hit %d-token limit; retrying with 512", max_tokens)
                 return self._transcribe_impl(audio, probe=probe, no_context=no_context,
                                              timeout=remaining, max_tokens=512)
-            raise Qwen3ASRError("Qwen3-ASR output truncated at token limit")
+            raise Qwen3ASRTruncationError("Qwen3-ASR output truncated at token limit")
 
         # Keep model-detected language metadata separate from spoken text.
         language, text = parse_qwen_asr_response(text)

@@ -64,6 +64,15 @@ class VadConfig:
     device: str = "cpu"
     threshold: float = 0.24
     neg_threshold: float = 0.16
+    # Optional noise-adaptive onset/exit thresholds (default: fixed VAD).
+    # Only confirmed idle frames contribute; adjustment never lowers sensitivity
+    # below the configured baseline or changes an active speech segment.
+    dynamic_threshold: bool = False
+    dynamic_window_s: float = 30.0
+    dynamic_update_s: float = 5.0
+    dynamic_quantile: float = 0.80
+    dynamic_noise_margin: float = 0.08
+    dynamic_max_increase: float = 0.12
     min_silence_ms: int = 400
     speech_pad_ms: int = 300
     min_speech_ms: int = 120
@@ -89,6 +98,17 @@ class VadConfig:
     def __post_init__(self):
         if not 0 <= self.neg_threshold <= self.threshold <= 1 or not 0 <= self.short_reply_probability <= 1:
             raise ValueError("Invalid VAD probability thresholds")
+        if type(self.dynamic_threshold) is not bool:
+            raise ValueError("vad.dynamic_threshold must be boolean")
+        if (not math.isfinite(self.dynamic_window_s) or self.dynamic_window_s <= 0
+                or not math.isfinite(self.dynamic_update_s) or not 0 < self.dynamic_update_s <= self.dynamic_window_s):
+            raise ValueError("vad.dynamic_update_s must be positive and no longer than dynamic_window_s")
+        if not math.isfinite(self.dynamic_quantile) or not 0 < self.dynamic_quantile < 1:
+            raise ValueError("vad.dynamic_quantile must be strictly between 0 and 1")
+        if (not math.isfinite(self.dynamic_noise_margin) or not 0 <= self.dynamic_noise_margin <= 1
+                or not math.isfinite(self.dynamic_max_increase)
+                or not 0 <= self.dynamic_max_increase <= 1):
+            raise ValueError("vad.dynamic_noise_margin and dynamic_max_increase must be in 0..1")
         for key in ("min_speech_ms", "min_silence_ms", "short_reply_ms", "onset_ms", "prob_smooth_frames",
                     "max_utterance_s", "live_max_utterance_s", "adaptive_split_s", "live_adaptive_split_s",
                     "adaptive_pause_ms", "split_pause_min_ms", "fallback_min_s"):

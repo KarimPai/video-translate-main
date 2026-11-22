@@ -131,6 +131,16 @@ sample_interval_s = 3.0
 device = "cpu"
 threshold = 0.24
 neg_threshold = 0.16
+# Optional adaptive threshold for noisy streams. Fixed VAD remains the default.
+# Raise onset and exit thresholds together, never below the baseline.
+# Train only on idle audio; freeze the threshold during an utterance.
+# Uses at least 10s of idle audio; resets on seek or a new stream.
+dynamic_threshold = false
+dynamic_window_s = 30.0
+dynamic_update_s = 5.0
+dynamic_quantile = 0.80
+dynamic_noise_margin = 0.08
+dynamic_max_increase = 0.12
 min_silence_ms = 400
 speech_pad_ms = 300
 min_speech_ms = 120

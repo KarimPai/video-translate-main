@@ -138,6 +138,13 @@ class Segmenter:
         self.short_reply_frames = _ms_to_frames(cfg.short_reply_ms)
         self.onset_frames = _ms_to_frames(cfg.onset_ms)
         self.prob_smooth_frames = max(1, cfg.prob_smooth_frames)
+        # Dynamic threshold operates on existing CPU Silero probabilities:
+        # no second VAD model, network call or GPU memory is required.
+        self._dynamic_window_frames = _ms_to_frames(cfg.dynamic_window_s * 1000)
+        self._dynamic_update_frames = _ms_to_frames(cfg.dynamic_update_s * 1000)
+        self._dynamic_min_frames = min(
+            self._dynamic_window_frames, _ms_to_frames(10_000),
+        )
         self.max_frames = _ms_to_frames(cfg.max_utterance_s * 1000)
         self.hard_max_frames = self.max_frames + max(
             0, round(cfg.max_split_extension_s * SAMPLE_RATE / FRAME)
@@ -159,6 +166,13 @@ class Segmenter:
         # A seek only resets recurrent state; it must not reload model weights.
         self.vad = StreamingSileroVAD(cfg.threshold, cfg.device, cfg.model_dir)
         self._reset(0, generation=0)
+        if cfg.dynamic_threshold:
+            log.info(
+                "Dynamic Silero VAD enabled: baseline=%.2f/%.2f "
+                "window=%.1fs update=%.1fs max_increase=%.2f",
+                cfg.threshold, cfg.neg_threshold, cfg.dynamic_window_s,
+                cfg.dynamic_update_s, cfg.dynamic_max_increase,
+            )
 
     def _reset(self, next_sample: int, generation: int) -> None:
         """Fresh stream state, starting at sample `next_sample` (0 = take it from the first chunk)."""
@@ -175,6 +189,11 @@ class Segmenter:
         self._preroll: deque[np.ndarray] = deque(maxlen=self.pad + self.onset_frames)  # recent audio, including onset
         self._preroll_probs: deque[float] = deque(maxlen=self.pad + self.onset_frames)
         self._prob_history: deque[float] = deque(maxlen=self.prob_smooth_frames)
+        # Reset learned background after each VOD seek / stream generation.
+        self._speech_threshold = self.cfg.threshold
+        self._exit_threshold = self.cfg.neg_threshold
+        self._dynamic_idle_probs: deque[float] = deque(maxlen=self._dynamic_window_frames)
+        self._dynamic_idle_since_update = 0
         self._onset_count = 0
         self._idle: list[np.ndarray] = []  # non-speech frames since the last utterance (fallback)
         self._idle_start = next_sample
@@ -245,6 +264,42 @@ class Segmenter:
         return AudioProgress(target, generation=self._generation)
 
 
+    def _observe_idle_probability(self, prob: float) -> None:
+        """Raise/lower a bounded threshold using sustained background evidence.
+
+        Ignore active utterances, tentative speech onsets and speech-positive
+        frames to avoid learning the speaker's voice as background noise.
+        Only eligible idle audio counts toward the update interval. Keep
+        the original onset/exit hysteresis distance when the gate adapts.
+        """
+        cfg = self.cfg
+        if (not cfg.dynamic_threshold or self._in_speech or self._onset_count
+                or not np.isfinite(prob) or prob >= self._speech_threshold):
+            return
+        self._dynamic_idle_probs.append(prob)
+        self._dynamic_idle_since_update += 1
+        if self._dynamic_idle_since_update < self._dynamic_update_frames:
+            return
+        self._dynamic_idle_since_update = 0
+        if len(self._dynamic_idle_probs) < self._dynamic_min_frames:
+            return
+
+        background = float(np.quantile(self._dynamic_idle_probs, cfg.dynamic_quantile))
+        target = min(
+            min(1.0, cfg.threshold + cfg.dynamic_max_increase),
+            max(cfg.threshold, background + cfg.dynamic_noise_margin),
+        )
+        # Smooth updates, with a maximum 0.02 probability change each time.
+        change = max(-0.02, min(0.02, (target - self._speech_threshold) * 0.25))
+        new_threshold = max(cfg.threshold, min(1.0, self._speech_threshold + change))
+        if abs(new_threshold - self._speech_threshold) > 0.0001:
+            self._speech_threshold = new_threshold
+            self._exit_threshold = min(1.0, cfg.neg_threshold + new_threshold - cfg.threshold)
+            log.info(
+                "Dynamic VAD threshold gen=%d onset=%.3f exit=%.3f background=%.3f",
+                self._generation, self._speech_threshold, self._exit_threshold, background,
+            )
+
     def _step(self, frame: np.ndarray, prob: float) -> None:
         cfg = self.cfg
         # The upstream postprocessor's smoothed flags are not used by this
@@ -252,10 +307,11 @@ class Segmenter:
         self._prob_history.append(prob)
         prob = sum(self._prob_history) / len(self._prob_history)
         if not self._in_speech:
+            self._observe_idle_probability(prob)
             previous_preroll = len(self._preroll)
             self._preroll.append(frame)
             self._preroll_probs.append(prob)
-            self._onset_count = self._onset_count + 1 if prob >= cfg.threshold else 0
+            self._onset_count = self._onset_count + 1 if prob >= self._speech_threshold else 0
             if self._onset_count < self.onset_frames:
                 self._add_idle(frame)
                 return
@@ -275,12 +331,12 @@ class Segmenter:
 
         self._frames.append(frame)
         self._probs.append(prob)
-        if self._speech_start_sample is None and prob >= cfg.threshold:
+        if self._speech_start_sample is None and prob >= self._speech_threshold:
             # A forced cut can leave only silence in the continuation. Its
             # next spoken onset belongs to the next positive frame, not the
             # earlier padded audio boundary retained for ASR context.
             self._speech_start_sample = self._next_frame_sample
-        self._silence = self._silence + 1 if prob < cfg.neg_threshold else 0
+        self._silence = self._silence + 1 if prob < self._exit_threshold else 0
 
         if self._silence >= self.min_silence:
             # Pause found: keep `pad` frames of trailing silence, the rest becomes preroll.
@@ -302,7 +358,7 @@ class Segmenter:
                     search_frames=self.split_search,
                     pause_frames=self.split_pause_frames,
                     context_frames=self.split_context_frames,
-                    negative_threshold=cfg.neg_threshold,
+                    negative_threshold=self._exit_threshold,
                     hard=hard,
                 )
                 if cut is not None:
@@ -314,7 +370,7 @@ class Segmenter:
         start = self._start_sample
         end = start + n * FRAME
 
-        speech_probs = [p for p in probs if p >= self.cfg.threshold]
+        speech_probs = [p for p in probs if p >= self._speech_threshold]
         # Keep brief, sustained high-probability replies without opening
         # the gate for isolated peaks or lowering the ordinary speech floor.
         confident_run = 0
@@ -355,7 +411,7 @@ class Segmenter:
             self._frames, self._probs = rest_frames, rest_probs
             self._start_sample = end
             first_positive = next(
-                (i for i, p in enumerate(rest_probs) if p >= self.cfg.threshold), None,
+                (i for i, p in enumerate(rest_probs) if p >= self._speech_threshold), None,
             )
             self._speech_start_sample = (end + first_positive * FRAME
                                          if first_positive is not None else None)

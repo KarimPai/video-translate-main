@@ -70,6 +70,8 @@ def _main(resources: ExitStack) -> None:
     diagnostics_option.add_argument("--no-diagnostics", dest="diagnostics", action="store_false")
     parser.add_argument("--list-backends", action="store_true",
                         help="List available ASR and translation backends")
+    parser.add_argument("--list-models", action="store_true",
+                        help="List locally installed compatible GGUF and Whisper CT2 models")
     parser.add_argument("--asr-backend", type=str,
                         help="ASR backend name (e.g. haas, qwen3-asr)")
     parser.add_argument("--translate-backend", type=str,
@@ -95,6 +97,21 @@ def _main(resources: ExitStack) -> None:
                 if caps:
                     print(f"    {name}: {caps.description} (runtime={caps.runtime}, device={caps.device})")
         print()
+        return
+
+    if args.list_models:
+        from .model_discovery import inventory, models_root
+        local_root = models_root()
+        ggufs, whisper_folders = inventory(local_root)
+        print(f"Local models directory: {local_root}", flush=True)
+        print(f"Compatible GGUF files ({len(ggufs)}):", flush=True)
+        for path in ggufs:
+            print(f"  {path}", flush=True)
+        print(f"Whisper CTranslate2 directories ({len(whisper_folders)}):", flush=True)
+        for path in whisper_folders:
+            print(f"  {path}", flush=True)
+        if not ggufs and not whisper_folders:
+            print("No structurally compatible model files found.", flush=True)
         return
 
     from urllib.parse import urlsplit
@@ -306,6 +323,12 @@ def _main(resources: ExitStack) -> None:
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
                                      explicit_overrides=asr_cli_overrides if asr_cli_overrides else None,
                                      selected_backend=asr_backend_name)
+    from .model_discovery import log_inventory, resolve_selected_model_paths
+    log_inventory()
+    # Respect explicitly entered CLI model paths; automatically repair only
+    # configured paths that were relocated with the project directory.
+    if "model_path" not in asr_cli_overrides:
+        asr_profile = resolve_selected_model_paths("asr", asr_backend_name, asr_profile)
     # Derive timeout from the already-merged profile (backend-specific values
     # take precedence over common config). For live mode, use the shorter
     # live_response_timeout_s; for VOD, use response_timeout_s.
@@ -515,6 +538,10 @@ def _load_translator(cfg, glossary, stream_context, budget, log, registry,
             sys.exit(1)
         if resolved_path:
             translate_profile["model_path"] = resolved_path
+
+    from .model_discovery import resolve_selected_model_paths
+    if not translate_cli_overrides or "model_path" not in translate_cli_overrides:
+        translate_profile = resolve_selected_model_paths("translate", translate_backend_name, translate_profile)
 
     headroom = cfg.gpu_budget.startup_headroom_gb
     auto = translate_profile.get("gpu_layers", -1) < 0

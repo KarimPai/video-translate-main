@@ -312,6 +312,10 @@ def _main(resources: ExitStack) -> None:
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
                                      explicit_overrides=asr_cli_overrides if asr_cli_overrides else None,
                                      selected_backend=asr_backend_name)
+    # Resolve relocated local model paths without downloading or mixing backends.
+    from .model_discovery import log_inventory, resolve_selected_model_paths
+    log_inventory()
+    asr_profile = resolve_selected_model_paths("asr", asr_backend_name, asr_profile)
     # Derive timeout from the already-merged profile (backend-specific values
     # take precedence over common config). For live mode, use the shorter
     # live_response_timeout_s; for VOD, use response_timeout_s.
@@ -499,6 +503,9 @@ def _load_translator(cfg, glossary, stream_context, budget, log, registry,
     translate_profile = get_backend_config(cfg, "translate", translate_backend_name,
                                            explicit_overrides=translate_cli_overrides,
                                            selected_backend=translate_backend_name)
+
+    from .model_discovery import resolve_selected_model_paths
+    translate_profile = resolve_selected_model_paths("translate", translate_backend_name, translate_profile)
 
     headroom = cfg.gpu_budget.startup_headroom_gb
     auto = translate_profile.get("gpu_layers", -1) < 0

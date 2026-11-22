@@ -135,6 +135,9 @@ class BackendControl:
         self.stop.set()
 
     def close(self):
+        # Notify the GUI before intentionally shutting down the control socket.
+        # It will use the final process exit code for the user-facing reason.
+        emit_event("session_ending")
         with self.lock:
             self.closed = True
             if self.socket is not None:

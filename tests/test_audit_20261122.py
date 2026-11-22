@@ -8,7 +8,7 @@ import logging
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -132,14 +132,42 @@ def test_gui_control_close_does_not_mark_natural_end_as_stopped():
         _update_seek_buttons=Mock(),
         _control_lost=False,
         _stopping=False,
+        _session="session-a",
+        _backend_finishing=True,
         status=status,
+        _write_console=Mock(),
+        _resolve_control_disconnect=Mock(),
+        stop_translation=Mock(),
+    )
+    with patch("auto_translate.gui.QTimer.singleShot") as timer:
+        VideoTranslateWindow._control_disconnected(fake)
+    assert fake._control_lost is True
+    fake.stop_translation.assert_not_called()
+    timer.assert_called_once()
+    assert "waiting for backend exit" in status.setText.call_args.args[0]
+
+
+def test_unexpected_gui_control_loss_stops_backend():
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QProcess
+    from auto_translate.gui import VideoTranslateWindow
+
+    fake = SimpleNamespace(
+        _session="session-a",
+        process=SimpleNamespace(state=lambda: QProcess.ProcessState.Running),
+        _stopping=False,
+        _backend_finishing=False,
+        _control_lost=True,
         _write_console=Mock(),
         stop_translation=Mock(),
     )
-    VideoTranslateWindow._control_disconnected(fake)
-    assert fake._control_lost is True
+    VideoTranslateWindow._resolve_control_disconnect(fake, "session-a")
+    fake.stop_translation.assert_called_once()
+
+    fake.stop_translation.reset_mock()
+    fake._backend_finishing = True
+    VideoTranslateWindow._resolve_control_disconnect(fake, "session-a")
     fake.stop_translation.assert_not_called()
-    assert "waiting for backend exit" in status.setText.call_args.args[0]
 
 
 def test_expired_cached_live_subtitle_releases_pending_coverage():

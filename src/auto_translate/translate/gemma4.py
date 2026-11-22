@@ -332,7 +332,7 @@ class Gemma4Translator:
             layers = 999
         else:
             layers = self.gpu_layers + 1
-        device = detect_device(self.executable)
+        device = detect_device(self.executable, self.cfg.cuda_device)
         return [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),

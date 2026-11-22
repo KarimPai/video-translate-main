@@ -241,7 +241,7 @@ class HymtTranslator:
             layers = self.gpu_layers + 1
         else:
             layers = self.gpu_layers
-        device = detect_device(self.executable)
+        device = detect_device(self.executable, self.cfg.cuda_device)
         return [
             "-m", str(self.model),
             "-c", str(self.cfg.context_size),

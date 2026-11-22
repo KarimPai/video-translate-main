@@ -361,7 +361,7 @@ class PlamoTranslator:
             layers = 999
         else:
             layers = self.gpu_layers + 1
-        device = detect_device(self.executable)
+        device = detect_device(self.executable, self.cfg.cuda_device)
         
         # Find the chat template file next to the model or in the same directory
         template_path = self._find_chat_template()

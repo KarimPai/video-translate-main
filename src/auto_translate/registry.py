@@ -343,6 +343,7 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Qwen3-ASR.
 
     Qwen3-ASR must never inherit Haas's model path from dataclass defaults.
+    Searches local model directories before raising a missing-model error.
     Raises clear errors if model_path or mmproj_path are missing.
     """
     from .asr.qwen3_asr import Qwen3ASR
@@ -358,20 +359,96 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
             config["mmproj_path"] = ""
         config = AsrConfig(**config)
     # Validate Qwen3-ASR required fields before attempting to load
-    if not config.model_path or not config.model_path.strip():
+    model_path = (config.model_path or "").strip()
+    mmproj_path = (config.mmproj_path or "").strip()
+
+    # Try to resolve model path if not set or not found
+    if not model_path:
+        model_path = _find_qwen3_asr_model()
+
+    # Try to resolve mmproj path if not set or not found
+    if not mmproj_path:
+        mmproj_path = _find_qwen3_asr_mmproj()
+
+    if not model_path:
         raise ValueError(
             "Qwen3-ASR backend selected but no Qwen3-ASR model is configured. "
             "Set asr.model_path to a Qwen3-ASR GGUF model file, "
-            "or configure [asr.qwen3-asr] model_path in config.toml."
+            "or configure [asr.qwen3-asr] model_path in config.toml. "
+            "Example: model_path = 'models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf'"
         )
-    if not config.mmproj_path or not config.mmproj_path.strip():
+    if not mmproj_path:
         raise ValueError(
             "Qwen3-ASR backend selected but no audio projector (mmproj) is configured. "
             "Set asr.mmproj_path to a Qwen3-ASR mmproj GGUF file, "
-            "or configure [asr.qwen3-asr] mmproj_path in config.toml."
+            "or configure [asr.qwen3-asr] mmproj_path in config.toml. "
+            "Example: mmproj_path = 'models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf'"
         )
+
+    # Update config with resolved paths
+    if isinstance(config, AsrConfig):
+        from dataclasses import replace
+        config = replace(config, model_path=model_path, mmproj_path=mmproj_path)
+    elif isinstance(config, dict):
+        config["model_path"] = model_path
+        config["mmproj_path"] = mmproj_path
+
     context = kwargs.pop("context", "")
     return Qwen3ASR(config, context=context)
+
+
+def _find_qwen3_asr_model() -> str:
+    """Search common locations for a Qwen3-ASR GGUF model.
+
+    Returns the path if found, empty string otherwise.
+    """
+    import glob as glob_mod
+    from pathlib import Path
+
+    root = Path.cwd()
+    search_dirs = [
+        root / "models" / "qwen3-asr",
+        root / "models" / "Qwen3-ASR",
+        root / "models",
+    ]
+    patterns = ["*Qwen3-ASR*.gguf", "*qwen3-asr*.gguf", "*Qwen3ASR*.gguf"]
+    # Exclude mmproj files
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        for pattern in patterns:
+            for path in glob_mod.glob(str(search_dir / pattern)):
+                p = Path(path)
+                if "mmproj" not in p.name.lower():
+                    logger.info("Found Qwen3-ASR model: %s", p)
+                    return str(p)
+    return ""
+
+
+def _find_qwen3_asr_mmproj() -> str:
+    """Search common locations for a Qwen3-ASR mmproj GGUF file.
+
+    Returns the path if found, empty string otherwise.
+    """
+    import glob as glob_mod
+    from pathlib import Path
+
+    root = Path.cwd()
+    search_dirs = [
+        root / "models" / "qwen3-asr",
+        root / "models" / "Qwen3-ASR",
+        root / "models",
+    ]
+    patterns = ["*mmproj*.gguf", "*mmproj*.GGUF"]
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        for pattern in patterns:
+            for path in glob_mod.glob(str(search_dir / pattern)):
+                p = Path(path)
+                logger.info("Found Qwen3-ASR mmproj: %s", p)
+                return str(p)
+    return ""
 
 
 def _whisper_asr_factory(config: Any, **kwargs: Any) -> Any:

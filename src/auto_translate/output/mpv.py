@@ -909,8 +909,26 @@ class MpvOutput:
         so that valid callbacks are not rejected after seeking.
         Also abandons any pending speech from the previous generation that
         survived the reset (should be none, but defensive).
+
+        Idempotent per generation: _restart_audio_at() calls reset_buffer()
+        immediately, then ingest.py emits a reset AudioProgress marker that
+        causes pipeline.py to call reset_buffer() again. The second call must
+        NOT wipe valid pending speech registered between the two resets.
+        We track the generation we already reset for and skip the destructive
+        portion on a duplicate call for the same generation.
         """
         with self._buffer_condition:
+            new_gen = self.ingest.generation
+            # Idempotency guard: if we already reset for this generation,
+            # only update the seek lead target (in case progress_s advanced)
+            # and skip the destructive reset that would wipe valid pending speech.
+            if new_gen == self._pending_generation:
+                # Already reset for this generation — update lead target only
+                if self._seek_lead_target is None or progress_s + self.PAUSE_LEAD_SECONDS > self._seek_lead_target:
+                    self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
+                log.debug("reset_buffer: already reset for generation=%d, skipping duplicate", new_gen)
+                self._buffer_condition.notify_all()
+                return
             self._seek_lead_target = progress_s + self.PAUSE_LEAD_SECONDS
             self._coverage.reset(progress_s)
             self._source_finished = False
@@ -918,7 +936,6 @@ class MpvOutput:
             # Synchronize generation with the current ingest generation.
             # request_restart() increments ingest._generation before calling
             # reset_buffer(), so the new generation is already available.
-            new_gen = self.ingest.generation
             self._pending_generation = new_gen
             self._coverage.set_generation(new_gen)
             # Defensive: abandon any stale-generation pending speech

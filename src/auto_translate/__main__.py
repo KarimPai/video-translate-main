@@ -318,9 +318,15 @@ def _main(resources: ExitStack) -> None:
     whisper_kwargs = {}
     if asr_backend_name == "whisper" and asr_identity.get("model_path"):
         whisper_kwargs["_whisper_is_explicit"] = True
-    asr = registry.create_backend("asr", asr_backend_name, asr_profile,
-                                  context=stream_context.recognition_text(),
-                                  **whisper_kwargs)
+    try:
+        asr = registry.create_backend("asr", asr_backend_name, asr_profile,
+                                      context=stream_context.recognition_text(),
+                                      **whisper_kwargs)
+    except ValueError as exc:
+        # Backend factory validation failure (e.g. missing model path)
+        log.error("ASR backend '%s' failed to initialize: %s", asr_backend_name, exc)
+        print(f"Error: ASR backend '{asr_backend_name}' cannot start:\n  {exc}", file=sys.stderr)
+        sys.exit(1)
     resources.callback(asr.close)
 
     # Optional OverlaySubs-style fusion: Whisper alone supports safe, bounded
@@ -517,6 +523,11 @@ def _load_translator(cfg, glossary, stream_context, budget, log, registry,
                                                  translate_profile, glossary=glossary, stream=stream_context,
                                                  gpu_layers=layers)
             break
+        except ValueError as exc:
+            # Backend factory validation failure (e.g. missing model path)
+            log.error("Translation backend '%s' failed to initialize: %s", translate_backend_name, exc)
+            print(f"Error: Translation backend '{translate_backend_name}' cannot start:\n  {exc}", file=sys.stderr)
+            sys.exit(1)
         except LlamaServerError:
             if layers == 0 or not auto:
                 raise

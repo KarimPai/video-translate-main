@@ -40,12 +40,61 @@ def resolve_executable(path: str) -> Path:
 def detect_device(executable: Path | None = None, cuda_device: int | None = None) -> str:
     """Detect the best available GPU device for llama-server.
 
+    Honors explicit cuda_device configuration:
+    - cuda_device=-1: return "CPU" for CPU-only inference
+    - cuda_device>=0: return the specific CUDA device (e.g. "CUDA2")
+    - cuda_device=None: auto-detect best available device
+
     Prefers CUDA for NVIDIA GPUs (better performance), falls back to Vulkan.
     Returns a device string like "CUDA0" or "Vulkan0" suitable for --device flag.
     If executable is provided, uses it directly; otherwise resolves from config/PATH.
     """
     import re
 
+    # Honor explicit CPU request
+    if cuda_device == -1:
+        return "CPU"
+
+    # Honor explicit CUDA device index
+    if cuda_device is not None and cuda_device >= 0:
+        requested = f"CUDA{cuda_device}"
+        # Verify the device exists if we can query
+        exe = executable
+        if exe is None:
+            try:
+                exe = resolve_executable("")
+            except LlamaServerError:
+                pass
+        verified = False
+        if exe is not None:
+            try:
+                result = subprocess.run(
+                    [str(exe), "--list-devices"],
+                    capture_output=True, text=True, timeout=10,
+                    check=False,
+                    creationflags=hidden_console_flags(),
+                )
+                output = result.stdout + result.stderr
+                devices = re.findall(r"^\s+(\w+\d+):", output, re.MULTILINE)
+                if requested in devices:
+                    return requested
+                # Requested device not found — warn and fall through to auto-detect
+                log.warning(
+                    "Requested CUDA device %s not found in available devices %s; "
+                    "falling back to auto-detection",
+                    requested, devices,
+                )
+                verified = True
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        # If we could verify and the device was not found, fall through to auto-detect.
+        # If we could not verify (no executable or timeout), return the requested device
+        # anyway — llama-server will fail with a clear error if it doesn't exist.
+        if not verified:
+            return requested
+        # Fall through to auto-detect below
+
+    # Auto-detect: find the best available device
     exe = executable
     if exe is None:
         try:

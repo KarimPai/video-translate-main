@@ -413,18 +413,6 @@ class DiagnosticsConfig:
             raise ValueError("diagnostics.backups must be in 1..10")
 
 
-@dataclass
-class HolodexConfig:
-    api_key: str = ""
-    timeout_s: float = 5.0
-
-    def __post_init__(self):
-        if not isinstance(self.api_key, str):
-            raise TypeError("holodex.api_key must be a string")
-        if type(self.timeout_s) not in (int, float) or not 0.5 <= self.timeout_s <= 30:
-            raise ValueError("holodex.timeout_s must be in 0.5..30")
-
-
 def vad_for_haas_game_audio(cfg: VadConfig) -> VadConfig:
     """Slightly reduce VAD sensitivity to game engines when Haas is selected.
 
@@ -468,7 +456,6 @@ class Config:
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     mpv: MpvConfig = field(default_factory=MpvConfig)
-    holodex: HolodexConfig = field(default_factory=HolodexConfig)
     # Backend-specific config overrides keyed by backend name
     asr_profiles: dict[str, dict] = field(default_factory=dict)
     translate_profiles: dict[str, dict] = field(default_factory=dict)
@@ -553,7 +540,6 @@ def load_config(path: Path) -> Config:
         translate=TranslateConfig(**data.get("translate", {})),
         output=OutputConfig(**data.get("output", {})),
         mpv=MpvConfig(**data.get("mpv", {})),
-        holodex=HolodexConfig(**data.get("holodex", {})),
         asr_profiles=asr_profiles,
         translate_profiles=translate_profiles,
         stats_interval_s=data.get("stats_interval_s", 30.0),

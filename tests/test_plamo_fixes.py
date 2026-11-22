@@ -216,10 +216,12 @@ class TestRetryDetection:
     def test_repeated_empty_responses(self):
         """Repeated empty responses should not cause infinite retries.
 
-        The improved retry strategy tries: (1) original, (2) glossary-only low temp,
-        (3) simplified prompt, (4) untranslated retry. At most 4 calls.
+        The improved retry strategy tries: (1) original, (1a) deterministic retry
+        if original temp was non-zero, (1b) glossary-only deterministic,
+        (1c) simplified prompt, (2) untranslated retry. At most 5 calls.
         """
         translator, call_index = self._make_translator([
+            ("", "stop"),
             ("", "stop"),
             ("", "stop"),
             ("", "stop"),
@@ -227,7 +229,7 @@ class TestRetryDetection:
         ])
         from auto_translate.translate.plamo import PlamoTranslator
         PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
-        assert call_index[0] <= 4
+        assert call_index[0] <= 5
 
     def test_exhausted_retries(self):
         """When all retries are exhausted, return empty string."""

@@ -485,22 +485,32 @@ class Gemma4Translator:
         """Return (terms, all_names, utterance_names).
 
         `terms` — all glossary terms for the prompt.
-        `all_names` — names found in the utterance OR context (used for missing_names check).
+        `all_names` — names found in the utterance OR prior context (used for missing_names check).
         `utterance_names` — names actually present in the current Japanese text (used for garbled_name check).
 
-        Key: use source context for disambiguation so context-dependent nicknames
-        (e.g. Miko) are recognized, but only require names that appear in the current
-        utterance. Context-only names are hints, not mandatory.
+        Key distinction: all_names includes names from prior dialogue context so that
+        context-only names do not trigger garbled rejection. utterance_names contains
+        only names actually spoken in the current utterance, using source context for
+        disambiguation so that context-dependent nicknames (e.g. Miko) are recognized.
         """
         source_context = f"{context}\n{ja}"
-        # Use source context for disambiguation — this lets context-dependent
-        # nicknames like Miko be recognized even when the utterance alone is ambiguous.
-        all_names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
-        # Names actually spoken in the current utterance — use source context for
-        # disambiguation so that context-dependent nicknames are still recognized.
-        # This preserves exactly the nickname spoken without requiring names from
-        # previous dialogue to appear in the current subtitle.
+        # Names in the current utterance with source context for disambiguation.
+        # This lets context-dependent nicknames like Miko be recognized.
         utterance_names = self.glossary.name_terms(ja, context=source_context)
+        # Also gather names mentioned in prior context — these are hints, not mandatory.
+        # They prevent garbled_name from rejecting a valid translation because a name
+        # was only mentioned in previous dialogue, not the current utterance.
+        context_names = []
+        if context:
+            context_names = self.glossary.name_terms(context, context="")
+        # all_names = utterance names + context-only names (for missing_names check)
+        all_names = list(utterance_names)
+        seen = {en for _, en in utterance_names}
+        for term, en in context_names:
+            if en not in seen:
+                all_names.append((term, en))
+                seen.add(en)
+        all_names = all_names[:MAX_TERMS]
         found = self.glossary.find(ja, context=source_context)
         extra = [term for term in found if term not in all_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
@@ -561,55 +571,48 @@ class Gemma4Translator:
                         truncation_retries += 1
 
                         # --- Context-aware truncation retry ---
-                        # Independently calculate token budgets for full and simplified prompts.
+                        # Independently calculate token budgets for each recovery strategy.
                         # Each budget accounts for: per-slot context, input tokens, output tokens,
                         # and a 256-token safety margin. Never submit max_tokens <= 0.
+                        #
+                        # Recovery order (least destructive first):
+                        #   1. Full prompt with increased output allowance
+                        #   2. Glossary-only prompt (keeps names, drops dialogue context)
+                        #   3. Simplified prompt (no glossary, no context)
 
                         simplified_input = ja_tokens + template_overhead
-                        # Simplified prompt budget: no glossary, no context
-                        simplified_output_budget = slot_context_size - simplified_input - 256
-                        # Full prompt budget: with glossary and context
-                        full_output_budget = slot_context_size - input_tokens - 256
+                        glossary_only_input = ja_tokens + glossary_tokens + template_overhead
 
-                        # Clamp to positive values
-                        simplified_output_budget = max(0, simplified_output_budget)
-                        full_output_budget = max(0, full_output_budget)
+                        # Output budgets for each strategy
+                        full_output_budget = max(0, slot_context_size - input_tokens - 256)
+                        glossary_output_budget = max(0, slot_context_size - glossary_only_input - 256)
+                        simplified_output_budget = max(0, slot_context_size - simplified_input - 256)
 
                         # Desired retry output: at least double the original, minimum 512
                         desired_output = max(self.cfg.max_tokens * 2, 512)
 
-                        # Decide which prompt to retry with
+                        # Select the least destructive strategy that fits a meaningful increase
                         retry_prompt = None
                         retry_max_tokens = 0
                         retry_strategy = ""
 
-                        # Prefer full prompt if it can fit a meaningful increase
+                        # 1. Full prompt: preserves everything (glossary + context)
                         if full_output_budget > self.cfg.max_tokens:
                             retry_max_tokens = min(desired_output, full_output_budget)
                             retry_prompt = prompt
                             retry_strategy = "full_increased_tokens"
-                        # Fall back to simplified prompt if it gives more output room
+                        # 2. Glossary-only: keeps names, drops dialogue context
+                        elif glossary_output_budget > self.cfg.max_tokens:
+                            retry_max_tokens = min(desired_output, glossary_output_budget)
+                            retry_prompt = build_prompt(ja, terms, "", self.cfg.style)
+                            retry_strategy = "glossary_only"
+                        # 3. Simplified: no glossary, no context — last resort
                         elif simplified_output_budget > self.cfg.max_tokens:
                             retry_max_tokens = min(desired_output, simplified_output_budget)
                             retry_prompt = build_prompt(ja, [], "", self.cfg.style)
                             retry_strategy = "simplified"
-                        # If neither fits better than original, try simplified with glossary only
-                        elif simplified_output_budget > 0:
-                            # Keep glossary terms for name accuracy, drop dialogue context
-                            glossary_only_input = ja_tokens + glossary_tokens + template_overhead
-                            glossary_output_budget = max(0, slot_context_size - glossary_only_input - 256)
-                            if glossary_output_budget > self.cfg.max_tokens:
-                                retry_max_tokens = min(desired_output, glossary_output_budget)
-                                glossary_only_prompt = build_prompt(ja, terms, "", self.cfg.style)
-                                retry_prompt = glossary_only_prompt
-                                retry_strategy = "glossary_only"
-                            elif simplified_output_budget > full_output_budget:
-                                # Simplified gives more room than full, even if not more than original
-                                retry_max_tokens = simplified_output_budget
-                                retry_prompt = build_prompt(ja, [], "", self.cfg.style)
-                                retry_strategy = "simplified_best_fit"
 
-                        # Only retry if we have a valid prompt and meaningful output allowance
+                        # Execute retry only if it meaningfully increases output allowance
                         if retry_prompt is not None and retry_max_tokens > self.cfg.max_tokens:
                             record_event("mt_truncation_retry", strategy=retry_strategy,
                                          max_tokens=retry_max_tokens)
@@ -617,16 +620,11 @@ class Gemma4Translator:
                             english, finish_reason = self._chat(
                                 retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_max_tokens
                             )
-                        elif retry_prompt is not None and retry_max_tokens > 0:
-                            # Retry with best available budget even if not larger
-                            record_event("mt_truncation_retry", strategy=retry_strategy,
-                                         max_tokens=retry_max_tokens, note="no_increase")
-                            increment_counter("mt_retries")
-                            english, finish_reason = self._chat(
-                                retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_max_tokens
-                            )
                         else:
-                            record_event("mt_truncation_failed", reason="context_budget")
+                            record_event("mt_truncation_failed", reason="no_viable_retry",
+                                         full_budget=full_output_budget,
+                                         glossary_budget=glossary_output_budget,
+                                         simplified_budget=simplified_output_budget)
                             increment_counter("mt_rejected")
                             return ""
 

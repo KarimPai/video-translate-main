@@ -318,6 +318,7 @@ def _main(resources: ExitStack) -> None:
     from .config import get_backend_config, resolve_model_identity
     from .registry import get_default_registry
     from .llama_server import LlamaServerError
+    from .asr.whisper_turbo import WhisperError
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
@@ -346,7 +347,7 @@ def _main(resources: ExitStack) -> None:
         asr = registry.create_backend("asr", asr_backend_name, asr_profile,
                                       context=stream_context.recognition_text(),
                                       **whisper_kwargs)
-    except (ValueError, LlamaServerError) as exc:
+    except (ValueError, LlamaServerError, WhisperError) as exc:
         # Expected configuration and model-file errors should be shown in the
         # GUI without an unhandled traceback. ExitStack still cleans resources.
         log.error("ASR backend '%s' failed to initialize: %s", asr_backend_name, exc)

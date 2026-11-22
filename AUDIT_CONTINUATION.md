@@ -60,3 +60,11 @@ Two `llama-server` processes found (PIDs 1720, 12012) — both are user-owned GU
 
 ## Exact next step
 Run the tests above. Then continue Phase 1 with `registry.py` plus the GUI/backend model switch (confirm the old translator/ASR `close()` completes before the replacement is constructed), then start Phase 2 at `mpv.py` `_seek_base` / `_jump`.
+
+## Session 3 — GitHub follow-up fixes (validation pending)
+
+- Startup spawn, log initialization and cancellation-watcher creation now have exception cleanup.
+- Health timeout reaps the loading child without permanently closing the server, enabling later retries.
+- Failed process termination keeps its handle for a subsequent cleanup attempt, and log handles close even on failure.
+- Added mocked tests for spawn errors, watcher failure, failed kill and timeout restart; added a test parsing the shipped example with PLaMo 8B enabled.
+- **Validation:** not run in this GitHub-only edit session. The 588 passing tests reported above belong to Session 2, before these changes. Re-run pytest, Ruff and a Windows process-lifecycle smoke test before deploying.

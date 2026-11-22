@@ -232,29 +232,39 @@ class LlamaServer:
             if self._closed:
                 raise LlamaServerError(f"{self.name} server is closed")
             self._stop_process()
-            self.port = _free_port()
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            rotate_log(self.log_path)
-            self._log_stream = self.log_path.open("ab")
-            command = [str(self.executable), *self.args, "--host", "127.0.0.1", "--port", str(self.port)]
-            log.info("Starting %s llama-server: %s", self.name, " ".join(command[1:]))
-            self.process = owned_popen(command, cwd=str(self.executable.parent), stdin=subprocess.DEVNULL,
-                                       stdout=self._log_stream, stderr=subprocess.STDOUT,
-                                       creationflags=hidden_console_flags())
-            process = self.process
-            # Join any old watcher before creating a new one
-            if self._cancel_thread is not None and self._cancel_thread.is_alive():
-                self._shutdown.set()
-                self._cancel_thread.join(timeout=2)
-                self._cancel_thread = None
-                self._shutdown.clear()
-            self._watcher_generation += 1
-            self._cancel_thread = threading.Thread(
-                target=self._watch_cancellation,
-                args=(self._watcher_generation,),
-                name=f"{self.name}-cancel", daemon=True,
-            )
-            self._cancel_thread.start()
+            # Process creation, log setup and watcher startup all need cleanup.
+            # The health-polling exception handler below cannot catch failures here.
+            try:
+                self.port = _free_port()
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                rotate_log(self.log_path)
+                self._log_stream = self.log_path.open("ab")
+                command = [str(self.executable), *self.args, "--host", "127.0.0.1", "--port", str(self.port)]
+                log.info("Starting %s llama-server: %s", self.name, " ".join(command[1:]))
+                self.process = owned_popen(command, cwd=str(self.executable.parent), stdin=subprocess.DEVNULL,
+                                           stdout=self._log_stream, stderr=subprocess.STDOUT,
+                                           creationflags=hidden_console_flags())
+                process = self.process
+                # Join any old watcher before creating a new one.
+                if self._cancel_thread is not None and self._cancel_thread.is_alive():
+                    self._shutdown.set()
+                    self._cancel_thread.join(timeout=2)
+                    self._cancel_thread = None
+                    self._shutdown.clear()
+                self._watcher_generation += 1
+                self._cancel_thread = threading.Thread(
+                    target=self._watch_cancellation,
+                    args=(self._watcher_generation,),
+                    name=f"{self.name}-cancel", daemon=True,
+                )
+                self._cancel_thread.start()
+            except BaseException:
+                # Already holding _lock: do not call _abort_startup here.
+                try:
+                    self._stop_process()
+                except Exception:
+                    log.exception("%s failed to clean up after an interrupted spawn", self.name)
+                raise
         deadline = time.monotonic() + self.startup_timeout_s
         try:
             while time.monotonic() < deadline:
@@ -268,7 +278,8 @@ class LlamaServer:
                 except httpx.HTTPError:
                     pass
                 time.sleep(0.1)
-            self.close()
+            # A health timeout is recoverable; the outer handler stops this
+            # child without permanently closing the server or HTTP client.
             raise LlamaServerError(f"{self.name} llama-server did not load within {self.startup_timeout_s:g}s. "
                                    + self.log_tail())
         except BaseException:
@@ -314,17 +325,29 @@ class LlamaServer:
             return f"See {self.log_path}."
 
     def _stop_process(self) -> None:
-        process, self.process = self.process, None
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
-        if self._log_stream is not None:
-            self._log_stream.close()
-            self._log_stream = None
+        # Never lose ownership of a process until its exit is observed.
+        # If termination fails, a later close()/start() can retry safely.
+        process = self.process
+        try:
+            if process is not None:
+                if process.poll() is None:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=3)
+                    except (subprocess.TimeoutExpired, OSError):
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=3)
+                if process.poll() is None:
+                    raise LlamaServerError(f"{self.name} llama-server did not exit after termination")
+                self.process = None
+        finally:
+            # A failed terminate/kill must not leave our log stream open.
+            if self._log_stream is not None:
+                try:
+                    self._log_stream.close()
+                finally:
+                    self._log_stream = None
 
     def reset_for_restart(self) -> None:
         """Clear the closed flag so start() can be called again.
@@ -358,9 +381,13 @@ class LlamaServer:
 
     def close(self) -> None:
         with self._lock:
-            if self._closed:
+            # Retained process references must remain terminable even after
+            # a previous close() attempt failed.
+            if self._closed and self.process is None and self._log_stream is None:
                 return
             self._closed = True
             self._shutdown.set()
-            self._stop_process()
-        self.client.close()
+            try:
+                self._stop_process()
+            finally:
+                self.client.close()

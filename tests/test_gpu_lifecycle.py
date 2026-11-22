@@ -95,6 +95,11 @@ def test_health_timeout_kills_child(make_server):
     (proc,) = make_server.spawned
     assert proc.terminated
     assert server.process is None
+    assert not server._closed, "health timeout must leave the server restartable"
+    server.client.get = lambda *_a, **_k: SimpleNamespace(status_code=200)
+    server.start()
+    assert len(make_server.spawned) == 2
+    assert make_server.spawned[-1].returncode is None
 
 
 def test_unexpected_error_while_waiting_kills_child(make_server):
@@ -154,3 +159,64 @@ def test_guard_allows_opt_in_and_other_programs(monkeypatch, tmp_path):
     monkeypatch.delenv("VIDEO_TRANSLATE_RUN_REAL_MODELS")
     proc = subprocess.run([sys.executable, "-c", "pass"], check=True)
     assert proc.returncode == 0
+
+
+def test_spawn_failure_closes_log_stream(make_server, monkeypatch):
+    server = make_server()
+    def fail_spawn(*_args, **_kwargs):
+        raise OSError("simulated Popen failure")
+    monkeypatch.setattr(ls, "owned_popen", fail_spawn)
+    with pytest.raises(OSError, match="simulated Popen failure"):
+        server.start()
+    assert server.process is None
+    assert server._log_stream is None
+    assert not server._closed
+
+
+def test_watcher_start_failure_reaps_spawned_child(make_server, monkeypatch):
+    server = make_server()
+    class BrokenThread:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def start(self):
+            raise RuntimeError("watcher failed")
+    monkeypatch.setattr(ls, "threading", SimpleNamespace(Thread=BrokenThread))
+    with pytest.raises(RuntimeError, match="watcher failed"):
+        server.start()
+    (proc,) = make_server.spawned
+    assert proc.terminated
+    assert server.process is None
+    assert server._log_stream is None
+
+
+def test_failed_termination_keeps_process_owned_for_retry(make_server, monkeypatch):
+    class StubbornProc(FakeProc):
+        failed_kill = False
+
+        def terminate(self):
+            self.terminated = True  # Simulate a terminate request being ignored.
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("llama-server", timeout)
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            if not self.failed_kill:
+                self.failed_kill = True
+                raise PermissionError("simulated kill failure")
+            self.returncode = 1
+
+    proc = StubbornProc()
+    server = make_server(get=lambda *_a, **_k: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(ls, "owned_popen", lambda *_a, **_k: proc)
+    server.start()
+
+    with pytest.raises(PermissionError, match="simulated kill failure"):
+        server.close()
+    assert server.process is proc, "failed termination must retain the child handle"
+    assert server._log_stream is None, "the log must close even when kill fails"
+    server.close()  # Repeated close must retry the remaining child.
+    assert server.process is None
+    assert proc.killed and proc.returncode is not None

@@ -564,3 +564,38 @@ model_path = "C:/models/plamo8b/plamo-3-translate-8b-Q3_K_M.gguf"
         prefs.sync()
         import shutil
         shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_documented_plamo8b_profile_loads_from_example(tmp_path):
+    """The shipped config example should work when the documented 8B profile is enabled.
+
+    Unlike the hermetic fixture tests, this inspects the *actual* config.example.toml.
+    """
+    from auto_translate.config import get_backend_config, load_config
+
+    example_path = Path(__file__).parent.parent / "config.example.toml"
+    example = example_path.read_text(encoding="utf-8")
+    assert 'translate_backend = "gemma4"' in example
+    example = example.replace('translate_backend = "gemma4"',
+                              'translate_backend = "plamo8b"', 1)
+    # Uncomment only the 8B block; identical keys exist under other profiles.
+    block = (
+        "# [translate.plamo8b]\n"
+        '# model_path = "models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"\n'
+        "# gpu_layers = -1\n"
+        "# context_size = 8192\n"
+        "# max_tokens = 512\n"
+        "# load_timeout_s = 300"
+    )
+    assert block in example, "Documented PLaMo 8B profile is missing or changed"
+    enabled_block = "\n".join(line.removeprefix("# ") for line in block.splitlines())
+    example = example.replace(block, enabled_block, 1)
+
+    enabled = tmp_path / "enabled-config-example.toml"
+    enabled.write_text(example, encoding="utf-8")
+    cfg = load_config(enabled)
+    assert cfg.models.translate_backend == "plamo8b"
+    effective = get_backend_config(cfg, "translate", "plamo8b")
+    assert effective["model_path"].endswith("plamo-3-translate-8b-Q3_K_M.gguf")
+    assert effective["gpu_layers"] == -1
+    assert effective["context_size"] == 8192

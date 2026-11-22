@@ -4,6 +4,7 @@ Tests backend switching, failure recovery, and resource cleanup.
 Runs against real models and servers on the development machine.
 """
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -11,12 +12,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+# These integration scripts launch real models. Opt in explicitly for pytest.
+# Direct `python tests/test_model_switching.py` invocation remains supported.
+__test__ = os.environ.get("VIDEO_TRANSLATE_RUN_REAL_MODELS") == "1"
+
 results = []
 
 def record(test_name: str, passed: bool, detail: str = ""):
     results.append({"test": test_name, "passed": passed, "detail": detail})
     status = "PASS" if passed else "FAIL"
     print(f"  [{status}] {test_name}" + (f" — {detail}" if detail else ""))
+    if not passed:
+        raise AssertionError(f"{test_name}: {detail}")
 
 def section(name: str):
     print(f"\n{'='*60}")

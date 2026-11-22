@@ -516,11 +516,13 @@ class Gemma4Translator:
                 all_names.append((term, en))
                 seen.add(en)
         all_names = all_names[:MAX_TERMS]
+        # Current speech takes precedence over optional context hints at the cap.
+        context_only_names = [name for name in all_names if name not in utterance_names]
         found = self.glossary.find(ja, context=source_context)
-        extra = [term for term in found if term not in all_names]
+        extra = [term for term in found if term not in utterance_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
         rest = [t for t in extra if t not in exact]
-        terms = all_names + exact + rest
+        terms = utterance_names + exact + rest + context_only_names
         return terms[:MAX_TERMS], all_names, utterance_names
 
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> dict:

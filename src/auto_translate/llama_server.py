@@ -75,7 +75,7 @@ def detect_device(executable: Path | None = None, cuda_device: int | None = None
                     creationflags=hidden_console_flags(),
                 )
                 if result.returncode == 0:
-                    devices = re.findall(r"^\\s+(\\w+\\d+):", result.stdout + result.stderr, re.MULTILINE)
+                    devices = re.findall(r"^\s+(\w+\d+):", result.stdout + result.stderr, re.MULTILINE)
                     if devices and requested not in devices:
                         raise LlamaServerError(
                             f"Requested CUDA device {requested} is unavailable; "

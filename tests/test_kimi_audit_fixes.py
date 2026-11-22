@@ -639,6 +639,102 @@ class TestPipelineGenerationFiltering:
 
 
 # ============================================================================
+# 6. PLaMo local model path discovery
+# ============================================================================
+
+class TestPlamoModelDiscovery:
+    """Local, model-free verification of PLaMo 2B / 8B path isolation."""
+
+    @staticmethod
+    def _models_dir(tmp_path, monkeypatch):
+        from auto_translate import registry
+
+        root = tmp_path / "project"
+        models = root / "models" / "plamo3"
+        models.mkdir(parents=True)
+        # Simulate a project checkout even if pytest runs from elsewhere.
+        monkeypatch.setattr(registry, "__file__", str(root / "src" / "auto_translate" / "registry.py"))
+        monkeypatch.chdir(root)
+        return models
+
+    def test_plamo_2b_found_without_configured_path(self, tmp_path, monkeypatch):
+        from auto_translate.registry import resolve_local_plamo_model_path
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        model = folder / "plamo-3-translate-2b-Q4_K_M.gguf"
+        model.write_bytes(b"GGUF")
+        assert resolve_local_plamo_model_path("plamo") == str(model.resolve())
+
+    def test_plamo_8b_never_used_for_2b(self, tmp_path, monkeypatch):
+        from auto_translate.registry import resolve_local_plamo_model_path
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        model = folder / "plamo-3-translate-8b-Q3_K_M.gguf"
+        model.write_bytes(b"GGUF")
+        assert resolve_local_plamo_model_path("plamo") == ""
+        assert resolve_local_plamo_model_path("plamo8b") == str(model.resolve())
+
+    def test_plamo_2b_never_used_for_8b(self, tmp_path, monkeypatch):
+        from auto_translate.registry import resolve_local_plamo_model_path
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        model = folder / "plamo-3-translate-2b-Q4_K_M.gguf"
+        model.write_bytes(b"GGUF")
+        assert resolve_local_plamo_model_path("plamo8b") == ""
+
+    def test_plamo_ambiguous_quantizations_require_explicit_path(self, tmp_path, monkeypatch):
+        from auto_translate.registry import resolve_local_plamo_model_path
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        (folder / "plamo-3-translate-2b-Q4_K_M.gguf").write_bytes(b"GGUF")
+        (folder / "plamo-3-translate-2b-Q8_0.gguf").write_bytes(b"GGUF")
+        with pytest.raises(ValueError, match=r"Multiple PLaMo 2B"):
+            resolve_local_plamo_model_path("plamo")
+
+    def test_plamo_explicit_path_is_never_overridden(self, tmp_path, monkeypatch):
+        from auto_translate.registry import resolve_local_plamo_model_path
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        (folder / "plamo-3-translate-2b-Q4_K_M.gguf").write_bytes(b"GGUF")
+        assert resolve_local_plamo_model_path("plamo", "/custom/selected.gguf") == "/custom/selected.gguf"
+
+    def test_plamo_factory_uses_locally_discovered_model(self, tmp_path, monkeypatch):
+        from auto_translate.registry import _plamo_translate_factory
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        model = folder / "plamo-3-translate-2b-Q4_K_M.gguf"
+        model.write_bytes(b"GGUF")
+        with patch("auto_translate.translate.plamo.PlamoTranslator") as factory:
+            _plamo_translate_factory({"model_path": ""}, gpu_layers=0)
+            assert factory.call_args.args[0].model_path == str(model.resolve())
+
+    def test_plamo_resolution_happens_before_budget_allocation(self, tmp_path, monkeypatch):
+        """A discovered model must reach _load_translator's effective profile."""
+        import importlib
+        from auto_translate.config import Config
+
+        folder = self._models_dir(tmp_path, monkeypatch)
+        model = folder / "plamo-3-translate-2b-Q4_K_M.gguf"
+        model.write_bytes(b"GGUF")
+        config = Config()
+        config.models.translate_backend = "plamo"
+        config.translate_profiles.pop("plamo", None)
+        budget = MagicMock()
+        budget.free = None  # Avoid hardware-dependent offload estimation.
+        translator = MagicMock()
+        translator.gpu_layers = None
+        registry = MagicMock()
+        registry.create_backend.return_value = translator
+        app = importlib.import_module("auto_translate.__main__")
+        result = app._load_translator(config, MagicMock(), MagicMock(),
+                                      budget, MagicMock(), registry)
+        assert result is translator
+        profile = registry.create_backend.call_args.args[2]
+        assert profile["model_path"] == str(model.resolve())
+        assert profile["cuda_device"] == 0  # Keep RTX 3070 CUDA0 default.
+
+
+# ============================================================================
 # Test runner
 # ============================================================================
 

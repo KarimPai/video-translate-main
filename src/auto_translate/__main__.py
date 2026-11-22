@@ -70,6 +70,8 @@ def _main(resources: ExitStack) -> None:
     diagnostics_option.add_argument("--no-diagnostics", dest="diagnostics", action="store_false")
     parser.add_argument("--list-backends", action="store_true",
                         help="List available ASR and translation backends")
+    parser.add_argument("--list-models", action="store_true",
+                        help="List installed, structurally valid local GGUF and Whisper CT2 models")
     parser.add_argument("--asr-backend", type=str,
                         help="ASR backend name (e.g. haas, qwen3-asr)")
     parser.add_argument("--translate-backend", type=str,
@@ -95,6 +97,21 @@ def _main(resources: ExitStack) -> None:
                 if caps:
                     print(f"    {name}: {caps.description} (runtime={caps.runtime}, device={caps.device})")
         print()
+        return
+
+    if args.list_models:
+        from .model_discovery import inventory, models_root
+        model_dir = models_root()
+        ggufs, whisper_folders = inventory(model_dir)
+        print(f"Local models directory: {model_dir}", flush=True)
+        print(f"Compatible GGUF files ({len(ggufs)}):", flush=True)
+        for path in ggufs:
+            print(f"  {path}", flush=True)
+        print(f"Whisper CTranslate2 directories ({len(whisper_folders)}):", flush=True)
+        for path in whisper_folders:
+            print(f"  {path}", flush=True)
+        if not ggufs and not whisper_folders:
+            print("No compatible models found. Check model files and directory structure.", flush=True)
         return
 
     from urllib.parse import urlsplit

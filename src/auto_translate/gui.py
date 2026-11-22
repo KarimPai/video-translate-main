@@ -880,6 +880,13 @@ class VideoTranslateWindow(QMainWindow):
                 self._session_ready()
             elif (event := parse_event(line.strip())) is not None:
                 self._on_player_event(event)
+            elif (line.startswith("Error: ASR backend '")
+                  or line.startswith("Error: Translation backend '")):
+                # Preserve actionable backend initialization failures in the
+                # GUI status, not only in the console log.
+                self._session_error = line.strip()
+                self.status.setText(self._session_error)
+                self._write_console(line + "\n")
             else:
                 self._write_console(line + "\n")
         # Preserve partial multibyte chunks across Qt readyRead signals.

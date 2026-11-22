@@ -121,6 +121,112 @@ def test_qwen3_rejects_second_truncated_response():
         asr._transcribe_impl(np.zeros(16000, dtype=np.float32), timeout=10)
 
 
+def _make_qwen3_for_truncation_test():
+    """Create a model-free Qwen instance with the normal retry state."""
+    from collections import deque
+    from auto_translate.config import AsrConfig
+
+    asr = Qwen3ASR.__new__(Qwen3ASR)
+    asr.cfg = AsrConfig(response_timeout_s=15)
+    asr._generation = 0
+    asr._inference_lock = threading.Lock()
+    asr._state_lock = threading.Lock()
+    asr._closed = False
+    asr._failures = 0
+    asr._restarts = 0
+    asr._recent = deque(maxlen=4)
+    asr._accepted_keys = deque(maxlen=32)
+    asr.last_rejection = None
+    asr.last_raw_transcript = ""
+    asr.last_detected_language = "und"
+    return asr
+
+
+def test_qwen3_utterance_truncation_does_not_kill_session():
+    """An isolated length error is not a permanent ASR/server failure."""
+    from auto_translate.asr.qwen3_asr import Qwen3ASRTruncationError
+
+    asr = _make_qwen3_for_truncation_test()
+    with patch.object(asr, "_transcribe_impl", side_effect=Qwen3ASRTruncationError(
+            "Qwen3-ASR output truncated at token limit")) as decode, \
+         patch.object(asr, "_restart", side_effect=AssertionError("unexpected restart")):
+        assert asr.transcribe(np.zeros(16000, dtype=np.float32)) == ""
+    decode.assert_called_once()
+    assert asr.last_rejection == "token_limit"
+    assert asr.last_detected_language == "und"
+    assert asr._failures == 0
+
+
+def test_qwen3_long_truncation_recovers_two_valid_short_windows():
+    """Two complete Japanese decodes can recover a long truncated segment."""
+    from auto_translate.asr.qwen3_asr import Qwen3ASRTruncationError
+
+    asr = _make_qwen3_for_truncation_test()
+    calls = []
+    def decode(audio, *, probe=False, timeout=None, max_tokens=256, **kwargs):
+        calls.append((len(audio), max_tokens))
+        if len(calls) == 1:
+            raise Qwen3ASRTruncationError("truncated")
+        asr.last_detected_language = "ja"
+        return "前半" if len(calls) == 2 else "後半"
+
+    with patch.object(asr, "_transcribe_impl", side_effect=decode), \
+         patch("auto_translate.asr.qwen3_asr.transcript_problem", return_value=None), \
+         patch.object(asr, "_restart", side_effect=AssertionError("unexpected restart")):
+        result = asr.transcribe(np.zeros(8 * 16000, dtype=np.float32))
+    assert result == "前半後半"
+    assert len(calls) == 3
+    assert calls[0] == (8 * 16000, 256)
+    assert calls[1][1] == calls[2][1] == 512
+    assert calls[1][0] + calls[2][0] == 8 * 16000
+    assert asr.last_detected_language == "ja"
+    assert asr.last_rejection is None
+
+
+def test_qwen3_truncation_recovery_rejects_partial_windows():
+    """Do not publish partial transcripts when one recovery window fails."""
+    from auto_translate.asr.qwen3_asr import Qwen3ASRTruncationError
+
+    asr = _make_qwen3_for_truncation_test()
+    calls = []
+    def decode(audio, *, probe=False, timeout=None, max_tokens=256, **kwargs):
+        calls.append(max_tokens)
+        if len(calls) in (1, 3):
+            raise Qwen3ASRTruncationError("truncated")
+        asr.last_detected_language = "ja"
+        return "前半"
+
+    with patch.object(asr, "_transcribe_impl", side_effect=decode), \
+         patch("auto_translate.asr.qwen3_asr.transcript_problem", return_value=None), \
+         patch.object(asr, "_restart", side_effect=AssertionError("unexpected restart")):
+        assert asr.transcribe(np.zeros(8 * 16000, dtype=np.float32)) == ""
+    assert calls == [256, 512, 512]
+    assert asr.last_rejection == "token_limit"
+    assert asr.last_raw_transcript == ""
+
+
+def test_qwen3_truncation_recovery_rejects_mixed_languages():
+    """A combined transcript must not carry a misleading single-language tag."""
+    from auto_translate.asr.qwen3_asr import Qwen3ASRTruncationError
+
+    asr = _make_qwen3_for_truncation_test()
+    calls = []
+    def decode(audio, *, probe=False, timeout=None, max_tokens=256, **kwargs):
+        calls.append(max_tokens)
+        if len(calls) == 1:
+            raise Qwen3ASRTruncationError("truncated")
+        asr.last_detected_language = "ja" if len(calls) == 2 else "en"
+        return "こんにちは" if len(calls) == 2 else "hello"
+
+    with patch.object(asr, "_transcribe_impl", side_effect=decode), \
+         patch("auto_translate.asr.qwen3_asr.transcript_problem", return_value=None), \
+         patch.object(asr, "_restart", side_effect=AssertionError("unexpected restart")):
+        assert asr.transcribe(np.zeros(8 * 16000, dtype=np.float32)) == ""
+    assert asr.last_rejection == "token_limit"
+    assert asr.last_detected_language == "und"
+
+
+
 def test_gui_control_close_does_not_mark_natural_end_as_stopped():
     pytest.importorskip("PySide6")
     from auto_translate.gui import VideoTranslateWindow

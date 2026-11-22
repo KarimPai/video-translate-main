@@ -140,3 +140,47 @@ def test_gui_control_close_does_not_mark_natural_end_as_stopped():
     assert fake._control_lost is True
     fake.stop_translation.assert_not_called()
     assert "waiting for backend exit" in status.setText.call_args.args[0]
+
+
+def test_expired_cached_live_subtitle_releases_pending_coverage():
+    import queue
+
+    from auto_translate.pipeline import run_translate
+    from auto_translate.types import Subtitle
+
+    incoming, outgoing = queue.Queue(), queue.Queue()
+    completed = []
+    incoming.put(Subtitle(0.0, 1.0, "こんにちは", "Hello.",
+                          generation=0, speech_id=42))
+    incoming.put(None)
+    run_translate(
+        None, 0, incoming, outgoing, live=True,
+        playback_position=lambda: 20.0,
+        complete_speech_cb=lambda start, end, generation, *, speech_id:
+            completed.append((start, end, generation, speech_id)),
+    )
+    assert completed == [(0.0, 1.0, 0, 42)]
+
+
+@pytest.mark.parametrize("backend", [Gemma4Translator, HymtTranslator])
+def test_oversized_translation_prompt_uses_simplified_request(backend):
+    from auto_translate.config import TranslateConfig
+
+    translator = backend.__new__(backend)
+    translator._relief = threading.Event()
+    translator._lock = threading.Lock()
+    translator._closed = False
+    translator.server = SimpleNamespace(alive=lambda: True)
+    translator.cfg = TranslateConfig(context_size=512, max_tokens=128)
+    translator._context = lambda history: "文脈" * 150
+    translator._terms_for = lambda ja, context: ([], [], [])
+    prompts = []
+    def chat(prompt, *, timeout, **kwargs):
+        prompts.append(prompt)
+        return ("Hello.", "stop")
+    translator._chat = chat
+
+    output = translator.translate("こんにちは", [])
+    assert output == "Hello."
+    assert len(prompts) == 1
+    assert "文脈" not in str(prompts[0])

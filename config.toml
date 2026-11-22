@@ -172,13 +172,6 @@ background_opacity = 0.3
 vod_pause_threshold_s = 0.5
 vod_resume_threshold_s = 8.0
 
-[holodex]
-# Optional: a Holodex API key (holodex.net > Account Settings) adds the
-# video's tagged collab cast, so the right names are hinted to the translator.
-# The HOLODEX_API_KEY environment variable also works.
-api_key = ""
-timeout_s = 5.0
-
 [safe_playback]
 enabled = true
 max_inference_concurrency = 2

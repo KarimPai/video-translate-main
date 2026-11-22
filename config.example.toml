@@ -171,11 +171,7 @@ max_cue_lines = 2
 max_subtitle_rows = 4
 background_opacity = 0.3
 vod_pause_threshold_s = 0.5
-vod_resume_threshold_s = 3.0
-
-[holodex]
-api_key = ""
-timeout_s = 5.0
+vod_resume_threshold_s = 8.0
 
 [safe_playback]
 enabled = true

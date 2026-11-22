@@ -51,14 +51,12 @@ def describe_stream(metadata: dict[str, Any] | None, glossary: Glossary | None =
     host_line = ""
     cast: list[str] = []
     if glossary is not None and glossary.talents:
-        # Holodex tags are curated, so they outrank names scraped from text.
-        hosts = glossary.talents_in(channel) or glossary.talents_in("\n".join(meta.get("holodex_channel") or []))
+        hosts = glossary.talents_in(channel)
         if hosts:
             host = hosts[0]
             host_line = glossary.host_line(host)
         sources = (title, " ".join(meta.get("tags") or []), str(meta.get("description") or ""))
-        tagged = [name for entry in meta.get("holodex_mentions") or [] for name in glossary.talents_in(entry)]
-        for name in tagged + glossary.talents_in("\n".join(sources)):
+        for name in glossary.talents_in("\n".join(sources)):
             if name != host and name not in cast and len(cast) < MAX_CAST:
                 cast.append(name)
     chapters = []

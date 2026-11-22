@@ -148,10 +148,15 @@ def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: s
     return {"messages": messages}
 
 
-def missing_names(english: str, names: list[tuple[str, str]]) -> list[str]:
-    """Find names from the glossary that are missing in the translation."""
+def missing_names(english: str, names: list[str]) -> list[str]:
+    """Find names that are missing in the translation.
+
+    Args:
+        english: the translated English text.
+        names: English name strings to check for (e.g. ["Miko", "Subaru"]).
+    """
     missing = []
-    for _, name in names:
+    for name in names:
         tokens = re.split(r"[- ]+", name)
         pattern = r"(?<!\w)" + r"[\s\-‐‑–—]+".join(re.escape(token) for token in tokens) + r"(?!\w)"
         if not re.search(pattern, english, re.IGNORECASE):
@@ -540,7 +545,7 @@ class Gemma4Translator:
                 if not self.server.alive():
                     self._recover("server exited")
                 context = self._context(history)
-                terms, names, utterance_names = self._terms_for(ja, context)
+                terms, _all_names, utterance_names = self._terms_for(ja, context)
                 prompt = build_prompt(ja, terms, context, self.cfg.style)
 
                 started = time.monotonic()
@@ -665,7 +670,7 @@ class Gemma4Translator:
                     english, _ = self._chat(minimal, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
 
-                # Retry 2: untranslated Japanese
+                # Retry 2: untranslated Japanese — try deterministically
                 if retries_left > 0 and english:
                     output_issue = english_output_issue(english)
                     if output_issue == "untranslated_japanese":
@@ -674,14 +679,17 @@ class Gemma4Translator:
                         minimal = build_prompt(ja, [], "")
                         retries_left -= 1
                         increment_counter("mt_retries")
-                        candidate, _ = self._chat(minimal, timeout=self.cfg.timeout_s, temperature=0.2)
+                        candidate, _ = self._chat(minimal, timeout=self.cfg.timeout_s, temperature=0.0)
                         cleaned = clean_output(candidate)
                         if cleaned and not english_output_issue(cleaned):
                             english = cleaned
 
                 # Retry 3: missing or garbled names
+                # Only check names actually spoken in the current utterance.
+                # Context-only names must not trigger name-correction retries.
                 output_issue = english_output_issue(english)
-                missing = missing_names(english, names)
+                utterance_name_list = [en for _, en in utterance_names]
+                missing = missing_names(english, utterance_name_list)
                 if not self._closed and retries_left > 0 and (output_issue or missing):
                     if output_issue:
                         record_event("mt_rejected", reason=output_issue, retry=True)
@@ -695,7 +703,7 @@ class Gemma4Translator:
                             record_event("mt_name_retry", names=missing)
                         candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
                         candidates.append(clean_output(candidate))
-                    english = self._best(candidates, names, utterance_names=[en for _, en in utterance_names])
+                    english = self._best(candidates, utterance_name_list)
 
                 retry_count = self._MAX_RETRIES - retries_left
                 record_event(
@@ -712,18 +720,19 @@ class Gemma4Translator:
                 raise
 
     @staticmethod
-    def _best(candidates: list[str], names: list[tuple[str, str]],
-              *, utterance_names: list[str] | None = None) -> str:
+    def _best(candidates: list[str], names: list[str]) -> str:
         """Prefer valid output, then correct names; an omitted name beats a wrong one.
 
-        Only names explicitly mentioned in the current utterance can trigger
-        garbled rejection. Context-only names are hints — missing them is fine.
+        Args:
+            candidates: list of translation candidates.
+            names: English name strings actually spoken in the current utterance.
+                Context-only names must not be included — they are hints, not mandatory.
         """
         scored = []
         for index, text in enumerate(candidates):
             missing = missing_names(text, names)
-            present = [en for _, en in names if en not in missing]
-            garbled = garbled_name(text, missing, present, utterance_names=utterance_names)
+            present = [n for n in names if n not in missing]
+            garbled = garbled_name(text, missing, present, utterance_names=names)
             scored.append((english_output_issue(text) is not None, garbled,
                            len(missing), index, text, missing))
         issue, garbled, _, _, text, missing = min(scored)
@@ -732,7 +741,7 @@ class Gemma4Translator:
             if missing:
                 record_event("mt_name_rejected", names=missing)
             return ""
-        if garbled and utterance_names is not None:
+        if garbled:
             increment_counter("mt_rejected")
             if missing:
                 record_event("mt_name_rejected", names=missing)

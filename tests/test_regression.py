@@ -3559,12 +3559,11 @@ class TestGarbledNameFalsePositives:
     def test_context_only_name_not_rejected(self):
         """Context-only names should not cause garbled rejection in _best()."""
         from auto_translate.translate.plamo import PlamoTranslator
-        # "Subaru" is a context-only name (not in utterance_names)
-        # "Sure" appears in the translation — should NOT be rejected
+        # With the new signature, names only contains utterance names.
+        # Context-only names are not passed to _best() at all.
         result = PlamoTranslator._best(
             ["Sure, I understand."],
-            names=[("すばる", "Subaru")],
-            utterance_names=[]  # No utterance names — Subaru is context-only
+            names=[]  # No utterance names — Subaru is context-only, not passed
         )
         assert result == "Sure, I understand.", f"Valid translation rejected: '{result}'"
 
@@ -3626,8 +3625,7 @@ class TestGarbledNameFalsePositives:
         # "Subaruu" is clearly garbled and Subaru is an utterance name
         result = PlamoTranslator._best(
             ["Hello Subaruu!"],
-            names=[("すばる", "Subaru")],
-            utterance_names=["Subaru"]
+            names=["Subaru"]  # Subaru is spoken in the utterance
         )
         assert result == "", f"Garbled utterance name should be rejected, got: '{result}'"
 
@@ -3671,11 +3669,10 @@ class TestGarbledNameFalsePositives:
         # The key fix is in _terms_for: using source_context instead of empty context
         # for utterance_names. This test verifies the _best() method handles context-only names.
         from auto_translate.translate.plamo import PlamoTranslator
-        # Even if Miko is not in utterance_names, a valid translation should survive
+        # Miko is spoken in the utterance, so it's in the names list
         result = PlamoTranslator._best(
             ["Miko is here!"],
-            names=[("みこ", "Miko")],
-            utterance_names=["Miko"]  # Miko IS in utterance_names
+            names=["Miko"]  # Miko IS spoken in the utterance
         )
         assert result == "Miko is here!", f"Valid translation with Miko rejected: '{result}'"
 
@@ -3696,11 +3693,10 @@ class TestGarbledNameFalsePositives:
     def test_valid_translation_survives_minor_name_irregularities(self):
         """Valid dialogue should not be discarded for context-only name omission."""
         from auto_translate.translate.plamo import PlamoTranslator
-        # Translation is valid; context-only name missing should not reject it
+        # Context-only names are not passed to _best() — only utterance names
         result = PlamoTranslator._best(
             ["I'm going to the store."],
-            names=[("すばる", "Subaru")],  # Subaru is context-only
-            utterance_names=[]  # No names in current utterance
+            names=[]  # No names spoken in current utterance
         )
         assert result == "I'm going to the store.", f"Valid translation rejected: '{result}'"
 
@@ -3710,18 +3706,17 @@ class TestGarbledNameFalsePositives:
         # Empty output should be rejected
         result = PlamoTranslator._best(
             [""],
-            names=[],
-            utterance_names=[]
+            names=[]
         )
         assert result == "", f"Empty output should be rejected, got: '{result}'"
 
     def test_sure_not_dropped_because_of_subaru(self):
         """'Sure, I understand.' must not be dropped because of Subaru in glossary."""
         from auto_translate.translate.plamo import PlamoTranslator
+        # Subaru is context-only, not in utterance — not passed to _best()
         result = PlamoTranslator._best(
             ["Sure, I understand."],
-            names=[("すばる", "Subaru")],
-            utterance_names=[]  # Subaru is context-only, not in utterance
+            names=[]  # No names spoken in current utterance
         )
         assert result == "Sure, I understand.", f"Valid translation rejected: '{result}'"
 
@@ -4093,12 +4088,11 @@ class TestGlossaryNicknameMatching:
         This test verifies the _best() method correctly handles Miko in utterance_names.
         """
         from auto_translate.translate.plamo import PlamoTranslator
-        # When Miko is properly in utterance_names (from _terms_for fix),
+        # When Miko is in the names list (spoken in utterance),
         # a garbled Miko should be rejected
         result = PlamoTranslator._best(
             ["Mikoo is here!"],
-            names=[("みこ", "Miko")],
-            utterance_names=["Miko"]  # Miko IS in utterance_names
+            names=["Miko"]  # Miko IS spoken in the utterance
         )
         # "Mikoo" is garbled Miko — should be rejected
         assert result == "", f"Garbled Miko should be rejected, got: '{result}'"
@@ -4106,10 +4100,10 @@ class TestGlossaryNicknameMatching:
     def test_miko_without_context_not_required(self):
         """Miko without context should not cause rejection of valid translation."""
         from auto_translate.translate.plamo import PlamoTranslator
+        # Miko not in current utterance — not passed to _best()
         result = PlamoTranslator._best(
             ["Hello everyone!"],
-            names=[("みこ", "Miko")],
-            utterance_names=[]  # Miko not in current utterance
+            names=[]  # No names spoken in current utterance
         )
         assert result == "Hello everyone!", f"Valid translation rejected: '{result}'"
 
@@ -4140,10 +4134,10 @@ class TestGlossaryNicknameMatching:
         # matsuri is ambiguous (festival vs person), but with context it should be recognized
         # The key test: it should not cause rejection of valid translations
         from auto_translate.translate.plamo import PlamoTranslator
+        # Matsuri not in current utterance — not passed to _best()
         result = PlamoTranslator._best(
             ["Hello everyone!"],
-            names=[("まつり", "Matsuri")],
-            utterance_names=[]  # Not in current utterance
+            names=[]  # No names spoken in current utterance
         )
         assert result == "Hello everyone!", f"Valid translation rejected: '{result}'"
 
@@ -4530,12 +4524,11 @@ class TestGlossaryNameDistinction:
         """A context-only name should not cause garbled rejection of valid translation."""
         from auto_translate.translate.gemma4 import Gemma4Translator
 
-        # "Subaru" is in all_names (from context) but not in utterance_names
+        # Context-only names are not passed to _best() — only utterance names
         # "Sure" in the translation should not be treated as garbled Subaru
         result = Gemma4Translator._best(
             ["Sure, I understand."],
-            names=[("すばる", "Subaru")],  # all_names includes Subaru from context
-            utterance_names=[]  # but not in current utterance
+            names=[]  # No names spoken in current utterance
         )
         assert result == "Sure, I understand.", (
             f"Valid translation rejected because of context-only name: '{result}'"

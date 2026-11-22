@@ -377,6 +377,7 @@ class TestCudaDeviceSelection:
 
         translator = Gemma4Translator.__new__(Gemma4Translator)
         translator.cfg = TranslateConfig(cuda_device=0)
+        translator.model = Path("/fake/gemma.gguf")
         translator.gpu_layers = 3
         translator.layer_count = 5
         translator.executable = Path("/fake/llama-server")

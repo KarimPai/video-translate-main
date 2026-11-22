@@ -529,6 +529,49 @@ def _gemma4_translate_factory(config: Any, **kwargs: Any) -> Any:
     return Gemma4Translator(config, glossary, stream=stream, gpu_layers=gpu_layers)
 
 
+def resolve_local_plamo_model_path(backend_name: str, configured_path: str = "") -> str:
+    """Find an installed PLaMo GGUF only when no model was configured.
+
+    Keep 2B ('plamo') and 8B ('plamo8b') isolated. Never choose a random
+    quantization when multiple matching files are installed, and never
+    override a user-selected path (including an invalid one).
+    """
+    import re
+    from pathlib import Path
+
+    if configured_path and configured_path.strip():
+        return configured_path
+    size = {"plamo": "2", "plamo8b": "8"}.get(backend_name)
+    if size is None:
+        return configured_path or ""
+
+    project_models = Path(__file__).resolve().parents[2] / "models"
+    roots = (project_models, Path.cwd() / "models")
+    candidates: set[Path] = set()
+    model_size = re.compile(rf"(?:^|[-_.]){size}b(?:[-_.]|$)")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in ("*.gguf", "*.GGUF"):
+            for path in root.rglob(pattern):
+                name = path.name.casefold()
+                if ("plamo" in name and "translate" in name
+                        and model_size.search(name) and path.is_file()):
+                    candidates.add(path.resolve())
+
+    matches = sorted(candidates)
+    if len(matches) == 1:
+        logger.info("Found PLaMo %sB translation model: %s", size, matches[0])
+        return str(matches[0])
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple PLaMo {size}B GGUF models found; specify "
+            f"[translate.{backend_name}] model_path explicitly: "
+            + ", ".join(str(path) for path in matches)
+        )
+    return ""
+
+
 def _plamo_translate_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for PLaMo 3 Translate translation.
 
@@ -545,7 +588,11 @@ def _plamo_translate_factory(config: Any, **kwargs: Any) -> Any:
         if "model_path" not in config:
             config["model_path"] = ""
         config = TranslateConfig(**config)
-    # Validate PLaMo model is configured before attempting to load it
+    # Resolve installed PLaMo 2B without borrowing Gemma or PLaMo 8B paths.
+    resolved = resolve_local_plamo_model_path("plamo", config.model_path)
+    if resolved != config.model_path:
+        from dataclasses import replace
+        config = replace(config, model_path=resolved)
     if not config.model_path or not config.model_path.strip():
         raise ValueError(
             "PLaMo translation backend selected but no PLaMo model is configured. "
@@ -603,7 +650,11 @@ def _plamo8b_translate_factory(config: Any, **kwargs: Any) -> Any:
         if "model_path" not in config:
             config["model_path"] = ""
         config = TranslateConfig(**config)
-    # Validate PLaMo 8B model is configured before attempting to load it
+    # Resolve installed PLaMo 8B without borrowing PLaMo 2B paths.
+    resolved = resolve_local_plamo_model_path("plamo8b", config.model_path)
+    if resolved != config.model_path:
+        from dataclasses import replace
+        config = replace(config, model_path=resolved)
     if not config.model_path or not config.model_path.strip():
         raise ValueError(
             "PLaMo 8B translation backend selected but no PLaMo 8B model is configured. "

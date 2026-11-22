@@ -712,11 +712,11 @@ class VideoTranslateWindow(QMainWindow):
         self._pending_seek_target = None
         self._update_seek_buttons()
         if not self._control_lost and not self._stopping:
+            # The socket also closes during normal VOD completion. Do not mark
+            # this as a user stop; let QProcess.finished determine success/failure.
             self._control_lost = True
-            self.status.setText("Seek channel lost. See Console.")
-            self._write_console("GUI: control channel lost. Stopping translation.\n")
-
-            self.stop_translation()
+            self.status.setText("Player controls disconnected; waiting for backend exit.")
+            self._write_console("GUI: control channel closed; awaiting backend exit status.\n")
 
     def _poll_control(self):
         # Nonblocking sockets keep Qt responsive and reuse the packaged Qt runtime.

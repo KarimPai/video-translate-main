@@ -284,13 +284,6 @@ def _main(resources: ExitStack) -> None:
     budget.operation = gate.operation
     glossary = Glossary.load(Path(cfg.translate.glossary))
     metadata = source.timeline
-    holodex_key = cfg.holodex.api_key or os.getenv("HOLODEX_API_KEY", "")
-    if holodex_key and metadata and metadata.get("video_id"):
-        from .holodex import fetch_cast
-        cast = fetch_cast(metadata["video_id"], holodex_key, cfg.holodex.timeout_s)
-        if cast:
-            log.info("Holodex: %d tagged collab name(s)", len(cast["mentions"]))
-            metadata = dict(metadata, holodex_channel=cast["channel"], holodex_mentions=cast["mentions"])
     meta = metadata or {}
     glossary = glossary.for_stream("\n".join((str(meta.get("title") or ""),
                                               " ".join(map(str, meta.get("tags") or [])))))

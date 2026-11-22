@@ -256,20 +256,35 @@ class LlamaServer:
             )
             self._cancel_thread.start()
         deadline = time.monotonic() + self.startup_timeout_s
-        while time.monotonic() < deadline:
-            check_running()
-            if process.poll() is not None:
-                raise LlamaServerError(f"{self.name} llama-server exited during startup "
-                                       f"(code {process.returncode}). {self.log_tail()}")
-            try:
-                if self.client.get(self.base_url + "/health", timeout=0.5).status_code == 200:
-                    return
-            except httpx.HTTPError:
-                pass
-            time.sleep(0.1)
-        self.close()
-        raise LlamaServerError(f"{self.name} llama-server did not load within {self.startup_timeout_s:g}s. "
-                               + self.log_tail())
+        try:
+            while time.monotonic() < deadline:
+                check_running()
+                if process.poll() is not None:
+                    raise LlamaServerError(f"{self.name} llama-server exited during startup "
+                                           f"(code {process.returncode}). {self.log_tail()}")
+                try:
+                    if self.client.get(self.base_url + "/health", timeout=0.5).status_code == 200:
+                        return
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.1)
+            self.close()
+            raise LlamaServerError(f"{self.name} llama-server did not load within {self.startup_timeout_s:g}s. "
+                                   + self.log_tail())
+        except BaseException:
+            # Cancellation (CancelledError), KeyboardInterrupt or any unexpected
+            # error while waiting for /health must never leave a loading child
+            # holding VRAM. Only reap the child this call started.
+            self._abort_startup(process)
+            raise
+
+    def _abort_startup(self, process: subprocess.Popen) -> None:
+        with self._lock:
+            if self.process is process:
+                try:
+                    self._stop_process()
+                except Exception:
+                    log.exception("%s llama-server cleanup after failed startup raised", self.name)
 
     def alive(self) -> bool:
         process = self.process

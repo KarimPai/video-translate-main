@@ -10,6 +10,53 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+_REPO_CONFIG = (Path(__file__).parent.parent / "config.toml").resolve()
+
+# Hermetic stand-in for the user's real config.toml. The real file may disable or
+# rename local translation profiles, so ordinary profile/merge tests must never
+# depend on it. Nothing here touches the real file or any model on disk.
+_HERMETIC_TOML = """
+[models]
+asr_backend = "haas"
+translate_backend = "gemma4"
+
+[translate]
+model_path = "models/gemma4/gemma-4-E4B-it-Q4_K_M.gguf"
+gpu_layers = 42
+context_size = 4096
+
+[translate.gemma4]
+model_path = "models/gemma4/gemma-4-E4B-it-Q4_K_M.gguf"
+
+[translate.plamo]
+model_path = "models/plamo3/plamo-3-translate-2b-Q4_K_M.gguf"
+gpu_layers = -1
+context_size = 8192
+
+[translate.plamo8b]
+model_path = "models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"
+gpu_layers = -1
+context_size = 8192
+"""
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_repo_config(monkeypatch, tmp_path):
+    """Redirect load_config(<repo>/config.toml) to a temporary, known profile set."""
+    import auto_translate.config as config_module
+
+    hermetic = tmp_path / "hermetic-config.toml"
+    hermetic.write_text(_HERMETIC_TOML, encoding="utf-8")
+    real_load = config_module.load_config
+
+    def load_config(path=None, *args, **kwargs):
+        if path is not None and Path(path).resolve() == _REPO_CONFIG:
+            path = hermetic
+        return real_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(config_module, "load_config", load_config)
+
+
 
 # ====================================================================
 # 1. Backend registration tests
@@ -234,10 +281,15 @@ def test_plamo8b_explicit_override_precedence():
 # ====================================================================
 
 
-def test_plamo8b_factory_raises_without_model():
+def test_plamo8b_factory_raises_without_model(monkeypatch):
     """Test that plamo8b factory raises clear error without model."""
     from auto_translate.registry import _plamo8b_translate_factory
 
+    # Prevent auto-discovery from finding a real model on disk.
+    monkeypatch.setattr(
+        "auto_translate.registry.resolve_local_plamo_model_path",
+        lambda backend, path: "",
+    )
     with pytest.raises(ValueError, match="PLaMo 8B|plamo"):
         _plamo8b_translate_factory({})
 

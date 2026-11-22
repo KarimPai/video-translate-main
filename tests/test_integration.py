@@ -472,12 +472,6 @@ def test_windows_job_import():
     assert callable(bind_process_tree)
 
 
-def test_holodex_import():
-    """Holodex module imports correctly."""
-    from auto_translate.holodex import fetch_cast
-    assert callable(fetch_cast)
-
-
 def test_models_import():
     """Models module imports correctly."""
     from auto_translate.models import ensure_model

@@ -41,3 +41,15 @@ Thumbs.db
 
 # Config with sensitive data
 config.toml
+
+# Cookies and browser data
+cookies.txt
+
+# Video fragments and test media
+*.mp4
+
+# PyTorch model caches and unrelated assets
+assets/
+
+# Agent workspace
+.junie/

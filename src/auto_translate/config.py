@@ -517,8 +517,13 @@ def load_config(path: Path) -> Config:
     asr_section = data.get("asr", {})
     for key in list(asr_section.keys()):
         if key not in {f.name for f in fields(AsrConfig)}:
-            # This is a backend profile subtable (e.g. "qwen3-asr")
-            asr_profiles[key] = asr_section.pop(key)
+            value = asr_section.pop(key)
+            if not isinstance(value, dict):
+                logger.warning("Ignoring unknown [asr] setting %s (possible typo)", key)
+            else:
+                if key not in {"haas", "qwen3-asr", "whisper"}:
+                    logger.warning("Unregistered ASR backend profile [asr.%s]", key)
+                asr_profiles[key] = value
     
     # Handle legacy ASR config keys
 
@@ -526,7 +531,13 @@ def load_config(path: Path) -> Config:
     translate_section = data.get("translate", {})
     for key in list(translate_section.keys()):
         if key not in {f.name for f in fields(TranslateConfig)}:
-            translate_profiles[key] = translate_section.pop(key)
+            value = translate_section.pop(key)
+            if not isinstance(value, dict):
+                logger.warning("Ignoring unknown [translate] setting %s (possible typo)", key)
+            else:
+                if key not in {"gemma4", "plamo", "plamo8b", "hymt"}:
+                    logger.warning("Unregistered translation backend profile [translate.%s]", key)
+                translate_profiles[key] = value
 
 
     return Config(
@@ -639,6 +650,7 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
         if selected_backend is not None and backend_name != selected_backend:
             # Remove model_path override for non-selected backends
             scoped_overrides.pop("model_path", None)
+            scoped_overrides.pop("mmproj_path", None)
         merged.update(scoped_overrides)
     return merged
 

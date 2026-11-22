@@ -120,3 +120,9 @@ See the GUI's Console/Diagnostics area and generated `logs/` files when troubles
 - `config.toml` — model selection, paths, and runtime settings.
 - `glossary.toml` — Japanese/English names and terminology.
 - `VideoTranslate.spec` — optional GUI-only PyInstaller configuration.
+
+## Tests
+
+The default `pytest` run excludes `tests/test_model_switching.py` and `tests/test_e2e_runtime.py` because they launch real inference servers. Their failures are assertions, not silently passing log records. To run these GPU/model integration tests intentionally, set `VIDEO_TRANSLATE_RUN_REAL_MODELS=1` in the shell first, then run the specific test files. Do **not** enable this flag for routine CPU-only regression tests.
+
+The audit regression tests are in `tests/test_audit_20261122.py`. The GitHub commits do not themselves execute local Windows, MPV, or GPU runtime checks.

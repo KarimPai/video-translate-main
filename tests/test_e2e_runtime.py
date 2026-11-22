@@ -7,6 +7,7 @@ This script is designed to run on the development machine with installed
 models and binaries. It does NOT modify the project codebase.
 """
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,10 @@ from pathlib import Path
 
 # Ensure src/ is on the path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+# These integration scripts launch real models. Opt in explicitly for pytest.
+# Direct `python tests/test_e2e_runtime.py` invocation remains supported.
+__test__ = os.environ.get("VIDEO_TRANSLATE_RUN_REAL_MODELS") == "1"
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +31,8 @@ def record(test_name: str, passed: bool, detail: str = ""):
     results.append({"test": test_name, "passed": passed, "detail": detail})
     status = "PASS" if passed else "FAIL"
     print(f"  [{status}] {test_name}" + (f" — {detail}" if detail else ""))
+    if not passed:
+        raise AssertionError(f"{test_name}: {detail}")
 
 
 def section(name: str):

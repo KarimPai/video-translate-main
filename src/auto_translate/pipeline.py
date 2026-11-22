@@ -861,6 +861,9 @@ def run_translate(
         if live and _expired_live_cue(tr, playback_position, live_late_window_s):
             log.info("Skipping expired live cue %.2f-%.2fs", tr.start_s, tr.end_s)
             increment_counter("expired")
+            if isinstance(tr, Subtitle):
+                _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s,
+                                         tr.generation, tr.speech_id)
             continue
 
         # Seek resets are normally carried by AudioProgress. Also protect

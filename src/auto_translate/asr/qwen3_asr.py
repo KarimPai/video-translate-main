@@ -489,6 +489,7 @@ class Qwen3ASR:
         probe: bool = False,
         no_context: bool = False,
         timeout: float | None = None,
+        max_tokens: int = 256,
     ) -> str:
         """Send audio to the server and return transcribed text.
 
@@ -523,7 +524,7 @@ class Qwen3ASR:
         payload = {
             "messages": messages,
             "temperature": 0.0 if not probe else 0.3,
-            "max_tokens": 256,
+            "max_tokens": max_tokens,
             "stream": False,
         }
 
@@ -548,12 +549,21 @@ class Qwen3ASR:
             log.error("Qwen3-ASR HTTP error after %.1fs: %s", elapsed_on_error, exc)
             raise
 
-        # Extract text from response
+        # Truncated ASR is not valid speech evidence: retry once within the
+        # original utterance timeout rather than emitting a partial transcript.
         try:
-            content = body["choices"][0]["message"]["content"]
+            choice = body["choices"][0]
+            content = choice["message"]["content"]
             text = content.strip()
-        except (KeyError, IndexError) as exc:
+        except (KeyError, IndexError, AttributeError, TypeError) as exc:
             raise Qwen3ASRError(f"Unexpected response format: {body}") from exc
+        if choice.get("finish_reason") == "length":
+            remaining = timeout - (time.perf_counter() - t0)
+            if max_tokens < 512 and remaining > 0.5:
+                log.warning("Qwen3-ASR hit %d-token limit; retrying with 512", max_tokens)
+                return self._transcribe_impl(audio, probe=probe, no_context=no_context,
+                                             timeout=remaining, max_tokens=512)
+            raise Qwen3ASRError("Qwen3-ASR output truncated at token limit")
 
         # Keep model-detected language metadata separate from spoken text.
         language, text = parse_qwen_asr_response(text)

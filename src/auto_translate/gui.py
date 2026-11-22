@@ -682,6 +682,7 @@ class VideoTranslateWindow(QMainWindow):
     def _listen_for_control(self):
         self._close_control()
         self._control_lost = False
+        self._backend_finishing = False
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             server.bind(("127.0.0.1", 0))
@@ -717,6 +718,18 @@ class VideoTranslateWindow(QMainWindow):
             self._control_lost = True
             self.status.setText("Player controls disconnected; waiting for backend exit.")
             self._write_console("GUI: control channel closed; awaiting backend exit status.\n")
+            session = self._session
+            QTimer.singleShot(3000, lambda: self._resolve_control_disconnect(session))
+
+    def _resolve_control_disconnect(self, session):
+        # A real channel failure must still stop an orphaned backend. A normal
+        # video end emits session_ending before closing its command socket.
+        if (self._session != session or self.process is None or self._stopping
+                or self._backend_finishing or not self._control_lost):
+            return
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            self._write_console("GUI: unexpected control loss; stopping backend.\n")
+            self.stop_translation()
 
     def _poll_control(self):
         # Nonblocking sockets keep Qt responsive and reuse the packaged Qt runtime.
@@ -935,6 +948,9 @@ class VideoTranslateWindow(QMainWindow):
                 self._update_seek_buttons()
                 if self._ready:
                     self.status.setText("Running.")
+            return
+        if action == "session_ending":
+            self._backend_finishing = True
             return
         if action == "control_closed":
             self._control_disconnected()

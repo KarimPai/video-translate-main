@@ -72,6 +72,47 @@ class TestSeekResetRace:
         assert mpv._coverage.record_speech.call_count == 1
         assert 42 in mpv._speech_id_map, "speech_id_map should not be cleared by duplicate reset"
 
+    def test_seek_reset_preserves_real_coverage_and_blocks_early_resume(self):
+        """Real CoverageTracker reproduces the double-reset interleaving."""
+        from types import SimpleNamespace
+        from auto_translate.output.coverage import CoverageTracker
+        from auto_translate.output.mpv import MpvOutput
+        from auto_translate.ingest import Source
+
+        mpv = MpvOutput.__new__(MpvOutput)
+        mpv._buffer_condition = threading.Condition()
+        mpv._coverage = CoverageTracker()
+        mpv._speech_id_map = {}
+        mpv._pending_generation = 0
+        mpv._source_finished = False
+        mpv._seek_lead_target = None
+        mpv._subtitle_ready = threading.Event()
+        mpv._now = 100.0
+        mpv.PAUSE_LEAD_SECONDS = 5.0
+        mpv.cfg = SimpleNamespace(vod_resume_threshold_s=8.0)
+        mpv.ingest = SimpleNamespace(
+            generation=1, source=Source(location="test.mp4", live=False)
+        )
+
+        mpv.reset_buffer(100.0)
+        sid = mpv.record_speech(101.0, 107.0, generation=1)
+        assert sid is not None
+        mpv.advance(115.0)
+        assert mpv._coverage.translated_until <= 101.0
+        assert mpv._vod_should_resume() is False
+
+        # The late seek-reset marker must not erase this unfinished speech.
+        mpv.reset_buffer(100.0)
+        assert mpv._coverage.pending_count() == 1
+        assert mpv._coverage.translated_until <= 101.0
+        assert mpv._vod_should_resume() is False
+
+        # Only completion of the pending subtitle unblocks contiguous lead.
+        mpv.advance_to_subtitle(107.0, generation=1, speech_id=sid)
+        assert mpv._coverage.pending_count() == 0
+        assert mpv._coverage.translated_until >= 115.0
+        assert mpv._vod_should_resume() is True
+
     def test_reset_buffer_different_generation(self):
         """A reset for a new generation must still perform the full destructive reset."""
         from auto_translate.output.mpv import MpvOutput
@@ -220,10 +261,10 @@ class TestCudaDeviceSelection:
     """Test that detect_device honors cuda_device parameter."""
 
     def test_detect_device_cpu(self):
-        """cuda_device=-1 must return 'CPU'."""
+        """cuda_device=-1 must generate llama.cpp --device none."""
         from auto_translate.llama_server import detect_device
         result = detect_device(cuda_device=-1)
-        assert result == "CPU"
+        assert result == "none"
 
     def test_detect_device_cuda0(self):
         """cuda_device=0 must return 'CUDA0' when verification is unavailable."""
@@ -287,22 +328,19 @@ class TestCudaDeviceSelection:
             assert result == "Vulkan0"
 
     def test_detect_device_requested_not_found(self):
-        """If requested CUDA device not in available list, fall back to auto-detect."""
-        from auto_translate.llama_server import detect_device
+        """An unavailable explicitly requested GPU must never fall back."""
+        from auto_translate.llama_server import detect_device, LlamaServerError
 
-        mock_exe = MagicMock(spec=Path)
-        mock_exe.__str__ = MagicMock(return_value="/fake/llama-server")
-
-        # subprocess.run is called twice: once for verification, once for auto-detect fallback
+        mock_exe = Path("/fake/llama-server")
         with patch("auto_translate.llama_server.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
+                returncode=0,
                 stdout="Available devices:\n  CUDA0: NVIDIA RTX 3070\n",
                 stderr=""
             )
-            # Request CUDA2 which doesn't exist — should fall back to auto-detect
-            result = detect_device(executable=mock_exe, cuda_device=2)
-            # After warning, falls through to auto-detect which returns CUDA0
-            assert result == "CUDA0"
+            with pytest.raises(LlamaServerError, match="CUDA2 is unavailable"):
+                detect_device(executable=mock_exe, cuda_device=2)
+            mock_run.assert_called_once()
 
     def test_detect_device_requested_verified(self):
         """If requested CUDA device exists, return it exactly."""
@@ -313,11 +351,39 @@ class TestCudaDeviceSelection:
 
         with patch("auto_translate.llama_server.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
+                returncode=0,
                 stdout="Available devices:\n  CUDA0: NVIDIA RTX 3070\n  CUDA1: NVIDIA RTX 3080\n",
                 stderr=""
             )
             result = detect_device(executable=mock_exe, cuda_device=1)
             assert result == "CUDA1"
+
+    def test_explicit_cuda0_keeps_rtx_gpu(self):
+        """The user's default CUDA0 must stay on GPU after the CPU fix."""
+        from auto_translate.llama_server import detect_device
+
+        with patch("auto_translate.llama_server.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="Available devices:\n  CUDA0: NVIDIA RTX 3070\n  Vulkan0: NVIDIA RTX 3070\n",
+                stderr=""
+            )
+            assert detect_device(executable=Path("/fake/llama-server"), cuda_device=0) == "CUDA0"
+
+    def test_gemma4_server_args_use_explicit_cuda0(self):
+        """Verify constructed llama-server arguments, not source-text presence."""
+        from auto_translate.translate.gemma4 import Gemma4Translator
+        from auto_translate.config import TranslateConfig
+
+        translator = Gemma4Translator.__new__(Gemma4Translator)
+        translator.cfg = TranslateConfig(cuda_device=0)
+        translator.gpu_layers = 3
+        translator.layer_count = 5
+        translator.executable = Path("/fake/llama-server")
+        with patch("auto_translate.translate.gemma4.detect_device", return_value="CUDA0") as detect:
+            args = translator._args()
+        detect.assert_called_once_with(translator.executable, 0)
+        assert args[args.index("--device") + 1] == "CUDA0"
 
     def test_gemma4_passes_cuda_device(self):
         """Gemma4Translator must pass cuda_device to detect_device."""
@@ -365,6 +431,41 @@ class TestCudaDeviceSelection:
 
 class TestQwen3ASRStartup:
     """Test Qwen3-ASR model resolution and error messages."""
+
+    def test_qwen3_asr_auto_projector_matches_model_size(self):
+        from auto_translate.registry import _find_qwen3_asr_mmproj
+
+        candidates = [
+            "/models/Qwen3-ASR-0.6B/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+            "/models/Qwen3-ASR-1.7B/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+            "/models/Gemma/mmproj-Gemma-4.gguf",
+        ]
+        with patch("auto_translate.registry._qwen3_asr_candidates", return_value=candidates):
+            assert _find_qwen3_asr_mmproj(
+                "/models/Qwen3-ASR-1.7B/Qwen3-ASR-1.7B-Q8_0.gguf"
+            ) == candidates[1]
+
+    def test_qwen3_asr_rejects_incompatible_explicit_projector(self):
+        from auto_translate.registry import _qwen3_asr_factory
+
+        with patch("auto_translate.asr.qwen3_asr.Qwen3ASR", MagicMock()) as constructor:
+            with pytest.raises(ValueError, match="different model sizes"):
+                _qwen3_asr_factory({
+                    "model_path": "/models/Qwen3-ASR-1.7B-Q8_0.gguf",
+                    "mmproj_path": "/models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+                })
+            constructor.assert_not_called()
+
+    def test_qwen3_asr_ambiguous_models_fail_instead_of_guessing(self):
+        from auto_translate.registry import _find_qwen3_asr_model
+
+        candidates = [
+            "/models/Qwen3-ASR-0.6B-Q8_0.gguf",
+            "/models/Qwen3-ASR-1.7B-Q8_0.gguf",
+        ]
+        with patch("auto_translate.registry._qwen3_asr_candidates", return_value=candidates):
+            with pytest.raises(ValueError, match="Multiple Qwen3-ASR GGUF"):
+                _find_qwen3_asr_model()
 
     def test_qwen3_asr_missing_model_error(self):
         """Missing model must raise ValueError with actionable message."""

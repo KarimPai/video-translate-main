@@ -570,11 +570,13 @@ class PlamoTranslator:
                 all_names.append((term, en))
                 seen.add(en)
         all_names = all_names[:MAX_TERMS]
+        # Current speech takes precedence over optional context hints at the cap.
+        context_only_names = [name for name in all_names if name not in utterance_names]
         found = self.glossary.find(ja, context=source_context)
-        extra = [term for term in found if term not in all_names]
+        extra = [term for term in found if term not in utterance_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
         rest = [t for t in extra if t not in exact]
-        terms = all_names + exact + rest
+        terms = utterance_names + exact + rest + context_only_names
         return terms[:MAX_TERMS], all_names, utterance_names
 
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> dict:
@@ -717,7 +719,9 @@ class PlamoTranslator:
                             )
                             _record(english, "simplified_retry")
 
-                            if finish_reason == "length" and retries_left > 0 and _elapsed_ok():
+                            if (finish_reason == "length" and retries_left > 0
+                                    and truncation_retries < self._MAX_TRUNCATION_RETRIES
+                                    and _elapsed_ok()):
                                 # Prefer the full prompt for names when a larger
                                 # generation budget still fits, otherwise simplify.
                                 if _fits_context(full_input_tokens, retry_tokens):
@@ -822,7 +826,7 @@ class PlamoTranslator:
                 if retries_left > 0 and english and _elapsed_ok():
                     output_issue = english_output_issue(english)
                     if output_issue == "untranslated_japanese":
-                        req_key = "deterministic"
+                        req_key = "untranslated_deterministic"
                         if not _repeated(english, req_key):
                             record_event("mt_rejected", reason=output_issue, retry=True)
                             increment_counter("mt_rejected")

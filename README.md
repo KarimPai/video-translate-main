@@ -40,12 +40,12 @@ uv sync --extra gui --extra diagnostics --extra asr
 
 Before launching:
 
-1. Open `config.toml`. Set model and runtime paths for the selected backends. Some committed paths refer to the original developer's `C:/Games/video-translate-main/` folder and **must be adapted** on another machine.
+1. Create your private local config: `Copy-Item config.example.toml config.toml` in PowerShell (the GUI creates it automatically if absent). Set model and runtime paths for your machine. `config.toml` is intentionally gitignored and must never be committed.
 2. Supply the Haas model and compatible speech.cpp executable if using the default ASR backend.
 3. Supply the selected translation model and a compatible CUDA `llama-server` executable (or configure another supported backend).
 4. Confirm that FFmpeg, MPV, and yt-dlp are installed and discoverable.
 
-The defaults under `[models]` in `config.toml` are `haas` ASR, `plamo` translation, and `silero` VAD. Backend-specific overrides live under sections such as `[asr.qwen3-asr]`, `[asr.whisper]`, `[translate.plamo]`, and `[translate.plamo8b]`.
+The example defaults under `[models]` are `haas` ASR and `gemma4` translation; the built-in VAD default is `silero`. Back up your existing local `config.toml` before pulling the change that stops tracking it. Backend-specific overrides live under sections such as `[asr.qwen3-asr]`, `[asr.whisper]`, `[translate.plamo]`, and `[translate.plamo8b]`.
 
 ## Run
 

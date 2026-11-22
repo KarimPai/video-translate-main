@@ -495,11 +495,26 @@ def _load_translator(cfg, glossary, stream_context, budget, log, registry,
     """Start translation backend, adapting GPU layers for llama.cpp-based models."""
     from .config import get_backend_config
     from .llama_server import LlamaServerError, gguf_block_count, require_gguf
+    from .registry import resolve_local_plamo_model_path
 
     translate_backend_name = cfg.models.translate_backend
     translate_profile = get_backend_config(cfg, "translate", translate_backend_name,
                                            explicit_overrides=translate_cli_overrides,
                                            selected_backend=translate_backend_name)
+
+    # Resolve the installed model BEFORE computing GPU layer allocation.
+    # The factory also resolves paths for callers that bypass _load_translator.
+    if translate_backend_name in ("plamo", "plamo8b"):
+        try:
+            resolved_path = resolve_local_plamo_model_path(
+                translate_backend_name, translate_profile.get("model_path", "")
+            )
+        except ValueError as exc:
+            log.error("Translation backend '%s' model selection failed: %s", translate_backend_name, exc)
+            print(f"Error: Translation backend '{translate_backend_name}' cannot start:\n  {exc}", file=sys.stderr)
+            sys.exit(1)
+        if resolved_path:
+            translate_profile["model_path"] = resolved_path
 
     headroom = cfg.gpu_budget.startup_headroom_gb
     auto = translate_profile.get("gpu_layers", -1) < 0

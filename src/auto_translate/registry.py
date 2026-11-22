@@ -368,7 +368,7 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
 
     # Try to resolve mmproj path if not set or not found
     if not mmproj_path:
-        mmproj_path = _find_qwen3_asr_mmproj()
+        mmproj_path = _find_qwen3_asr_mmproj(model_path)
 
     if not model_path:
         raise ValueError(
@@ -385,6 +385,16 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
             "Example: mmproj_path = 'models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf'"
         )
 
+    # Filename-level compatibility check; custom filenames remain supported
+    # when both paths are explicitly provided.
+    model_family = _qwen3_asr_family(model_path)
+    mmproj_family = _qwen3_asr_family(mmproj_path)
+    if model_family and mmproj_family and model_family != mmproj_family:
+        raise ValueError(
+            f"Qwen3-ASR model ({model_family}) and mmproj ({mmproj_family}) "
+            "are from different model sizes. Configure a matching pair."
+        )
+
     # Update config with resolved paths
     if isinstance(config, AsrConfig):
         from dataclasses import replace
@@ -397,57 +407,78 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
     return Qwen3ASR(config, context=context)
 
 
-def _find_qwen3_asr_model() -> str:
-    """Search common locations for a Qwen3-ASR GGUF model.
-
-    Returns the path if found, empty string otherwise.
-    """
-    import glob as glob_mod
+def _qwen3_asr_family(path: str) -> str | None:
+    """Recognize Qwen3-ASR model size in an official-style GGUF filename."""
+    import re
     from pathlib import Path
 
-    root = Path.cwd()
-    search_dirs = [
-        root / "models" / "qwen3-asr",
-        root / "models" / "Qwen3-ASR",
-        root / "models",
-    ]
-    patterns = ["*Qwen3-ASR*.gguf", "*qwen3-asr*.gguf", "*Qwen3ASR*.gguf"]
-    # Exclude mmproj files
-    for search_dir in search_dirs:
-        if not search_dir.is_dir():
+    match = re.search(r"qwen3[-_.]?asr[-_.]?(0\.6|1\.7)b", Path(path).name, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _qwen3_asr_candidates() -> list[str]:
+    """Find local GGUF candidates without downloading files or trusting the CWD."""
+    import glob
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[2]
+    roots = (project_root / "models", Path.cwd() / "models")
+    found: set[str] = set()
+    for base in roots:
+        if not base.is_dir():
             continue
-        for pattern in patterns:
-            for path in glob_mod.glob(str(search_dir / pattern)):
-                p = Path(path)
-                if "mmproj" not in p.name.lower():
-                    logger.info("Found Qwen3-ASR model: %s", p)
-                    return str(p)
+        for pattern in ("*.gguf", "*.GGUF"):
+            for path in glob.glob(str(base / "**" / pattern), recursive=True):
+                if _qwen3_asr_family(path):
+                    found.add(str(Path(path)))
+    return sorted(found)
+
+
+def _find_qwen3_asr_model() -> str:
+    """Auto-select only when exactly one Qwen3-ASR model candidate exists."""
+    from pathlib import Path
+
+    candidates = [
+        path for path in _qwen3_asr_candidates()
+        if "mmproj" not in Path(path).name.lower()
+    ]
+    if len(candidates) == 1:
+        logger.info("Found Qwen3-ASR model: %s", candidates[0])
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValueError(
+            "Multiple Qwen3-ASR GGUF models found. Set [asr.qwen3-asr] "
+            "model_path explicitly to avoid selecting the wrong version: "
+            + ", ".join(candidates)
+        )
     return ""
 
 
-def _find_qwen3_asr_mmproj() -> str:
-    """Search common locations for a Qwen3-ASR mmproj GGUF file.
-
-    Returns the path if found, empty string otherwise.
-    """
-    import glob as glob_mod
+def _find_qwen3_asr_mmproj(model_path: str = "") -> str:
+    """Find a uniquely matching Qwen3-ASR projector, never another family's."""
     from pathlib import Path
 
-    root = Path.cwd()
-    search_dirs = [
-        root / "models" / "qwen3-asr",
-        root / "models" / "Qwen3-ASR",
-        root / "models",
+    family = _qwen3_asr_family(model_path) if model_path else None
+    if model_path and not family:
+        # A user-renamed model has no reliable filename identifier.
+        return ""
+    candidates = [
+        path for path in _qwen3_asr_candidates()
+        if "mmproj" in Path(path).name.lower()
+        and (family is None or _qwen3_asr_family(path) == family)
     ]
-    patterns = ["*mmproj*.gguf", "*mmproj*.GGUF"]
-    for search_dir in search_dirs:
-        if not search_dir.is_dir():
-            continue
-        for pattern in patterns:
-            for path in glob_mod.glob(str(search_dir / pattern)):
-                p = Path(path)
-                logger.info("Found Qwen3-ASR mmproj: %s", p)
-                return str(p)
+    if model_path:
+        nearby = [p for p in candidates if Path(p).parent == Path(model_path).parent]
+        if nearby:
+            candidates = nearby
+    if len(candidates) == 1:
+        logger.info("Found Qwen3-ASR mmproj: %s", candidates[0])
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValueError(
+            "Multiple compatible Qwen3-ASR projectors found. Set "
+            "[asr.qwen3-asr] mmproj_path explicitly: " + ", ".join(candidates)
+        )
     return ""
 
 

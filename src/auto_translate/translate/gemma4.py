@@ -482,9 +482,25 @@ class Gemma4Translator:
                              english=self.cfg.context_english)
 
     def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+        """Return (terms, all_names, utterance_names).
+
+        `terms` — all glossary terms for the prompt.
+        `all_names` — names found in the utterance OR context (used for missing_names check).
+        `utterance_names` — names actually present in the current Japanese text (used for garbled_name check).
+
+        Key: use source context for disambiguation so context-dependent nicknames
+        (e.g. Miko) are recognized, but only require names that appear in the current
+        utterance. Context-only names are hints, not mandatory.
+        """
         source_context = f"{context}\n{ja}"
+        # Use source context for disambiguation — this lets context-dependent
+        # nicknames like Miko be recognized even when the utterance alone is ambiguous.
         all_names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
-        utterance_names = self.glossary.name_terms(ja, context="")
+        # Names actually spoken in the current utterance — use source context for
+        # disambiguation so that context-dependent nicknames are still recognized.
+        # This preserves exactly the nickname spoken without requiring names from
+        # previous dialogue to appear in the current subtitle.
+        utterance_names = self.glossary.name_terms(ja, context=source_context)
         found = self.glossary.find(ja, context=source_context)
         extra = [term for term in found if term not in all_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
@@ -543,42 +559,79 @@ class Gemma4Translator:
                     if finish_reason == "length" and retries_left > 0 and truncation_retries < self._MAX_TRUNCATION_RETRIES:
                         retries_left -= 1
                         truncation_retries += 1
-                        retry_tokens = max(self.cfg.max_tokens * 2, 512)
-                        # Context-aware: cap retry_tokens so the request actually fits
-                        if not _fits_context(input_tokens, retry_tokens):
-                            # Reduce to the largest output budget that fits
-                            retry_tokens = max(0, slot_context_size - input_tokens - 256)
-                            if retry_tokens <= self.cfg.max_tokens:
-                                # Even the original budget was the max that fits;
-                                # retry with simplified prompt instead
-                                simplified = build_prompt(ja, [], "", self.cfg.style)
-                                simplified_input = ja_tokens + template_overhead
-                                if _fits_context(simplified_input, retry_tokens):
-                                    record_event("mt_truncation_retry", strategy="simplified",
-                                                 max_tokens=retry_tokens)
-                                    increment_counter("mt_retries")
-                                    english, finish_reason = self._chat(
-                                        simplified, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
-                                    )
-                                else:
-                                    record_event("mt_truncation_failed", reason="context_budget")
-                                    increment_counter("mt_rejected")
-                                    return ""
-                            else:
-                                record_event("mt_truncation_retry", max_tokens=retry_tokens,
-                                             capped=True)
-                                increment_counter("mt_retries")
-                                english, finish_reason = self._chat(
-                                    prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
-                                )
-                        else:
-                            record_event("mt_truncation_retry", max_tokens=retry_tokens)
+
+                        # --- Context-aware truncation retry ---
+                        # Independently calculate token budgets for full and simplified prompts.
+                        # Each budget accounts for: per-slot context, input tokens, output tokens,
+                        # and a 256-token safety margin. Never submit max_tokens <= 0.
+
+                        simplified_input = ja_tokens + template_overhead
+                        # Simplified prompt budget: no glossary, no context
+                        simplified_output_budget = slot_context_size - simplified_input - 256
+                        # Full prompt budget: with glossary and context
+                        full_output_budget = slot_context_size - input_tokens - 256
+
+                        # Clamp to positive values
+                        simplified_output_budget = max(0, simplified_output_budget)
+                        full_output_budget = max(0, full_output_budget)
+
+                        # Desired retry output: at least double the original, minimum 512
+                        desired_output = max(self.cfg.max_tokens * 2, 512)
+
+                        # Decide which prompt to retry with
+                        retry_prompt = None
+                        retry_max_tokens = 0
+                        retry_strategy = ""
+
+                        # Prefer full prompt if it can fit a meaningful increase
+                        if full_output_budget > self.cfg.max_tokens:
+                            retry_max_tokens = min(desired_output, full_output_budget)
+                            retry_prompt = prompt
+                            retry_strategy = "full_increased_tokens"
+                        # Fall back to simplified prompt if it gives more output room
+                        elif simplified_output_budget > self.cfg.max_tokens:
+                            retry_max_tokens = min(desired_output, simplified_output_budget)
+                            retry_prompt = build_prompt(ja, [], "", self.cfg.style)
+                            retry_strategy = "simplified"
+                        # If neither fits better than original, try simplified with glossary only
+                        elif simplified_output_budget > 0:
+                            # Keep glossary terms for name accuracy, drop dialogue context
+                            glossary_only_input = ja_tokens + glossary_tokens + template_overhead
+                            glossary_output_budget = max(0, slot_context_size - glossary_only_input - 256)
+                            if glossary_output_budget > self.cfg.max_tokens:
+                                retry_max_tokens = min(desired_output, glossary_output_budget)
+                                glossary_only_prompt = build_prompt(ja, terms, "", self.cfg.style)
+                                retry_prompt = glossary_only_prompt
+                                retry_strategy = "glossary_only"
+                            elif simplified_output_budget > full_output_budget:
+                                # Simplified gives more room than full, even if not more than original
+                                retry_max_tokens = simplified_output_budget
+                                retry_prompt = build_prompt(ja, [], "", self.cfg.style)
+                                retry_strategy = "simplified_best_fit"
+
+                        # Only retry if we have a valid prompt and meaningful output allowance
+                        if retry_prompt is not None and retry_max_tokens > self.cfg.max_tokens:
+                            record_event("mt_truncation_retry", strategy=retry_strategy,
+                                         max_tokens=retry_max_tokens)
                             increment_counter("mt_retries")
                             english, finish_reason = self._chat(
-                                prompt, timeout=self.cfg.timeout_s, max_tokens=retry_tokens
+                                retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_max_tokens
                             )
+                        elif retry_prompt is not None and retry_max_tokens > 0:
+                            # Retry with best available budget even if not larger
+                            record_event("mt_truncation_retry", strategy=retry_strategy,
+                                         max_tokens=retry_max_tokens, note="no_increase")
+                            increment_counter("mt_retries")
+                            english, finish_reason = self._chat(
+                                retry_prompt, timeout=self.cfg.timeout_s, max_tokens=retry_max_tokens
+                            )
+                        else:
+                            record_event("mt_truncation_failed", reason="context_budget")
+                            increment_counter("mt_rejected")
+                            return ""
+
                         if finish_reason == "length":
-                            record_event("mt_truncation_failed", max_tokens=retry_tokens)
+                            record_event("mt_truncation_failed", max_tokens=retry_max_tokens)
                             increment_counter("mt_rejected")
                             return ""
 

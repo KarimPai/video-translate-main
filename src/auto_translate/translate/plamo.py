@@ -543,13 +543,21 @@ class PlamoTranslator:
 
         `terms` — all glossary terms for the prompt.
         `all_names` — names found in the utterance OR context (used for missing_names check).
-        `utterance_names` — names found in the utterance only (used for garbled_name check).
-        Only utterance names can trigger garbled rejection; context names are hints.
+        `utterance_names` — names actually present in the current Japanese text (used for garbled_name check).
+
+        Key: use source context for disambiguation so context-dependent nicknames
+        (e.g. Miko) are recognized, but only require names that appear in the current
+        utterance. Context-only names are hints, not mandatory.
         """
         source_context = f"{context}\n{ja}"
+        # Use source context for disambiguation — this lets context-dependent
+        # nicknames like Miko be recognized even when the utterance alone is ambiguous.
         all_names = self.glossary.name_terms(ja, context=source_context)[:MAX_TERMS]
-        # Names found only in the current utterance (not just in prior context)
-        utterance_names = self.glossary.name_terms(ja, context="")
+        # Names actually spoken in the current utterance — use source context for
+        # disambiguation so that context-dependent nicknames are still recognized.
+        # This preserves exactly the nickname spoken without requiring names from
+        # previous dialogue to appear in the current subtitle.
+        utterance_names = self.glossary.name_terms(ja, context=source_context)
         found = self.glossary.find(ja, context=source_context)
         extra = [term for term in found if term not in all_names]
         exact = [t for t in extra if t[0] == ja or f" {t[0]} " in f" {ja} "]
@@ -749,20 +757,38 @@ class PlamoTranslator:
                     log.warning("Translation latency %.2fs exceeded budget %.2fs", elapsed, latency_budget)
                     increment_counter("mt_latency_exceeded")
 
-                # Retry 1: empty or invalid output — try simplified prompt (no glossary/context)
-                # to give the model more output tokens. This catches cases where PLaMo returns
-                # empty for long/complex Japanese text even with max_tokens=512.
+                # Retry 1: empty or invalid output — improved retry sequence:
+                # 1a. Try with original glossary and lower temperature first (preserves names)
+                # 1b. Fall back to simplified prompt only if 1a fails or doesn't fit
                 if self._is_invalid(english) and retries_left > 0 and _elapsed_ok():
-                    req_key = "minimal"
-                    if not _repeated(english, req_key):
-                        issue = english_output_issue(english)
-                        if issue:
-                            record_event("mt_rejected", reason=issue, retry=True)
-                        retries_left -= 1
-                        increment_counter("mt_retries")
-                        english, _ = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
-                        _record(english, req_key)
-                        english = clean_output(english)
+                    issue = english_output_issue(english)
+                    if issue:
+                        record_event("mt_rejected", reason=issue, retry=True)
+
+                    # Step 1a: retry with glossary but lower temperature — preserves name accuracy
+                    glossary_only_prompt = build_plamo_prompt(ja, terms, "")
+                    glossary_only_input_tokens = simplified_input_tokens + glossary_tokens
+                    glossary_only_fits = _fits_context(glossary_only_input_tokens, self.cfg.max_tokens)
+
+                    if glossary_only_fits and (glossary_only_prompt != first_prompt or self.cfg.temperature != 0):
+                        req_key = "glossary_low_temp"
+                        if not _repeated(english, req_key):
+                            retries_left -= 1
+                            increment_counter("mt_retries")
+                            english, _ = self._chat(glossary_only_prompt, timeout=self.cfg.timeout_s, temperature=0.2)
+                            _record(english, req_key)
+                            english = clean_output(english)
+
+                    # Step 1b: if still invalid, try simplified prompt (no glossary/context)
+                    # to give the model more output tokens
+                    if self._is_invalid(english) and retries_left > 0 and _elapsed_ok():
+                        req_key = "minimal"
+                        if not _repeated(english, req_key):
+                            retries_left -= 1
+                            increment_counter("mt_retries")
+                            english, _ = self._chat(simplified_prompt, timeout=self.cfg.timeout_s)
+                            _record(english, req_key)
+                            english = clean_output(english)
 
                 # Retry 2: untranslated Japanese — try with lower temperature
                 if retries_left > 0 and english and _elapsed_ok():

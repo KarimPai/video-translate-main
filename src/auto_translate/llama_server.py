@@ -41,7 +41,7 @@ def detect_device(executable: Path | None = None, cuda_device: int | None = None
     """Detect the best available GPU device for llama-server.
 
     Honors explicit cuda_device configuration:
-    - cuda_device=-1: return "CPU" for CPU-only inference
+    - cuda_device=-1: return "none" for CPU-only inference
     - cuda_device>=0: return the specific CUDA device (e.g. "CUDA2")
     - cuda_device=None: auto-detect best available device
 
@@ -51,21 +51,21 @@ def detect_device(executable: Path | None = None, cuda_device: int | None = None
     """
     import re
 
-    # Honor explicit CPU request
+    # llama.cpp uses --device none to disable GPU offload.
     if cuda_device == -1:
-        return "CPU"
+        return "none"
+    if cuda_device is not None and cuda_device < -1:
+        raise ValueError("cuda_device must be -1 (CPU) or a nonnegative CUDA index")
 
-    # Honor explicit CUDA device index
-    if cuda_device is not None and cuda_device >= 0:
+    # Explicit CUDA indices must never silently select another GPU.
+    if cuda_device is not None:
         requested = f"CUDA{cuda_device}"
-        # Verify the device exists if we can query
         exe = executable
         if exe is None:
             try:
                 exe = resolve_executable("")
             except LlamaServerError:
                 pass
-        verified = False
         if exe is not None:
             try:
                 result = subprocess.run(
@@ -74,25 +74,23 @@ def detect_device(executable: Path | None = None, cuda_device: int | None = None
                     check=False,
                     creationflags=hidden_console_flags(),
                 )
-                output = result.stdout + result.stderr
-                devices = re.findall(r"^\s+(\w+\d+):", output, re.MULTILINE)
-                if requested in devices:
-                    return requested
-                # Requested device not found — warn and fall through to auto-detect
-                log.warning(
-                    "Requested CUDA device %s not found in available devices %s; "
-                    "falling back to auto-detection",
-                    requested, devices,
-                )
-                verified = True
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-        # If we could verify and the device was not found, fall through to auto-detect.
-        # If we could not verify (no executable or timeout), return the requested device
-        # anyway — llama-server will fail with a clear error if it doesn't exist.
-        if not verified:
-            return requested
-        # Fall through to auto-detect below
+                if result.returncode == 0:
+                    devices = re.findall(r"^\\s+(\\w+\\d+):", result.stdout + result.stderr, re.MULTILINE)
+                    if devices and requested not in devices:
+                        raise LlamaServerError(
+                            f"Requested CUDA device {requested} is unavailable; "
+                            f"llama-server reports: {', '.join(devices)}. "
+                            "Change cuda_device or install a CUDA-enabled llama-server."
+                        )
+                else:
+                    log.warning(
+                        "Cannot verify %s: llama-server --list-devices exited with code %s; "
+                        "the server will validate the requested GPU on startup",
+                        requested, result.returncode,
+                    )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                log.warning("Could not enumerate CUDA devices (%s); requesting %s explicitly", exc, requested)
+        return requested
 
     # Auto-detect: find the best available device
     exe = executable

@@ -570,6 +570,19 @@ class Gemma4Translator:
                 def _fits_context(itokens: int, otokens: int) -> bool:
                     return itokens + otokens + 256 <= slot_context_size
 
+                simplified_input = ja_tokens + template_overhead
+                if not _fits_context(simplified_input, self.cfg.max_tokens):
+                    record_event("mt_rejected", reason="context_budget",
+                                 estimated_input_tokens=simplified_input)
+                    increment_counter("mt_rejected")
+                    log.warning("Translation utterance exceeds per-slot context budget")
+                    return ""
+                skip_full_prompt = not _fits_context(input_tokens, self.cfg.max_tokens)
+                if skip_full_prompt:
+                    prompt = build_prompt(ja, [], "", self.cfg.style)
+                    record_event("mt_request", strategy="simplified_first",
+                                 estimated_input_tokens=input_tokens)
+
                 try:
                     english, finish_reason = self._chat(prompt, timeout=self.cfg.timeout_s)
 
@@ -604,7 +617,7 @@ class Gemma4Translator:
                         retry_strategy = ""
 
                         # 1. Full prompt: preserves everything (glossary + context)
-                        if full_output_budget > self.cfg.max_tokens:
+                        if not skip_full_prompt and full_output_budget > self.cfg.max_tokens:
                             retry_max_tokens = min(desired_output, full_output_budget)
                             retry_prompt = prompt
                             retry_strategy = "full_increased_tokens"
@@ -649,7 +662,8 @@ class Gemma4Translator:
                         raise
                     self._recover(str(exc))
                     # BUG FIX: Rebuild prompt after recovery — server state may have changed
-                    prompt = build_prompt(ja, terms, context, self.cfg.style)
+                    prompt = (build_prompt(ja, [], "", self.cfg.style) if skip_full_prompt
+                              else build_prompt(ja, terms, context, self.cfg.style))
                     if retries_left > 0:
                         retries_left -= 1
                         increment_counter("mt_retries")
@@ -696,9 +710,11 @@ class Gemma4Translator:
                     if output_issue:
                         record_event("mt_rejected", reason=output_issue, retry=True)
                         increment_counter("mt_rejected")
-                    fallback = build_prompt(ja, terms, "")
+                    fallback = build_prompt(ja, terms, "", self.cfg.style)
+                    fallback_tokens = simplified_input + glossary_tokens
+                    fallback_fits = _fits_context(fallback_tokens, self.cfg.max_tokens)
                     candidates = [english]
-                    if fallback != prompt or self.cfg.temperature != 0:
+                    if fallback_fits and (fallback != prompt or self.cfg.temperature != 0):
                         retries_left -= 1
                         increment_counter("mt_retries")
                         if missing:

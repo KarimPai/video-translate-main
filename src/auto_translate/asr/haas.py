@@ -104,7 +104,12 @@ class HaasASR:
 
     def __init__(self, cfg: AsrConfig, context: str = "") -> None:
         self.cfg = cfg
-        self.context = context.strip()[: cfg.max_context_chars]
+        # The speech.cpp Haas HTTP route accepts WAV only; context hints are unsupported.
+        self.context = ""
+        self.supports_context_biasing = False
+        self._context_warning_logged = bool(context.strip())
+        if self._context_warning_logged:
+            log.warning("Haas ASR ignores configured context: speech.cpp has no verified Haas prompt support")
         self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
         self._accepted_keys: deque[str] = deque(maxlen=32)
         self.last_match_score = 0.0
@@ -144,12 +149,15 @@ class HaasASR:
             self.close()
             raise
         update_metrics(workers={"asr": "ready (Haas-ja-v1.0)"})
-        log.info("Haas-ja-v1.0 ready (pid=%s, device=%s, context %d chars)",
-                 self.server.process.pid, device, len(self.context))
+        log.info("Haas-ja-v1.0 ready (pid=%s, device=%s, context biasing unsupported)",
+                 self.server.process.pid, device)
 
     def set_context(self, context: str) -> None:
+        """Explicitly report unsupported context hints instead of pretending to apply them."""
         with self._state_lock:
-            self.context = context.strip()[: self.cfg.max_context_chars]
+            if context.strip() and not self._context_warning_logged:
+                self._context_warning_logged = True
+                log.warning("Haas ASR name/context hints are unsupported by this speech.cpp endpoint")
 
     def cancel_pending(self) -> None:
         with self._state_lock:

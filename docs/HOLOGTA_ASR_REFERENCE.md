@@ -17,7 +17,7 @@ uv run python .\scripts\prepare_asr_reference.py prepare `
   ".\hologta-stress-test.mp4" --extract-audio
 ```
 
-The script searches `benchmarks/runs` for the latest **matched** 14-second VAD / 0.28 threshold runs with identical clip size: `haas-gemma4`, `qwen3-asr-gemma4`, and `whisper-gemma4`. You can override any result with `--haas PATH`, `--qwen PATH`, or `--whisper PATH`. It does **not** rerun the GPU models. For reliable three-way comparisons, supply all three run JSONLs.
+The script searches `benchmarks/runs` for the latest **matched** 14-second VAD / 0.28 threshold runs with identical clip size. Each ASR can be paired with **any translation backend** (for example `haas-plamo8b`, `haas-hymt`, or `qwen3-asr-gemma4`), because this is a Japanese-ASR evaluation. You can override any source with `--haas PATH`, `--qwen PATH`, or `--whisper PATH`. If an ASR run is unavailable, the script warns and leaves that hypothesis column empty with `source_unavailable` in its boundary field. The missing model is **excluded** from scoring, not counted as a recognition failure. Audio extraction and human-reference preparation still proceed, even if all ASR logs are missing. It does **not** rerun GPU models. For reliable three-way comparisons, supply all three run JSONLs.
 
 The output is `benchmarks/reference/working/hologta_30_review.csv`, `sources.json`, and 30 clips in `benchmarks/reference/working/audio/HG01.wav`, etc.
 

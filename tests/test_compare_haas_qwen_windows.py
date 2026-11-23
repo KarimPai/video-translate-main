@@ -266,3 +266,45 @@ def test_qwen_ab_control_disables_production_default():
     )
     assert len(rows) == 4
     assert model.flags == [False, True, False, False]
+
+
+def test_qwen_split_first_failure_falls_back_to_full_512(monkeypatch):
+    """Do not drop a long utterance if split recovery fails but full retry works."""
+    import threading
+    from collections import deque
+    from auto_translate.config import AsrConfig
+    from auto_translate.asr.qwen3_asr import Qwen3ASR, Qwen3ASRTruncationError
+
+    model = Qwen3ASR.__new__(Qwen3ASR)
+    model.cfg = AsrConfig(response_timeout_s=15.0)
+    model._generation = 0
+    model._inference_lock = threading.Lock()
+    model._state_lock = threading.Lock()
+    model._closed = False
+    model._failures = 0
+    model._restarts = 0
+    model._terminal_failure = False
+    model._recent = deque(maxlen=4)
+    model._accepted_keys = deque(maxlen=32)
+    model._prefer_split_on_truncation = True
+    model.last_raw_transcript = ""
+    model.last_detected_language = "und"
+    model.last_rejection = None
+
+    calls = []
+
+    def decode(samples, *, probe=False, timeout=None, max_tokens=256):
+        calls.append((len(samples), max_tokens))
+        if len(calls) <= 2:
+            raise Qwen3ASRTruncationError("token limit")
+        model.last_detected_language = "ja"
+        model.last_raw_transcript = "ありがとう"
+        return "ありがとう"
+
+    monkeypatch.setattr(model, "_transcribe_impl", decode)
+    assert model.transcribe(np.zeros(16 * bench.SAMPLE_RATE, np.float32)) == "ありがとう"
+    assert [tokens for _, tokens in calls] == [256, 512, 512]
+    assert calls[0][0] == calls[2][0] == 16 * bench.SAMPLE_RATE
+    assert calls[1][0] < calls[0][0]
+    assert model.last_detected_language == "ja"
+    assert model.last_rejection is None

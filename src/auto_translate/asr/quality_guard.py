@@ -64,7 +64,15 @@ def whisper_suspect_reason(text: str) -> str | None:
                 # or reactions repeatedly; don't flag those solely as loops.
                 if unit in {"いや", "はい", "うん", "そう", "もう", "だめ", "やだ"}:
                     continue
-                if len(match.group()) >= 14 or (width <= 3 and len(match.group()) >= 10):
+                # Fast repeated reactions in chaotic gameplay are genuine
+                # speech candidates, not proof that the entire utterance
+                # hallucinated. HG05/HG21 were dropped even though the repeat
+                # occupied only ~25% of the Japanese kana in each transcript.
+                # Treat a repetition as suspicious only when it dominates
+                # the kana stream, or is itself exceptionally long.
+                repeated = len(match.group())
+                if ((repeated >= 14 or (width <= 3 and repeated >= 10))
+                        and (repeated * 2 >= len(kana) or repeated >= 40)):
                     return "whisper_phonetic_loop"
         if re.search(r"([ぁ-ゖ])\1{4,}", kana):
             return "whisper_phonetic_loop"

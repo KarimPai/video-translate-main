@@ -493,6 +493,12 @@ def main(argv: list[str] | None = None) -> int:
         print("Run shortening, split-first, rejected-speech recovery and vocabulary separately",
               file=sys.stderr)
         return 2
+    if args.qwen_vocabulary and "qwen3-asr" not in args.model:
+        print("--qwen-vocabulary requires --model qwen3-asr", file=sys.stderr)
+        return 2
+    if args.qwen_vocabulary and not args.qwen_vocabulary_terms.strip():
+        print("--qwen-vocabulary-terms must not be blank", file=sys.stderr)
+        return 2
     qwen_dir = args.qwen_model_dir.expanduser().resolve()
     qwen_model = qwen_dir / STANDARD_QWEN_MODEL
     qwen_mmproj = qwen_dir / STANDARD_QWEN_MMPROJ

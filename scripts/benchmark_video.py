@@ -101,6 +101,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         help="optional context experiment; omit for unmodified baseline")
     parser.add_argument("--vad-max-utterance-s", type=float,
                         help="optional VOD soft segment cap; e.g. 10 (does not edit config.toml)")
+    parser.add_argument("--vad-threshold", type=float,
+                        help="optional VAD threshold, e.g. 0.28 for matched ASR evaluation")
     parser.add_argument("--outdir", type=Path, default=ROOT / "benchmarks" / "runs")
     parser.add_argument("--dry-run", action="store_true", help="print commands without loading models")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -134,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
             command.extend(["--context-lines", str(args.context_lines)])
         if args.vad_max_utterance_s is not None:
             command.extend(["--vad-max-utterance-s", str(args.vad_max_utterance_s)])
+        if args.vad_threshold is not None:
+            command.extend(["--vad-threshold", str(args.vad_threshold)])
         plan.append((name, asr, mt, command))
     if args.dry_run:
         for name, _, _, command in plan:
@@ -147,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             "clip": str(clip), "clip_bytes": clip.stat().st_size,
             "config": str(config), "context_lines": args.context_lines,
             "vad_max_utterance_s": args.vad_max_utterance_s,
+            "vad_threshold": args.vad_threshold,
             "combinations": [{"asr": a, "mt": m} for _, a, m, _ in plan],
             "note": "Operational metrics are NOT accuracy measurements.",
         }, ensure_ascii=False, indent=2), encoding="utf-8"

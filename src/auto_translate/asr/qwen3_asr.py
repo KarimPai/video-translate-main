@@ -129,6 +129,9 @@ class Qwen3ASR:
         # The diagnostic harness explicitly disables this for its control arm.
         self._prefer_split_on_truncation = True
         self.context = context.strip()[: cfg.max_context_chars]
+        # Dedicated opt-in experiment; generic stream/name context is NOT
+        # automatically sent to the model (avoids vocabulary hallucinations).
+        self._vocabulary_hint = ""
         self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
         self._accepted_keys: deque[str] = deque(maxlen=32)
         self.last_match_score = 0.0
@@ -610,14 +613,30 @@ class Qwen3ASR:
                     if self._recent:
                         self._recent.pop()
 
+    def set_vocabulary_hint(self, words: str) -> None:
+        """Set a bounded *experimental* ASR vocabulary, or clear with ''.
+
+        This is intentionally separate from stream context/name-fusion. A
+        static hotword list must not become an instruction to invent dialogue.
+        The production default is no system message at all.
+        """
+        if not isinstance(words, str):
+            raise TypeError("Vocabulary hint must be a string")
+        terms = [term.strip() for term in words.replace("\n", ",").split(",")]
+        terms = [term for term in terms if term]
+        if (len(terms) > 12 or any(len(term) > 32 for term in terms)
+                or len(", ".join(terms)) > 220):
+            raise ValueError("Vocabulary hint exceeds 12 terms or 220 characters")
+        self._vocabulary_hint = ", ".join(terms)
+
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
                              vad_confidence: float | None = None,
                              timeout: float = 0.0) -> str:
         """Retry transcription to recover from context echo.
 
-        NOTE: Qwen3-ASR does not send user-provided context in the request
-        payload, so context removal is not applicable. This method retries
-        the transcription with the remaining timeout budget.
+        The optional vocabulary experiment is disabled for this retry, so
+        a possible hint echo is independently checked against the audio.
+        This method enforces the remaining timeout budget.
 
         Enforces the supplied remaining timeout and never starts recovery when
         the budget has expired. Cancellation is propagated via the generation
@@ -632,7 +651,8 @@ class Qwen3ASR:
         if not len(audio):
             return ""
         try:
-            text = self._transcribe_impl(audio, probe=probe, timeout=timeout)
+            text = self._transcribe_impl(audio, probe=probe, no_context=True,
+                                         timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             log.warning("Qwen3-ASR context echo recovery failed: %s", exc)
             return ""
@@ -670,9 +690,9 @@ class Qwen3ASR:
         ``timeout`` overrides the configured response timeout (used by context
         echo recovery to enforce the remaining time budget).
 
-        NOTE: ``no_context`` is a no-op. Qwen3-ASR does not send user-provided
-        context in the request payload, so there is nothing to remove. The
-        parameter is kept for API compatibility with other ASR backends.
+        The optional recognition vocabulary is conveyed through a system
+        message only when explicitly enabled with set_vocabulary_hint().
+        no_context=True omits it for independent echo recovery.
         """
         t0 = time.perf_counter()
 
@@ -683,7 +703,16 @@ class Qwen3ASR:
         # No forced assistant prefix: Qwen must detect the language from audio.
         # Forcing Japanese converts English dialogue and game sounds into
         # misleading Japanese hypotheses.
-        messages = [
+        messages = []
+        hint = getattr(self, "_vocabulary_hint", "")
+        if hint and not no_context and not probe:
+            # Qwen3-ASR's chat template accepts vocabulary as a system turn.
+            # Audio remains the only user message. This is *not* forced text.
+            messages.append({
+                "role": "system",
+                "content": [{"type": "text", "text": "Vocabulary: " + hint}],
+            })
+        messages.append(
             {
                 "role": "user",
                 "content": [
@@ -693,7 +722,7 @@ class Qwen3ASR:
                     }
                 ],
             },
-        ]
+        )
 
         payload = {
             "messages": messages,

@@ -153,6 +153,12 @@ class Qwen3ASRResponseError(Qwen3ASRError):
     reason = "invalid_response"
 
 
+class Qwen3ASRTransportError(Qwen3ASRError):
+    """A transient transport failure exhausted one utterance's recovery."""
+
+    reason = "transport_error"
+
+
 class _UtteranceDeadline(Qwen3ASRError):
     reason = "deadline"
 
@@ -191,6 +197,7 @@ class Qwen3ASR:
         self._cancel_event = threading.Event()
         self._closed = False
         self._restarts = 0
+        self._transport_failures = 0
         self.last_timing: dict | None = None
 
         # Resolve model and mmproj paths
@@ -263,7 +270,16 @@ class Qwen3ASR:
                     self.last_raw_transcript = ""
                     self.last_rejection = None
                 try:
-                    return self._recognize(audio, probe, deadline, generation)
+                    result = self._recognize(audio, probe, deadline, generation)
+                    self._transport_failures = 0
+                    return result
+                except Qwen3ASRTransportError as exc:
+                    self._remaining(deadline, generation)
+                    self._transport_failures += 1
+                    if self._transport_failures >= 3:
+                        raise Qwen3ASRError("Qwen3-ASR transport failed for three consecutive utterances") from exc
+                    self._reject_request(generation, exc)
+                    return ""
                 except (_UtteranceDeadline, Qwen3ASRResponseError, Qwen3ASRTruncationError) as exc:
                     self._reject_request(generation, exc)
                     return ""
@@ -362,8 +378,6 @@ class Qwen3ASR:
         # never reach this transport restart path.
         if self._remaining(deadline, generation) <= 0.5:
             raise _UtteranceDeadline("Insufficient utterance budget to restart Qwen3-ASR")
-        if self._restarts >= 2:
-            raise Qwen3ASRError(f"Qwen3-ASR transcription failed: {last_error}") from last_error
         try:
             self._restart(deadline=deadline, generation=generation)
         except (CancelledError, _UtteranceDeadline):
@@ -376,7 +390,7 @@ class Qwen3ASR:
         try:
             return self._decode_with_recovery(audio, probe, deadline, generation)
         except httpx.HTTPError as exc:
-            raise Qwen3ASRError(f"Qwen3-ASR transcription failed after restart: {exc}") from exc
+            raise Qwen3ASRTransportError(f"Qwen3-ASR transcription failed after restart: {exc}") from exc
 
     def _decode_with_recovery(
         self, audio: np.ndarray, probe: bool, deadline: float, generation: int,
@@ -818,8 +832,12 @@ class Qwen3ASR:
             self._remaining(deadline, generation)
 
         check()
+        now = time.monotonic()
+        if now - getattr(self, "_restart_window_start", 0.0) > 300:
+            self._restart_window_start = now
+            self._restarts = 0
         if self._restarts >= 2:
-            raise Qwen3ASRError("Qwen3-ASR restart limit reached (2 attempts); server is unstable")
+            raise Qwen3ASRError("Qwen3-ASR restart limit reached within five minutes; server is unstable")
         self._restarts += 1
         log.warning("Restarting Qwen3-ASR server (attempt %d)", self._restarts)
         try:

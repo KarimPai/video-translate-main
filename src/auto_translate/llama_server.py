@@ -326,7 +326,7 @@ class LlamaServer:
                 remaining()
             elif check is not None:
                 check()
-            self._stop_process(deadline)
+            self._stop_process()
             # Process creation, log setup and watcher startup all need cleanup.
             # The health-polling exception handler below cannot catch failures here.
             try:
@@ -350,7 +350,7 @@ class LlamaServer:
             except BaseException:
                 # Already holding _lock: do not call _abort_startup here.
                 try:
-                    self._stop_process(deadline)
+                    self._stop_process()
                 except Exception:
                     log.exception("%s failed to clean up after an interrupted spawn", self.name)
                 raise
@@ -375,24 +375,19 @@ class LlamaServer:
             # Cancellation (CancelledError), KeyboardInterrupt or any unexpected
             # error while waiting for /health must never leave a loading child
             # holding VRAM. Only reap the child this call started.
-            self._abort_startup(process, deadline)
+            self._abort_startup(process)
             raise
 
-    def _abort_startup(self, process: subprocess.Popen, deadline: float | None) -> None:
+    def _abort_startup(self, process: subprocess.Popen) -> None:
         # Close takes responsibility for the child as soon as it signals
         # shutdown. A cancelled startup should not wait for close's reap.
         if self._shutdown.is_set():
             return
-        if deadline is None:
-            self._lock.acquire()
-        else:
-            while not self._lock.acquire(timeout=max(0, min(0.05, deadline - time.monotonic()))):
-                if self._shutdown.is_set() or time.monotonic() >= deadline:
-                    return
+        self._lock.acquire()
         try:
             if self.process is process:
                 try:
-                    self._stop_process(deadline)
+                    self._stop_process()
                 except Exception:
                     log.exception("%s llama-server cleanup after failed startup raised", self.name)
         finally:
@@ -425,7 +420,7 @@ class LlamaServer:
         except OSError:
             return f"See {self.log_path}."
 
-    def _stop_process(self, deadline: float | None = None) -> None:
+    def _stop_process(self) -> None:
         # Never lose ownership of a process until its exit is observed.
         # If termination fails, a later close()/start() can retry safely.
         process = self.process
@@ -434,13 +429,11 @@ class LlamaServer:
                 if process.poll() is None:
                     try:
                         process.terminate()
-                        first_wait = 3 if deadline is None else max(0.0, min(3, (deadline - time.monotonic()) / 2))
-                        process.wait(timeout=first_wait)
+                        process.wait(timeout=3)
                     except (subprocess.TimeoutExpired, OSError):
                         if process.poll() is None:
                             process.kill()
-                            last_wait = 3 if deadline is None else max(0.0, min(3, deadline - time.monotonic()))
-                            process.wait(timeout=last_wait)
+                            process.wait(timeout=3)
                 if process.poll() is None:
                     raise LlamaServerError(f"{self.name} llama-server did not exit after termination")
                 self.process = None
@@ -473,7 +466,7 @@ class LlamaServer:
             if self._closed or self._shutdown.is_set():
                 raise LlamaServerError(f"{self.name} server is closed")
             remaining()
-            self._stop_process(deadline)
+            self._stop_process()
             remaining()
             old_client = self.client
             self.client = self._new_client()

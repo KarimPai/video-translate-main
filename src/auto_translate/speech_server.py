@@ -102,53 +102,76 @@ class SpeechCppServer:
             if self._closed:
                 raise SpeechServerError("Haas speech-server is closed")
             self._stop_process()
-            self.port = _free_port()
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            rotate_log(self.log_path)
-            self._log_stream = self.log_path.open("ab")
-            command = [
-                str(self.executable), "serve", self.model_name,
-                "--host", "127.0.0.1",
-                "--port", str(self.port),
-                "--device", self.device,
-                "--threads", str(self.threads),
-            ]
-            log.info("Starting Haas speech-server: %s", " ".join(command[1:]))
-            self.process = owned_popen(
-                command,
-                cwd=str(self.executable.parent),
-                stdin=subprocess.DEVNULL,
-                stdout=self._log_stream,
-                stderr=subprocess.STDOUT,
-                creationflags=hidden_console_flags(),
-            )
-            process = self.process
-            if self._cancel_thread is None:
-                self._cancel_thread = threading.Thread(
-                    target=self._watch_cancellation,
-                    name="haas-cancel",
-                    daemon=True,
-                )
-                self._cancel_thread.start()
-        deadline = time.monotonic() + self.startup_timeout_s
-        while time.monotonic() < deadline:
-            check_running()
-            if process.poll() is not None:
-                raise SpeechServerError(
-                    f"Haas speech-server exited during startup "
-                    f"(code {process.returncode}). {self.log_tail()}"
-                )
             try:
-                if self.client.get(self.base_url + "/health", timeout=0.5).status_code == 200:
-                    return
-            except httpx.HTTPError:
-                pass
-            time.sleep(0.1)
-        self.close()
-        raise SpeechServerError(
-            f"Haas speech-server did not start within {self.startup_timeout_s:g}s. "
-            + self.log_tail()
-        )
+                self.port = _free_port()
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                rotate_log(self.log_path)
+                self._log_stream = self.log_path.open("ab")
+                command = [
+                    str(self.executable), "serve", self.model_name,
+                    "--host", "127.0.0.1",
+                    "--port", str(self.port),
+                    "--device", self.device,
+                    "--threads", str(self.threads),
+                ]
+                log.info("Starting Haas speech-server: %s", " ".join(command[1:]))
+                self.process = owned_popen(
+                    command,
+                    cwd=str(self.executable.parent),
+                    stdin=subprocess.DEVNULL,
+                    stdout=self._log_stream,
+                    stderr=subprocess.STDOUT,
+                    creationflags=hidden_console_flags(),
+                )
+                process = self.process
+                if self._cancel_thread is None:
+                    self._cancel_thread = threading.Thread(
+                        target=self._watch_cancellation,
+                        name="haas-cancel",
+                        daemon=True,
+                    )
+                    self._cancel_thread.start()
+            except BaseException:
+                # Already holding _lock: clean up inline, not via _abort_startup.
+                try:
+                    self._stop_process()
+                except Exception:
+                    log.exception("Haas failed to clean up after an interrupted spawn")
+                raise
+        deadline = time.monotonic() + self.startup_timeout_s
+        try:
+            while time.monotonic() < deadline:
+                check_running()
+                if process.poll() is not None:
+                    raise SpeechServerError(
+                        f"Haas speech-server exited during startup "
+                        f"(code {process.returncode}). {self.log_tail()}"
+                    )
+                try:
+                    if self.client.get(self.base_url + "/health", timeout=0.5).status_code == 200:
+                        return
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.1)
+            # A health timeout is recoverable: stop this child but keep the
+            # server restartable so HaasASR._restart() can try again.
+            raise SpeechServerError(
+                f"Haas speech-server did not start within {self.startup_timeout_s:g}s. "
+                + self.log_tail()
+            )
+        except BaseException:
+            # Cancellation, KeyboardInterrupt or any unexpected error while
+            # waiting for /health must never leave a loading child on the GPU.
+            self._abort_startup(process)
+            raise
+
+    def _abort_startup(self, process: subprocess.Popen) -> None:
+        with self._lock:
+            if self.process is process:
+                try:
+                    self._stop_process()
+                except Exception:
+                    log.exception("Haas speech-server cleanup after failed startup raised")
 
     def alive(self) -> bool:
         process = self.process
@@ -211,23 +234,39 @@ class SpeechCppServer:
             return f"See {self.log_path}."
 
     def _stop_process(self) -> None:
-        process, self.process = self.process, None
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
-        if self._log_stream is not None:
-            self._log_stream.close()
-            self._log_stream = None
+        # Never lose ownership of a process until its exit is observed.
+        # If termination fails, a later close()/start() can retry safely.
+        process = self.process
+        try:
+            if process is not None:
+                if process.poll() is None:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=3)
+                    except (subprocess.TimeoutExpired, OSError):
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=3)
+                if process.poll() is None:
+                    raise SpeechServerError("Haas speech-server did not exit after termination")
+                self.process = None
+        finally:
+            # A failed terminate/kill must not leave our log stream open.
+            if self._log_stream is not None:
+                try:
+                    self._log_stream.close()
+                finally:
+                    self._log_stream = None
 
     def close(self) -> None:
         with self._lock:
-            if self._closed:
+            # Retained process references must remain terminable even after
+            # a previous close() attempt failed.
+            if self._closed and self.process is None and self._log_stream is None:
                 return
             self._closed = True
             self._shutdown.set()
-            self._stop_process()
-        self.client.close()
+            try:
+                self._stop_process()
+            finally:
+                self.client.close()

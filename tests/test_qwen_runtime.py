@@ -283,6 +283,57 @@ def test_second_token_limit_after_restart_skips_only_the_utterance(backend, monk
     assert backend.server.client.post.call_count == 8
 
 
+def test_repeated_transport_failure_is_bounded_per_utterance(backend, monkeypatch):
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    backend.server.client.post.side_effect = httpx.ConnectError("offline")
+    assert backend.transcribe(PCM) == ""
+    assert backend.last_rejection == "transport_error"
+    backend._restart_window_start = time.monotonic() - 301
+    assert backend.transcribe(PCM) == ""
+    backend._restart_window_start = time.monotonic() - 301
+    with pytest.raises(qwen.Qwen3ASRError, match="three consecutive utterances"):
+        backend.transcribe(PCM)
+
+
+def test_restart_allowance_recovers_after_window(backend, monkeypatch):
+    backend._restarts = 2
+    backend._restart_window_start = time.monotonic() - 301
+    monkeypatch.setattr(backend, "_warmup", Mock())
+    backend._restart(deadline=time.monotonic() + 1, generation=0)
+    assert backend._restarts == 1
+    backend.server.reset_for_restart.assert_called_once()
+
+
+def test_successful_utterance_resets_consecutive_transport_failures(backend, monkeypatch):
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    offline = httpx.ConnectError("offline")
+    for outcome, failures in ((offline, 1), (offline, 2), (None, 0), (offline, 1), (offline, 2)):
+        backend._restart_window_start = time.monotonic() - 301
+        backend.server.client.post.side_effect = outcome
+        backend.transcribe(PCM)
+        assert backend._transport_failures == failures
+
+
+def test_seek_after_transport_failure_is_not_counted(backend, monkeypatch):
+    def fail_then_seek(*args):
+        backend._generation += 1
+        raise qwen.Qwen3ASRTransportError("offline")
+
+    monkeypatch.setattr(backend, "_recognize", fail_then_seek)
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 0
+
+
+def test_expired_startup_deadline_still_reaps_owned_child(owned_server):
+    server, spawned = owned_server
+    server.client.get = Mock(return_value=SimpleNamespace(status_code=503))
+    with pytest.raises(ls.LlamaServerError, match="deadline"):
+        server.start(deadline=time.monotonic() + 0.05)
+    assert len(spawned) == 1
+    assert spawned[0].poll() is not None
+    assert server.process is None
+
+
 def test_close_during_reset_never_calls_start(backend, monkeypatch):
     monkeypatch.setattr(backend, "_wait_retry", Mock())
     backend.server.client.post.side_effect = httpx.ConnectError("child unavailable")

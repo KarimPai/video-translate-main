@@ -99,6 +99,10 @@ def is_japanese_text(text: str) -> bool:
     return bool(_JAPANESE_SCRIPT.search(text))
 
 
+# A clean decode this long after the last restart clears the restart budget.
+_RESTART_STABLE_S = 120.0
+
+
 class HaasASR:
     """Haas-ja-v1.0 ASR via speech.cpp HTTP server."""
 
@@ -124,7 +128,8 @@ class HaasASR:
         self.last_timing: dict | None = None
         self._recent_engine_interjections: deque[float] = deque(maxlen=8)
 
-        executable = resolve_speech_executable(cfg.server_path if cfg.server_path else None)
+        # --speech-server / asr.speech_server_path overrides the shared server_path.
+        executable = resolve_speech_executable(cfg.speech_server_path or cfg.server_path or None)
         device = "cpu"
         if cfg.cuda_device is not None:
             device = "gpu"
@@ -276,6 +281,7 @@ class HaasASR:
                     return ""
                 return self._failed(exc)
         self._failures = 0
+        self._note_stable_decode()
         with self._state_lock:
             if generation != self._generation:
                 return ""
@@ -320,10 +326,25 @@ class HaasASR:
             raise HaasError(f"Haas-ja-v1.0 failed three consecutive utterances: {exc}") from exc
         return ""
 
+    def _note_stable_decode(self) -> None:
+        """Forgive old restarts once the server has decoded cleanly for a while.
+
+        The restart cap exists to stop a crash loop, not to make the third
+        isolated crash hours into a stream fatal. A success only clears the
+        counter when the last restart is at least _RESTART_STABLE_S old, so a
+        server that dies right after each restart still hits the cap.
+        """
+        if self._restarts and (time.monotonic() - getattr(self, "_last_restart_at", 0.0)
+                               >= _RESTART_STABLE_S):
+            log.info("Haas-ja-v1.0 stable for %.0fs; restart counter reset (%d -> 0)",
+                     _RESTART_STABLE_S, self._restarts)
+            self._restarts = 0
+
     def _restart(self, reason: str) -> None:
         if self._restarts >= 2:
             raise HaasError(f"Haas-ja-v1.0 server stopped again ({reason}). {self.server.log_tail()}")
         self._restarts += 1
+        self._last_restart_at = time.monotonic()
         log.warning("Restarting Haas-ja-v1.0 server (%s)", reason)
         update_metrics(workers={"asr": "restarting"})
         self.server.start()

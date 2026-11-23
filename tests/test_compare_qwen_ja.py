@@ -137,3 +137,100 @@ def test_unknown_window_fails_before_loading_models(tmp_path):
     with pytest.raises(ValueError, match="Unknown windows"):
         cmp.main([str(media), "--config", str(config),
                   "--window", "NOPE", "--dry-run"])
+
+
+
+def test_explicit_paths_prevent_ambiguous_registry_discovery(tmp_path):
+    """Installing two Qwen models must never trigger implicit model selection."""
+    from auto_translate.config import Config
+
+    config = Config()
+    standard = tmp_path / "standard"
+    japanese = tmp_path / "japanese"
+    selected = cmp.explicit_model_configs(config, standard, japanese)
+    assert set(selected) == {"current", "qwen-ja"}
+    assert selected["current"]["model_path"] == str(standard / cmp.STANDARD_MODEL)
+    assert selected["current"]["mmproj_path"] == str(standard / cmp.STANDARD_MMPROJ)
+    assert selected["qwen-ja"]["model_path"] == str(japanese / cmp.JA_MODEL)
+    assert selected["qwen-ja"]["mmproj_path"] == str(japanese / cmp.JA_MMPROJ)
+    assert selected["current"]["model_path"] != selected["qwen-ja"]["model_path"]
+    assert selected["current"]["response_timeout_s"] == selected["qwen-ja"]["response_timeout_s"]
+
+
+def test_both_models_are_selected_explicitly_and_closed_sequentially(
+        tmp_path, monkeypatch):
+    """CPU-only integration: compare runner does not use registry auto-discovery."""
+    import numpy as np
+    import auto_translate.config as cfg_module
+    import auto_translate.registry as reg_module
+
+    clip = tmp_path / "test.flac"
+    config = tmp_path / "config.toml"
+    clip.write_bytes(b"fake")
+    config.write_text("[models]\n", encoding="utf-8")
+    standard = tmp_path / "standard"
+    japanese = tmp_path / "japanese"
+    for parent, model, mmproj in (
+        (standard, cmp.STANDARD_MODEL, cmp.STANDARD_MMPROJ),
+        (japanese, cmp.JA_MODEL, cmp.JA_MMPROJ),
+    ):
+        parent.mkdir()
+        (parent / model).write_bytes(b"fake")
+        (parent / mmproj).write_bytes(b"fake")
+
+    events = []
+
+    class FakeASR:
+        last_detected_language = "ja"
+        last_rejection = None
+
+        def __init__(self, identity):
+            self.identity = identity
+
+        def forget(self):
+            pass
+
+        def transcribe(self, audio, probe=False):
+            assert not probe
+            assert audio.size == 16000
+            events.append(("decode", self.identity))
+            return "みこさん"
+
+        def close(self):
+            events.append(("close", self.identity))
+
+    class FakeRegistry:
+        def create_asr(self, name, model_config):
+            assert name == "qwen3-asr"
+            model = Path(model_config["model_path"])
+            mmproj = Path(model_config["mmproj_path"])
+            assert model.exists() and mmproj.exists()
+            assert model.parent == mmproj.parent
+            events.append(("open", model.name))
+            return FakeASR(model.name)
+
+    monkeypatch.setattr(cfg_module, "load_config", lambda _: cfg_module.Config())
+    monkeypatch.setattr(reg_module, "get_default_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(cmp.shutil, "which", lambda _: "ffmpeg")
+    monkeypatch.setattr(
+        cmp, "decode_window",
+        lambda media, start, end, ffmpeg: np.zeros(16000, dtype=np.float32),
+    )
+    status = cmp.main([
+        str(clip), "--config", str(config),
+        "--standard-model-dir", str(standard), "--ja-model-dir", str(japanese),
+        "--outdir", str(tmp_path / "runs"), "--window", "HG02",
+    ])
+    assert status == 0
+    assert events == [
+        ("open", cmp.STANDARD_MODEL),
+        ("decode", cmp.STANDARD_MODEL),
+        ("close", cmp.STANDARD_MODEL),
+        ("open", cmp.JA_MODEL),
+        ("decode", cmp.JA_MODEL),
+        ("close", cmp.JA_MODEL),
+    ]
+    output_dirs = list((tmp_path / "runs").iterdir())
+    assert len(output_dirs) == 1
+    report = (output_dirs[0] / "review.csv").read_text(encoding="utf-8-sig")
+    assert "みこさん" in report

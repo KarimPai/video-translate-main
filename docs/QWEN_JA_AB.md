@@ -26,6 +26,21 @@ Expected SHA-256, per conversion model card:
 - Decoder: 77b760ea80ee34ac3c6746cf6028e3e0fd630b2fae26270bce1feb33b0a06ef5
 - Projector: 81356edc3c64538f130d9156843beee7f4f65d7354820f0d5cabbf9db9798f13
 
+## Important: explicit model selection
+
+After adding the JA GGUF, there are two Qwen model families under models/.
+The Qwen registry intentionally refuses to auto-select among them. The A/B
+script now explicitly pins both model and projector file paths:
+
+- Current: models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf plus matching mmproj.
+- Fine-tune: models/qwen3-asr-ja/Qwen3-ASR-1.7B-JA-Q8_0.gguf plus matching mmproj.
+
+No edits to config.toml or the registry are needed for this A/B. If a custom
+model directory is used, pass --standard-model-dir and/or --ja-model-dir.
+To choose Qwen for regular playback afterward, configure its model_path and
+mmproj_path explicitly in [asr.qwen3-asr]. Leaving them blank causes the
+registry to report that multiple versions were found.
+
 ## Windows PowerShell
 
 From C:\Games\video-translate-main:

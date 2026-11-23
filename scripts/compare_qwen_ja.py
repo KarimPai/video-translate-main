@@ -25,6 +25,8 @@ from compare_haas_qwen_windows import decode_window, run_case, SAMPLE_RATE
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_WINDOWS = ROOT / "benchmarks" / "reference" / "hologta_30.csv"
+STANDARD_MODEL = "Qwen3-ASR-1.7B-Q8_0.gguf"
+STANDARD_MMPROJ = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
 JA_MODEL = "Qwen3-ASR-1.7B-JA-Q8_0.gguf"
 JA_MMPROJ = "mmproj-Qwen3-ASR-1.7B-JA-Q8_0.gguf"
 JA_REPO = "minimalcorp/Qwen3-ASR-1.7B-JA-GGUF"
@@ -170,10 +172,35 @@ def write_results(dest: Path, rows: list[dict], windows: dict[str, dict],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def explicit_model_configs(config: object, standard_dir: Path, ja_dir: Path) -> dict[str, dict]:
+    """Pin each complete model/projector pair; never invoke registry auto-discovery.
+
+    After installing the Japanese fine-tune, auto-discovery sees two models and
+    refuses to pick one. Both arms must be explicit to prevent accidental
+    comparison of two identical checkpoints.
+    """
+    from auto_translate.config import get_backend_config
+
+    shared = get_backend_config(config, "asr", "qwen3-asr")
+    current = dict(shared)
+    current.update(
+        model_path=str(standard_dir / STANDARD_MODEL),
+        mmproj_path=str(standard_dir / STANDARD_MMPROJ),
+    )
+    tuned = dict(shared)
+    tuned.update(
+        model_path=str(ja_dir / JA_MODEL),
+        mmproj_path=str(ja_dir / JA_MMPROJ),
+    )
+    return {"current": current, "qwen-ja": tuned}
+
+
 def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("media", type=Path, help="The existing 20-minute holoGTA audio")
     parser.add_argument("--config", type=Path, default=ROOT / "config.toml")
+    parser.add_argument("--standard-model-dir", type=Path,
+                        default=ROOT / "models" / "qwen3-asr")
     parser.add_argument("--ja-model-dir", type=Path, default=ROOT / "models" / "qwen3-asr-ja")
     parser.add_argument("--reference-windows", type=Path, default=REFERENCE_WINDOWS)
     parser.add_argument("--window", nargs="+", help="Selected HGxx windows")
@@ -199,21 +226,31 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"Unknown windows: {sorted(unknown)}")
     chosen = list(dict.fromkeys(chosen))
     windows = {key: all_windows[key] for key in chosen}
+    standard_dir = args.standard_model_dir.resolve()
     ja_dir = args.ja_model_dir.resolve()
+    standard_model = standard_dir / STANDARD_MODEL
+    standard_mmproj = standard_dir / STANDARD_MMPROJ
     ja_model, ja_mmproj = ja_dir / JA_MODEL, ja_dir / JA_MMPROJ
 
     if not media.is_file() or not config_file.is_file():
         raise FileNotFoundError("Audio clip or config.toml is missing")
     print("Qwen standard vs Japanese fine-tune; same llama.cpp CUDA runtime.")
     print("Windows:", ", ".join(windows))
+    print("Current model:", standard_model)
+    print("Current mmproj:", standard_mmproj)
     print("JA model:", ja_model)
     print("JA mmproj:", ja_mmproj)
     if args.dry_run:
         return 0
-    if not ja_model.is_file() or not ja_mmproj.is_file():
+    missing = [p for p in (standard_model, standard_mmproj, ja_model, ja_mmproj)
+               if not p.is_file()]
+    if missing:
+        print("Missing required Qwen GGUF model/projector files:", file=sys.stderr)
+        for path in missing:
+            print(f"  {path}", file=sys.stderr)
         print(
-            "Download BOTH llama.cpp-format JA GGUF files first from "
-            f"https://huggingface.co/{JA_REPO} (not the speech.cpp one-file GGUF).",
+            f"Download BOTH llama.cpp-format JA GGUF files from https://huggingface.co/{JA_REPO} "
+            "and keep the standard Qwen pair in models/qwen3-asr.",
             file=sys.stderr,
         )
         return 2
@@ -221,14 +258,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ffmpeg not available: {args.ffmpeg}", file=sys.stderr)
         return 2
 
-    from auto_translate.config import get_backend_config, load_config
+    from auto_translate.config import load_config
     from auto_translate.registry import get_default_registry
 
     config = load_config(config_file)
-    standard_cfg = get_backend_config(config, "asr", "qwen3-asr")
-    ja_cfg = dict(standard_cfg)
-    ja_cfg.update(model_path=str(ja_model), mmproj_path=str(ja_mmproj))
-    model_configs = {"current": standard_cfg, "qwen-ja": ja_cfg}
+    model_configs = explicit_model_configs(config, standard_dir, ja_dir)
     model_paths = {
         name: {"model_path": str(cfg.get("model_path", "")),
                "mmproj_path": str(cfg.get("mmproj_path", ""))}

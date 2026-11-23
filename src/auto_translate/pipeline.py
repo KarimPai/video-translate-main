@@ -1235,7 +1235,12 @@ def run(
     if ingest.source.live:
         session_cache = None
 
-    vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
+    # Prefer the actual instantiated segmenter's settings. ASR-specific guards
+    # (e.g. Haas game-audio threshold) use a session-only VAD config and must
+    # not be misreported as the unchanged config.toml values.
+    vad_cfg = getattr(segmenter, "cfg", None) if segmenter is not None else None
+    if vad_cfg is None:
+        vad_cfg = vad_for_source(cfg.vad, live=bool(ingest.source.live))
     vad_backend_name = cfg.models.vad_backend
     log.info(
         "VAD backend '%s' (%s): threshold=%.2f, min_speech=%dms, "

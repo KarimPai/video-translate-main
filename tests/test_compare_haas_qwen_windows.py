@@ -293,7 +293,7 @@ def test_qwen_split_first_failure_falls_back_to_full_512(monkeypatch):
 
     calls = []
 
-    def decode(samples, *, probe=False, timeout=None, max_tokens=256):
+    def decode(samples, probe=False, *, timeout=None, max_tokens=256):
         calls.append((len(samples), max_tokens))
         if len(calls) <= 2:
             raise Qwen3ASRTruncationError("token limit")

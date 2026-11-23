@@ -118,6 +118,12 @@ class Qwen3ASR:
 
     def __init__(self, cfg: AsrConfig, context: str = "") -> None:
         self.cfg = cfg
+        # Only after >=12s audio demonstrably hits the 256-token ceiling,
+        # prefer the existing bounded two-window recovery rather than spending
+        # more time retrying the entire audio with 512 tokens. Normal decodes,
+        # short segments, language checks and quality gates are unchanged.
+        # The diagnostic harness explicitly disables this for its control arm.
+        self._prefer_split_on_truncation = True
         self.context = context.strip()[: cfg.max_context_chars]
         self._recent: deque[str] = deque(maxlen=cfg.recent_context_lines)
         self._accepted_keys: deque[str] = deque(maxlen=32)

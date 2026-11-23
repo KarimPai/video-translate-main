@@ -420,3 +420,66 @@ def test_standard_qwen_preflight_is_explicit_when_ja_is_also_installed(
         "--qwen-model-dir", str(model_dir), "--qwen-short-target-s", "10",
     ]) == 2
     assert "Standard Qwen requires" in capsys.readouterr().err
+
+
+
+def test_qwen_rejected_recovery_ab_preserves_baseline_and_config():
+    """A/B runs identical PCM and restores any user-chosen config value."""
+    class FakeQwen:
+        last_detected_language = "ja"
+        last_rejection = None
+        _prefer_split_on_truncation = True
+
+        def __init__(self):
+            self.cfg = SimpleNamespace(recover_rejected_speech=True)
+            self.calls = []
+
+        def forget(self):
+            pass
+
+        def transcribe(self, audio, probe=False):
+            assert not probe
+            self.calls.append((len(audio), self.cfg.recover_rejected_speech,
+                               self._prefer_split_on_truncation))
+            # The first 16s request is deliberately rejected; only the
+            # experimental arm can salvage the same audio.
+            if len(audio) == 16 * bench.SAMPLE_RATE:
+                if self.cfg.recover_rejected_speech:
+                    self.last_rejection = None
+                    return "みこさんが話しています"
+                self.last_rejection = "repeated_character"
+                return ""
+            self.last_rejection = None
+            return "会話"
+
+    model = FakeQwen()
+    audio = np.zeros(16 * bench.SAMPLE_RATE, np.float32)
+    rows = bench.run_model(
+        model, "qwen3-asr", {"HG11": (385.0, audio)},
+        qwen_quality_recovery=True,
+    )
+    assert [row["variant"] for row in rows] == [
+        "full", "quality_recovery", "split", "split",
+    ]
+    assert rows[0]["rejection"] == "repeated_character"
+    assert rows[0]["text"] == ""
+    assert rows[1]["rejection"] == ""
+    assert rows[1]["text"] == "みこさんが話しています"
+    assert model.calls[:2] == [
+        (16 * bench.SAMPLE_RATE, False, True),
+        (16 * bench.SAMPLE_RATE, True, True),
+    ]
+    assert model.cfg.recover_rejected_speech is True
+    assert "## Qwen rejected-speech recovery A/B" in bench.english_report(rows, "clip.flac")
+
+
+def test_qwen_recovery_flag_must_be_separate_from_segmentation(tmp_path, capsys):
+    clip, config = tmp_path / "clip.flac", tmp_path / "config.toml"
+    clip.write_bytes(b"not-decoded")
+    config.write_text("", encoding="utf-8")
+    assert bench.main([
+        str(clip), "--config", str(config),
+        "--qwen-recover-rejected", "--qwen-short-target-s", "10",
+        "--dry-run",
+    ]) == 2
+    assert "separately" in capsys.readouterr().err

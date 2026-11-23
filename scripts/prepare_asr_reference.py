@@ -41,8 +41,9 @@ def load_cues(path: Path) -> list[dict]:
 
 
 def latest_matched_run(root: Path, model: str, clip_size: int) -> Path | None:
-    suffix = {"haas": "-haas-gemma4.jsonl", "qwen": "-qwen3-asr-gemma4.jsonl",
-              "whisper": "-whisper-gemma4.jsonl"}[model]
+    # The MT backend does not alter the ASR hypotheses. A matched Haas
+    # + PLaMo/Hy-MT run is just as suitable as Haas + Gemma.
+    backend = {"haas": "haas", "qwen": "qwen3-asr", "whisper": "whisper"}[model]
     for run_dir in sorted(root.glob("*"), reverse=True):
         manifest = run_dir / "manifest.json"
         if not manifest.is_file():
@@ -55,7 +56,7 @@ def latest_matched_run(root: Path, model: str, clip_size: int) -> Path | None:
                 or config.get("vad_max_utterance_s") != 14
                 or config.get("vad_threshold") != 0.28):
             continue
-        matches = sorted(run_dir.glob("*" + suffix))
+        matches = sorted(run_dir.glob(f"*-{backend}-*.jsonl"))
         if matches:
             return matches[0]
     return None
@@ -89,10 +90,13 @@ def prepare(args: argparse.Namespace) -> int:
         provided = getattr(args, model)
         path = provided or latest_matched_run(args.runs_root, model, clip.stat().st_size)
         if path is None:
-            raise FileNotFoundError(
-                f"No matched {model} benchmark JSONL. Pass --{model} PATH, or run "
-                "the model at VAD 14s, threshold 0.28 on the same clip."
+            print(
+                f"WARNING: No matched {model} JSONL found; its hypothesis column "
+                f"will be unavailable. Supply --{model} PATH to include it."
             )
+            paths[model] = None
+            cues[model] = None
+            continue
         print(f"{model}: {path}")
         paths[model] = str(path)
         cues[model] = load_cues(path)
@@ -106,8 +110,12 @@ def prepare(args: argparse.Namespace) -> int:
         item.update(verification_status="pending", speech_present="", reference_ja="",
                     review_note="")
         for model in ("haas", "qwen", "whisper"):
-            item[f"{model}_ja"], item[f"{model}_boundary"] = aligned_text(
-                cues[model], start, end)
+            if cues[model] is None:
+                item[f"{model}_ja"] = ""
+                item[f"{model}_boundary"] = "source_unavailable"
+            else:
+                item[f"{model}_ja"], item[f"{model}_boundary"] = aligned_text(
+                    cues[model], start, end)
         result.append(item)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -169,6 +177,10 @@ def score_rows(rows: list[dict[str, str]]) -> tuple[list[dict], list[dict]]:
         if (truth == "yes" and not reference) or (truth == "no" and reference):
             raise ValueError(f"{row['id']}: reference_ja must be filled for speech, blank for no speech")
         for model, stats in aggregates.items():
+            # An absent JSONL is not an ASR failure. Never count it as
+            # missing speech or assign it an artificial 100% CER.
+            if row.get(f"{model}_boundary", "").strip() == "source_unavailable":
+                continue
             hypothesis = normalize_ja(row.get(f"{model}_ja", ""))
             boundary = bool(row.get(f"{model}_boundary", "").strip())
             stats["boundary_warnings"] += boundary

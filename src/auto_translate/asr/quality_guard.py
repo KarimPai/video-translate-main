@@ -74,8 +74,15 @@ def whisper_suspect_reason(text: str) -> str | None:
                 if ((repeated >= 14 or (width <= 3 and repeated >= 10))
                         and (repeated * 2 >= len(kana) or repeated >= 40)):
                     return "whisper_phonetic_loop"
-        if re.search(r"([ぁ-ゖ])\1{4,}", kana):
-            return "whisper_phonetic_loop"
+        # A short sustained vowel inside otherwise substantial speech is
+        # not evidence that the *entire* utterance hallucinated. One 14.5s
+        # holoGTA cue was lost despite three ASRs recovering dialogue because
+        # a 6-8 character "aa" interjection triggered this absolute check.
+        # Retain the guard for dominant or exceptionally long vowel loops.
+        for match in re.finditer(r"([ぁ-ゖ])\1{4,}", kana):
+            run_length = len(match.group())
+            if run_length >= 20 or run_length * 2 >= len(kana):
+                return "whisper_phonetic_loop"
 
     # A long all-katakana hypothesis with no Japanese grammar is
     # *uncertain*, not necessarily wrong: VTuber names and game titles can

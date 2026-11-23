@@ -330,6 +330,63 @@ def test_seek_after_transport_failure_is_not_counted(backend, monkeypatch):
     assert backend._transport_failures == 0
 
 
+def test_actual_http_timeout_exhausting_deadline_counts_as_transport(backend):
+    """An expired HTTP read must not turn into an unclassified deadline."""
+    def read_after_budget(*args, **kwargs):
+        time.sleep(0.035)
+        raise httpx.ReadTimeout("HTTP read exceeded the utterance budget")
+
+    backend.server.client.post.side_effect = read_after_budget
+    assert backend.transcribe(PCM, deadline=time.monotonic() + 0.01) == ""
+    assert backend._transport_failures == 1
+    assert backend.last_rejection == "deadline"
+    backend.server.client.post.assert_called_once()
+
+
+def test_http_retry_backoff_expiry_counts_as_transport(backend):
+    """A retry delay must retain the preceding transport error's cause."""
+    backend.server.client.post.side_effect = httpx.ConnectError("offline")
+    assert backend.transcribe(PCM, deadline=time.monotonic() + 0.03) == ""
+    assert backend._transport_failures == 1
+    assert backend.last_rejection == "deadline"
+    backend.server.client.post.assert_called_once()
+
+
+def test_three_real_deadline_expirations_are_fatal(backend):
+    """Count separate expired HTTP requests, not only immediate mock errors."""
+    def slow_timeout(*args, **kwargs):
+        time.sleep(0.025)
+        raise httpx.ReadTimeout("socket timed out")
+
+    backend.server.client.post.side_effect = slow_timeout
+    for _ in range(2):
+        assert backend.transcribe(PCM, deadline=time.monotonic() + 0.01) == ""
+    with pytest.raises(qwen.Qwen3ASRError, match="three consecutive utterances"):
+        backend.transcribe(PCM, deadline=time.monotonic() + 0.01)
+    assert backend._transport_failures == 3
+
+
+def test_mixed_english_tag_keeps_recognized_japanese_dialogue():
+    """Restore the established mixed-audio parser contract, without forcing JA."""
+    lang, transcript = qwen.parse_qwen_asr_response(
+        "language English<asr_text>Go, go! 危ない、逃げて！"
+    )
+    assert lang == "ja"
+    assert transcript == "Go, go! 危ない、逃げて！"
+    assert qwen.parse_qwen_asr_response(
+        "language English<asr_text>Get in the car!"
+    ) == ("en", "Get in the car!")
+
+
+def test_recovered_japanese_guard_matches_downstream_kana_gate():
+    """Single-kana reactions pass; Latin-only and kanji-only do not."""
+    assert qwen.has_japanese_recovery_text("え")
+    assert qwen.has_japanese_recovery_text("ｱ")
+    assert qwen.has_japanese_recovery_text("危ない！")
+    assert not qwen.has_japanese_recovery_text("Get in the car")
+    assert not qwen.has_japanese_recovery_text("危険")
+
+
 # ------------------------------------------------------------------ #
 # Finding #1 — Transport-related deadlines count as transport failures
 # ------------------------------------------------------------------ #

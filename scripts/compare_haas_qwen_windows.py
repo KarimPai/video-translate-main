@@ -55,6 +55,15 @@ WINDOWS = {
     "Q14": (224.0, 238.4),
     "Q16": (611.2, 627.0),
 }
+# Clip-local, approximate speech landmarks inferred from uploaded WAVs.
+# They are not speaker timestamps or human-corrected transcript references.
+# Tight and wide crops are nested around exactly the same anchor.
+CROSSTALK_FOCUS_S = {
+    "HG06": (9.0, "practice / microphone overlap"),
+    "HG10": (11.0, "drinks / Suichan crosstalk"),
+    "HG13": (13.0, "Matsuri closing phrase"),
+    "Q16": (11.5, "descending / X-key instructions"),
+}
 MODELS = ("haas", "qwen3-asr")
 COLUMNS = (
     "window", "model", "variant", "part", "start_s", "end_s",
@@ -128,6 +137,31 @@ def pause_guided_ranges(audio: np.ndarray, target_s: float = 10.0,
         # Pathological energy minima should never exceed the stated target.
         raise ValueError("Pause-based split exceeded requested maximum duration")
     return ranges
+
+
+def crosstalk_focus_ranges(length: int, center_s: float,
+                           tight_s: float = 6.0, wide_s: float = 10.0
+                           ) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Nested audio excerpts around one *approximate* spoken landmark.
+
+    The shorter sample range is identical in both tight control requests.
+    These crops have different media coverage: never compare their overall
+    transcript lengths as if they were for the same audio.
+    """
+    duration = length / SAMPLE_RATE
+    if (not math.isfinite(center_s) or not math.isfinite(tight_s)
+            or not math.isfinite(wide_s) or not 0 < center_s < duration
+            or not 2.0 <= tight_s < wide_s <= 15.0):
+        raise ValueError("Invalid crosstalk focus center or crop lengths")
+    def crop(span_s: float) -> tuple[int, int]:
+        left = max(0, round((center_s - span_s / 2) * SAMPLE_RATE))
+        right = min(length, round((center_s + span_s / 2) * SAMPLE_RATE))
+        return left, right
+    tight, wide = crop(tight_s), crop(wide_s)
+    if (tight[1] - tight[0] < SAMPLE_RATE * 2
+            or not wide[0] <= tight[0] < tight[1] <= wide[1]):
+        raise ValueError("Invalid nested crosstalk focus audio windows")
+    return tight, wide
 
 
 def decode_window(media: Path, start_s: float, end_s: float, ffmpeg: str) -> np.ndarray:
@@ -246,7 +280,8 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
               qwen_short_target_s: float | None = None,
               qwen_quality_recovery: bool = False,
               qwen_vocabulary: str | None = None,
-              qwen_trunc_overlap_s: float | None = None) -> list[dict]:
+              qwen_trunc_overlap_s: float | None = None,
+              qwen_crosstalk_focus: bool = False) -> list[dict]:
     rows: list[dict] = []
     for label, (start_s, audio) in windows.items():
         length = len(audio)
@@ -258,6 +293,7 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
                 qwen_short_target_s is not None or qwen_quality_recovery
                 or qwen_vocabulary is not None
                 or qwen_trunc_overlap_s is not None
+                or qwen_crosstalk_focus
             )
         if qwen_vocabulary is not None and name == "qwen3-asr":
             # ABA rather than just AB: normal Qwen can differ between two
@@ -324,6 +360,19 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
                         model, name, label, start_s, audio,
                         variant="short", part=part, left=left, right=right,
                     ))
+        if qwen_crosstalk_focus and name == "qwen3-asr":
+            (tight_left, tight_right), (wide_left, wide_right) = (
+                crosstalk_focus_ranges(length, CROSSTALK_FOCUS_S[label][0])
+            )
+            for variant, left, right in (
+                ("focus_tight", tight_left, tight_right),
+                ("focus_wide", wide_left, wide_right),
+                ("focus_tight_repeat", tight_left, tight_right),
+            ):
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant=variant, part=0, left=left, right=right,
+                ))
         if qwen_trunc_overlap_s is not None and name == "qwen3-asr":
             rows.append(run_truncation_recovery_case(
                 model, label, start_s, audio, overlap_s=0.0,
@@ -413,6 +462,46 @@ def english_report(rows: list[dict], media_name: str) -> str:
                 f'{candidate["elapsed_s"]:.3f} | {base["ja_chars"]} | '
                 f'{candidate["ja_chars"]} | '
                 f'{sim if sim is not None else "-"} |'
+            )
+    focus_rows = [r for r in rows if r["model"] == "qwen3-asr"
+                  and r["variant"] == "focus_wide"]
+    if focus_rows:
+        lines.extend([
+            "", "## Qwen targeted crosstalk context-window experiment", "",
+            "All variants use the same Qwen weights, auto-language detection "
+            "and no vocabulary hints. A1 and A2 decode identical 6-second "
+            "crops; B decodes a nested 10-second crop around the same point. "
+            "Actual crops may be shorter near the clip edge. **The spans differ**, "
+            "so total characters must NOT be scored as accuracy or transcript "
+            "coverage. Listen to the common center span and check word identity, "
+            "missing speaker turns, false words and name/number changes.", "",
+            "| Scene | Focus (s in clip) | Tight audio range (s) | Wide audio range (s) | "
+            "Tight A1 chars | Wide B chars | Tight A2 chars | Tight A/A agree | Flags |",
+            "|---|---:|---|---|---:|---:|---:|---|---|",
+        ])
+        for wide in focus_rows:
+            win = wide["window"]
+            tight = next((r for r in rows if r["model"] == "qwen3-asr"
+                          and r["window"] == win and r["variant"] == "focus_tight"), None)
+            repeat = next((r for r in rows if r["model"] == "qwen3-asr"
+                           and r["window"] == win and r["variant"] == "focus_tight_repeat"), None)
+            if tight is None or repeat is None:
+                continue
+            stable = tight["text"] == repeat["text"] and tight["language"] == repeat["language"]
+            flags = []
+            if not stable:
+                flags.append("baseline_varies")
+            if any(r["language"] == "error" or r["rejection"] for r in (tight, wide, repeat)):
+                flags.append("decode_error_or_rejection")
+            if wide["language"] != tight["language"]:
+                flags.append("language_changed")
+            local_start = WINDOWS[win][0]
+            fmt = lambda r: f'{r["start_s"]-local_start:.2f}-{r["end_s"]-local_start:.2f}'
+            lines.append(
+                f'| {win} | {CROSSTALK_FOCUS_S[win][0]:.2f} | {fmt(tight)} | '
+                f'{fmt(wide)} | {tight["ja_chars"]} | {wide["ja_chars"]} | '
+                f'{repeat["ja_chars"]} | {"yes" if stable else "NO"} | '
+                f'{", ".join(flags) or "-"} |'
             )
     trunc_rows = [r for r in rows if r["model"] == "qwen3-asr"
                   and r["variant"] == "trunc_overlap"]
@@ -577,6 +666,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--qwen-model-dir", type=Path,
                         default=ROOT / "models" / "qwen3-asr",
                         help="Explicit standard Qwen model/projector folder; avoids JA auto-discovery")
+    parser.add_argument("--qwen-crosstalk-focus", action="store_true",
+                        help="A/B/A 6s-vs-10s nested audio context around four difficult speech landmarks")
     parser.add_argument("--qwen-trunc-overlap-s", type=float,
                         choices=[0.16, 0.24],
                         help="Test forced truncated-audio recovery with 0 versus 0.16/0.24s overlap")
@@ -605,11 +696,22 @@ def main(argv: list[str] | None = None) -> int:
     requested_arms = sum(bool(v) for v in (
         args.qwen_short_target_s, args.qwen_split_first, args.qwen_recover_rejected,
         args.qwen_vocabulary, args.qwen_trunc_overlap_s,
+        args.qwen_crosstalk_focus,
     ))
     if requested_arms > 1:
-        print("Run shortening, split-first, rejected-speech recovery and vocabulary separately",
+        print("Run Qwen experimental modes separately",
               file=sys.stderr)
         return 2
+    if args.qwen_crosstalk_focus:
+        if args.model != ["qwen3-asr"]:
+            print("--qwen-crosstalk-focus requires --model qwen3-asr only",
+                  file=sys.stderr)
+            return 2
+        invalid = sorted(set(args.window) - CROSSTALK_FOCUS_S.keys())
+        if invalid:
+            print("No audited crosstalk anchor for: " + ", ".join(invalid),
+                  file=sys.stderr)
+            return 2
     if args.qwen_trunc_overlap_s is not None and "qwen3-asr" not in args.model:
         print("--qwen-trunc-overlap-s requires --model qwen3-asr", file=sys.stderr)
         return 2
@@ -640,6 +742,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Experimental Qwen pause-guided segments: <= {args.qwen_short_target_s}s")
     if args.qwen_recover_rejected:
         print("A/B: normal Qwen versus opt-in recovery of rejected hypotheses")
+    if args.qwen_crosstalk_focus:
+        print("A/B/A: 6s tight, 10s wide, exact 6s tight repeat around focus anchors")
     if args.qwen_trunc_overlap_s is not None:
         print(f"A/B/A: forced truncation recovery with 0 versus {args.qwen_trunc_overlap_s}s overlap")
     if args.qwen_vocabulary:
@@ -683,6 +787,7 @@ def main(argv: list[str] | None = None) -> int:
                     qwen_vocabulary=(args.qwen_vocabulary_terms
                                      if args.qwen_vocabulary else None),
                     qwen_trunc_overlap_s=args.qwen_trunc_overlap_s,
+                    qwen_crosstalk_focus=args.qwen_crosstalk_focus,
                 ))
             finally:
                 if model is not None:

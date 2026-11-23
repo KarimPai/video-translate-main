@@ -295,6 +295,38 @@ class Qwen3ASR:
                             "two shorter audio windows", duration_s,
                         )
                         break
+                    # The split-first path is an optimization, not permission to
+                    # lose speech: when the guarded split failed, retain the
+                    # historical 512-token full-window fallback if deadline
+                    # permits. This is needed only for >=12s experimental
+                    # recovery; short windows still use their original path.
+                    if (getattr(self, "_prefer_split_on_truncation", False)
+                            and duration_s >= 12.0
+                            and gen == self._generation
+                            and not self._closed
+                            and not stopping.is_set()
+                            and deadline - time.monotonic() > 0.5):
+                        try:
+                            fallback = self._transcribe_impl(
+                                audio, probe=probe,
+                                timeout=deadline - time.monotonic(),
+                                max_tokens=512,
+                            )
+                            if fallback:
+                                text = fallback
+                                self._failures = 0
+                                log.warning(
+                                    "Qwen3-ASR split-first unavailable; recovered "
+                                    "%.1fs utterance with original 512-token retry",
+                                    duration_s,
+                                )
+                                break
+                        except (Qwen3ASRTruncationError, Qwen3ASRError,
+                                httpx.HTTPError) as fallback_exc:
+                            log.warning(
+                                "Qwen3-ASR split-first and 512-token fallback both "
+                                "failed for %.1fs audio (%s)", duration_s, fallback_exc,
+                            )
                     self.last_rejection = "token_limit"
                     self.last_detected_language = "und"
                     self.last_raw_transcript = ""

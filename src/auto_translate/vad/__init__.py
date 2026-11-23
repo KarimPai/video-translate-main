@@ -128,7 +128,7 @@ def _select_longform_cut(
 
 
 class Segmenter:
-    """State machine over 10 ms frames: idle → speech → (pause | max length) → emit."""
+    """State machine over 32 ms frames: idle → speech → (pause | max length) → emit."""
 
     def __init__(self, cfg: VadConfig) -> None:
         self.cfg = cfg
@@ -203,7 +203,9 @@ class Segmenter:
         self._speech_start_sample = 0
         self._silence = 0  # consecutive silent frames at the end of the utterance
         self._in_speech = False
+        self._continuing_speech = False
         self._read_at = 0.0
+        self._read_end_sample = next_sample
         self._out: list[Utterance] = []
         self._pending_progress = next_sample
         self._last_progress_sample = next_sample
@@ -216,10 +218,11 @@ class Segmenter:
         if chunk.generation != self._generation:
             return []
         self._read_at = chunk.read_at
-        if self._next_frame_sample == 0:
+        if self._next_frame_sample == 0 and not len(self._leftover):
             self._next_frame_sample = chunk.start_sample  # VOD may start mid-video
             self._idle_start = chunk.start_sample
         audio = np.concatenate([self._leftover, chunk.pcm])
+        self._read_end_sample = self._next_frame_sample + len(audio)
         whole = len(audio) // FRAME * FRAME
         self._leftover = audio[whole:]
         if whole:
@@ -232,6 +235,12 @@ class Segmenter:
 
     def flush(self) -> list[Utterance]:
         """End of stream: emit whatever speech is in progress."""
+        if len(self._leftover):
+            frame = self._leftover
+            self._leftover = np.zeros(0, dtype=np.float32)
+            padded = np.pad(frame, (0, FRAME - len(frame)))
+            self._step(frame, float(self.vad(padded)[0]))
+            self._next_frame_sample += len(frame)
         if self._in_speech:
             self._emit(len(self._frames), keep_rest=False)
         self._emit_probe(len(self._idle))
@@ -249,7 +258,7 @@ class Segmenter:
         elif self._in_speech:
             safe_sample = self._start_sample
         else:
-            safe_sample = self._next_frame_sample - len(self._preroll) * FRAME
+            safe_sample = self._next_frame_sample - sum(map(len, self._preroll))
 
         # Idle frames may still produce a fallback ASR probe.
         if not force and not self._in_speech and self.fallback_frames and self._idle:
@@ -331,7 +340,8 @@ class Segmenter:
 
         self._frames.append(frame)
         self._probs.append(prob)
-        if self._speech_start_sample is None and prob >= self._speech_threshold:
+        threshold = self._exit_threshold if self._continuing_speech else self._speech_threshold
+        if self._speech_start_sample is None and prob >= threshold:
             # A forced cut can leave only silence in the continuation. Its
             # next spoken onset belongs to the next positive frame, not the
             # earlier padded audio boundary retained for ASR context.
@@ -340,7 +350,8 @@ class Segmenter:
 
         if self._silence >= self.min_silence:
             # Pause found: keep `pad` frames of trailing silence, the rest becomes preroll.
-            n = min(len(self._frames), len(self._frames) - self._silence + self.pad)
+            retained_silence = min(self._silence, len(self._frames))
+            n = min(len(self._frames), len(self._frames) - retained_silence + self.pad)
             self._emit(n, keep_rest=False)
         elif (self.adaptive_frames and len(self._frames) >= self.adaptive_frames
               and self._silence >= self.adaptive_pause_frames):
@@ -348,7 +359,7 @@ class Segmenter:
             # the maximum chunk length. Include its trailing silence once;
             # no PCM is repeated or discarded across consecutive cues.
             self._emit(len(self._frames), keep_rest=False)
-        elif len(self._frames) >= self._soft_limit:
+        elif len(frame) == FRAME and len(self._frames) >= self._soft_limit:
             # Prefer a real sustained pause; extend at most 1s before
             # a smoothed-energy forced cut. Timestamped PCM remains contiguous.
             hard = len(self._frames) >= self._hard_limit
@@ -368,20 +379,26 @@ class Segmenter:
         frames, probs = self._frames[:n], self._probs[:n]
         rest_frames, rest_probs = self._frames[n:], self._probs[n:]
         start = self._start_sample
-        end = start + n * FRAME
+        end = start + sum(map(len, frames))
 
-        speech_probs = [p for p in probs if p >= self._speech_threshold]
+        threshold = self._exit_threshold if self._continuing_speech else self._speech_threshold
+        speech_probs = [p for p in probs if p >= threshold]
         # Keep brief, sustained high-probability replies without opening
         # the gate for isolated peaks or lowering the ordinary speech floor.
         confident_run = 0
         short_reply = False
-        if 0 < len(speech_probs) < self.min_speech:
+        if not self._continuing_speech and 0 < len(speech_probs) < self.min_speech:
             for prob in probs:
                 confident_run = confident_run + 1 if prob >= self.cfg.short_reply_probability else 0
                 if confident_run >= self.short_reply_frames:
                     short_reply = True
                     break
-        if len(speech_probs) >= self.min_speech or short_reply:
+        # A length cut does not end speech. An already accepted sequence can
+        # continue below the onset threshold, including a short tail at EOF.
+        # A continuation consisting entirely of silence still emits nothing.
+        accepted = (len(speech_probs) >= self.min_speech or short_reply
+                    or (self._continuing_speech and bool(speech_probs)))
+        if accepted:
             utt = Utterance(
                 start / SAMPLE_RATE,
                 end / SAMPLE_RATE,
@@ -391,10 +408,7 @@ class Segmenter:
                                 if self._speech_start_sample is not None else None),
                 vad_confidence=sum(speech_probs) / len(speech_probs),
             )
-            # Estimate when the utterance's last sample arrived: the current chunk's read time,
-            # minus the audio processed after it (the trailing silence we waited for).
-            processed_end = self._next_frame_sample + FRAME
-            utt.timings.audio_read = self._read_at - (processed_end - end) / SAMPLE_RATE
+            utt.timings.audio_read = self._read_at - (self._read_end_sample - end) / SAMPLE_RATE
             utt.timings.segmented = time.monotonic()
             self._out.append(utt)
             log.debug(
@@ -408,15 +422,18 @@ class Segmenter:
             self._hard_limit = self.hard_max_frames
 
         if keep_rest:
+            self._continuing_speech |= accepted
             self._frames, self._probs = rest_frames, rest_probs
             self._start_sample = end
+            threshold = self._exit_threshold if self._continuing_speech else self._speech_threshold
             first_positive = next(
-                (i for i, p in enumerate(rest_probs) if p >= self._speech_threshold), None,
+                (i for i, p in enumerate(rest_probs) if p >= threshold), None,
             )
             self._speech_start_sample = (end + first_positive * FRAME
                                          if first_positive is not None else None)
         else:
             self._in_speech = False
+            self._continuing_speech = False
             self._frames, self._probs = [], []
             self._preroll.clear()
             self._preroll.extend(rest_frames)  # deque(maxlen) keeps only the last `pad`
@@ -438,8 +455,8 @@ class Segmenter:
         if len(self._idle) >= max_idle:
             # Drop oldest frames and emit a probe from what remains
             excess = len(self._idle) - self.fallback_frames
+            self._idle_start += sum(map(len, self._idle[:excess]))
             self._idle = self._idle[excess:]
-            self._idle_start += excess * FRAME
         if len(self._idle) >= self.fallback_frames:
             # Cut at the quietest frame in the last ~2 s, so a word is less likely to be split.
             lo = max(self.fallback_min, len(self._idle) - self.split_search)
@@ -450,7 +467,7 @@ class Segmenter:
         """Send idle frames to ASR only when fallback_s is explicitly enabled."""
         frames, self._idle = self._idle[:max(n, 0)], self._idle[max(n, 0):]
         start = self._idle_start
-        self._idle_start += len(frames) * FRAME
+        self._idle_start += sum(map(len, frames))
         if not self.fallback_frames or len(frames) < self.fallback_min:
             return
         audio = np.concatenate(frames)
@@ -464,7 +481,7 @@ class Segmenter:
             probe=True,
             generation=self._generation,
         )
-        utt.timings.audio_read = self._read_at - (self._next_frame_sample + FRAME - end) / SAMPLE_RATE
+        utt.timings.audio_read = self._read_at - (self._read_end_sample - end) / SAMPLE_RATE
         utt.timings.segmented = time.monotonic()
         self._out.append(utt)
         log.info(

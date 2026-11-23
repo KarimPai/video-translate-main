@@ -617,6 +617,8 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
       value is used as the compatible default.
     - Otherwise, the field is empty — no cross-backend contamination.
     - Explicit GUI/CLI overrides always win.
+    - A Qwen checkpoint override can infer its own projector when only the
+      model changes.
 
     When `selected_backend` is provided, model_path overrides in `explicit_overrides`
     are scoped to that backend only, preventing --mt-model from overriding a different
@@ -662,6 +664,11 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
             # Remove model_path override for non-selected backends
             scoped_overrides.pop("model_path", None)
             scoped_overrides.pop("mmproj_path", None)
+        if (backend_type == "asr" and backend_name == "qwen3-asr"
+                and "model_path" in scoped_overrides
+                and scoped_overrides["model_path"] != merged.get("model_path")
+                and "mmproj_path" not in scoped_overrides):
+            merged.pop("mmproj_path", None)
         merged.update(scoped_overrides)
     return merged
 
@@ -676,33 +683,16 @@ def resolve_model_identity(cfg: Config, backend_type: str, backend_name: str,
     3. Common config default (only if backend is the default for its type)
     4. Empty string (no compatible source)
 
-    Returns a dict with keys: model_path, mmproj_path (ASR only), server_path.
+    Returns the model_path and, for ASR, mmproj_path fields.
     """
     if backend_type == "asr":
-        profile = cfg.asr_profiles.get(backend_name, {})
         identity_keys = _MODEL_IDENTITY_ASR
-        common = {f.name: getattr(cfg.asr, f.name) for f in fields(cfg.asr)}
     elif backend_type == "translate":
-        profile = cfg.translate_profiles.get(backend_name, {})
         identity_keys = _MODEL_IDENTITY_TRANSLATE
-        common = {f.name: getattr(cfg.translate, f.name) for f in fields(cfg.translate)}
     else:
-        profile = {}
-        identity_keys = set()
-        common = {}
-
-    result = {}
-    for key in identity_keys:
-        # Priority: explicit override > backend profile > compatible default > empty
-        if explicit_overrides and key in explicit_overrides:
-            result[key] = explicit_overrides[key]
-        elif key in profile:
-            result[key] = profile[key]
-        elif _is_compatible_identity(backend_name, key, common.get(key, ""), backend_type):
-            result[key] = common.get(key, "")
-        else:
-            result[key] = ""
-    return result
+        return {}
+    merged = get_backend_config(cfg, backend_type, backend_name, explicit_overrides)
+    return {key: merged.get(key, "") for key in identity_keys}
 
 
 __all__ = [

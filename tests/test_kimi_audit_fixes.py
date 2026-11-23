@@ -433,18 +433,14 @@ class TestCudaDeviceSelection:
 class TestQwen3ASRStartup:
     """Test Qwen3-ASR model resolution and error messages."""
 
-    def test_qwen3_asr_auto_projector_matches_model_size(self):
+    def test_qwen3_asr_auto_projector_matches_sibling(self, tmp_path):
         from auto_translate.registry import _find_qwen3_asr_mmproj
 
-        candidates = [
-            "/models/Qwen3-ASR-0.6B/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
-            "/models/Qwen3-ASR-1.7B/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
-            "/models/Gemma/mmproj-Gemma-4.gguf",
-        ]
-        with patch("auto_translate.registry._qwen3_asr_candidates", return_value=candidates):
-            assert _find_qwen3_asr_mmproj(
-                "/models/Qwen3-ASR-1.7B/Qwen3-ASR-1.7B-Q8_0.gguf"
-            ) == candidates[1]
+        model = tmp_path / "Qwen3-ASR-1.7B-Q8_0.gguf"
+        (tmp_path / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").touch()
+        projector = tmp_path / f"mmproj-{model.name}"
+        projector.touch()
+        assert _find_qwen3_asr_mmproj(str(model)) == str(projector)
 
     def test_qwen3_asr_rejects_incompatible_explicit_projector(self):
         from auto_translate.registry import _qwen3_asr_factory
@@ -461,8 +457,8 @@ class TestQwen3ASRStartup:
         from auto_translate.registry import _find_qwen3_asr_model
 
         candidates = [
-            "/models/Qwen3-ASR-0.6B-Q8_0.gguf",
-            "/models/Qwen3-ASR-1.7B-Q8_0.gguf",
+            "/models/first/Qwen3-ASR-1.7B-Q8_0.gguf",
+            "/models/second/Qwen3-ASR-1.7B-Q8_0.gguf",
         ]
         with patch("auto_translate.registry._qwen3_asr_candidates", return_value=candidates):
             with pytest.raises(ValueError, match="Multiple Qwen3-ASR GGUF"):
@@ -515,23 +511,13 @@ class TestQwen3ASRStartup:
                 result = _find_qwen3_asr_model()
                 assert result == str(model_file)
 
-    def test_qwen3_asr_mmproj_search(self):
-        """_find_qwen3_asr_mmproj must search common directories."""
+    def test_qwen3_asr_mmproj_search_finds_sibling_outside_models(self, tmp_path, monkeypatch):
         from auto_translate.registry import _find_qwen3_asr_mmproj
-        from pathlib import Path
 
-        with patch("pathlib.Path.cwd") as mock_cwd:
-            root = Path("/fake/project")
-            mock_cwd.return_value = root
-
-            model_dir = root / "models" / "qwen3-asr"
-            mmproj_file = model_dir / "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-
-            with patch("pathlib.Path.is_dir", return_value=True), \
-                 patch("glob.glob") as mock_glob:
-                mock_glob.return_value = [str(mmproj_file)]
-                result = _find_qwen3_asr_mmproj()
-                assert result == str(mmproj_file)
+        monkeypatch.chdir(tmp_path)
+        projector = tmp_path / "mmproj-Qwen3-ASR-1.7B-JA-Q8_0.gguf"
+        projector.touch()
+        assert _find_qwen3_asr_mmproj("Qwen3-ASR-1.7B-JA-Q8_0.gguf") == projector.name
 
     def test_qwen3_asr_model_search_excludes_mmproj(self):
         """Model search must not return mmproj files."""
@@ -557,7 +543,7 @@ class TestQwen3ASRStartup:
         mock_asr = MagicMock()
 
         with patch("auto_translate.registry._find_qwen3_asr_model", return_value="/found/model.gguf"), \
-             patch("auto_translate.registry._find_qwen3_asr_mmproj", return_value="/found/mmproj.gguf"), \
+             patch("auto_translate.registry._find_qwen3_asr_mmproj", return_value="/found/mmproj-model.gguf"), \
              patch("auto_translate.asr.qwen3_asr.Qwen3ASR", mock_asr):
             _qwen3_asr_factory({"model_path": "", "mmproj_path": ""})
 
@@ -565,7 +551,7 @@ class TestQwen3ASRStartup:
             call_args = mock_asr.call_args
             config_arg = call_args[0][0]
             assert config_arg.model_path == "/found/model.gguf"
-            assert config_arg.mmproj_path == "/found/mmproj.gguf"
+            assert config_arg.mmproj_path == "/found/mmproj-model.gguf"
 
 
 # ============================================================================

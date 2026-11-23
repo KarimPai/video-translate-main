@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_QWEN3_ASR_DEFAULT_MODEL = "Qwen3-ASR-1.7B-Q8_0.gguf"
 
 
 @dataclass(frozen=True)
@@ -343,50 +345,32 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Qwen3-ASR.
 
     Qwen3-ASR must never inherit Haas's model path from dataclass defaults.
-    Searches local model directories before raising a missing-model error.
-    Raises clear errors if model_path or mmproj_path are missing.
+    Defaults to the standard local Q8_0 checkpoint and its matching projector.
     """
     from .asr.qwen3_asr import Qwen3ASR
     from .config import AsrConfig
     if isinstance(config, dict):
         config = dict(config)
         # Qwen3-ASR is NOT the default ASR — do NOT inherit Haas model path.
-        # If model_path is missing from config, set it empty so the backend
-        # constructor raises a clear missing-model error.
-        if "model_path" not in config:
-            config["model_path"] = ""
-        if "mmproj_path" not in config:
-            config["mmproj_path"] = ""
+        config.setdefault("model_path", "")
         config = AsrConfig(**config)
-    # Validate Qwen3-ASR required fields before attempting to load
-    model_path = (config.model_path or "").strip()
-    mmproj_path = (config.mmproj_path or "").strip()
-
-    # Try to resolve model path if not set or not found
-    if not model_path:
-        model_path = _find_qwen3_asr_model()
-
-    # Try to resolve mmproj path if not set or not found
-    if not mmproj_path:
-        mmproj_path = _find_qwen3_asr_mmproj(model_path)
-
+    model_path = config.model_path.strip() or _find_qwen3_asr_model()
     if not model_path:
         raise ValueError(
-            "Qwen3-ASR backend selected but no Qwen3-ASR model is configured. "
+            f"Qwen3-ASR default model {_QWEN3_ASR_DEFAULT_MODEL} was not found and no model is configured. "
             "Set asr.model_path to a Qwen3-ASR GGUF model file, "
-            "or configure [asr.qwen3-asr] model_path in config.toml. "
-            "Example: model_path = 'models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf'"
+            "or configure [asr.qwen3-asr] model_path in config.toml."
         )
+    mmproj_path = config.mmproj_path.strip() or _find_qwen3_asr_mmproj(model_path)
     if not mmproj_path:
+        model = Path(model_path).expanduser()
+        expected_projector = model.with_name(f"mmproj-{model.name}")
         raise ValueError(
-            "Qwen3-ASR backend selected but no audio projector (mmproj) is configured. "
-            "Set asr.mmproj_path to a Qwen3-ASR mmproj GGUF file, "
-            "or configure [asr.qwen3-asr] mmproj_path in config.toml. "
-            "Example: mmproj_path = 'models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf'"
+            f"Qwen3-ASR has no audio projector (mmproj) configured and no matching "
+            f"sibling at {expected_projector}. Place the matching projector beside "
+            "the checkpoint or set [asr.qwen3-asr] mmproj_path or --asr-mmproj explicitly."
         )
 
-    # Filename-level compatibility check; custom filenames remain supported
-    # when both paths are explicitly provided.
     model_family = _qwen3_asr_family(model_path)
     mmproj_family = _qwen3_asr_family(mmproj_path)
     if model_family and mmproj_family and model_family != mmproj_family:
@@ -394,14 +378,15 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
             f"Qwen3-ASR model ({model_family}) and mmproj ({mmproj_family}) "
             "are from different model sizes. Configure a matching pair."
         )
-
-    # Update config with resolved paths
-    if isinstance(config, AsrConfig):
-        from dataclasses import replace
-        config = replace(config, model_path=model_path, mmproj_path=mmproj_path)
-    elif isinstance(config, dict):
-        config["model_path"] = model_path
-        config["mmproj_path"] = mmproj_path
+    model_name = Path(model_path).name
+    projector_name = f"mmproj-{model_name}"
+    if (model_name.casefold().startswith("mmproj-")
+            or Path(mmproj_path).name.casefold() != projector_name.casefold()):
+        raise ValueError(
+            f"Qwen3-ASR model and mmproj do not match: {model_name} and "
+            f"{Path(mmproj_path).name}. Use the matching projector {projector_name}."
+        )
+    config = replace(config, model_path=model_path, mmproj_path=mmproj_path)
 
     context = kwargs.pop("context", "")
     return Qwen3ASR(config, context=context)
@@ -410,8 +395,6 @@ def _qwen3_asr_factory(config: Any, **kwargs: Any) -> Any:
 def _qwen3_asr_family(path: str) -> str | None:
     """Recognize Qwen3-ASR model size in an official-style GGUF filename."""
     import re
-    from pathlib import Path
-
     match = re.search(r"qwen3[-_.]?asr[-_.]?(0\.6|1\.7)b", Path(path).name, re.IGNORECASE)
     return match.group(1) if match else None
 
@@ -419,66 +402,43 @@ def _qwen3_asr_family(path: str) -> str | None:
 def _qwen3_asr_candidates() -> list[str]:
     """Find local GGUF candidates without downloading files or trusting the CWD."""
     import glob
-    from pathlib import Path
-
     project_root = Path(__file__).resolve().parents[2]
     roots = (project_root / "models", Path.cwd() / "models")
-    found: set[str] = set()
+    found: set[Path] = set()
     for base in roots:
         if not base.is_dir():
             continue
         for pattern in ("*.gguf", "*.GGUF"):
             for path in glob.glob(str(base / "**" / pattern), recursive=True):
                 if _qwen3_asr_family(path):
-                    found.add(str(Path(path)))
-    return sorted(found)
+                    found.add(Path(path))
+    return sorted(map(str, found))
 
 
 def _find_qwen3_asr_model() -> str:
-    """Auto-select only when exactly one Qwen3-ASR model candidate exists."""
-    from pathlib import Path
-
+    """Select the standard checkpoint only. Other checkpoints require an override."""
     candidates = [
         path for path in _qwen3_asr_candidates()
-        if "mmproj" not in Path(path).name.lower()
+        if Path(path).name.casefold() == _QWEN3_ASR_DEFAULT_MODEL.casefold()
     ]
     if len(candidates) == 1:
         logger.info("Found Qwen3-ASR model: %s", candidates[0])
         return candidates[0]
     if len(candidates) > 1:
         raise ValueError(
-            "Multiple Qwen3-ASR GGUF models found. Set [asr.qwen3-asr] "
-            "model_path explicitly to avoid selecting the wrong version: "
+            "Multiple Qwen3-ASR GGUF copies of the standard checkpoint found. "
+            "Set [asr.qwen3-asr] model_path explicitly: "
             + ", ".join(candidates)
         )
     return ""
 
 
-def _find_qwen3_asr_mmproj(model_path: str = "") -> str:
-    """Find a uniquely matching Qwen3-ASR projector, never another family's."""
-    from pathlib import Path
-
-    family = _qwen3_asr_family(model_path) if model_path else None
-    if model_path and not family:
-        # A user-renamed model has no reliable filename identifier.
-        return ""
-    candidates = [
-        path for path in _qwen3_asr_candidates()
-        if "mmproj" in Path(path).name.lower()
-        and (family is None or _qwen3_asr_family(path) == family)
-    ]
-    if model_path:
-        nearby = [p for p in candidates if Path(p).parent == Path(model_path).parent]
-        if nearby:
-            candidates = nearby
-    if len(candidates) == 1:
-        logger.info("Found Qwen3-ASR mmproj: %s", candidates[0])
-        return candidates[0]
-    if len(candidates) > 1:
-        raise ValueError(
-            "Multiple compatible Qwen3-ASR projectors found. Set "
-            "[asr.qwen3-asr] mmproj_path explicitly: " + ", ".join(candidates)
-        )
+def _find_qwen3_asr_mmproj(model_path: str) -> str:
+    """Infer a projector only beside the selected checkpoint."""
+    model = Path(model_path).expanduser()
+    projector = model.with_name(f"mmproj-{model.name}")
+    if projector.is_file() and projector.resolve().parent == model.resolve().parent:
+        return str(projector)
     return ""
 
 

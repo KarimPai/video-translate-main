@@ -91,7 +91,8 @@ vod_merge_timeout_s = 5.0
 
 # Qwen3-ASR profile — multimodal ASR via llama.cpp (~2GB VRAM for 1.7B model)
 # Requires both a model GGUF and an audio projector (mmproj) GGUF
-# To use Qwen3-ASR, set asr_backend = "qwen3-asr" in [models] and uncomment:
+# Set asr_backend = "qwen3-asr" in [models] to use the standard Q8_0 pair.
+# To pin another checkpoint, set its path and the matching mmproj-<checkpoint filename>.
 # [asr.qwen3-asr]
 # model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
 # mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"

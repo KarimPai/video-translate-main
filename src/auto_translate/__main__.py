@@ -53,6 +53,7 @@ def _main(resources: ExitStack) -> None:
     parser.add_argument("--vad-threshold", type=float, metavar="PROBABILITY",
                         help="benchmark-only VAD onset threshold override; preserves config.toml")
     parser.add_argument("--asr-model", type=Path, help="ASR model path")
+    parser.add_argument("--asr-mmproj", type=Path, help="Qwen3-ASR audio projector path")
     parser.add_argument("--speech-server", type=Path, help="speech.cpp executable path")
     parser.add_argument("--mt-model", type=Path, help="Translation GGUF model")
     parser.add_argument("--llama-server", type=Path, help="llama.cpp llama-server executable (CUDA)")
@@ -193,6 +194,7 @@ def _main(resources: ExitStack) -> None:
     translate_cli_overrides = {}
     for option, section, field_name, override_dict in (
         ("asr_model", cfg.asr, "model_path", asr_cli_overrides),
+        ("asr_mmproj", cfg.asr, "mmproj_path", asr_cli_overrides),
         ("speech_server", cfg.asr, "speech_server_path", asr_cli_overrides),
         ("mt_model", cfg.translate, "model_path", translate_cli_overrides),
         ("llama_server", cfg.translate, "server_path", translate_cli_overrides),
@@ -342,9 +344,13 @@ def _main(resources: ExitStack) -> None:
                                      selected_backend=asr_backend_name)
     from .model_discovery import log_inventory, resolve_selected_model_paths
     log_inventory()
-    # Respect explicitly entered CLI model paths; automatically repair only
-    # configured paths that were relocated with the project directory.
-    if "model_path" not in asr_cli_overrides:
+    # Resolve configured Qwen paths independently so an explicit checkpoint
+    # or projector is never silently replaced by model discovery.
+    if asr_backend_name == "qwen3-asr":
+        configured = {key: value for key, value in asr_profile.items()
+                      if key not in asr_cli_overrides}
+        asr_profile.update(resolve_selected_model_paths("asr", asr_backend_name, configured))
+    elif "model_path" not in asr_cli_overrides:
         asr_profile = resolve_selected_model_paths("asr", asr_backend_name, asr_profile)
     # Derive timeout from the already-merged profile (backend-specific values
     # take precedence over common config). For live mode, use the shorter

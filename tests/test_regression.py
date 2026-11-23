@@ -560,7 +560,7 @@ def test_get_backend_config_precedence_cli_wins_over_profile():
     explicit = {"model_path": "/cli/model.gguf"}
     merged = get_backend_config(cfg, "asr", "qwen3-asr", explicit_overrides=explicit)
     assert merged["model_path"] == "/cli/model.gguf"
-    assert merged["mmproj_path"] == "/models/qwen3-asr/profile-mmproj.gguf"
+    assert "mmproj_path" not in merged  # Infer the projector for the CLI checkpoint.
     assert merged["threads"] == 4
 
 
@@ -1545,7 +1545,8 @@ def test_registry_factory_qwen3_raises_on_empty_model():
         "Qwen3-ASR should not inherit Haas's model_path"
 
     registry = get_default_registry()
-    with pytest.raises(ValueError, match="Qwen3-ASR.*model.*configured"):
+    with mock.patch("auto_translate.registry._qwen3_asr_candidates", return_value=[]), \
+         pytest.raises(ValueError, match="Qwen3-ASR.*model.*configured"):
         registry.create_asr("qwen3-asr", merged, context="")
 
 

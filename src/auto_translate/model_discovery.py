@@ -116,6 +116,20 @@ def _resolve_gguf(configured: str, root: Path) -> str:
     return configured  # The selected backend retains its normal failure behavior.
 
 
+def _relocate_qwen_projector(configured: str, model_path: str, root: Path) -> str:
+    """Relocate a missing projector only when its configured suffix finds a sibling."""
+    if not configured or not model_path or Path(configured).expanduser().is_file():
+        return configured
+    suffix = _relative_model_path(configured)
+    if suffix is not None:
+        candidate = root / suffix
+        model = Path(model_path).expanduser()
+        if (_inside(candidate, root) and _gguf_ok(candidate)
+                and candidate.resolve().parent == model.resolve().parent):
+            return str(candidate.resolve())
+    return configured
+
+
 def _resolve_whisper(configured: str, root: Path) -> str:
     if configured:
         original = Path(configured).expanduser()
@@ -158,7 +172,8 @@ def resolve_selected_model_paths(
     """Recover moved model paths for the selected backend, never cross-load.
 
     Explicit paths still win when present. Missing configured paths can be
-    relocated by suffix or exact filename. The Whisper backend can discover
+    relocated by suffix or exact filename, except Qwen projectors, which
+    can only be relocated alongside their checkpoint. Whisper can discover
     its own single valid local CT2 model without an explicit path.
     """
     root = root if root is not None else models_root()
@@ -180,7 +195,10 @@ def resolve_selected_model_paths(
         keys = ("model_path",)
     for key in keys:
         old = str(resolved.get(key) or "")
-        new = _resolve_gguf(old, root)
+        if key == "mmproj_path":
+            new = _relocate_qwen_projector(old, str(resolved.get("model_path") or ""), root)
+        else:
+            new = _resolve_gguf(old, root)
         if new != old:
             resolved[key] = new
             log.info("Resolved %s %s %s: %s", backend_type, backend_name, key, new)

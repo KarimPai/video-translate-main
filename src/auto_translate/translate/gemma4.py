@@ -275,7 +275,7 @@ def translation_is_overlong(ja: str, english: str) -> bool:
     23 source characters expanded into 422 output characters). It does not
     attempt to score semantic accuracy or reject moderately long sentences.
     """
-    source_chars = len(re.sub(r"\\s+", "", ja))
+    source_chars = len(re.sub(r"\s+", "", ja))
     return source_chars >= 8 and len(english) >= 250 and len(english) > source_chars * 12
 
 

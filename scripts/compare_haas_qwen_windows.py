@@ -98,10 +98,13 @@ def pause_guided_ranges(audio: np.ndarray, target_s: float = 10.0,
     length = len(audio)
     if length <= int(target_s * SAMPLE_RATE):
         return [(0, length)]
-    parts = max(2, math.ceil((length - overlap_s * SAMPLE_RATE)
-                             / ((target_s - overlap_s) * SAMPLE_RATE)))
     frame = int(0.08 * SAMPLE_RATE)
     radius = int(0.65 * SAMPLE_RATE)
+    # Leave room for independent pause-search deviations on both boundaries,
+    # the overlap, and one alignment frame. Otherwise a 19s clip can exceed
+    # a 10s chunk limit even though the nominal centers fit.
+    safety_s = 2 * radius / SAMPLE_RATE + overlap_s + frame / SAMPLE_RATE
+    parts = max(2, math.ceil(length / ((target_s - safety_s) * SAMPLE_RATE)))
     boundaries = [0]
     for i in range(1, parts):
         intended = round(i * length / parts)

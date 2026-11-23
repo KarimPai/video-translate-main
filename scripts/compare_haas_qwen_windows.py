@@ -185,7 +185,8 @@ def run_case(model: object, model_name: str, window: str,
 
 def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarray]],
               *, qwen_split_first: bool = False,
-              qwen_short_target_s: float | None = None) -> list[dict]:
+              qwen_short_target_s: float | None = None,
+              qwen_quality_recovery: bool = False) -> list[dict]:
     rows: list[dict] = []
     for label, (start_s, audio) in windows.items():
         length = len(audio)
@@ -193,11 +194,31 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
             # For shortening A/B, use the production 15s split-first default.
             # Historical --qwen-split-first A/B retains its explicit old-style
             # control (full 256->512->split vs split-first).
-            model._prefer_split_on_truncation = bool(qwen_short_target_s is not None)
-        rows.append(run_case(
-            model, name, label, start_s, audio,
-            variant="full", part=0, left=0, right=length,
-        ))
+            model._prefer_split_on_truncation = bool(
+                qwen_short_target_s is not None or qwen_quality_recovery
+            )
+        if qwen_quality_recovery and name == "qwen3-asr":
+            # Control: never allow an already-enabled local config to bias
+            # the baseline. Restore the original option after the second arm.
+            previous_recovery = model.cfg.recover_rejected_speech
+            try:
+                model.cfg.recover_rejected_speech = False
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant="full", part=0, left=0, right=length,
+                ))
+                model.cfg.recover_rejected_speech = True
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant="quality_recovery", part=0, left=0, right=length,
+                ))
+            finally:
+                model.cfg.recover_rejected_speech = previous_recovery
+        else:
+            rows.append(run_case(
+                model, name, label, start_s, audio,
+                variant="full", part=0, left=0, right=length,
+            ))
         if qwen_split_first and name == "qwen3-asr":
             # A/B comparison on exactly the same long PCM and model instance:
             # default 256->512->split vs experimental 256->split.
@@ -298,6 +319,33 @@ def english_report(rows: list[dict], media_name: str) -> str:
                 f'{candidate["ja_chars"]} | '
                 f'{sim if sim is not None else "-"} |'
             )
+    quality_rows = [row for row in rows if row["model"] == "qwen3-asr"
+                    and row["variant"] == "quality_recovery"]
+    if quality_rows:
+        lines.extend([
+            "", "## Qwen rejected-speech recovery A/B (opt-in)", "",
+            "Only malformed/looping hypotheses that the existing guard would "
+            "discard are eligible. **This is not a name or number correction.** "
+            "An unchanged result means the new recovery was not useful on that window.", "",
+            "| Window | Normal characters | Recovery characters | "
+            "Normal rejection | Recovery rejection | Match | Extra time (s) |",
+            "|---|---:|---:|---|---|---:|---:|",
+        ])
+        for retry in quality_rows:
+            full = next((r for r in rows if r["model"] == "qwen3-asr"
+                         and r["window"] == retry["window"]
+                         and r["variant"] == "full"), None)
+            if full is None:
+                continue
+            # Character similarity is agreement, not proof of recognition.
+            agreement = similarity(full["text"], retry["text"])
+            lines.append(
+                f'| {retry["window"]} | {full["ja_chars"]} | '
+                f'{retry["ja_chars"]} | {full["rejection"] or "-"} | '
+                f'{retry["rejection"] or "-"} | '
+                f'{agreement if agreement is not None else "-"} | '
+                f'{retry["elapsed_s"] - full["elapsed_s"]:.3f} |'
+            )
     short_trials = [row for row in rows if row["model"] == "qwen3-asr"
                     and row["variant"] == "short"]
     if short_trials:
@@ -350,6 +398,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--qwen-model-dir", type=Path,
                         default=ROOT / "models" / "qwen3-asr",
                         help="Explicit standard Qwen model/projector folder; avoids JA auto-discovery")
+    parser.add_argument("--qwen-recover-rejected", action="store_true",
+                        help="A/B normal decode versus opt-in salvage after clearly rejected speech")
     parser.add_argument("--qwen-short-target-s", type=float, choices=[8.0, 10.0, 12.0],
                         help="Experimental <=N second pause-guided splits, in addition to full controls")
     parser.add_argument("--qwen-split-first", action="store_true",
@@ -365,8 +415,12 @@ def main(argv: list[str] | None = None) -> int:
     if not media.is_file() or not config_file.is_file():
         print("Audio/video or config file not found", file=sys.stderr)
         return 2
-    if args.qwen_short_target_s and args.qwen_split_first:
-        print("Run shortening and split-first as separate experiments", file=sys.stderr)
+    requested_arms = sum(bool(v) for v in (
+        args.qwen_short_target_s, args.qwen_split_first, args.qwen_recover_rejected,
+    ))
+    if requested_arms > 1:
+        print("Run shortening, split-first and rejected-speech recovery separately",
+              file=sys.stderr)
         return 2
     qwen_dir = args.qwen_model_dir.expanduser().resolve()
     qwen_model = qwen_dir / STANDARD_QWEN_MODEL
@@ -387,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     print("For each window: one full decode, two overlapping half decodes.")
     if args.qwen_short_target_s:
         print(f"Experimental Qwen pause-guided segments: <= {args.qwen_short_target_s}s")
+    if args.qwen_recover_rejected:
+        print("A/B: normal Qwen versus opt-in recovery of rejected hypotheses")
     if "qwen3-asr" in args.model:
         print("Standard Qwen model:", qwen_model)
         print("Standard Qwen mmproj:", qwen_mmproj)
@@ -421,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                 rows.extend(run_model(
                     model, model_name, data, qwen_split_first=args.qwen_split_first,
                     qwen_short_target_s=args.qwen_short_target_s,
+                    qwen_quality_recovery=args.qwen_recover_rejected,
                 ))
             finally:
                 if model is not None:

@@ -712,6 +712,11 @@ class Gemma4Translator:
                             english = ""
                     else:
                         english = ""
+                    if not english:
+                        # Exhausted the context-free recovery; an ordinary
+                        # empty-output retry could reintroduce the same echo.
+                        record_event("mt_rejected", reason="translation_overrun_unresolved")
+                        return ""
 
                 elapsed = time.monotonic() - started
                 if elapsed > latency_budget:

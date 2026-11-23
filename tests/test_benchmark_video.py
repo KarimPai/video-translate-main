@@ -71,7 +71,7 @@ def test_runs_sequentially_and_saves_distinct_results(tmp_path: Path, monkeypatc
     code = main([
         str(clip), "--config", str(config), "--outdir", str(tmp_path / "runs"),
         "--asr", "haas", "whisper", "--mt", "gemma4",
-        "--context-lines", "8", "--vad-max-utterance-s", "10",
+        "--context-lines", "8", "--vad-max-utterance-s", "10", "--vad-threshold", "0.28",
     ])
     assert code == 0
     assert len(calls) == 2
@@ -79,6 +79,8 @@ def test_runs_sequentially_and_saves_distinct_results(tmp_path: Path, monkeypatc
     assert "--no-web" in calls[0]
     assert "--context-lines" in calls[0]
     assert "--vad-max-utterance-s" in calls[0]
+    assert "--vad-threshold" in calls[0]
+    assert calls[0][calls[0].index("--vad-threshold") + 1] == "0.28"
     assert calls[0].index("--asr-backend") != calls[0].index("--translate-backend")
     results = list((tmp_path / "runs").glob("*/summary.json"))
     assert len(results) == 1

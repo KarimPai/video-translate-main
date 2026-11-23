@@ -55,6 +55,35 @@ _JAPANESE_KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
 _NON_SPEECH = {"none", "no speech", "no_speech", "silence", "null"}
 
 
+def recovery_split_ranges(audio: np.ndarray, overlap_s: float = 0.0) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Choose a low-energy midpoint for truncated-audio recovery.
+
+    Optional overlap is *experimental*, measured in total shared seconds.
+    Production keeps 0.0 until audio-grounded results justify a change.
+    No text rewriting or guessed de-duplication occurs here.
+    """
+    if not 0.0 <= overlap_s <= 0.30:
+        raise ValueError("Qwen recovery overlap must be between 0.0 and 0.30s")
+    length = len(audio)
+    if length < 4 * 16000:
+        raise ValueError("Qwen recovery requires at least four seconds of audio")
+    center = length // 2
+    radius = length // 10
+    frame = 1280  # 80 ms at 16 kHz
+    best = center
+    best_energy = float("inf")
+    for pos in range(max(frame, center - radius), min(length - frame, center + radius) + 1, frame):
+        window = audio[pos - frame // 2:pos + frame // 2]
+        energy = float(np.mean(np.square(window.astype(np.float64))))
+        if energy < best_energy:
+            best_energy = energy
+            best = pos
+    shared_half = round(overlap_s * 16000 / 2)
+    left_end = min(length, best + shared_half)
+    right_start = max(0, best - shared_half)
+    return (0, left_end), (right_start, length)
+
+
 def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
     """Separate audio-derived language metadata from spoken text.
 
@@ -128,6 +157,9 @@ class Qwen3ASR:
         # short segments, language checks and quality gates are unchanged.
         # The diagnostic harness explicitly disables this for its control arm.
         self._prefer_split_on_truncation = True
+        # Audio-grounded 0.16/0.24s recovery overlap experiment only.
+        # Production has no shared samples or speculative text de-duplication.
+        self._truncation_recovery_overlap_s = 0.0
         self.context = context.strip()[: cfg.max_context_chars]
         # Dedicated opt-in experiment; generic stream/name context is NOT
         # automatically sent to the model (avoids vocabulary hallucinations).
@@ -467,21 +499,13 @@ class Qwen3ASR:
         if len(audio) < 4 * 16000 or self._closed or stopping.is_set():
             return None
 
-        # Place the split near the lowest-energy 80 ms window in the middle
-        # fifth of the segment to reduce the chance of cutting a spoken word.
-        center = len(audio) // 2
-        radius = len(audio) // 10
-        frame = 1280  # 80 ms at 16 kHz
-        best = center
-        best_energy = float("inf")
-        for pos in range(max(frame, center - radius), min(len(audio) - frame, center + radius) + 1, frame):
-            window = audio[pos - frame // 2:pos + frame // 2]
-            energy = float(np.mean(np.square(window.astype(np.float64))))
-            if energy < best_energy:
-                best_energy = energy
-                best = pos
-
-        parts = (audio[:best], audio[best:])
+        # Production uses the exact former zero-overlap boundary. Test-only
+        # overlap keeps words near the split audible to both requests, but
+        # may duplicate text: never enable it blindly for subtitles.
+        ranges = recovery_split_ranges(
+            audio, overlap_s=getattr(self, "_truncation_recovery_overlap_s", 0.0),
+        )
+        parts = tuple(audio[start:end] for start, end in ranges)
         transcripts: list[str] = []
         languages: list[str] = []
         for part in parts:

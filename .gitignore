@@ -53,3 +53,8 @@ assets/
 
 # Agent workspace
 .junie/
+
+# Local benchmark outputs and downloaded audio
+benchmarks/runs/
+*.webm
+*.m4a

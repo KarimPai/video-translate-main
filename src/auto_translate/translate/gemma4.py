@@ -268,6 +268,17 @@ def _strip_reasoning_tags(text: str) -> str:
     return result
 
 
+def translation_is_overlong(ja: str, english: str) -> bool:
+    """Detect extreme over-translation rather than ordinary English expansion.
+
+    The intentionally high threshold targets context-copied paragraphs (e.g.
+    23 source characters expanded into 422 output characters). It does not
+    attempt to score semantic accuracy or reject moderately long sentences.
+    """
+    source_chars = len(re.sub(r"\\s+", "", ja))
+    return source_chars >= 8 and len(english) >= 250 and len(english) > source_chars * 12
+
+
 def clean_output(text: str) -> str:
     """Clean translation output: strip reasoning tags, remove role prefixes, markdown, orphan quotes."""
     line = " ".join(part.strip() for part in text.strip().splitlines() if part.strip())
@@ -669,6 +680,38 @@ class Gemma4Translator:
                         increment_counter("mt_retries")
                     english, _ = self._chat(prompt, timeout=self.cfg.timeout_s)
                     english = clean_output(english)
+
+                # Guard against an extreme context-echo overrun. One real
+                # 20-minute benchmark produced 422 English chars for a
+                # 23-character JA utterance by copying prior dialogue.
+                # Retry once without all context/glossary hints; never
+                # publish the known-invalid candidate as a subtitle.
+                if english and translation_is_overlong(ja, english):
+                    record_event("mt_rejected", reason="translation_overrun",
+                                 ja_chars=len(ja), en_chars=len(english))
+                    increment_counter("mt_rejected")
+                    log.warning(
+                        "Gemma translation overrun: source=%d chars, English=%d chars; "
+                        "retrying without contextual hints", len(ja), len(english),
+                    )
+                    if retries_left > 0:
+                        retries_left -= 1
+                        increment_counter("mt_retries")
+                        try:
+                            candidate, _ = self._chat(
+                                build_prompt(ja, [], ""), timeout=self.cfg.timeout_s,
+                                temperature=0.0,
+                            )
+                            candidate = clean_output(candidate)
+                            english = (
+                                candidate if candidate and not translation_is_overlong(ja, candidate)
+                                and not english_output_issue(candidate) else ""
+                            )
+                        except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
+                            log.warning("Gemma overrun recovery failed: %s", exc)
+                            english = ""
+                    else:
+                        english = ""
 
                 elapsed = time.monotonic() - started
                 if elapsed > latency_budget:

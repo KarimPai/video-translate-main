@@ -45,6 +45,10 @@ _QWEN3_SYSTEM = (
 # Default llama-server path for Qwen3-ASR
 LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
 
+# Measured holoGTA: 14.4s split-first lost dialogue; 15.8s preserved it.
+# Restrict the production fast path to the longer, tested class of cues.
+LONG_TRUNCATION_SPLIT_MIN_S = 15.0
+
 
 _LANGUAGE_HEADER = re.compile(r"^\s*language\s+([A-Za-z][A-Za-z ,\-]*)\s*$", re.IGNORECASE)
 _JAPANESE_KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
@@ -118,7 +122,7 @@ class Qwen3ASR:
 
     def __init__(self, cfg: AsrConfig, context: str = "") -> None:
         self.cfg = cfg
-        # Only after >=12s audio demonstrably hits the 256-token ceiling,
+        # Only after >=15s audio demonstrably hits the 256-token ceiling,
         # prefer the existing bounded two-window recovery rather than spending
         # more time retrying the entire audio with 512 tokens. Normal decodes,
         # short segments, language checks and quality gates are unchanged.
@@ -298,10 +302,10 @@ class Qwen3ASR:
                     # The split-first path is an optimization, not permission to
                     # lose speech: when the guarded split failed, retain the
                     # historical 512-token full-window fallback if deadline
-                    # permits. This is needed only for >=12s experimental
+                    # permits. This is needed only for >=15s experimental
                     # recovery; short windows still use their original path.
                     if (getattr(self, "_prefer_split_on_truncation", False)
-                            and duration_s >= 12.0
+                            and duration_s >= LONG_TRUNCATION_SPLIT_MIN_S
                             and gen == self._generation
                             and not self._closed
                             and not stopping.is_set()
@@ -690,7 +694,7 @@ class Qwen3ASR:
             # enabled by the diagnostic harness.
             prefer_split = bool(getattr(self, "_prefer_split_on_truncation", False))
             if (prefer_split and max_tokens < 512
-                    and len(audio) >= 12 * 16000):
+                    and len(audio) >= LONG_TRUNCATION_SPLIT_MIN_S * 16000):
                 log.info(
                     "Qwen3-ASR experiment: %.1fs audio hit %d-token limit; "
                     "try bounded split recovery first", len(audio) / 16000, max_tokens,

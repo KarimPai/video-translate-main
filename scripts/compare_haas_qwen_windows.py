@@ -187,8 +187,9 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
     for label, (start_s, audio) in windows.items():
         length = len(audio)
         if name == "qwen3-asr":
-            # Explicit control arm: the normal pre-optimization 256->512->split
-            # path, even after production enables split-first for long segments.
+            # For shortening A/B, use the production 15s split-first default.
+            # Historical --qwen-split-first A/B retains its explicit old-style
+            # control (full 256->512->split vs split-first).
             model._prefer_split_on_truncation = bool(qwen_short_target_s is not None)
         rows.append(run_case(
             model, name, label, start_s, audio,
@@ -436,6 +437,10 @@ def main(argv: list[str] | None = None) -> int:
         print("CSV:", csv_path)
         print("JSONL:", jsonl_path)
         print("English report:", report)
+    if any(row["language"] == "error" for row in rows):
+        print("One or more ASR decodes failed; inspect the JSONL rejection fields.",
+              file=sys.stderr)
+        return 1
     return 0
 
 

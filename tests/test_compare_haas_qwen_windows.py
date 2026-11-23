@@ -134,7 +134,8 @@ def test_qwen_ab_mode_completes_both_full_decodes_then_short_halves():
     assert "Qwen experimental split-first" in report
 
 
-def test_qwen_truncation_opt_in_skips_redundant_512_long_decode():
+@pytest.mark.parametrize("duration_s", [15.0, 15.8, 16.0])
+def test_qwen_truncation_opt_in_skips_redundant_512_long_decode(duration_s):
     from auto_translate.asr.qwen3_asr import Qwen3ASR, Qwen3ASRTruncationError
 
     calls = []
@@ -152,12 +153,13 @@ def test_qwen_truncation_opt_in_skips_redundant_512_long_decode():
                                      client=SimpleNamespace(post=post))
     backend._prefer_split_on_truncation = True
     with pytest.raises(Qwen3ASRTruncationError, match="experimental split-first"):
-        backend._transcribe_impl(np.zeros(16 * bench.SAMPLE_RATE, np.float32),
+        backend._transcribe_impl(np.zeros(int(duration_s * bench.SAMPLE_RATE), np.float32),
                                  timeout=10.0)
     assert calls == [256]
 
 
-def test_qwen_short_truncation_remains_on_original_512_retry():
+@pytest.mark.parametrize("duration_s", [8.0, 14.4, 14.99])
+def test_qwen_short_truncation_remains_on_original_512_retry(duration_s):
     from auto_translate.asr.qwen3_asr import Qwen3ASR
 
     calls = []
@@ -176,7 +178,7 @@ def test_qwen_short_truncation_remains_on_original_512_retry():
     backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
                                      client=SimpleNamespace(post=post))
     backend._prefer_split_on_truncation = True
-    assert backend._transcribe_impl(np.zeros(8 * bench.SAMPLE_RATE, np.float32),
+    assert backend._transcribe_impl(np.zeros(int(duration_s * bench.SAMPLE_RATE), np.float32),
                                     timeout=10.0) == "ありがとう"
     assert calls == [256, 512]
 

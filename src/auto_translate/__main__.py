@@ -48,6 +48,8 @@ def _main(resources: ExitStack) -> None:
     option.add_argument("--no-safe-playback", dest="safe_playback", action="store_false")
     parser.add_argument("--context-lines", type=int, choices=range(21), metavar="0..20",
                         help="previous dialogue lines given to the translator")
+    parser.add_argument("--vad-max-utterance-s", type=float, metavar="SECONDS",
+                        help="VOD stress-test override for VAD soft segment length; preserves config.toml")
     parser.add_argument("--asr-model", type=Path, help="ASR model path")
     parser.add_argument("--speech-server", type=Path, help="speech.cpp executable path")
     parser.add_argument("--mt-model", type=Path, help="Translation GGUF model")
@@ -169,6 +171,12 @@ def _main(resources: ExitStack) -> None:
     from .session_cache import SessionSubtitleCache
 
     cfg = load_config(args.config)
+    if args.vad_max_utterance_s is not None:
+        if not math.isfinite(args.vad_max_utterance_s) or not 3.0 <= args.vad_max_utterance_s <= 30.0:
+            parser.error("--vad-max-utterance-s must be a finite number between 3 and 30")
+        if args.mode == "live":
+            parser.error("--vad-max-utterance-s is a VOD-only benchmark override")
+        cfg.vad.max_utterance_s = args.vad_max_utterance_s
 
     # Collect explicit CLI overrides for backend config precedence.
     # These must override both common config AND backend-specific profiles.

@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import httpx
 import numpy as np
 
-from ..asr.haas import wav_bytes
+from ..asr.haas import is_japanese_text, wav_bytes
 from ..config import AsrConfig
 from ..llama_server import (
     DeadlineHttpClient,
@@ -56,6 +56,12 @@ LONG_TRUNCATION_SPLIT_MIN_S = 15.0
 _LANGUAGE_HEADER = re.compile(r"^\s*language\s+([A-Za-z][A-Za-z ,\-]*)\s*$", re.IGNORECASE)
 _JAPANESE_KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
 _NON_SPEECH = {"none", "no speech", "no_speech", "silence", "null"}
+
+
+def has_japanese_recovery_text(text: str) -> bool:
+    """Check for Japanese-script letters after the audio is identified as Japanese."""
+    return any(char.isalpha() and is_japanese_text(char)
+               for char in unicodedata.normalize("NFKC", text))
 
 
 def recovery_split_ranges(audio: np.ndarray, overlap_s: float = 0.0) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -91,11 +97,13 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
     """Separate audio-derived language metadata from spoken text.
 
     Qwen3-ASR normally emits 'language English<asr_text>spoken words'.
-    An untagged response is unknown, not presumed Japanese.
+    Kana can classify untagged text. An explicit spoken-language tag can describe
+    the dominant voice in a mixed recording, so kana never overrides it.
     """
     if not isinstance(raw, str) or not raw.strip():
         return "none", ""
     raw = raw.strip().replace("<|im_end|>", "").strip()
+    infer_from_text = True
     if "<asr_text>" in raw:
         prefix, text = raw.split("<asr_text>", 1)
         prefix = prefix.strip()
@@ -104,6 +112,7 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
             if match is None:
                 return "und", ""  # malformed metadata cannot enter subtitles
             language = match.group(1).strip().lower()
+            infer_from_text = language in _NON_SPEECH
             if language in _NON_SPEECH:
                 # Qwen's 'language None' normally signals nonspeech. In the
                 # unusual case where it also provides actual words, preserve
@@ -117,10 +126,6 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
                 "indonesian": "id", "id": "id",
                 "malay": "ms", "ms": "ms",
             }.get(language, "und")
-            # The language tag identifies the dominant voice, not every
-            # speaker. Retain audible Japanese text in mixed EN/JA output.
-            if language != "ja" and len(_JAPANESE_KANA.findall(text)) >= 2:
-                language = "ja"
         else:
             language = "und"
     else:
@@ -131,7 +136,7 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
     text = trim_repetition_tail("".join(c for c in text if unicodedata.category(c) != "Cc"))
     if not text or text.casefold() in {"<|nospeech|>", "<|audio_sentinel|>"}:
         return "none", ""
-    if language == "und" and _JAPANESE_KANA.search(text):
+    if language == "und" and infer_from_text and _JAPANESE_KANA.search(text):
         language = "ja"
     return language, text
 
@@ -160,7 +165,18 @@ class Qwen3ASRTransportError(Qwen3ASRError):
 
 
 class _UtteranceDeadline(Qwen3ASRError):
+    """An utterance's time budget expired.
+
+    When ``transport=True``, the deadline was consumed by genuine transport
+    failures (HTTP timeouts, connection errors) rather than seek cancellations
+    or inference-queue delays. Those count toward the consecutive-transport-
+    failure shutdown threshold.
+    """
     reason = "deadline"
+
+    def __init__(self, message: str, *, transport: bool = False) -> None:
+        super().__init__(message)
+        self.transport = transport
 
 
 class Qwen3ASR:
@@ -198,6 +214,7 @@ class Qwen3ASR:
         self._closed = False
         self._restarts = 0
         self._transport_failures = 0
+        self._restart_timestamps: deque[float] = deque()
         self.last_timing: dict | None = None
 
         # Resolve model and mmproj paths
@@ -280,7 +297,23 @@ class Qwen3ASR:
                         raise Qwen3ASRError("Qwen3-ASR transport failed for three consecutive utterances") from exc
                     self._reject_request(generation, exc)
                     return ""
-                except (_UtteranceDeadline, Qwen3ASRResponseError, Qwen3ASRTruncationError) as exc:
+                except _UtteranceDeadline as exc:
+                    # A deadline consumed by genuine transport failures (HTTP
+                    # timeouts, connection errors) counts toward the consecutive
+                    # transport-failure threshold. Non-transport deadlines (seek
+                    # cancellation, inference-queue delay) do not.
+                    if exc.transport:
+                        self._transport_failures += 1
+                        if self._transport_failures >= 3:
+                            raise Qwen3ASRError(
+                                "Qwen3-ASR transport failed for three consecutive utterances"
+                            ) from exc
+                    self._reject_request(generation, exc)
+                    return ""
+                except (Qwen3ASRResponseError, Qwen3ASRTruncationError) as exc:
+                    # Non-transport failures reset the consecutive counter.
+                    # Invalid responses and token limits are not transport issues.
+                    self._transport_failures = 0
                     self._reject_request(generation, exc)
                     return ""
         except (CancelledError, _UtteranceDeadline):
@@ -377,7 +410,13 @@ class Qwen3ASR:
         # Token-limit and malformed-response errors are utterance-local and
         # never reach this transport restart path.
         if self._remaining(deadline, generation) <= 0.5:
-            raise _UtteranceDeadline("Insufficient utterance budget to restart Qwen3-ASR")
+            # The utterance budget was consumed by genuine transport failures
+            # (HTTP timeouts, connection errors). Mark it so the caller counts
+            # it toward the consecutive-transport-failure threshold.
+            raise _UtteranceDeadline(
+                "Insufficient utterance budget to restart Qwen3-ASR",
+                transport=True,
+            )
         try:
             self._restart(deadline=deadline, generation=generation)
         except (CancelledError, _UtteranceDeadline):
@@ -386,7 +425,10 @@ class Qwen3ASR:
             self._remaining(deadline, generation)
             raise Qwen3ASRError(f"Qwen3-ASR restart failed: {exc}") from exc
         if self._remaining(deadline, generation) <= 0.05:
-            raise _UtteranceDeadline("Insufficient utterance budget for a decode after restart")
+            raise _UtteranceDeadline(
+                "Insufficient utterance budget for a decode after restart",
+                transport=True,
+            )
         try:
             return self._decode_with_recovery(audio, probe, deadline, generation)
         except httpx.HTTPError as exc:
@@ -562,7 +604,7 @@ class Qwen3ASR:
                             log.debug("Qwen mixed-language window recovery unavailable: %s", exc)
                             break
                         if (self.last_detected_language != "ja"
-                                or len(_JAPANESE_KANA.findall(candidate)) < 2
+                                or not has_japanese_recovery_text(candidate)
                                 or transcript_problem(candidate, end_s - start_s)):
                             continue
                         key = speech_key(candidate)
@@ -827,18 +869,24 @@ class Qwen3ASR:
         return text
 
     def _restart(self, *, deadline: float, generation: int) -> None:
-        """Recycle one open server under the same utterance deadline."""
+        """Recycle one open server under the same utterance deadline.
+
+        Uses a rolling five-minute window: at most two restarts are permitted
+        within any preceding 300 seconds. Old timestamps are pruned on each
+        call so the window is truly rolling rather than fixed.
+        """
         def check():
             self._remaining(deadline, generation)
 
         check()
         now = time.monotonic()
-        if now - getattr(self, "_restart_window_start", 0.0) > 300:
-            self._restart_window_start = now
-            self._restarts = 0
-        if self._restarts >= 2:
+        # Prune timestamps older than 300 seconds
+        while self._restart_timestamps and self._restart_timestamps[0] < now - 300:
+            self._restart_timestamps.popleft()
+        if len(self._restart_timestamps) >= 2:
             raise Qwen3ASRError("Qwen3-ASR restart limit reached within five minutes; server is unstable")
-        self._restarts += 1
+        self._restart_timestamps.append(now)
+        self._restarts = len(self._restart_timestamps)
         log.warning("Restarting Qwen3-ASR server (attempt %d)", self._restarts)
         try:
             self.server.reset_for_restart(deadline=deadline, check=check)
@@ -852,7 +900,9 @@ class Qwen3ASR:
                 self._accepted_keys.clear()
                 self._recent.clear()
         except CancelledError:
-            # A seek interrupted the attempt. Leave recovery available to
-            # the new generation if there is no healthy child left.
-            self._restarts -= 1
+            # A seek interrupted the attempt. Remove the timestamp so the
+            # aborted restart does not consume a slot in the rolling window.
+            if self._restart_timestamps and self._restart_timestamps[-1] == now:
+                self._restart_timestamps.pop()
+            self._restarts = len(self._restart_timestamps)
             raise

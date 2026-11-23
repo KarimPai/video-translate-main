@@ -288,18 +288,23 @@ def test_repeated_transport_failure_is_bounded_per_utterance(backend, monkeypatc
     backend.server.client.post.side_effect = httpx.ConnectError("offline")
     assert backend.transcribe(PCM) == ""
     assert backend.last_rejection == "transport_error"
-    backend._restart_window_start = time.monotonic() - 301
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
     assert backend.transcribe(PCM) == ""
-    backend._restart_window_start = time.monotonic() - 301
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
     with pytest.raises(qwen.Qwen3ASRError, match="three consecutive utterances"):
         backend.transcribe(PCM)
 
 
 def test_restart_allowance_recovers_after_window(backend, monkeypatch):
-    backend._restarts = 2
-    backend._restart_window_start = time.monotonic() - 301
+    backend._restart_timestamps.clear()
+    # Both timestamps are >300s old, so both are pruned
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    backend._restart_timestamps.append(time.monotonic() - 302)
     monkeypatch.setattr(backend, "_warmup", Mock())
     backend._restart(deadline=time.monotonic() + 1, generation=0)
+    # After pruning both old timestamps, only the new one remains
     assert backend._restarts == 1
     backend.server.reset_for_restart.assert_called_once()
 
@@ -308,7 +313,8 @@ def test_successful_utterance_resets_consecutive_transport_failures(backend, mon
     monkeypatch.setattr(backend, "_wait_retry", Mock())
     offline = httpx.ConnectError("offline")
     for outcome, failures in ((offline, 1), (offline, 2), (None, 0), (offline, 1), (offline, 2)):
-        backend._restart_window_start = time.monotonic() - 301
+        backend._restart_timestamps.clear()
+        backend._restart_timestamps.append(time.monotonic() - 301)
         backend.server.client.post.side_effect = outcome
         backend.transcribe(PCM)
         assert backend._transport_failures == failures
@@ -322,6 +328,205 @@ def test_seek_after_transport_failure_is_not_counted(backend, monkeypatch):
     monkeypatch.setattr(backend, "_recognize", fail_then_seek)
     assert backend.transcribe(PCM) == ""
     assert backend._transport_failures == 0
+
+
+# ------------------------------------------------------------------ #
+# Finding #1 — Transport-related deadlines count as transport failures
+# ------------------------------------------------------------------ #
+
+def test_transport_deadline_counts_as_transport_failure(backend, monkeypatch):
+    """When HTTP timeouts exhaust the utterance budget, the deadline raises
+    with transport=True and increments _transport_failures."""
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    # All 4 decode attempts raise HTTP timeout, then restart also fails.
+    # The path raises Qwen3ASRTransportError which increments _transport_failures.
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    backend.server.client.post.side_effect = httpx.ReadTimeout("timeout")
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 1
+
+
+def test_three_transport_deadlines_trigger_fatal_error(backend, monkeypatch):
+    """Three consecutive transport-related deadline expirations should raise
+    the fatal Qwen3ASRError, just like three Qwen3ASRTransportErrors."""
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    backend.server.client.post.side_effect = httpx.ReadTimeout("timeout")
+    for _ in range(2):
+        backend._restart_timestamps.clear()
+        backend._restart_timestamps.append(time.monotonic() - 301)
+        assert backend.transcribe(PCM) == ""
+    # Third consecutive transport failure should be fatal
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    with pytest.raises(qwen.Qwen3ASRError, match="three consecutive utterances"):
+        backend.transcribe(PCM)
+    assert backend._transport_failures == 3
+
+
+def test_non_transport_deadline_does_not_count(backend, monkeypatch):
+    """A deadline raised without transport=True (e.g., inference queue delay)
+    should not increment _transport_failures."""
+    monkeypatch.setattr(backend, "_recognize", lambda *a, **kw: (_ for _ in ()).throw(
+        qwen._UtteranceDeadline("inference queue timeout", transport=False)
+    ))
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 0
+
+
+# ------------------------------------------------------------------ #
+# Finding #2 — Non-transport failures reset the counter
+# ------------------------------------------------------------------ #
+
+def test_invalid_response_resets_transport_failure_counter(backend, monkeypatch):
+    """An invalid response between transport errors should reset the counter."""
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    offline = httpx.ConnectError("offline")
+    bad_json = httpx.Response(200, text="not JSON", request=httpx.Request("POST", "http://localhost"))
+
+    # First transport error
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    backend.server.client.post.side_effect = offline
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 1
+
+    # Invalid response should reset counter
+    backend.server.client.post.side_effect = lambda *a, **kw: bad_json
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 0
+    assert backend.last_rejection == "invalid_response"
+
+    # Next transport error starts counting from 1
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    backend.server.client.post.side_effect = offline
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 1
+
+
+def test_token_limit_resets_transport_failure_counter(backend, monkeypatch):
+    """A token limit rejection between transport errors should reset the counter."""
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    offline = httpx.ConnectError("offline")
+
+    # First transport error
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    backend.server.client.post.side_effect = offline
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 1
+
+    # Token limit should reset counter
+    backend.server.client.post.side_effect = lambda *a, **kw: completion(finish="length")
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 0
+    assert backend.last_rejection == "token_limit"
+
+    # Next transport error starts counting from 1
+    backend._restart_timestamps.clear()
+    backend._restart_timestamps.append(time.monotonic() - 301)
+    backend.server.client.post.side_effect = offline
+    assert backend.transcribe(PCM) == ""
+    assert backend._transport_failures == 1
+
+
+# ------------------------------------------------------------------ #
+# Finding #3 — Rolling restart window
+# ------------------------------------------------------------------ #
+
+def test_rolling_restart_window_allows_two_within_300s(backend, monkeypatch):
+    """Two restarts within 300 seconds should succeed; the third should fail."""
+    monkeypatch.setattr(backend, "_warmup", Mock())
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    backend.server.client.post.side_effect = httpx.ConnectError("offline")
+
+    # First restart
+    assert backend.transcribe(PCM) == ""
+    assert backend._restarts == 1
+
+    # Second restart (still within window)
+    assert backend.transcribe(PCM) == ""
+    assert backend._restarts == 2
+
+    # Third restart should fail — either with restart limit or transport failure limit.
+    # The restart limit fires first here since _transport_failures reaches 3.
+    with pytest.raises(qwen.Qwen3ASRError, match="restart limit reached|three consecutive"):
+        backend.transcribe(PCM)
+
+
+def test_rolling_restart_window_prunes_old_timestamps(backend, monkeypatch):
+    """After 300 seconds pass since the oldest restart, a new restart should be allowed."""
+    monkeypatch.setattr(backend, "_warmup", Mock())
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    backend.server.client.post.side_effect = httpx.ConnectError("offline")
+
+    # Two restarts
+    assert backend.transcribe(PCM) == ""
+    assert backend.transcribe(PCM) == ""
+    assert backend._restarts == 2
+
+    # Reset transport failures so the next call isn't blocked by the 3-failure limit
+    backend._transport_failures = 0
+    # Advance both timestamps to be >300s old so both are pruned
+    backend._restart_timestamps[0] = backend._restart_timestamps[0] - 301
+    backend._restart_timestamps[1] = backend._restart_timestamps[1] - 301
+
+    # Third restart should now be allowed (both old timestamps pruned)
+    assert backend.transcribe(PCM) == ""
+    assert backend._restarts == 1
+
+
+def test_rolling_restart_window_boundary_cannot_accumulate(backend, monkeypatch):
+    """A fixed window allows 2 restarts at t=0 and 2 more at t=301 (4 total).
+    A rolling window should still limit to 2 within any 300s span."""
+    monkeypatch.setattr(backend, "_warmup", Mock())
+    monkeypatch.setattr(backend, "_wait_retry", Mock())
+    backend.server.client.post.side_effect = httpx.ConnectError("offline")
+
+    # Two restarts at t=0
+    assert backend.transcribe(PCM) == ""
+    assert backend.transcribe(PCM) == ""
+
+    # Reset transport failures so the next call isn't blocked by the 3-failure limit
+    backend._transport_failures = 0
+    # Advance only the first timestamp so it prunes, but the second is still recent
+    backend._restart_timestamps[0] = backend._restart_timestamps[0] - 301
+
+    # One more restart should succeed (first pruned, second still in window)
+    assert backend.transcribe(PCM) == ""
+    assert backend._restarts == 2
+
+    # Another should fail (two recent timestamps remain)
+    with pytest.raises(qwen.Qwen3ASRError, match="restart limit reached"):
+        backend.transcribe(PCM)
+
+
+def test_cancelled_restart_does_not_consume_rolling_slot(backend, owned_server, monkeypatch):
+    """When a restart is cancelled by a seek, its timestamp should be removed
+    so it doesn't consume a slot in the rolling window."""
+    server, _spawned = owned_server
+    ingest = start_ingest(backend)
+    entered, release = threading.Event(), threading.Event()
+
+    def get(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return SimpleNamespace(status_code=200)
+
+    reconnect(backend, server, monkeypatch, get=get)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(backend.transcribe, PCM)
+        try:
+            assert entered.wait(2)
+            ingest.request_restart(90)
+        finally:
+            release.set()
+        assert future.result(timeout=1) == ""
+
+    # Cancelled restart should not have consumed a timestamp slot
+    assert len(backend._restart_timestamps) == 0
+    assert backend._restarts == 0
 
 
 def test_expired_startup_deadline_still_reaps_owned_child(owned_server):

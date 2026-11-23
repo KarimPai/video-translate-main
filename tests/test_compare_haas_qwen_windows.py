@@ -310,3 +310,112 @@ def test_qwen_split_first_failure_falls_back_to_full_512(monkeypatch):
     assert calls[1][0] < calls[0][0]
     assert model.last_detected_language == "ja"
     assert model.last_rejection is None
+
+
+
+def test_qwen_pause_guided_segments_cover_audio_with_bounded_overlap():
+    audio = np.ones(16 * bench.SAMPLE_RATE, np.float32)
+    # Intentionally low-energy region near the midpoint; other audio is loud.
+    audio[int(7.90 * bench.SAMPLE_RATE):int(8.15 * bench.SAMPLE_RATE)] = 0
+    ranges = bench.pause_guided_ranges(audio, target_s=10.0, overlap_s=0.24)
+    assert len(ranges) == 2
+    assert ranges[0][0] == 0 and ranges[-1][1] == len(audio)
+    assert ranges[0][1] > ranges[1][0]
+    assert all(right > left and (right - left) <= 10 * bench.SAMPLE_RATE
+               for left, right in ranges)
+    assert 7.8 <= (ranges[0][1] + ranges[1][0]) / (2 * bench.SAMPLE_RATE) <= 8.2
+
+
+@pytest.mark.parametrize("length_s,target_s", [(7, 10.0), (11, 10.0),
+                                                (14, 10.0), (16, 8.0),
+                                                (30, 10.0)])
+def test_qwen_pause_guided_segments_do_not_drop_samples(length_s, target_s):
+    audio = np.zeros(length_s * bench.SAMPLE_RATE, np.float32)
+    ranges = bench.pause_guided_ranges(audio, target_s=target_s)
+    assert ranges[0][0] == 0
+    assert ranges[-1][1] == len(audio)
+    assert all(ranges[i][1] >= ranges[i + 1][0] for i in range(len(ranges) - 1))
+    assert all((right - left) / bench.SAMPLE_RATE <= target_s + 0.002
+               for left, right in ranges)
+    if length_s <= target_s:
+        assert ranges == [(0, len(audio))]
+    else:
+        assert len(ranges) >= 2
+
+
+def test_qwen_pause_guided_segments_reject_invalid_parameters():
+    audio = np.zeros(16 * bench.SAMPLE_RATE, np.float32)
+    with pytest.raises(ValueError, match="Invalid"):
+        bench.pause_guided_ranges(audio, target_s=0.0)
+    with pytest.raises(ValueError, match="Invalid"):
+        bench.pause_guided_ranges(audio, overlap_s=1.0)
+
+
+def test_qwen_pause_guided_ab_keeps_production_full_control_and_no_auto_merge():
+    class FakeQwen:
+        _prefer_split_on_truncation = False
+        last_detected_language = "ja"
+        last_rejection = None
+
+        def __init__(self):
+            self.flags = []
+            self.requests = []
+
+        def forget(self):
+            pass
+
+        def transcribe(self, audio, probe=False):
+            self.flags.append(self._prefer_split_on_truncation)
+            self.requests.append(len(audio))
+            return "みこさん、ありがとう"
+
+    model = FakeQwen()
+    audio = np.zeros(16 * bench.SAMPLE_RATE, np.float32)
+    rows = bench.run_model(
+        model, "qwen3-asr", {"HG11": (385.0, audio)},
+        qwen_short_target_s=10.0,
+    )
+    assert [row["variant"] for row in rows] == [
+        "full", "short", "short", "split", "split",
+    ]
+    assert rows[0]["audio_s"] == pytest.approx(16.0)
+    assert all(row["audio_s"] <= 10.002 for row in rows if row["variant"] == "short")
+    assert all(model.flags)  # full control uses current production recovery default
+    assert sum(row["ja_chars"] for row in rows if row["variant"] == "short") > rows[0]["ja_chars"]
+    report = bench.english_report(rows, "clip.flac")
+    assert "pause-guided" in report
+    assert "Overlapping cuts can duplicate words" in report
+    assert "NOT a production VAD comparison" in report
+
+
+def test_qwen_shortening_does_not_trigger_on_short_audio():
+    class FakeQwen:
+        last_rejection = None
+        last_detected_language = "ja"
+
+        def forget(self):
+            pass
+
+        def transcribe(self, audio, probe=False):
+            return "ありがとう"
+
+    audio = np.zeros(5 * bench.SAMPLE_RATE, np.float32)
+    rows = bench.run_model(
+        FakeQwen(), "qwen3-asr", {"HG02": (15.9, audio)},
+        qwen_short_target_s=10.0,
+    )
+    assert not any(row["variant"] == "short" for row in rows)
+
+
+def test_standard_qwen_preflight_is_explicit_when_ja_is_also_installed(
+        tmp_path, capsys):
+    clip = tmp_path / "clip.flac"
+    config = tmp_path / "config.toml"
+    clip.write_bytes(b"audio-placeholder")
+    config.write_text("", encoding="utf-8")
+    model_dir = tmp_path / "models" / "qwen3-asr"
+    assert bench.main([
+        str(clip), "--config", str(config), "--model", "qwen3-asr",
+        "--qwen-model-dir", str(model_dir), "--qwen-short-target-s", "10",
+    ]) == 2
+    assert "Standard Qwen requires" in capsys.readouterr().err

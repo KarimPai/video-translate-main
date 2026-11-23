@@ -423,6 +423,93 @@ def test_standard_qwen_preflight_is_explicit_when_ja_is_also_installed(
 
 
 
+
+@pytest.mark.parametrize("scene", ["HG06", "HG10", "HG13", "Q16"])
+def test_crosstalk_focus_has_nested_audio_and_repeatable_tight_pcm(scene):
+    duration = int((bench.WINDOWS[scene][1] - bench.WINDOWS[scene][0]) * bench.SAMPLE_RATE)
+    center = bench.CROSSTALK_FOCUS_S[scene][0]
+    (a, b), (c, d) = bench.crosstalk_focus_ranges(duration, center)
+    assert 0 <= c <= a < b <= d <= duration
+    assert (b - a) / bench.SAMPLE_RATE <= 6.002
+    assert (d - c) / bench.SAMPLE_RATE <= 10.002
+    assert b - a >= 2 * bench.SAMPLE_RATE
+    assert d - c > b - a
+
+
+@pytest.mark.parametrize("center,tight,wide", [
+    (float("nan"), 6, 10), (5, 0, 10), (5, 10, 6),
+    (0, 6, 10), (30, 6, 10), (5, 6, float("inf")),
+])
+def test_crosstalk_focus_rejects_unsafe_ranges(center, tight, wide):
+    with pytest.raises(ValueError, match="Invalid"):
+        bench.crosstalk_focus_ranges(16 * bench.SAMPLE_RATE, center, tight, wide)
+
+
+def test_crosstalk_focus_three_calls_and_nothing_autopublished():
+    class FakeQwen:
+        last_rejection = None
+        last_detected_language = "ja"
+        _prefer_split_on_truncation = True
+
+        def __init__(self):
+            self.requests = []
+            self.forgot = 0
+
+        def forget(self):
+            self.forgot += 1
+
+        def transcribe(self, audio, probe=False):
+            self.requests.append(audio.copy())
+            return "練習見に来ました" if len(audio) < 7 * bench.SAMPLE_RATE else "練習見に来ました。何々"
+
+    model = FakeQwen()
+    audio = np.arange(16 * bench.SAMPLE_RATE, dtype=np.float32)
+    rows = bench.run_model(
+        model, "qwen3-asr", {"HG06": (bench.WINDOWS["HG06"][0], audio)},
+        qwen_crosstalk_focus=True,
+    )
+    assert [r["variant"] for r in rows] == [
+        "full", "focus_tight", "focus_wide", "focus_tight_repeat", "split", "split",
+    ]
+    assert np.array_equal(model.requests[1], model.requests[3])
+    assert model.forgot == len(rows)
+    assert rows[1]["text"] == rows[3]["text"] == "練習見に来ました"
+    assert rows[1]["start_s"] >= rows[2]["start_s"]
+    assert rows[1]["end_s"] <= rows[2]["end_s"]
+    report = bench.english_report(rows, "clip.flac")
+    assert "targeted crosstalk context-window experiment" in report
+    assert "spans differ" in report
+    assert "Tight A/A agree" in report
+    assert "yes | -" in report
+
+
+def test_crosstalk_focus_experiment_guards_wrong_backend_and_unknown_windows(
+        tmp_path, capsys):
+    clip = tmp_path / "clip.flac"
+    config = tmp_path / "config.toml"
+    clip.write_bytes(b"fake audio")
+    config.write_text("", encoding="utf-8")
+
+    assert bench.main([
+        str(clip), "--config", str(config), "--dry-run",
+        "--model", "haas", "--window", "HG06", "--qwen-crosstalk-focus",
+    ]) == 2
+    assert "requires --model qwen3-asr only" in capsys.readouterr().err
+
+    assert bench.main([
+        str(clip), "--config", str(config), "--dry-run",
+        "--model", "qwen3-asr", "--window", "HG27", "--qwen-crosstalk-focus",
+    ]) == 2
+    assert "No audited crosstalk anchor" in capsys.readouterr().err
+
+    assert bench.main([
+        str(clip), "--config", str(config), "--dry-run",
+        "--model", "qwen3-asr", "--window", "HG06", "--qwen-crosstalk-focus",
+        "--qwen-vocabulary",
+    ]) == 2
+    assert "separately" in capsys.readouterr().err
+
+
 def test_qwen_rejected_recovery_ab_preserves_baseline_and_config():
     """A/B runs identical PCM and restores any user-chosen config value."""
     class FakeQwen:

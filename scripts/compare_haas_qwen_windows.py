@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_RATE = 16000
 STANDARD_QWEN_MODEL = "Qwen3-ASR-1.7B-Q8_0.gguf"
 STANDARD_QWEN_MMPROJ = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+# Deliberately short, scene-relevant words. NOT a forced Japanese prompt.
+DEFAULT_QWEN_VOCAB = "みこ, みこち, ラミィ, ルイ, まつり, すいちゃん, スイちゃん"
 # Local clip time, not timestamp in the original 1:25:00-offset stream.
 WINDOWS = {
     # Name, crowded dialogue, monetary-negation and speech-presence excerpts.
@@ -186,7 +188,8 @@ def run_case(model: object, model_name: str, window: str,
 def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarray]],
               *, qwen_split_first: bool = False,
               qwen_short_target_s: float | None = None,
-              qwen_quality_recovery: bool = False) -> list[dict]:
+              qwen_quality_recovery: bool = False,
+              qwen_vocabulary: str | None = None) -> list[dict]:
     rows: list[dict] = []
     for label, (start_s, audio) in windows.items():
         length = len(audio)
@@ -196,8 +199,32 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
             # control (full 256->512->split vs split-first).
             model._prefer_split_on_truncation = bool(
                 qwen_short_target_s is not None or qwen_quality_recovery
+                or qwen_vocabulary is not None
             )
-        if qwen_quality_recovery and name == "qwen3-asr":
+        if qwen_vocabulary is not None and name == "qwen3-asr":
+            # ABA rather than just AB: normal Qwen can differ between two
+            # unprompted runs, even at temperature 0. Only a stable A/A
+            # control permits a stronger attribution to vocabulary hints.
+            old_hint = getattr(model, "_vocabulary_hint", "")
+            try:
+                model.set_vocabulary_hint("")
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant="full", part=0, left=0, right=length,
+                ))
+                model.set_vocabulary_hint(qwen_vocabulary)
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant="vocab_hint", part=0, left=0, right=length,
+                ))
+                model.set_vocabulary_hint("")
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant="control_repeat", part=0, left=0, right=length,
+                ))
+            finally:
+                model.set_vocabulary_hint(old_hint)
+        elif qwen_quality_recovery and name == "qwen3-asr":
             # Control: never allow an already-enabled local config to bias
             # the baseline. Restore the original option after the second arm.
             previous_recovery = model.cfg.recover_rejected_speech
@@ -319,6 +346,44 @@ def english_report(rows: list[dict], media_name: str) -> str:
                 f'{candidate["ja_chars"]} | '
                 f'{sim if sim is not None else "-"} |'
             )
+    vocabulary_rows = [r for r in rows if r["model"] == "qwen3-asr"
+                       and r["variant"] == "vocab_hint"]
+    if vocabulary_rows:
+        lines.extend([
+            "", "## Qwen vocabulary hint experiment (A/B/A)", "",
+            "System vocabulary may improve proper nouns but can also prime "
+            "hallucinations. The second unprompted control checks whether "
+            "differences simply reflect repeated-decode variability.", "",
+            "| Window | Control1 (chars) | Vocabulary (chars) | Control2 (chars) | "
+            "Unprompted controls agree | Hint-only change | Flags |",
+            "|---|---:|---:|---:|---|---|---|",
+        ])
+        for hinted in vocabulary_rows:
+            win = hinted["window"]
+            normal = next((r for r in rows if r["model"] == "qwen3-asr"
+                           and r["window"] == win and r["variant"] == "full"), None)
+            repeated = next((r for r in rows if r["model"] == "qwen3-asr"
+                             and r["window"] == win
+                             and r["variant"] == "control_repeat"), None)
+            if normal is None or repeated is None:
+                continue
+            same = normal["text"] == repeated["text"] and normal["language"] == repeated["language"]
+            unique_change = same and (hinted["text"] != normal["text"]
+                                      or hinted["language"] != normal["language"])
+            flags = []
+            if not same:
+                flags.append("baseline_varies")
+            if not normal["text"] and hinted["text"]:
+                flags.append("hint_on_unverified_silence")
+            if hinted["language"] != normal["language"]:
+                flags.append("language_changed")
+            if hinted["rejection"]:
+                flags.append("hint_rejected")
+            lines.append(
+                f'| {win} | {normal["ja_chars"]} | {hinted["ja_chars"]} | '
+                f'{repeated["ja_chars"]} | {"yes" if same else "NO"} | '
+                f'{"yes" if unique_change else "no"} | {", ".join(flags) or "-"} |'
+            )
     quality_rows = [row for row in rows if row["model"] == "qwen3-asr"
                     and row["variant"] == "quality_recovery"]
     if quality_rows:
@@ -398,6 +463,11 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--qwen-model-dir", type=Path,
                         default=ROOT / "models" / "qwen3-asr",
                         help="Explicit standard Qwen model/projector folder; avoids JA auto-discovery")
+    parser.add_argument("--qwen-vocabulary", action="store_true",
+                        help="A/B/A standard Qwen with a short recognition vocabulary system prompt")
+    parser.add_argument("--qwen-vocabulary-terms", type=str,
+                        default=DEFAULT_QWEN_VOCAB,
+                        help="Comma-separated Japanese names for --qwen-vocabulary")
     parser.add_argument("--qwen-recover-rejected", action="store_true",
                         help="A/B normal decode versus opt-in salvage after clearly rejected speech")
     parser.add_argument("--qwen-short-target-s", type=float, choices=[8.0, 10.0, 12.0],
@@ -417,9 +487,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     requested_arms = sum(bool(v) for v in (
         args.qwen_short_target_s, args.qwen_split_first, args.qwen_recover_rejected,
+        args.qwen_vocabulary,
     ))
     if requested_arms > 1:
-        print("Run shortening, split-first and rejected-speech recovery separately",
+        print("Run shortening, split-first, rejected-speech recovery and vocabulary separately",
               file=sys.stderr)
         return 2
     qwen_dir = args.qwen_model_dir.expanduser().resolve()
@@ -443,6 +514,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Experimental Qwen pause-guided segments: <= {args.qwen_short_target_s}s")
     if args.qwen_recover_rejected:
         print("A/B: normal Qwen versus opt-in recovery of rejected hypotheses")
+    if args.qwen_vocabulary:
+        print("A/B/A: normal Qwen, vocabulary hints, normal Qwen repeat")
+        print("Vocabulary words:", args.qwen_vocabulary_terms)
     if "qwen3-asr" in args.model:
         print("Standard Qwen model:", qwen_model)
         print("Standard Qwen mmproj:", qwen_mmproj)
@@ -478,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
                     model, model_name, data, qwen_split_first=args.qwen_split_first,
                     qwen_short_target_s=args.qwen_short_target_s,
                     qwen_quality_recovery=args.qwen_recover_rejected,
+                    qwen_vocabulary=(args.qwen_vocabulary_terms
+                                     if args.qwen_vocabulary else None),
                 ))
             finally:
                 if model is not None:

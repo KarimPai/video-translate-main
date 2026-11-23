@@ -23,9 +23,12 @@ From the existing repository directory:
     Test-Path $clip
     uv run python .\scripts\benchmark_video.py "$clip" --asr haas --mt gemma4
 
-Run ASR combinations sequentially, with unchanged translation:
+Run ASR combinations sequentially, with unchanged translation AND VAD.
+Haas applies a special 0.28 onset threshold when config.toml has the 0.24
+default, so explicitly use 0.28 for every backend in a controlled comparison.
+The 14-second VAD cap is retained for context-rich recognition:
 
-    uv run python .\scripts\benchmark_video.py "$clip" --asr haas qwen3-asr whisper --mt gemma4
+    uv run python .\scripts\benchmark_video.py "$clip" --asr haas qwen3-asr whisper --mt gemma4 --vad-max-utterance-s 14 --vad-threshold 0.28
 
 Only include backends whose models and runtimes are configured. To compare
 translation models after selecting an ASR using human-checked Japanese audio:
@@ -37,7 +40,12 @@ To compare context separately, keep ASR and translator unchanged:
     uv run python .\scripts\benchmark_video.py "$clip" --asr haas --mt gemma4 --context-lines 8
 
 The first Haas/Gemma 4 baseline (126 cues over 20 minutes) produced 41
-cues at 14–16 seconds. Test whether shorter VOD segmentation helps.
+cues at 14–16 seconds. In a repeat with the same effective 0.28 VAD threshold,
+14s produced 125 cues; 10s produced 137 cues. The 10s experiment shortened
+translated output but recovered 4.6% less Japanese text. Neither is proven
+more accurate without checked audio. Some 10s VAD utterances are merged by
+the translator into subtitles lasting up to 16s (translate.merge_max_s).
+Test whether shorter VOD segmentation helps with a human reference.
 The following is an EXPERIMENT, not a new default. It does not modify config.toml:
 
     uv run python .\scripts\benchmark_video.py "$clip" --asr haas --mt gemma4 --vad-max-utterance-s 10

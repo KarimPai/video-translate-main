@@ -123,7 +123,8 @@ def run_case(model: object, model_name: str, window: str,
     }
 
 
-def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarray]]) -> list[dict]:
+def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarray]],
+              *, qwen_split_first: bool = False) -> list[dict]:
     rows: list[dict] = []
     for label, (start_s, audio) in windows.items():
         length = len(audio)
@@ -131,6 +132,17 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
             model, name, label, start_s, audio,
             variant="full", part=0, left=0, right=length,
         ))
+        if qwen_split_first and name == "qwen3-asr":
+            # A/B comparison on exactly the same long PCM and model instance:
+            # default 256->512->split vs experimental 256->split.
+            try:
+                model._prefer_split_on_truncation = True
+                rows.append(run_case(
+                    model, name, label, start_s, audio,
+                    variant="split_first", part=0, left=0, right=length,
+                ))
+            finally:
+                model._prefer_split_on_truncation = False
         for part, (left, right) in enumerate(split_ranges(length), start=1):
             rows.append(run_case(
                 model, name, label, start_s, audio,
@@ -183,6 +195,34 @@ def english_report(rows: list[dict], media_name: str) -> str:
             f"{sum(r['ja_chars'] for r in qs) if qs else '-'} | "
             f"{'; '.join(flags) if flags else '-'} |"
         )
+    qwen_trials = [row for row in rows if row["model"] == "qwen3-asr"
+                   and row["variant"] == "split_first"]
+    if qwen_trials:
+        lines.extend([
+            "",
+            "## Qwen experimental split-first after a 256-token truncation",
+            "",
+            "The experimental path has **no effect** unless the full long request "
+            "hits its token limit. It retains the existing two-window "
+            "acceptance gates. Lower latency is not a verified accuracy gain.",
+            "",
+            "| Window | Default full time (s) | Split-first time (s) | "
+            "Default JA chars | Split-first JA chars | Agreement |",
+            "|---|---:|---:|---:|---:|---:|",
+        ])
+        for candidate in qwen_trials:
+            base = next((row for row in rows if row["model"] == "qwen3-asr"
+                         and row["window"] == candidate["window"]
+                         and row["variant"] == "full"), None)
+            if not base:
+                continue
+            sim = similarity(base["text"], candidate["text"])
+            lines.append(
+                f'| {candidate["window"]} | {base["elapsed_s"]:.3f} | '
+                f'{candidate["elapsed_s"]:.3f} | {base["ja_chars"]} | '
+                f'{candidate["ja_chars"]} | '
+                f'{sim if sim is not None else "-"} |'
+            )
     lines += [
         "",
         "## How to interpret",
@@ -209,6 +249,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         default=list(WINDOWS), help="Only these regression windows")
     parser.add_argument("--outdir", type=Path, default=ROOT / "benchmarks" / "runs")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg executable or path")
+    parser.add_argument("--qwen-split-first", action="store_true",
+                        help="A/B test conditional split-first after Qwen 256-token truncation")
     parser.add_argument("--dry-run", action="store_true", help="Show planned work; load no models")
     return parser.parse_args(argv)
 
@@ -251,7 +293,9 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 backend_config = get_backend_config(config, "asr", model_name)
                 model = get_default_registry().create_asr(model_name, backend_config)
-                rows.extend(run_model(model, model_name, data))
+                rows.extend(run_model(
+                    model, model_name, data, qwen_split_first=args.qwen_split_first,
+                ))
             finally:
                 if model is not None:
                     model.close()

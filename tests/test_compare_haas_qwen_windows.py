@@ -328,6 +328,7 @@ def test_qwen_pause_guided_segments_cover_audio_with_bounded_overlap():
 
 @pytest.mark.parametrize("length_s,target_s", [(7, 10.0), (11, 10.0),
                                                 (14, 10.0), (16, 8.0),
+                                                (19, 10.0), (27, 10.0),
                                                 (30, 10.0)])
 def test_qwen_pause_guided_segments_do_not_drop_samples(length_s, target_s):
     audio = np.zeros(length_s * bench.SAMPLE_RATE, np.float32)

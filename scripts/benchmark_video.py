@@ -60,12 +60,17 @@ def parse_log(text: str) -> list[dict]:
 
 def summarize(cues: list[dict], wall_s: float, status: int) -> dict:
     """Operational metrics only. None of these establishes translation quality."""
+    durations = [c["end_s"] - c["start_s"] for c in cues]
     result = {
         "exit_code": status,
         "cue_count": len(cues),
         "translated_count": sum(bool(c["en"]) for c in cues),
         "japanese_chars": sum(len(c["ja"]) for c in cues),
-        "short_cues_under_1s": sum(c["end_s"] - c["start_s"] < 1.0 for c in cues),
+        "short_cues_under_1s": sum(duration < 1.0 for duration in durations),
+        "long_cues_ge_14s": sum(duration >= 14.0 for duration in durations),
+        "long_cues_ge_10s": sum(duration >= 10.0 for duration in durations),
+        "english_cues_over_160_chars": sum(len(c["en"]) > 160 for c in cues),
+        "median_cue_duration_s": round(statistics.median(durations), 2) if durations else None,
         "wall_s": round(wall_s, 2),
         "mean_asr_s": None,
         "mean_mt_s": None,
@@ -94,6 +99,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=ROOT / "config.toml")
     parser.add_argument("--context-lines", type=int, choices=range(21),
                         help="optional context experiment; omit for unmodified baseline")
+    parser.add_argument("--vad-max-utterance-s", type=float,
+                        help="optional VOD soft segment cap; e.g. 10 (does not edit config.toml)")
     parser.add_argument("--outdir", type=Path, default=ROOT / "benchmarks" / "runs")
     parser.add_argument("--dry-run", action="store_true", help="print commands without loading models")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -125,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if args.context_lines is not None:
             command.extend(["--context-lines", str(args.context_lines)])
+        if args.vad_max_utterance_s is not None:
+            command.extend(["--vad-max-utterance-s", str(args.vad_max_utterance_s)])
         plan.append((name, asr, mt, command))
     if args.dry_run:
         for name, _, _, command in plan:
@@ -137,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps({
             "clip": str(clip), "clip_bytes": clip.stat().st_size,
             "config": str(config), "context_lines": args.context_lines,
+            "vad_max_utterance_s": args.vad_max_utterance_s,
             "combinations": [{"asr": a, "mt": m} for _, a, m, _ in plan],
             "note": "Operational metrics are NOT accuracy measurements.",
         }, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -159,6 +169,27 @@ def main(argv: list[str] | None = None) -> int:
         with (dest / f"{name}.jsonl").open("w", encoding="utf-8") as output:
             for cue in cues:
                 output.write(json.dumps(cue, ensure_ascii=False) + "\n")
+        # Prioritize the cues most likely to require manual review.
+        with (dest / f"{name}-review.csv").open("w", newline="", encoding="utf-8-sig") as output:
+            writer = csv.DictWriter(
+                output, fieldnames=["start_s", "end_s", "duration_s", "review_reason", "ja", "en"]
+            )
+            writer.writeheader()
+            for cue in cues:
+                duration = cue["end_s"] - cue["start_s"]
+                reasons = []
+                if duration >= 14:
+                    reasons.append("long_asr_segment")
+                if len(cue["en"]) > 160:
+                    reasons.append("long_english_translation")
+                if reasons:
+                    writer.writerow({
+                        "start_s": cue["start_s"],
+                        "end_s": cue["end_s"],
+                        "duration_s": round(duration, 2),
+                        "review_reason": ";".join(reasons),
+                        "ja": cue["ja"], "en": cue["en"],
+                    })
         row = {"run": name, "asr": asr, "translator": mt,
                **summarize(cues, elapsed, status)}
         summaries.append(row)

@@ -271,6 +271,9 @@ class AsrConfig:
     max_context_chars: int = 2000
     recent_context_lines: int = 0
     context_retry_limit: int = 1
+    # Qwen-only experimental: re-decode two shorter windows after a mechanically
+    # invalid Japanese hypothesis; off until verified against real audio.
+    recover_rejected_speech: bool = False
     context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8
@@ -298,6 +301,8 @@ class AsrConfig:
             raise ValueError("asr.recent_context_lines must be an integer in 0..4")
         if type(self.context_retry_limit) is not int or self.context_retry_limit not in (0, 1):
             raise ValueError("asr.context_retry_limit must be 0 or 1")
+        if type(self.recover_rejected_speech) is not bool:
+            raise ValueError("asr.recover_rejected_speech must be a boolean")
         if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
             raise ValueError("asr.context_size must be an integer in 1024..32768")
         if type(self.cuda_device) is not int or self.cuda_device < -1:

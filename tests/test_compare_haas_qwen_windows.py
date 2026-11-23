@@ -202,3 +202,67 @@ def test_qwen_experimental_flag_is_opt_in():
     assert backend._transcribe_impl(np.zeros(16 * bench.SAMPLE_RATE, np.float32),
                                     timeout=10.0) == "続き"
     assert calls == [256, 512]
+
+
+def test_qwen_real_constructor_enables_guarded_split_first(monkeypatch):
+    """Production default is set without spawning models, processes or GPU."""
+    from auto_translate.asr import qwen3_asr as qwen_mod
+    from auto_translate.config import AsrConfig
+
+    class FakeServer:
+        def __init__(self, **kwargs):
+            self.started = False
+            self.closed = False
+
+        def start(self):
+            self.started = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(qwen_mod, "require_gguf",
+                        lambda name, purpose: Path(name))
+    monkeypatch.setattr(qwen_mod, "resolve_executable",
+                        lambda name: Path("unused-llama-server.exe"))
+    monkeypatch.setattr(qwen_mod, "detect_device",
+                        lambda executable, device: "CUDA0")
+    monkeypatch.setattr(qwen_mod, "LlamaServer", FakeServer)
+    monkeypatch.setattr(qwen_mod.Qwen3ASR, "_warmup", lambda self: None)
+    monkeypatch.setattr(qwen_mod, "check_running", lambda: None)
+    monkeypatch.setattr(qwen_mod, "update_metrics", lambda **kwargs: None)
+
+    model = qwen_mod.Qwen3ASR(AsrConfig(
+        model_path="unused-asr.gguf", mmproj_path="unused-mmproj.gguf",
+    ))
+    try:
+        assert model._prefer_split_on_truncation is True
+        assert model.server.started
+    finally:
+        model.close()
+    assert model.server.closed
+
+
+def test_qwen_ab_control_disables_production_default():
+    class ProductionDefaultQwen:
+        last_rejection = None
+        last_detected_language = "ja"
+        _prefer_split_on_truncation = True
+
+        def __init__(self):
+            self.flags = []
+
+        def forget(self):
+            pass
+
+        def transcribe(self, audio, probe=False):
+            self.flags.append(self._prefer_split_on_truncation)
+            return "日本語の会話"
+
+    model = ProductionDefaultQwen()
+    audio = np.zeros(16 * bench.SAMPLE_RATE, np.float32)
+    rows = bench.run_model(
+        model, "qwen3-asr", {"HG13": (425.0, audio)},
+        qwen_split_first=True,
+    )
+    assert len(rows) == 4
+    assert model.flags == [False, True, False, False]

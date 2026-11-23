@@ -645,6 +645,21 @@ class Qwen3ASR:
             raise Qwen3ASRError(f"Unexpected response format: {body}") from exc
         if choice.get("finish_reason") == "length":
             remaining = timeout - (time.perf_counter() - t0)
+            # Experimental *opt-in*: for long, dense speech that already hit
+            # the 256-token ceiling, skip another full-length 512-token decode
+            # and delegate to the existing guarded, two-window recovery in
+            # transcribe(). No effect on normal playback unless explicitly
+            # enabled by the diagnostic harness.
+            prefer_split = bool(getattr(self, "_prefer_split_on_truncation", False))
+            if (prefer_split and max_tokens < 512
+                    and len(audio) >= 12 * 16000):
+                log.info(
+                    "Qwen3-ASR experiment: %.1fs audio hit %d-token limit; "
+                    "try bounded split recovery first", len(audio) / 16000, max_tokens,
+                )
+                raise Qwen3ASRTruncationError(
+                    "Qwen3-ASR long audio truncated; experimental split-first recovery"
+                )
             if max_tokens < 512 and remaining > 0.5:
                 log.warning("Qwen3-ASR hit %d-token limit; retrying with 512", max_tokens)
                 return self._transcribe_impl(audio, probe=probe, no_context=no_context,

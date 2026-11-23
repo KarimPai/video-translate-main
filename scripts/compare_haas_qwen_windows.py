@@ -34,6 +34,11 @@ WINDOWS = {
     "HG13": (425.0, 441.0),
     "HG19": (736.0, 751.0),
     "HG21": (823.0, 838.0),
+    # Full-pipeline regression windows from the 20-minute holoGTA sample:
+    # Q14 lost audible words when 14.4s took the split-first path.
+    # Q16 preserved text and saved 3.36s when 15.8s was split-first.
+    "Q14": (224.0, 238.4),
+    "Q16": (611.2, 627.0),
 }
 MODELS = ("haas", "qwen3-asr")
 COLUMNS = (

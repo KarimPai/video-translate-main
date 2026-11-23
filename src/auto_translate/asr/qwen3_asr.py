@@ -5,8 +5,8 @@ both a main model GGUF and an audio projector GGUF (mmproj). Audio is sent
 as base64 WAV via the ``/v1/chat/completions`` endpoint with ``input_audio``
 content type.
 
-Supports 52 languages; for Japanese transcription, an assistant prefix with
-``language Japanese<asr_text>`` guides the model.
+Supports 52 languages. Keep automatic spoken-language detection; an optional
+bounded vocabulary system turn can be used in a controlled A/B experiment.
 """
 from __future__ import annotations
 

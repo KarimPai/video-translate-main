@@ -388,3 +388,31 @@ def test_whisper_context_echo_recovery_cannot_publish_katakana_loop():
     assert w.recover_context_echo(_audio(3.0), timeout=5.0) == ""
     assert w.last_rejection == "whisper_phonetic_loop"
     assert w._model.transcribe.call_count == 1
+
+
+# Speech candidates observed in the 2026-11-23 holoGTA 14-second benchmark.
+# Ground truth is NOT established, but a short repeated reaction in a longer
+# plausible utterance must not erase the entire transcript by itself.
+def test_whisper_hologta_repeated_reactions_do_not_trigger_whole_cue_rejection():
+    gameplay = (
+        "なんかちょっとストリップクラブみたいな場所っすね "
+        "あ、ここら辺かな? あ、ごめんなさい "
+        "あ、ちょちょちょちょちょちょちょちょ "
+        "ちょっとすみませんね よいしょ"
+    )
+    reactions = (
+        "なにこれキスキュートチェックなにこれ "
+        "おいちょっと他の客に30万でやるんじゃないぞキス "
+        "わかってるなんだこれ なにこれなにこれなにこれなにして"
+    )
+    assert whisper_suspect_reason(gameplay) is None
+    assert whisper_suspect_reason(reactions) is None
+
+
+def test_whisper_very_long_syllabic_decoder_loops_remain_suspicious():
+    for text in (
+        "お" + "ぉ" * 90,
+        "ちょっと待って " + "キタッショ" * 6,
+        "あ、これ" + "ちょ" * 32 + "次は",
+    ):
+        assert whisper_suspect_reason(text) == "whisper_phonetic_loop"

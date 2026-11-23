@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -194,3 +193,22 @@ def test_experimental_vocabulary_flag_conflicts_with_other_arms(tmp_path, capsys
         "--qwen-vocabulary", "--qwen-recover-rejected",
     ]) == 2
     assert "separately" in capsys.readouterr().err
+
+
+
+def test_vocab_flag_requires_qwen_and_nonempty_terms(tmp_path, capsys):
+    clip = tmp_path / "test.flac"
+    config = tmp_path / "config.toml"
+    clip.write_bytes(b"fake")
+    config.write_text("", encoding="utf-8")
+    assert bench.main([
+        str(clip), "--config", str(config), "--dry-run",
+        "--model", "haas", "--qwen-vocabulary",
+    ]) == 2
+    assert "requires --model qwen3-asr" in capsys.readouterr().err
+    assert bench.main([
+        str(clip), "--config", str(config), "--dry-run",
+        "--model", "qwen3-asr", "--qwen-vocabulary",
+        "--qwen-vocabulary-terms", "  ",
+    ]) == 2
+    assert "must not be blank" in capsys.readouterr().err

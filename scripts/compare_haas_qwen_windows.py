@@ -13,6 +13,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -27,13 +28,25 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_RATE = 16000
+STANDARD_QWEN_MODEL = "Qwen3-ASR-1.7B-Q8_0.gguf"
+STANDARD_QWEN_MMPROJ = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
 # Local clip time, not timestamp in the original 1:25:00-offset stream.
 WINDOWS = {
+    # Name, crowded dialogue, monetary-negation and speech-presence excerpts.
+    "HG02": (15.90, 19.52),
     "HG05": (190.0, 205.0),
+    "HG06": (224.00, 238.40),
+    "HG07": (254.18, 268.19),
+    "HG10": (350.69, 366.18),
     "HG11": (385.0, 401.0),
+    "HG12": (413.95, 425.70),
     "HG13": (425.0, 441.0),
     "HG19": (736.0, 751.0),
     "HG21": (823.0, 838.0),
+    "HG26": (1064.50, 1072.40),
+    "HG27": (1076.80, 1083.50),
+    "HG28": (1097.80, 1103.00),
+    "HG29": (1107.10, 1117.60),
     # Full-pipeline regression windows from the 20-minute holoGTA sample:
     # Q14 lost audible words when 14.4s took the split-first path.
     # Q16 preserved text and saved 3.36s when 15.8s was split-first.
@@ -71,6 +84,45 @@ def split_ranges(length: int, overlap_s: float = 0.4) -> list[tuple[int, int]]:
         (0, min(length, middle + overlap_samples // 2)),
         (max(0, middle - overlap_samples // 2), length),
     ]
+
+
+def pause_guided_ranges(audio: np.ndarray, target_s: float = 10.0,
+                        overlap_s: float = 0.24) -> list[tuple[int, int]]:
+    """Experimental <=target_s chunks; search quieter 80ms frames near each cut.
+
+    The energy minimum is NOT a verified speech pause. Boundaries retain a
+    small shared context region; outputs are deliberately not auto-merged.
+    """
+    if not 3.0 <= target_s <= 15.0 or not 0 <= overlap_s <= 0.5:
+        raise ValueError("Invalid target or overlap")
+    length = len(audio)
+    if length <= int(target_s * SAMPLE_RATE):
+        return [(0, length)]
+    parts = max(2, math.ceil((length - overlap_s * SAMPLE_RATE)
+                             / ((target_s - overlap_s) * SAMPLE_RATE)))
+    frame = int(0.08 * SAMPLE_RATE)
+    radius = int(0.65 * SAMPLE_RATE)
+    boundaries = [0]
+    for i in range(1, parts):
+        intended = round(i * length / parts)
+        lo = max(boundaries[-1] + frame, intended - radius)
+        hi = min(length - frame, intended + radius)
+        choices = range(lo, hi + 1, frame)
+        split = min(choices, key=lambda pos: float(np.mean(
+            np.square(audio[pos - frame // 2:pos + frame // 2].astype(np.float64))
+        ))) if lo <= hi else intended
+        boundaries.append(split)
+    boundaries.append(length)
+    shared = round(overlap_s * SAMPLE_RATE)
+    ranges = [
+        (max(0, boundaries[i] - (shared // 2 if i else 0)),
+         min(length, boundaries[i + 1] + (shared - shared // 2 if i < parts - 1 else 0)))
+        for i in range(parts)
+    ]
+    if max((right - left) / SAMPLE_RATE for left, right in ranges) > target_s + 0.002:
+        # Pathological energy minima should never exceed the stated target.
+        raise ValueError("Pause-based split exceeded requested maximum duration")
+    return ranges
 
 
 def decode_window(media: Path, start_s: float, end_s: float, ffmpeg: str) -> np.ndarray:
@@ -129,14 +181,15 @@ def run_case(model: object, model_name: str, window: str,
 
 
 def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarray]],
-              *, qwen_split_first: bool = False) -> list[dict]:
+              *, qwen_split_first: bool = False,
+              qwen_short_target_s: float | None = None) -> list[dict]:
     rows: list[dict] = []
     for label, (start_s, audio) in windows.items():
         length = len(audio)
         if name == "qwen3-asr":
             # Explicit control arm: the normal pre-optimization 256->512->split
             # path, even after production enables split-first for long segments.
-            model._prefer_split_on_truncation = False
+            model._prefer_split_on_truncation = bool(qwen_short_target_s is not None)
         rows.append(run_case(
             model, name, label, start_s, audio,
             variant="full", part=0, left=0, right=length,
@@ -152,6 +205,15 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
                 ))
             finally:
                 model._prefer_split_on_truncation = False
+        if qwen_short_target_s is not None and name == "qwen3-asr":
+            if length > int(qwen_short_target_s * SAMPLE_RATE):
+                for part, (left, right) in enumerate(
+                    pause_guided_ranges(audio, qwen_short_target_s), start=1,
+                ):
+                    rows.append(run_case(
+                        model, name, label, start_s, audio,
+                        variant="short", part=part, left=left, right=right,
+                    ))
         for part, (left, right) in enumerate(split_ranges(length), start=1):
             rows.append(run_case(
                 model, name, label, start_s, audio,
@@ -232,6 +294,29 @@ def english_report(rows: list[dict], media_name: str) -> str:
                 f'{candidate["ja_chars"]} | '
                 f'{sim if sim is not None else "-"} |'
             )
+    short_trials = [row for row in rows if row["model"] == "qwen3-asr"
+                    and row["variant"] == "short"]
+    if short_trials:
+        lines.extend([
+            "", "## Qwen experimental shorter segments (pause-guided)", "",
+            "This is ASR-only window slicing, NOT a production VAD comparison. "
+            "Overlapping cuts can duplicate words; split parts are not merged.", "",
+            "| Window | Full JA chars | Short parts JA chars (overlap counted) | "
+            "Full time (s) | Short total time (s) | Parts |",
+            "|---|---:|---:|---:|---:|---:|",
+        ])
+        for window in WINDOWS:
+            parts = [r for r in short_trials if r["window"] == window]
+            full = next((r for r in rows if r["model"] == "qwen3-asr"
+                         and r["window"] == window and r["variant"] == "full"), None)
+            if full is None or not parts:
+                continue
+            lines.append(
+                f'| {window} | {full["ja_chars"]} | '
+                f'{sum(r["ja_chars"] for r in parts)} | '
+                f'{full["elapsed_s"]:.3f} | '
+                f'{sum(r["elapsed_s"] for r in parts):.3f} | {len(parts)} |'
+            )
     lines += [
         "",
         "## How to interpret",
@@ -258,6 +343,11 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         default=list(WINDOWS), help="Only these regression windows")
     parser.add_argument("--outdir", type=Path, default=ROOT / "benchmarks" / "runs")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg executable or path")
+    parser.add_argument("--qwen-model-dir", type=Path,
+                        default=ROOT / "models" / "qwen3-asr",
+                        help="Explicit standard Qwen model/projector folder; avoids JA auto-discovery")
+    parser.add_argument("--qwen-short-target-s", type=float, choices=[8.0, 10.0, 12.0],
+                        help="Experimental <=N second pause-guided splits, in addition to full controls")
     parser.add_argument("--qwen-split-first", action="store_true",
                         help="A/B test conditional split-first after Qwen 256-token truncation")
     parser.add_argument("--dry-run", action="store_true", help="Show planned work; load no models")
@@ -271,6 +361,18 @@ def main(argv: list[str] | None = None) -> int:
     if not media.is_file() or not config_file.is_file():
         print("Audio/video or config file not found", file=sys.stderr)
         return 2
+    if args.qwen_short_target_s and args.qwen_split_first:
+        print("Run shortening and split-first as separate experiments", file=sys.stderr)
+        return 2
+    qwen_dir = args.qwen_model_dir.expanduser().resolve()
+    qwen_model = qwen_dir / STANDARD_QWEN_MODEL
+    qwen_mmproj = qwen_dir / STANDARD_QWEN_MMPROJ
+    if not args.dry_run and "qwen3-asr" in args.model:
+        missing = [path for path in (qwen_model, qwen_mmproj) if not path.is_file()]
+        if missing:
+            print("Standard Qwen requires its explicit model/projector pair:",
+                  *(str(path) for path in missing), sep="\n  ", file=sys.stderr)
+            return 2
     if not args.dry_run and not shutil.which(args.ffmpeg):
         print(f"ffmpeg executable unavailable: {args.ffmpeg}", file=sys.stderr)
         return 2
@@ -279,6 +381,11 @@ def main(argv: list[str] | None = None) -> int:
     print("Windows:", ", ".join(windows))
     print("Models:", ", ".join(args.model))
     print("For each window: one full decode, two overlapping half decodes.")
+    if args.qwen_short_target_s:
+        print(f"Experimental Qwen pause-guided segments: <= {args.qwen_short_target_s}s")
+    if "qwen3-asr" in args.model:
+        print("Standard Qwen model:", qwen_model)
+        print("Standard Qwen mmproj:", qwen_mmproj)
     if args.dry_run:
         return 0
 
@@ -301,9 +408,15 @@ def main(argv: list[str] | None = None) -> int:
             model = None
             try:
                 backend_config = get_backend_config(config, "asr", model_name)
+                if model_name == "qwen3-asr":
+                    backend_config = dict(backend_config)
+                    backend_config.update(
+                        model_path=str(qwen_model), mmproj_path=str(qwen_mmproj),
+                    )
                 model = get_default_registry().create_asr(model_name, backend_config)
                 rows.extend(run_model(
                     model, model_name, data, qwen_split_first=args.qwen_split_first,
+                    qwen_short_target_s=args.qwen_short_target_s,
                 ))
             finally:
                 if model is not None:

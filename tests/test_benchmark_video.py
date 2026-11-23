@@ -36,6 +36,9 @@ def test_summary_is_operational_not_quality():
     assert data["translated_count"] == 2
     assert data["mean_asr_s"] == 0.17
     assert data["p95_asr_s"] == 0.22
+    assert data["long_cues_ge_14s"] == 0
+    assert data["long_cues_ge_10s"] == 0
+    assert data["median_cue_duration_s"] == 2.45
     assert "accuracy" not in data
     assert summarize([], 5, 1)["mean_asr_s"] is None
 
@@ -67,13 +70,15 @@ def test_runs_sequentially_and_saves_distinct_results(tmp_path: Path, monkeypatc
     monkeypatch.setattr("benchmark_video.subprocess.run", fake_run)
     code = main([
         str(clip), "--config", str(config), "--outdir", str(tmp_path / "runs"),
-        "--asr", "haas", "whisper", "--mt", "gemma4", "--context-lines", "8",
+        "--asr", "haas", "whisper", "--mt", "gemma4",
+        "--context-lines", "8", "--vad-max-utterance-s", "10",
     ])
     assert code == 0
     assert len(calls) == 2
     assert "--fast" in calls[0]
     assert "--no-web" in calls[0]
     assert "--context-lines" in calls[0]
+    assert "--vad-max-utterance-s" in calls[0]
     assert calls[0].index("--asr-backend") != calls[0].index("--translate-backend")
     results = list((tmp_path / "runs").glob("*/summary.json"))
     assert len(results) == 1
@@ -81,6 +86,7 @@ def test_runs_sequentially_and_saves_distinct_results(tmp_path: Path, monkeypatc
     assert len(data) == 2
     assert all(entry["cue_count"] == 2 for entry in data)
     assert len(list(results[0].parent.glob("*.jsonl"))) == 2
+    assert len(list(results[0].parent.glob("*-review.csv"))) == 2
 
 
 def test_failed_run_stops_before_next_model(tmp_path: Path, monkeypatch):

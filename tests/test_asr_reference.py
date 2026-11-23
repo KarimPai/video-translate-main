@@ -74,3 +74,52 @@ def test_midpoint_alignment_flags_partial_cue():
 def test_full_cue_alignment_without_warning():
     cues = [{"start_s": 1, "end_s": 5, "ja": "ラミィ"}]
     assert ref.aligned_text(cues, 1, 5) == ("ラミィ", "")
+
+
+def test_find_matching_haas_run_with_non_gemma_translator(tmp_path):
+    import json
+
+    folder = tmp_path / "20261123-162100"
+    folder.mkdir()
+    (folder / "manifest.json").write_text(json.dumps({
+        "clip_bytes": 19515475, "vad_max_utterance_s": 14.0,
+        "vad_threshold": 0.28,
+        "combinations": [{"asr": "haas", "mt": "hymt"}],
+    }), encoding="utf-8")
+    expected = folder / "01-haas-hymt.jsonl"
+    expected.write_text('{"start_s":0,"end_s":1,"ja":"はい"}\n', encoding="utf-8")
+    assert ref.latest_matched_run(tmp_path, "haas", 19515475) == expected
+    assert ref.latest_matched_run(tmp_path, "haas", 19515476) is None
+    assert ref.latest_matched_run(tmp_path, "qwen", 19515475) is None
+
+
+def test_missing_optional_hypotheses_are_not_scored_as_asr_errors(tmp_path):
+    from argparse import Namespace
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"dummy clip data")
+    manifest = Path(__file__).resolve().parents[1] / "benchmarks/reference/hologta_30.csv"
+    haas = tmp_path / "01-haas-plamo8b.jsonl"
+    haas.write_text('{"start_s":0.26,"end_s":15.49,"ja":"こんにちは"}\n', encoding="utf-8")
+    args = Namespace(
+        clip=clip, manifest=manifest, runs_root=tmp_path / "runs",
+        haas=haas, qwen=None, whisper=None,
+        outdir=tmp_path / "working", extract_audio=False, overwrite=False,
+    )
+    assert ref.prepare(args) == 0
+    rows = ref.read_csv(args.outdir / "hologta_30_review.csv")
+    assert len(rows) == 30
+    assert rows[0]["haas_ja"] == "こんにちは"
+    assert rows[0]["qwen_boundary"] == "source_unavailable"
+    assert rows[0]["whisper_boundary"] == "source_unavailable"
+    assert rows[0]["verification_status"] == "pending"
+
+    rows[0].update(verification_status="verified",
+                   speech_present="yes", reference_ja="こんにちは")
+    scores, details = ref.score_rows(rows)
+    assert scores[0]["cer"] == 0
+    assert scores[0]["verified_windows"] == 1
+    assert scores[1]["verified_windows"] == 0
+    assert scores[1]["cer"] is None
+    assert scores[2]["verified_windows"] == 0
+    assert [entry["model"] for entry in details] == ["haas"]

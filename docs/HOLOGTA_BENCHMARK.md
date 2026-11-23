@@ -36,6 +36,15 @@ To compare context separately, keep ASR and translator unchanged:
 
     uv run python .\scripts\benchmark_video.py "$clip" --asr haas --mt gemma4 --context-lines 8
 
+The first Haas/Gemma 4 baseline (126 cues over 20 minutes) produced 41
+cues at 14–16 seconds. Test whether shorter VOD segmentation helps.
+The following is an EXPERIMENT, not a new default. It does not modify config.toml:
+
+    uv run python .\scripts\benchmark_video.py "$clip" --asr haas --mt gemma4 --vad-max-utterance-s 10
+
+Compare it against the unchanged baseline. Do not conclude that shorter
+cues are more accurate without listening to matched speech.
+
 The runner uses the existing CLI in local-file VOD mode, with fast processing,
 no web viewer, safe playback limits, and no shared diagnostics log. It does
 not launch MPV, isolating transcription and translation from player problems.
@@ -47,7 +56,9 @@ A unique timestamped directory within benchmarks/runs/ contains:
 - manifest.json: source, config path, selected models, clip size
 - 01-ASR-MT.log: full CLI output for debugging
 - 01-ASR-MT.jsonl: structured Japanese/English cues, timestamps, inference times
-- summary.json and summary.csv: status, cue counts, short cues, stage times, wall time
+- summary.json and summary.csv: status, cue counts, 10s/14s+ cues, long
+  English text counts, stage times, wall time
+- <run>-review.csv: especially long subtitles to check against actual audio
 
 Cue count, Japanese characters, and fluent English are not accuracy scores.
 More cues could mean more hallucinations. Fewer cues may mean missed speech.

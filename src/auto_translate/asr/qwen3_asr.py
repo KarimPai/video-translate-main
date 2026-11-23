@@ -417,7 +417,8 @@ class Qwen3ASR:
                 # into a fatal server error or interrupt playback.
                 log.warning("Qwen3-ASR quality recovery unavailable: %s", exc)
             if (candidate and self._generation == gen and not self._closed
-                    and not stopping.is_set() and self.last_detected_language == "ja"
+                    and not stopping.is_set() and time.monotonic() < deadline
+                    and self.last_detected_language == "ja"
                     and speech_key(candidate) != speech_key(text)
                     and transcript_problem(candidate, duration_s) is None):
                 log.info(
@@ -499,7 +500,9 @@ class Qwen3ASR:
             transcripts.append(candidate)
             languages.append(lang)
 
-        if len(transcripts) != 2 or languages[0] != languages[1]:
+        if (len(transcripts) != 2 or languages[0] != languages[1]
+                or self._generation != generation or self._closed
+                or stopping.is_set() or time.monotonic() >= deadline):
             return None
         joined = ("" if languages[0] == "ja" else " ").join(transcripts)
         if transcript_problem(joined, len(audio) / 16000):

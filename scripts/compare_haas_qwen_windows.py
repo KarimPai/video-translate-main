@@ -187,7 +187,7 @@ def run_case(model: object, model_name: str, window: str,
 
 def run_truncation_recovery_case(
     model: object, label: str, start_s: float, audio: np.ndarray, *,
-    overlap_s: float,
+    overlap_s: float, repeat_control: bool = False,
 ) -> dict:
     """Decode both halves using the real truncation-recovery logic.
 
@@ -230,7 +230,8 @@ def run_truncation_recovery_case(
         model.last_rejection = previous_rejection
     return {
         "window": label, "model": "qwen3-asr",
-        "variant": "trunc_overlap" if overlap_s else "trunc_control",
+        "variant": ("trunc_overlap" if overlap_s else
+                    ("trunc_control_repeat" if repeat_control else "trunc_control")),
         "part": 0, "start_s": round(start_s, 3),
         "end_s": round(start_s + len(audio) / SAMPLE_RATE, 3),
         "audio_s": round(len(audio) / SAMPLE_RATE, 3),
@@ -330,6 +331,9 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
             rows.append(run_truncation_recovery_case(
                 model, label, start_s, audio, overlap_s=qwen_trunc_overlap_s,
             ))
+            rows.append(run_truncation_recovery_case(
+                model, label, start_s, audio, overlap_s=0.0, repeat_control=True,
+            ))
         for part, (left, right) in enumerate(split_ranges(length), start=1):
             rows.append(run_case(
                 model, name, label, start_s, audio,
@@ -416,11 +420,13 @@ def english_report(rows: list[dict], media_name: str) -> str:
         lines.extend([
             "", "## Experimental Qwen token-limit recovery overlap", "",
             "This compares **forced** two-window recovery using exactly the "
-            "same audio and ASR. Production zero-overlap recovery is unchanged. "
+            "same audio and ASR. The A/B/A sequence checks normal run-to-run "
+            "variation. Production zero-overlap recovery is unchanged. "
             "More characters can reflect boundary duplication, not new speech.", "",
-            "| Window | No overlap chars | Overlap chars | Agreement | "
-            "No overlap time(s) | Overlap time(s) | Flags |",
-            "|---|---:|---:|---:|---:|---:|---|",
+            "| Window | No overlap chars | Overlap chars | Repeat control chars | "
+            "Control stable | Hint-only difference | No overlap time(s) | "
+            "Overlap time(s) | Flags |",
+            "|---|---:|---:|---:|---|---|---:|---:|---|",
         ])
         for trial in trunc_rows:
             normal = next((r for r in rows if r["model"] == "qwen3-asr"
@@ -428,8 +434,18 @@ def english_report(rows: list[dict], media_name: str) -> str:
                            and r["variant"] == "trunc_control"), None)
             if normal is None:
                 continue
-            agreement = similarity(normal["text"], trial["text"])
+            repeat = next((r for r in rows if r["model"] == "qwen3-asr"
+                           and r["window"] == trial["window"]
+                           and r["variant"] == "trunc_control_repeat"), None)
+            if repeat is None:
+                continue
+            stable = (normal["text"] == repeat["text"]
+                      and normal["language"] == repeat["language"])
+            changed = stable and (trial["text"] != normal["text"]
+                                   or trial["language"] != normal["language"])
             flags = []
+            if not stable:
+                flags.append("baseline_varies")
             if not normal["text"] or not trial["text"]:
                 flags.append("incomplete_recovery")
             if trial["language"] != normal["language"]:
@@ -438,8 +454,9 @@ def english_report(rows: list[dict], media_name: str) -> str:
                 flags.append("verify_duplicate_boundary_words")
             lines.append(
                 f'| {trial["window"]} | {normal["ja_chars"]} | '
-                f'{trial["ja_chars"]} | '
-                f'{agreement if agreement is not None else "-"} | '
+                f'{trial["ja_chars"]} | {repeat["ja_chars"]} | '
+                f'{"yes" if stable else "NO"} | '
+                f'{"yes" if changed else "no"} | '
                 f'{normal["elapsed_s"]:.3f} | {trial["elapsed_s"]:.3f} | '
                 f'{", ".join(flags) or "-"} |'
             )
@@ -593,6 +610,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Run shortening, split-first, rejected-speech recovery and vocabulary separately",
               file=sys.stderr)
         return 2
+    if args.qwen_trunc_overlap_s is not None and "qwen3-asr" not in args.model:
+        print("--qwen-trunc-overlap-s requires --model qwen3-asr", file=sys.stderr)
+        return 2
     if args.qwen_vocabulary and "qwen3-asr" not in args.model:
         print("--qwen-vocabulary requires --model qwen3-asr", file=sys.stderr)
         return 2
@@ -621,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.qwen_recover_rejected:
         print("A/B: normal Qwen versus opt-in recovery of rejected hypotheses")
     if args.qwen_trunc_overlap_s is not None:
-        print(f"A/B: forced truncation recovery with 0 versus {args.qwen_trunc_overlap_s}s overlap")
+        print(f"A/B/A: forced truncation recovery with 0 versus {args.qwen_trunc_overlap_s}s overlap")
     if args.qwen_vocabulary:
         print("A/B/A: normal Qwen, vocabulary hints, normal Qwen repeat")
         print("Vocabulary words:", args.qwen_vocabulary_terms)

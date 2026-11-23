@@ -128,6 +128,10 @@ def run_model(model: object, name: str, windows: dict[str, tuple[float, np.ndarr
     rows: list[dict] = []
     for label, (start_s, audio) in windows.items():
         length = len(audio)
+        if name == "qwen3-asr":
+            # Explicit control arm: the normal pre-optimization 256->512->split
+            # path, even after production enables split-first for long segments.
+            model._prefer_split_on_truncation = False
         rows.append(run_case(
             model, name, label, start_s, audio,
             variant="full", part=0, left=0, right=length,

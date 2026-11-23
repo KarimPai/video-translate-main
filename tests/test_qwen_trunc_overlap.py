@@ -122,16 +122,19 @@ def test_forced_benchmark_uses_same_audio_and_restores_metadata_and_overlap():
         qwen_trunc_overlap_s=0.16,
     )
     assert [r["variant"] for r in rows] == [
-        "full", "trunc_control", "trunc_overlap", "split", "split",
+        "full", "trunc_control", "trunc_overlap", "trunc_control_repeat", "split", "split",
     ]
-    assert qwen.overlaps == [0.0, 0.16]
+    assert qwen.overlaps == [0.0, 0.16, 0.0]
     assert qwen._truncation_recovery_overlap_s == 0.05
     # Recovery test does not leak language/raw text/last rejection into the
     # next variant, even when the previous full-window run set new metadata.
     assert qwen.last_detected_language == "ja"
     assert qwen.last_raw_transcript == "previous"
     assert qwen.last_rejection is None
-    assert "Experimental Qwen token-limit recovery overlap" in bench.english_report(rows, "clip.flac")
+    report = bench.english_report(rows, "clip.flac")
+    assert "Experimental Qwen token-limit recovery overlap" in report
+    assert "Control stable" in report
+    assert "yes | no" in report
 
 
 def test_overlap_experiment_is_separate_from_hints_and_other_variants(tmp_path, capsys):
@@ -145,3 +148,8 @@ def test_overlap_experiment_is_separate_from_hints_and_other_variants(tmp_path, 
         "--qwen-vocabulary",
     ]) == 2
     assert "separately" in capsys.readouterr().err
+    assert bench.main([
+        str(audio), "--config", str(config), "--model", "haas",
+        "--dry-run", "--qwen-trunc-overlap-s", "0.16",
+    ]) == 2
+    assert "requires --model qwen3-asr" in capsys.readouterr().err

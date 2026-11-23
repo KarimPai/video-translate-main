@@ -169,3 +169,30 @@ def test_recovery_config_is_boolean_and_backend_profile_isolated():
     haas = get_backend_config(cfg, "asr", "haas")
     assert selected["recover_rejected_speech"] is True
     assert haas["recover_rejected_speech"] is False
+
+
+
+def test_cancellation_during_second_half_never_publishes_joined_audio():
+    asr = backend(enabled=True)
+    original = "あ" * 12
+    calls = []
+
+    def decode(audio, probe=False, timeout=None, max_tokens=256, **kwargs):
+        calls.append(max_tokens)
+        asr.last_detected_language = "ja"
+        if len(calls) == 1:
+            asr.last_raw_transcript = original
+            return original
+        if len(calls) == 2:
+            asr.last_raw_transcript = "こんにちは"
+            return "こんにちは"
+        # A seek/cancel that lands while the second recovery call is in flight.
+        asr._generation += 1
+        asr.last_raw_transcript = "みこさん"
+        return "みこさん"
+
+    with patch.object(asr, "_transcribe_impl", side_effect=decode):
+        assert asr.transcribe(np.zeros(12 * 16000, np.float32)) == ""
+    assert calls == [256, 512, 512]
+    assert asr.last_rejection == "repeated_character"
+    assert asr.last_raw_transcript == original

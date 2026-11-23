@@ -148,7 +148,7 @@ def test_uncaught_recovery_exception_stays_local_and_preserves_original():
 def test_generation_cancellation_prevents_retry():
     asr = backend(enabled=True)
 
-    def cancel_in_first_decode(audio, probe=False, timeout=None, max_tokens=256):
+    def cancel_in_first_decode(audio, probe=False, timeout=None, max_tokens=256, **kwargs):
         asr._generation += 1
         asr.last_detected_language = "ja"
         asr.last_raw_transcript = "あ" * 12

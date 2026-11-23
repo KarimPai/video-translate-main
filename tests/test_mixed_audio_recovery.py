@@ -41,7 +41,7 @@ def test_qwen_short_windows_recover_japanese_without_forced_language():
     ])
     calls = []
 
-    def mock_decode(audio, probe=False, timeout=None):
+    def mock_decode(audio, probe=False, timeout=None, **kwargs):
         calls.append((len(audio), timeout))
         language, words = next(predictions)
         model.last_detected_language = language
@@ -66,7 +66,7 @@ def test_qwen_short_windows_recover_japanese_without_forced_language():
 def test_qwen_english_only_windows_remain_hidden():
     model = _mock_qwen()
 
-    def mock_decode(audio, probe=False, timeout=None):
+    def mock_decode(audio, probe=False, timeout=None, **kwargs):
         model.last_detected_language = "en"
         return "Get in the car"
 

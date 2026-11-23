@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,9 @@ import compare_haas_qwen_windows as bench  # noqa: E402
 def fake_backend():
     instance = Qwen3ASR.__new__(Qwen3ASR)
     instance.cfg = AsrConfig()
+    instance._generation, instance._closed = 0, False
+    instance._inference_lock = threading.Lock()
+    instance._state_lock = threading.Lock()
     instance.last_detected_language = "und"
     instance.last_raw_transcript = ""
     messages = []
@@ -89,13 +93,8 @@ def test_clear_hint_and_bounds_enforced():
 
 
 def test_echo_recovery_sends_unprompted_decode_not_hints():
-    import threading
-
     model, messages = fake_backend()
     model.set_vocabulary_hint("みこ, ルイ")
-    model._closed = False
-    model._generation = 0
-    model._state_lock = threading.Lock()
     assert model.recover_context_echo(np.zeros(16000, np.float32), timeout=10) == "みこさん"
     assert [m["role"] for m in messages[0]] == ["user"]
 

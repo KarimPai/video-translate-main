@@ -134,12 +134,17 @@ def test_restart_never_runs_two_children(make_server):
     ok = SimpleNamespace(status_code=200)
     server = make_server(timeout=2.0, get=lambda *a, **k: ok)
     server.start()
+    watcher = server._cancel_thread
     server.start()
     first, second = make_server.spawned
     assert first.terminated, "old server must be stopped before the replacement is launched"
     assert second.returncode is None
     assert server.process is second
     assert sum(p.returncode is None for p in make_server.spawned) == 1
+    assert server._cancel_thread is watcher
+    server.close()
+    watcher.join(timeout=1)
+    assert not watcher.is_alive()
 
 
 def test_real_llama_server_spawn_is_blocked_by_default(monkeypatch, tmp_path):

@@ -218,7 +218,7 @@ def test_llama_server_reset_for_restart_exists():
     from auto_translate.llama_server import LlamaServer
     assert hasattr(LlamaServer, "reset_for_restart")
     sig = inspect.signature(LlamaServer.reset_for_restart)
-    assert len(sig.parameters) == 1  # self only
+    assert set(sig.parameters) == {"self", "deadline", "check"}
 
 
 def test_llama_server_start_refuses_after_close():
@@ -241,10 +241,10 @@ def test_llama_server_start_refuses_after_close():
         assert "closed" in str(exc).lower()
 
 
-def test_llama_server_reset_allows_restart():
-    """After reset_for_restart(), start() should not raise 'closed' error."""
+def test_llama_server_reset_refuses_after_close():
+    """Neither recycle nor start may resurrect a closed server."""
+    import pytest
     from pathlib import Path
-
     from auto_translate.llama_server import LlamaServer, LlamaServerError
 
     server = LlamaServer(
@@ -254,17 +254,10 @@ def test_llama_server_reset_allows_restart():
         startup_timeout_s=0.1,
     )
     server.close()
-    server.reset_for_restart()
-    # start() will fail because executable doesn't exist, but not because of _closed
-    try:
+    with pytest.raises(LlamaServerError, match="server is closed"):
+        server.reset_for_restart()
+    with pytest.raises(LlamaServerError, match="server is closed"):
         server.start()
-    except LlamaServerError as exc:
-        # Should NOT be "server is closed"
-        assert "closed" not in str(exc).lower(), f"Should not say 'closed': {exc}"
-    except FileNotFoundError:
-        pass  # Also acceptable — executable not found
-    finally:
-        server.close()
 
 
 # ============================================================================

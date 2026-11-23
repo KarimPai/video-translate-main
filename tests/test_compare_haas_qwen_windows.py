@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,6 +150,7 @@ def test_qwen_truncation_opt_in_skips_redundant_512_long_decode(duration_s):
                                raise_for_status=lambda: None)
 
     backend = Qwen3ASR.__new__(Qwen3ASR)
+    backend._generation, backend._closed = 0, False
     backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
                                      client=SimpleNamespace(post=post))
     backend._prefer_split_on_truncation = True
@@ -175,6 +177,8 @@ def test_qwen_short_truncation_remains_on_original_512_retry(duration_s):
                                raise_for_status=lambda: None)
 
     backend = Qwen3ASR.__new__(Qwen3ASR)
+    backend._generation, backend._closed = 0, False
+    backend._state_lock = threading.Lock()
     backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
                                      client=SimpleNamespace(post=post))
     backend._prefer_split_on_truncation = True
@@ -199,6 +203,8 @@ def test_qwen_experimental_flag_is_opt_in():
                                raise_for_status=lambda: None)
 
     backend = Qwen3ASR.__new__(Qwen3ASR)
+    backend._generation, backend._closed = 0, False
+    backend._state_lock = threading.Lock()
     backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
                                      client=SimpleNamespace(post=post))
     assert backend._transcribe_impl(np.zeros(16 * bench.SAMPLE_RATE, np.float32),
@@ -229,7 +235,7 @@ def test_qwen_real_constructor_enables_guarded_split_first(monkeypatch):
     monkeypatch.setattr(qwen_mod, "detect_device",
                         lambda executable, device: "CUDA0")
     monkeypatch.setattr(qwen_mod, "LlamaServer", FakeServer)
-    monkeypatch.setattr(qwen_mod.Qwen3ASR, "_warmup", lambda self: None)
+    monkeypatch.setattr(qwen_mod.Qwen3ASR, "_warmup", lambda self, deadline, generation: None)
     monkeypatch.setattr(qwen_mod, "check_running", lambda: None)
     monkeypatch.setattr(qwen_mod, "update_metrics", lambda **kwargs: None)
 
@@ -272,7 +278,6 @@ def test_qwen_ab_control_disables_production_default():
 
 def test_qwen_split_first_failure_falls_back_to_full_512(monkeypatch):
     """Do not drop a long utterance if split recovery fails but full retry works."""
-    import threading
     from collections import deque
     from auto_translate.config import AsrConfig
     from auto_translate.asr.qwen3_asr import Qwen3ASR, Qwen3ASRTruncationError
@@ -295,7 +300,7 @@ def test_qwen_split_first_failure_falls_back_to_full_512(monkeypatch):
 
     calls = []
 
-    def decode(samples, probe=False, *, timeout=None, max_tokens=256):
+    def decode(samples, probe=False, *, timeout=None, max_tokens=256, **kwargs):
         calls.append((len(samples), max_tokens))
         if len(calls) <= 2:
             raise Qwen3ASRTruncationError("token limit")

@@ -282,6 +282,7 @@ class Ingest:
         self._vod_restart_enabled = False
         self._session = 0
         self._generation = 0
+        self._generation_listener: Callable[[int], None] | None = None
 
         self.first_pts: float | None = None
         self.first_pts_at = 0.0
@@ -382,6 +383,13 @@ class Ingest:
         with self._proc_lock:
             return self._generation
 
+    def set_generation_listener(self, listener: Callable[[int], None] | None) -> None:
+        """Register a short, nonblocking invalidation callback for audio restarts."""
+        with self._proc_lock:
+            self._generation_listener = listener
+            if listener is not None:
+                listener(self._generation)
+
     def request_restart(
         self,
         start_s: float,
@@ -400,6 +408,8 @@ class Ingest:
             )
 
             self._generation += 1
+            if self._generation_listener is not None:
+                self._generation_listener(self._generation)
             self._proc_lock.notify_all()
             self._session += 1
 

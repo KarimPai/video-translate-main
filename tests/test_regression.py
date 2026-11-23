@@ -183,6 +183,7 @@ def _make_qwen3(cfg=None):
     inst._restarts = 0
     inst._closed = False
     inst._generation = 0
+    inst._cancel_event = threading.Event()
     inst._inference_lock = threading.Lock()
     inst._state_lock = threading.Lock()
     from collections import deque
@@ -198,14 +199,14 @@ def test_qwen3_asr_timeout_followed_by_successful_retry():
     inst = _make_qwen3()
     call_count = [0]
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
             raise httpx.TimeoutException("read timeout")
         return "こんにちは"
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         text = inst.transcribe(np.zeros(16000, dtype=np.float32))
     assert text == "こんにちは"
     assert inst._restarts == 0  # recovered by retry, no restart needed
@@ -220,12 +221,12 @@ def test_qwen3_asr_repeated_failures_trigger_restart():
     # Four timeouts exhaust retries, then the post-restart call succeeds.
     impl = mock.Mock(side_effect=[httpx.TimeoutException("x")] * 4 + ["成功"])
 
-    def fake_restart():
+    def fake_restart(**kwargs):
         restarted.append(True)
 
     with mock.patch.object(inst, "_transcribe_impl", impl), \
             mock.patch.object(inst, "_restart", side_effect=fake_restart), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         text = inst.transcribe(np.zeros(16000, dtype=np.float32))
     assert text == "成功"
     assert restarted, "expected a restart to be attempted"
@@ -237,16 +238,16 @@ def test_qwen3_asr_restart_failure_is_permanent_shutdown():
     inst = _make_qwen3()
     restart_calls = []
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         raise httpx.TimeoutException("keep failing")
 
-    def fake_restart():
+    def fake_restart(**kwargs):
         restart_calls.append(True)
         raise RuntimeError("server will not start")
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
             mock.patch.object(inst, "_restart", side_effect=fake_restart), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         try:
             inst.transcribe(np.zeros(16000, dtype=np.float32))
         except Qwen3ASRError as exc:
@@ -261,11 +262,11 @@ def test_qwen3_asr_all_failures_no_recovery():
     inst = _make_qwen3()
     inst._restarts = 2  # already at restart limit
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         raise httpx.TimeoutException("always failing")
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         try:
             inst.transcribe(np.zeros(16000, dtype=np.float32))
         except Qwen3ASRError as exc:
@@ -275,16 +276,13 @@ def test_qwen3_asr_all_failures_no_recovery():
 
 
 def test_qwen3_asr_shutdown_skips_restart():
-    """Application cancellation prevents reviving the server during recovery."""
+    """Application cancellation prevents decode and revival during shutdown."""
     inst = _make_qwen3()
     inst._closed = True
-    with mock.patch.object(inst, "_transcribe_impl", side_effect=httpx.TimeoutException("x")), \
-            mock.patch("time.sleep", return_value=None):
-        try:
-            inst.transcribe(np.zeros(16000, dtype=np.float32))
-        except Qwen3ASRError:
-            return
-    raise AssertionError("expected terminal Qwen3ASRError when closed")
+    with mock.patch.object(inst, "_transcribe_impl") as decode, mock.patch.object(inst, "_restart") as restart:
+        assert inst.transcribe(np.zeros(16000, dtype=np.float32)) == ""
+    decode.assert_not_called()
+    restart.assert_not_called()
 
 
 def test_qwen3_asr_slow_restart_consumes_budget():
@@ -295,25 +293,21 @@ def test_qwen3_asr_slow_restart_consumes_budget():
     def fake_monotonic():
         return monotonic_counter[0]
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         raise httpx.TimeoutException("fail")
 
-    def fake_restart():
+    def fake_restart(**kwargs):
         # Simulate slow warmup consuming the entire budget
         monotonic_counter[0] += inst.cfg.response_timeout_s + 1.0
         inst._restarts += 1
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
             mock.patch.object(inst, "_restart", side_effect=fake_restart), \
-            mock.patch("time.sleep", return_value=None), \
+            mock.patch.object(inst, "_wait_retry"), \
             mock.patch("time.monotonic", side_effect=fake_monotonic):
-        try:
-            inst.transcribe(np.zeros(16000, dtype=np.float32))
-        except Qwen3ASRError as exc:
-            # Budget consumed by restart + warmup — no post-restart inference
-            assert "budget exceeded" in str(exc).lower() or "transcription failed" in str(exc).lower()
-            return
-    raise AssertionError("expected Qwen3ASRError when budget consumed by restart")
+        assert inst.transcribe(np.zeros(16000, dtype=np.float32)) == ""
+    assert inst.last_rejection == "deadline"
+    assert inst._restarts == 1
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +319,7 @@ def test_qwen3_asr_recovery_respects_remaining_timeout():
     inst = _make_qwen3()
     captured = {}
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         captured["timeout"] = timeout
         return "text"
 
@@ -336,14 +330,14 @@ def test_qwen3_asr_recovery_respects_remaining_timeout():
 
         # Budget remaining: timeout is forwarded to the HTTP request.
         inst.recover_context_echo(np.zeros(1600, dtype=np.float32), timeout=7.5)
-        assert captured["timeout"] == 7.5
+        assert 7.4 < captured["timeout"] <= 7.5
 
 
 def test_qwen3_asr_cancellation_during_recovery():
     """Cancellation (generation change) aborts context-echo recovery."""
     inst = _make_qwen3()
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         inst.cancel_pending()  # cancellation mid-recovery
         return "text"
 
@@ -378,20 +372,20 @@ def _make_qwen3_with_server(body):
 
 
 def test_qwen3_asr_strips_language_japanese_prefix_through_parser():
-    inst = _make_qwen3_with_server({"choices": [{"message": {"content": "language Japanese<asr_text>こんにちはです"}}]})
+    inst = _make_qwen3_with_server({"choices": [{"message": {"content": "language Japanese<asr_text>こんにちはです"}, "finish_reason": "stop"}]})
     text = inst._transcribe_impl(np.zeros(1600, dtype=np.float32))
     assert text == "こんにちはです"
     assert "language" not in text.lower()
 
 
 def test_qwen3_asr_strips_asr_text_tag_through_parser():
-    inst = _make_qwen3_with_server({"choices": [{"message": {"content": "<asr_text>おはようございます"}}]})
+    inst = _make_qwen3_with_server({"choices": [{"message": {"content": "<asr_text>おはようございます"}, "finish_reason": "stop"}]})
     text = inst._transcribe_impl(np.zeros(1600, dtype=np.float32))
     assert text == "おはようございます"
 
 
 def test_qwen3_asr_preserves_legitimate_japanese_through_parser():
-    inst = _make_qwen3_with_server({"choices": [{"message": {"content": "今日はいい天気ですね"}}]})
+    inst = _make_qwen3_with_server({"choices": [{"message": {"content": "今日はいい天気ですね"}, "finish_reason": "stop"}]})
     text = inst._transcribe_impl(np.zeros(1600, dtype=np.float32))
     assert text == "今日はいい天気ですね"
 
@@ -754,29 +748,19 @@ def test_backend_profile_propagates_to_pipeline():
     assert cfg.translate.timeout_s == 120.0
 
 
-def test_llama_server_watcher_lifecycle():
-    """Only one cancellation watcher exists per server; old watcher is joined on restart."""
-    import tempfile
-
+def test_llama_server_open_reset_replaces_and_closes_client():
+    """Recycling resources is allowed while the server remains open."""
     from auto_translate.llama_server import LlamaServer
 
-    with tempfile.TemporaryDirectory() as td:
-        exe = Path(td) / "llama-server.exe"
-        exe.write_bytes(b"fake")
-        server = LlamaServer(
-            name="test", executable=exe, args=["--model", "test.gguf"],
-            startup_timeout_s=1.0,
-        )
-        # Initial state: no watcher
-        assert server._cancel_thread is None
-        assert server._watcher_generation == 0
-
-        # After reset_for_restart, generation is incremented
-        server._closed = True  # simulate closed state
+    server = LlamaServer("test", Path("unused"), [], startup_timeout_s=1.0)
+    first = server.client
+    try:
         server.reset_for_restart()
-        assert server._watcher_generation == 1
-        assert server._cancel_thread is None
-        server._closed = True  # keep closed so start() doesn't create a watcher
+        assert first.is_closed
+        assert server.client is not first
+        assert not server.client.is_closed
+    finally:
+        server.close()
 
 
 def test_gui_backend_switching_preserves_paths():
@@ -1126,14 +1110,14 @@ def test_qwen3_asr_http_400_no_restart():
     """HTTP 400 Bad Request should not trigger a server restart."""
     inst = _make_qwen3()
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         resp = mock.Mock()
         resp.status_code = 400
         raise httpx.HTTPStatusError("400 Bad Request", request=mock.Mock(), response=resp)
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
             mock.patch.object(inst, "_restart", side_effect=AssertionError("should not restart")), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         try:
             inst.transcribe(np.zeros(16000, dtype=np.float32))
         except Qwen3ASRError as exc:
@@ -1147,7 +1131,7 @@ def test_qwen3_asr_http_500_retry():
     inst = _make_qwen3()
     call_count = [0]
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         call_count[0] += 1
         if call_count[0] <= 2:
             resp = mock.Mock()
@@ -1156,7 +1140,7 @@ def test_qwen3_asr_http_500_retry():
         return "成功"
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         text = inst.transcribe(np.zeros(16000, dtype=np.float32))
     assert text == "成功"
     assert call_count[0] == 3  # 2 failures + 1 success
@@ -1166,12 +1150,12 @@ def test_qwen3_asr_permanent_error_no_restart():
     """Qwen3ASRError should not trigger a server restart."""
     inst = _make_qwen3()
 
-    def fake_impl(audio, probe=False, no_context=False, timeout=None):
+    def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         raise Qwen3ASRError("invalid model configuration")
 
     with mock.patch.object(inst, "_transcribe_impl", side_effect=fake_impl), \
             mock.patch.object(inst, "_restart", side_effect=AssertionError("should not restart")), \
-            mock.patch("time.sleep", return_value=None):
+            mock.patch.object(inst, "_wait_retry"):
         try:
             inst.transcribe(np.zeros(16000, dtype=np.float32))
         except Qwen3ASRError as exc:
@@ -3034,7 +3018,7 @@ def test_vad_progress_does_not_expire_legitimately_pending_translation():
 def test_qwen_auto_language_metadata_is_not_displayed_and_no_forced_language():
     """Check the actual llama-server request and automatic language parser."""
     instance = _make_qwen3_with_server({
-        "choices": [{"message": {"content": "language English<asr_text>We should go home."}}],
+        "choices": [{"message": {"content": "language English<asr_text>We should go home."}, "finish_reason": "stop"}],
     })
     with mock.patch.object(instance.server.client, "post",
                            wraps=instance.server.client.post) as send:

@@ -1,6 +1,7 @@
 """Owned local llama.cpp server processes shared by the ASR and translation models."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import socket
@@ -8,6 +9,9 @@ import struct
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import CancelledError
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -194,10 +198,68 @@ def _free_port() -> int:
         return reservation.getsockname()[1]
 
 
+class DeadlineHttpClient:
+    """Synchronous interface for cancellable, wall-clock-bounded HTTP exchanges."""
+
+    def __init__(self) -> None:
+        self._closed = threading.Event()
+
+    def get(self, url: str, *, timeout: float, check: Callable[[], None] | None = None) -> httpx.Response:
+        return self._request("GET", url, timeout, check)
+
+    def post(self, url: str, *, json: dict, timeout: float,
+             check: Callable[[], None] | None = None) -> httpx.Response:
+        return self._request("POST", url, timeout, check, json=json)
+
+    def _request(self, method: str, url: str, timeout: float,
+                 check: Callable[[], None] | None, **kwargs) -> httpx.Response:
+        deadline = time.monotonic() + timeout
+
+        def check_request() -> None:
+            if self._closed.is_set():
+                raise CancelledError("llama-server HTTP client is closed")
+            if check is not None:
+                check()
+
+        async def exchange() -> httpx.Response:
+            check_request()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            # HTTPX timeouts apply per phase. Bound the entire exchange and
+            # cancel its socket when the calling utterance becomes stale.
+            async with asyncio.timeout(remaining):
+                async with httpx.AsyncClient(trust_env=False, timeout=remaining) as client:
+                    async def send() -> httpx.Response:
+                        check_request()
+                        return await client.request(method, url, **kwargs)
+
+                    task = asyncio.create_task(send())
+                    try:
+                        while True:
+                            done, _ = await asyncio.wait((task,), timeout=0.05)
+                            check_request()
+                            if done:
+                                return task.result()
+                    finally:
+                        if not task.done():
+                            task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+        try:
+            return asyncio.run(exchange())
+        except TimeoutError as exc:
+            raise httpx.TimeoutException("llama-server HTTP deadline exceeded") from exc
+
+    def close(self) -> None:
+        # Each exchange observes this signal and closes its own connection.
+        self._closed.set()
+
+
 class LlamaServer:
     """One llama-server child on a private loopback port."""
 
-    def __init__(self, name: str, executable: Path, args: list[str], *, startup_timeout_s: float) -> None:
+    def __init__(self, name: str, executable: Path, args: list[str], *,
+                 startup_timeout_s: float, strict_http_deadlines: bool = False) -> None:
         self.name = name
         self.executable = executable
         self.args = list(args)
@@ -209,29 +271,62 @@ class LlamaServer:
         self._closed = False
         self._shutdown = threading.Event()
         self._cancel_thread = None
-        self._watcher_generation = 0
-        self.client = httpx.Client(trust_env=False)
+        self._strict_http_deadlines = strict_http_deadlines
+        self.client = self._new_client()
         self.log_path = Path("logs") / f"{name}-server.log"
 
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def _watch_cancellation(self, generation: int) -> None:
+    def _new_client(self) -> httpx.Client | DeadlineHttpClient:
+        return DeadlineHttpClient() if self._strict_http_deadlines else httpx.Client(trust_env=False)
+
+    @contextmanager
+    def _lifecycle_lock(self, remaining: Callable[[], float] | None):
+        if remaining is None:
+            self._lock.acquire()
+        else:
+            while not self._lock.acquire(timeout=min(0.05, remaining())):
+                pass
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    def _watch_cancellation(self) -> None:
         while not self._shutdown.wait(0.1):
-            if self._watcher_generation != generation:
-                # Superseded by a newer watcher; exit cleanly.
-                return
             if stopping.is_set():
                 self.close()
                 return
 
-    def start(self) -> None:
+    def start(self, *, deadline: float | None = None,
+              check: Callable[[], None] | None = None) -> None:
         check_running()
-        with self._lock:
-            if self._closed:
+        startup_deadline = time.monotonic() + self.startup_timeout_s
+        if deadline is not None:
+            startup_deadline = min(startup_deadline, deadline)
+
+        def remaining() -> float:
+            check_running()
+            if self._shutdown.is_set():
+                raise CancelledError(f"{self.name} server is closing")
+            if check is not None:
+                check()
+            seconds = startup_deadline - time.monotonic()
+            if seconds <= 0:
+                raise LlamaServerError(f"{self.name} llama-server did not load before its startup deadline. "
+                                       + self.log_tail())
+            return seconds
+
+        with self._lifecycle_lock(remaining if deadline is not None else None):
+            if self._closed or self._shutdown.is_set():
                 raise LlamaServerError(f"{self.name} server is closed")
-            self._stop_process()
+            if deadline is not None:
+                remaining()
+            elif check is not None:
+                check()
+            self._stop_process(deadline)
             # Process creation, log setup and watcher startup all need cleanup.
             # The health-polling exception handler below cannot catch failures here.
             try:
@@ -241,61 +336,67 @@ class LlamaServer:
                 self._log_stream = self.log_path.open("ab")
                 command = [str(self.executable), *self.args, "--host", "127.0.0.1", "--port", str(self.port)]
                 log.info("Starting %s llama-server: %s", self.name, " ".join(command[1:]))
+                remaining()
                 self.process = owned_popen(command, cwd=str(self.executable.parent), stdin=subprocess.DEVNULL,
                                            stdout=self._log_stream, stderr=subprocess.STDOUT,
                                            creationflags=hidden_console_flags())
                 process = self.process
-                # Join any old watcher before creating a new one.
-                if self._cancel_thread is not None and self._cancel_thread.is_alive():
-                    self._shutdown.set()
-                    self._cancel_thread.join(timeout=2)
-                    self._cancel_thread = None
-                    self._shutdown.clear()
-                self._watcher_generation += 1
-                self._cancel_thread = threading.Thread(
-                    target=self._watch_cancellation,
-                    args=(self._watcher_generation,),
-                    name=f"{self.name}-cancel", daemon=True,
-                )
-                self._cancel_thread.start()
+                client, health_url = self.client, self.base_url + "/health"
+                if self._cancel_thread is None:
+                    watcher = threading.Thread(target=self._watch_cancellation,
+                                               name=f"{self.name}-cancel", daemon=True)
+                    watcher.start()
+                    self._cancel_thread = watcher
             except BaseException:
                 # Already holding _lock: do not call _abort_startup here.
                 try:
-                    self._stop_process()
+                    self._stop_process(deadline)
                 except Exception:
                     log.exception("%s failed to clean up after an interrupted spawn", self.name)
                 raise
-        deadline = time.monotonic() + self.startup_timeout_s
         try:
-            while time.monotonic() < deadline:
-                check_running()
+            while True:
+                timeout = min(remaining(), 0.2 if check is not None else 0.5)
                 if process.poll() is not None:
                     raise LlamaServerError(f"{self.name} llama-server exited during startup "
                                            f"(code {process.returncode}). {self.log_tail()}")
                 try:
-                    if self.client.get(self.base_url + "/health", timeout=0.5).status_code == 200:
-                        return
+                    options = {"check": remaining} if isinstance(client, DeadlineHttpClient) else {}
+                    ready = client.get(health_url, timeout=timeout, **options).status_code == 200
                 except httpx.HTTPError:
-                    pass
-                time.sleep(0.1)
-            # A health timeout is recoverable; the outer handler stops this
-            # child without permanently closing the server or HTTP client.
-            raise LlamaServerError(f"{self.name} llama-server did not load within {self.startup_timeout_s:g}s. "
-                                   + self.log_tail())
+                    ready = False
+                delay = remaining()
+                if ready:
+                    if self.process is not process or process.poll() is not None:
+                        raise LlamaServerError(f"{self.name} llama-server exited during startup")
+                    return
+                self._shutdown.wait(min(0.05 if check is not None else 0.1, delay))
         except BaseException:
             # Cancellation (CancelledError), KeyboardInterrupt or any unexpected
             # error while waiting for /health must never leave a loading child
             # holding VRAM. Only reap the child this call started.
-            self._abort_startup(process)
+            self._abort_startup(process, deadline)
             raise
 
-    def _abort_startup(self, process: subprocess.Popen) -> None:
-        with self._lock:
+    def _abort_startup(self, process: subprocess.Popen, deadline: float | None) -> None:
+        # Close takes responsibility for the child as soon as it signals
+        # shutdown. A cancelled startup should not wait for close's reap.
+        if self._shutdown.is_set():
+            return
+        if deadline is None:
+            self._lock.acquire()
+        else:
+            while not self._lock.acquire(timeout=max(0, min(0.05, deadline - time.monotonic()))):
+                if self._shutdown.is_set() or time.monotonic() >= deadline:
+                    return
+        try:
             if self.process is process:
                 try:
-                    self._stop_process()
+                    self._stop_process(deadline)
                 except Exception:
                     log.exception("%s llama-server cleanup after failed startup raised", self.name)
+        finally:
+            self._lock.release()
 
     def alive(self) -> bool:
         process = self.process
@@ -324,7 +425,7 @@ class LlamaServer:
         except OSError:
             return f"See {self.log_path}."
 
-    def _stop_process(self) -> None:
+    def _stop_process(self, deadline: float | None = None) -> None:
         # Never lose ownership of a process until its exit is observed.
         # If termination fails, a later close()/start() can retry safely.
         process = self.process
@@ -333,11 +434,13 @@ class LlamaServer:
                 if process.poll() is None:
                     try:
                         process.terminate()
-                        process.wait(timeout=3)
+                        first_wait = 3 if deadline is None else max(0.0, min(3, (deadline - time.monotonic()) / 2))
+                        process.wait(timeout=first_wait)
                     except (subprocess.TimeoutExpired, OSError):
                         if process.poll() is None:
                             process.kill()
-                            process.wait(timeout=3)
+                            last_wait = 3 if deadline is None else max(0.0, min(3, deadline - time.monotonic()))
+                            process.wait(timeout=last_wait)
                 if process.poll() is None:
                     raise LlamaServerError(f"{self.name} llama-server did not exit after termination")
                 self.process = None
@@ -349,44 +452,42 @@ class LlamaServer:
                 finally:
                     self._log_stream = None
 
-    def reset_for_restart(self) -> None:
-        """Clear the closed flag so start() can be called again.
+    def reset_for_restart(self, *, deadline: float | None = None,
+                          check: Callable[[], None] | None = None) -> None:
+        """Recycle the process and client of an open server. Close is permanent."""
+        def remaining() -> float:
+            check_running()
+            if self._shutdown.is_set():
+                raise CancelledError(f"{self.name} server is closing")
+            if check is not None:
+                check()
+            if deadline is None:
+                return float("inf")
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                raise LlamaServerError(f"{self.name} restart deadline exceeded")
+            return seconds
 
-        Stops the old process, clears the cancellation watcher (start()
-        recreates a fresh one), and recreates the HTTP client to release
-        sockets bound to the old process/port. Does not revive the server
-        while the application is shutting down.
-        """
-        with self._lock:
-            if stopping.is_set():
-                self._closed = True
-                self._shutdown.set()
-                self._stop_process()
-                self.client.close()
-                return
-            self._stop_process()
-            # Wake the previous cancellation watcher and wait for it to exit
-            self._shutdown.set()
-            if self._cancel_thread is not None and self._cancel_thread.is_alive():
-                self._cancel_thread.join(timeout=2)
-            self._cancel_thread = None
-            self._closed = False
-            self._shutdown.clear()
-            # Increment generation so the new watcher knows it is the current one
-            self._watcher_generation += 1
-            # Close and recreate the HTTP client to release sockets.
-            self.client.close()
-            self.client = httpx.Client(trust_env=False)
+        with self._lifecycle_lock(remaining if deadline is not None else None):
+            check_running()
+            if self._closed or self._shutdown.is_set():
+                raise LlamaServerError(f"{self.name} server is closed")
+            remaining()
+            self._stop_process(deadline)
+            remaining()
+            old_client = self.client
+            self.client = self._new_client()
+            old_client.close()
         log.info("%s server reset for restart", self.name)
 
     def close(self) -> None:
+        self._shutdown.set()
         with self._lock:
             # Retained process references must remain terminable even after
             # a previous close() attempt failed.
             if self._closed and self.process is None and self._log_stream is None:
                 return
             self._closed = True
-            self._shutdown.set()
             try:
                 self._stop_process()
             finally:

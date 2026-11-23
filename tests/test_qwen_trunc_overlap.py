@@ -68,7 +68,7 @@ def test_real_recovery_path_uses_opt_in_overlap_only():
     audio = np.zeros(8 * 16000, dtype=np.float32)
     calls = []
 
-    def fake_decoder(chunk, probe=False, timeout=None, max_tokens=256):
+    def fake_decoder(chunk, probe=False, timeout=None, max_tokens=256, **kwargs):
         calls.append((len(chunk), max_tokens))
         model.last_detected_language = "ja"
         return ("みこさんが" if len(calls) == 1 else "話しています")

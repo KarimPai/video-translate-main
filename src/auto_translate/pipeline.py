@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 
 from .asr.base import ASRBackend
 from .asr.quality_guard import transcript_problem
+from .asr.qwen3_asr import Qwen3ASR
 from .config import Config, vad_for_source
 from .gui_control import emit_event
 from .ingest import Ingest
@@ -379,6 +380,7 @@ def run_asr(
     import numpy as np
 
     current_generation = None
+    qwen = isinstance(asr, Qwen3ASR)
     last_accepted_end_s: float | None = None
     remember = getattr(asr, "remember", None)
     forget = getattr(asr, "forget", None)
@@ -405,7 +407,7 @@ def run_asr(
         nonlocal current_generation, last_accepted_end_s
         last_accepted_end_s = None
         cancel = getattr(asr, "cancel_pending", None)
-        if callable(cancel):
+        if not qwen and callable(cancel):
             cancel()
         if name_fusion is not None:
             name_fusion.reset()
@@ -501,6 +503,9 @@ def run_asr(
         # Record queue wait time: time from segmented to ASR start (waiting for inference slot)
         utt.timings.asr_queue_wait = time.monotonic() - utt.timings.segmented
         utt.timings.asr_start = time.monotonic()
+        request = ({"generation": utt.generation,
+                    "deadline": utt.timings.asr_start + asr.cfg.response_timeout_s}
+                   if qwen else {})
         # Report to watchdog: this utterance is now in-flight for ASR
         if worker_state is not None:
             worker_state.record_queue_get(id(utt))
@@ -511,14 +516,17 @@ def run_asr(
         reviewed = False
         while True:
             try:
-                with (gate.operation("asr", current=get_generation, generation=utt.generation)
+                with (gate.operation("asr", current=get_generation, generation=utt.generation,
+                                     deadline=request.get("deadline"))
                       if gate is not None else nullcontext()):
                     if cancelled(utt.generation):
                         break
                     if live and _expired_live_cue(utt, playback_position, live_late_window_s):
                         increment_counter("expired")
                         break
-                    text = asr.transcribe(utt.audio, utt.probe)
+                    text = asr.transcribe(utt.audio, utt.probe, **request)
+                    if cancelled(utt.generation):
+                        break
                     reason = _rejection_reason(asr, text)
                     if not text and reason in ("context_echo", "repeated_output"):
                         reviewed = True
@@ -530,7 +538,9 @@ def run_asr(
                                  "match_score=%.2f action=%s", reason, utt.start_s, utt.end_s,
                                  asr.last_match_score, "retry_without_context" if retry else "discard")
                         if retry:
-                            text = asr.recover_context_echo(utt.audio, utt.probe, utt.vad_confidence, remaining)
+                            text = asr.recover_context_echo(
+                                utt.audio, utt.probe, utt.vad_confidence, remaining, **request,
+                            )
                         if cancelled(utt.generation) or (live and _expired_live_cue(
                                 utt, playback_position, live_late_window_s)):
                             text = ""
@@ -678,7 +688,7 @@ def run_asr(
                     worker_state.enter_inference(id(utt), utt.generation)
                 candidates = []
                 try:
-                    candidates = rescue(utt.audio, utt.probe)
+                    candidates = rescue(utt.audio, utt.probe, **request)
                 except Exception as exc:  # noqa: BLE001
                     # Extra mixed-language recovery must never shut down the
                     # underlying ASR worker; the original English still exists
@@ -1362,6 +1372,10 @@ def run(
         )
     )
 
+    qwen = isinstance(asr, Qwen3ASR)
+    if qwen:
+        asr.bind_session_stop(stop)
+        ingest.set_generation_listener(asr.cancel_pending)
     for thread in threads:
         thread.start()
 
@@ -1791,6 +1805,8 @@ def run(
                     log.exception("output shutdown failed")
         finally:
             try:
+                if qwen:
+                    ingest.set_generation_listener(None)
                 ingest.stop()
             except Exception:
                 log.exception("ingest shutdown failed")

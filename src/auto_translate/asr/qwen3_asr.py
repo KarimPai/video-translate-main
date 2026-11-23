@@ -17,6 +17,8 @@ import threading
 import time
 import unicodedata
 from collections import deque
+from concurrent.futures import CancelledError
+from contextlib import contextmanager
 
 import httpx
 import numpy as np
@@ -24,6 +26,7 @@ import numpy as np
 from ..asr.haas import wav_bytes
 from ..config import AsrConfig
 from ..llama_server import (
+    DeadlineHttpClient,
     LlamaServer,
     detect_device,
     require_gguf,
@@ -141,6 +144,18 @@ class Qwen3ASRError(RuntimeError):
 class Qwen3ASRTruncationError(Qwen3ASRError):
     """A single utterance exceeded its safe output-token budget."""
 
+    reason = "token_limit"
+
+
+class Qwen3ASRResponseError(Qwen3ASRError):
+    """The server returned no reliable completion for this utterance."""
+
+    reason = "invalid_response"
+
+
+class _UtteranceDeadline(Qwen3ASRError):
+    reason = "deadline"
+
 
 class Qwen3ASR:
     """Qwen3-ASR speech recognition via llama.cpp HTTP server.
@@ -173,10 +188,9 @@ class Qwen3ASR:
         self._state_lock = threading.Lock()
         self._inference_lock = threading.Lock()
         self._generation = 0
+        self._cancel_event = threading.Event()
         self._closed = False
-        self._failures = 0
         self._restarts = 0
-        self._terminal_failure = False
         self.last_timing: dict | None = None
 
         # Resolve model and mmproj paths
@@ -209,11 +223,16 @@ class Qwen3ASR:
             executable=executable,
             args=args,
             startup_timeout_s=cfg.startup_timeout_s,
+            strict_http_deadlines=True,
         )
         try:
             self.server.start()
-            # Warmup with a short silent audio to reserve GPU memory
-            self._warmup()
+            try:
+                self._warmup(time.monotonic() + cfg.response_timeout_s, self._generation)
+            except _UtteranceDeadline:
+                # Initial warmup is optional after a successful health check.
+                # Restart warmup must still propagate the utterance deadline.
+                log.warning("Qwen3-ASR initial warmup timed out after %.1fs", cfg.response_timeout_s)
             check_running()
         except BaseException:
             self.close()
@@ -229,262 +248,206 @@ class Qwen3ASR:
     # ASRBackend protocol
     # ------------------------------------------------------------------ #
 
-    def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
-        """Transcribe 16 kHz mono float32 audio to Japanese text.
-
-        Recoverable failures (timeout, connection) are retried a bounded number
-        of times before a server restart is attempted. Permanent failures and
-        exhausted retries raise a clear terminal Qwen3ASRError so a single
-        transient error cannot terminate the whole session.
-
-        Uses a single monotonic deadline per utterance so the total time never
-        exceeds the configured budget, even with retries.
-        """
-        gen = self._generation
-        self.last_detected_language = "und"
-        duration_s = len(audio) / 16000
-        if duration_s < 0.05:
+    def transcribe(self, audio: np.ndarray, probe: bool = False, *,
+                   generation: int | None = None, deadline: float | None = None) -> str:
+        """Decode under one budget, including retries, restart and speech recovery."""
+        if len(audio) < 800:
             return ""
-
-        max_retries = 3
-        restart_limit = 2
-        backoff_s = 0.5
-
-        # Single monotonic deadline per utterance
-        budget = self.cfg.response_timeout_s
-        deadline = time.monotonic() + budget
-
-        with self._inference_lock:
-            text: str | None = None
-            last_exc: Exception | None = None
-            attempts = 0
-            self._terminal_failure = False
-            while attempts <= max_retries:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    last_exc = TimeoutError("utterance budget exceeded")
-                    break
-                try:
-                    text = self._transcribe_impl(audio, probe, timeout=remaining)
-                    self._failures = 0
-                    break
-                except httpx.TimeoutException as exc:
-                    last_exc = exc
-                    self._failures += 1
-                    attempts += 1
-                    log.warning("Qwen3-ASR timeout (attempt %d/%d)", attempts, max_retries + 1)
-                    if attempts <= max_retries:
-                        sleep_time = min(backoff_s * attempts, deadline - time.monotonic())
-                        if sleep_time > 0:
-                            time.sleep(sleep_time)
-                        continue
-                    break
-                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    last_exc = exc
-                    self._failures += 1
-                    attempts += 1
-                    log.warning("Qwen3-ASR connection failure (attempt %d/%d)", attempts, max_retries + 1)
-                    if attempts <= max_retries:
-                        sleep_time = min(backoff_s * attempts, deadline - time.monotonic())
-                        if sleep_time > 0:
-                            time.sleep(sleep_time)
-                        continue
-                    break
-                except httpx.HTTPStatusError as exc:
-                    last_exc = exc
-                    self._failures += 1
-                    status_code = exc.response.status_code if exc.response is not None else 0
-                    # 4xx = permanent (bad request, auth failure, etc.) — no retry
-                    # 5xx = transient (server error, overload) — retry with backoff
-                    if 400 <= status_code < 500:
-                        self._terminal_failure = True
-                        log.error("Qwen3-ASR permanent HTTP %d error: %s", status_code, exc)
-                        break
-                    else:
-                        # Transient server error — retry
-                        attempts += 1
-                        log.warning("Qwen3-ASR transient HTTP %d (attempt %d/%d)",
-                                    status_code, attempts, max_retries + 1)
-                        if attempts <= max_retries:
-                            sleep_time = min(backoff_s * attempts, deadline - time.monotonic())
-                            if sleep_time > 0:
-                                time.sleep(sleep_time)
-                            continue
-                        break
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    self._failures += 1
-                    self._terminal_failure = True
-                    log.error("Qwen3-ASR permanent HTTP error: %s", exc)
-                    # Permanent error — no retry, no restart
-                    break
-                except Qwen3ASRTruncationError as exc:
-                    # A length-limited utterance is not evidence of a broken
-                    # server. Try two shorter audio windows within the original
-                    # deadline, then reject this utterance rather than killing
-                    # the entire playback session.
-                    recovered = self._recover_truncated_utterance(
-                        audio, probe=probe, deadline=deadline, generation=gen,
-                    )
-                    if recovered is not None:
-                        text = recovered
-                        self._failures = 0
-                        log.warning(
-                            "Qwen3-ASR recovered %.1fs truncated utterance from "
-                            "two shorter audio windows", duration_s,
-                        )
-                        break
-                    # The split-first path is an optimization, not permission to
-                    # lose speech: when the guarded split failed, retain the
-                    # historical 512-token full-window fallback if deadline
-                    # permits. This is needed only for >=15s experimental
-                    # recovery; short windows still use their original path.
-                    if (getattr(self, "_prefer_split_on_truncation", False)
-                            and duration_s >= LONG_TRUNCATION_SPLIT_MIN_S
-                            and gen == self._generation
-                            and not self._closed
-                            and not stopping.is_set()
-                            and deadline - time.monotonic() > 0.5):
-                        try:
-                            fallback = self._transcribe_impl(
-                                audio, probe=probe,
-                                timeout=deadline - time.monotonic(),
-                                max_tokens=512,
-                            )
-                            if fallback:
-                                text = fallback
-                                self._failures = 0
-                                log.warning(
-                                    "Qwen3-ASR split-first unavailable; recovered "
-                                    "%.1fs utterance with original 512-token retry",
-                                    duration_s,
-                                )
-                                break
-                        except (Qwen3ASRTruncationError, Qwen3ASRError,
-                                httpx.HTTPError) as fallback_exc:
-                            log.warning(
-                                "Qwen3-ASR split-first and 512-token fallback both "
-                                "failed for %.1fs audio (%s)", duration_s, fallback_exc,
-                            )
-                    self.last_rejection = "token_limit"
+        generation = self._generation if generation is None else generation
+        deadline = time.monotonic() + self.cfg.response_timeout_s if deadline is None else deadline
+        try:
+            with self._inference(deadline, generation):
+                with self._state_lock:
+                    self._remaining(deadline, generation)
                     self.last_detected_language = "und"
                     self.last_raw_transcript = ""
-                    log.warning(
-                        "Qwen3-ASR discarded one %.1fs utterance after bounded "
-                        "token-limit recovery failed; pipeline continues (%s)",
-                        duration_s, exc,
-                    )
+                    self.last_rejection = None
+                try:
+                    return self._recognize(audio, probe, deadline, generation)
+                except (_UtteranceDeadline, Qwen3ASRResponseError, Qwen3ASRTruncationError) as exc:
+                    self._reject_request(generation, exc)
                     return ""
-                except Qwen3ASRError as exc:
-                    last_exc = exc
-                    self._failures += 1
-                    self._terminal_failure = True
-                    log.error("Qwen3-ASR permanent failure: %s", exc)
-                    # Permanent error — no retry, no restart
-                    break
-
-            # Restart only for transient failures, never for permanent errors.
-            # Permanent errors (HTTP 4xx, Qwen3ASRError) set _terminal_failure
-            # so the server cannot recover from a malformed request or invalid config.
-            if (
-                text is None
-                and not self._terminal_failure
-                and self._restarts < restart_limit
-                and not self._closed
-                and not stopping.is_set()
-            ):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    last_exc = TimeoutError("utterance budget exceeded after restart")
-                else:
-                    try:
-                        self._restart()
-                        # Recalculate remaining after restart + warmup
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            last_exc = TimeoutError(
-                                "utterance budget exceeded after restart and warmup"
-                            )
-                        else:
-                            text = self._transcribe_impl(audio, probe, timeout=remaining)
-                            self._failures = 0
-                    except Exception as restart_exc:  # noqa: BLE001
-                        raise Qwen3ASRError(
-                            f"Qwen3-ASR restart failed after {attempts} attempt(s): {restart_exc}"
-                        ) from last_exc
-
-            if text is None:
-                raise Qwen3ASRError(
-                    f"Qwen3-ASR transcription failed after {attempts} attempt(s): {last_exc}"
-                ) from last_exc
-
-        if self._generation != gen:
+        except (CancelledError, _UtteranceDeadline):
+            # A caller that never acquired the inference lock cannot replace
+            # the active request's metadata.
             return ""
 
-        # Quality guard. Normal accepted speech is never retried. Optionally
-        # salvage only clearly mechanical Japanese decoder failures that the
-        # existing quality guard would discard anyway. This is intentionally
-        # NOT a detector of subtle name, number or negation errors.
-        duration_s = len(audio) / 16000
-        reason = transcript_problem(text, duration_s)
-        recoverable = {
-            "repeated_character", "repeated_kana_loop",
-            "implausible_length", "implausible_speech_rate",
-        }
-        if (reason in recoverable
-                and self.cfg.recover_rejected_speech
-                and not probe and self.last_detected_language == "ja"
-                and duration_s >= 6.0
-                and deadline - time.monotonic() > 1.25
-                and self._generation == gen and not self._closed
-                and not stopping.is_set()):
-            original_raw = self.last_raw_transcript
-            original_language = self.last_detected_language
-            candidate = None
-            try:
-                with self._inference_lock:
-                    if self._generation == gen and not self._closed and not stopping.is_set():
-                        candidate = self._recover_truncated_utterance(
-                            audio, probe=False, deadline=deadline, generation=gen,
-                        )
-            except Exception as exc:  # noqa: BLE001
-                # A diagnostic recovery must never turn a discarded utterance
-                # into a fatal server error or interrupt playback.
-                log.warning("Qwen3-ASR quality recovery unavailable: %s", exc)
-            if (candidate and self._generation == gen and not self._closed
-                    and not stopping.is_set() and time.monotonic() < deadline
-                    and self.last_detected_language == "ja"
-                    and speech_key(candidate) != speech_key(text)
-                    and transcript_problem(candidate, duration_s) is None):
-                log.info(
-                    "Qwen3-ASR recovered rejected %.1fs speech via two shorter "
-                    "decodes (original reason=%s)", duration_s, reason,
-                )
-                text = candidate
-                reason = None
-            else:
-                # Failed retries must not publish partial hypotheses, silently
-                # change the language tag, or mask the original rejection.
-                self.last_raw_transcript = original_raw
-                self.last_detected_language = original_language
-        if reason:
-            self.last_rejection = reason
-            if reason in ("context_echo", "repeated_output"):
-                with self._state_lock:
-                    key = speech_key(text)
-                    if key and key not in self._accepted_keys:
-                        self._accepted_keys.append(key)
-            return ""
+    def _recognize(self, audio: np.ndarray, probe: bool, deadline: float, generation: int) -> str:
+        text = self._transcribe_with_retries(audio, probe, deadline, generation)
+        reason = transcript_problem(text, len(audio) / 16000)
+        if self._should_salvage(audio, probe, deadline, reason):
+            candidate = self._salvage(audio, text, deadline, generation)
+            if candidate:
+                text, reason = candidate, None
 
-        # Accept
         with self._state_lock:
+            self._remaining(deadline, generation)
+            self.last_rejection = reason
             key = speech_key(text)
-            if key:
+            if not reason:
+                if key:
+                    self._accepted_keys.append(key)
+                self._recent.append(text)
+                return text
+            if reason in ("context_echo", "repeated_output") and key and key not in self._accepted_keys:
                 self._accepted_keys.append(key)
-            self._recent.append(text)
-            self.last_rejection = None
+        return ""
 
+    def _cancelled(self, generation: int) -> bool:
+        stop = getattr(self, "_session_stop", None)
+        return (generation != self._generation or self._closed or stopping.is_set()
+                or (stop is not None and stop.is_set()))
+
+    def _remaining(self, deadline: float, generation: int) -> float:
+        if self._cancelled(generation):
+            raise CancelledError("Qwen3-ASR request is stale or shutting down")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _UtteranceDeadline("Qwen3-ASR utterance budget exceeded")
+        return remaining
+
+    @contextmanager
+    def _inference(self, deadline: float, generation: int):
+        while not self._inference_lock.acquire(timeout=min(self._remaining(deadline, generation), 0.05)):
+            pass
+        try:
+            self._remaining(deadline, generation)
+            yield
+        finally:
+            self._inference_lock.release()
+
+    def _decode(self, audio: np.ndarray, *, deadline: float, generation: int, **kwargs) -> str:
+        timeout = self._remaining(deadline, generation)
+        try:
+            text = self._transcribe_impl(audio, timeout=timeout, generation=generation,
+                                         deadline=deadline, **kwargs)
+        except Exception:
+            self._remaining(deadline, generation)
+            raise
+        self._remaining(deadline, generation)
         return text
+
+    def _wait_retry(self, seconds: float, deadline: float, generation: int) -> None:
+        with self._state_lock:
+            remaining = self._remaining(deadline, generation)
+            event = self._cancel_event
+        # The seek callback wakes this immediately. The short polling interval
+        # also observes the session-wide stop events without waiting on them.
+        end = time.monotonic() + min(remaining, seconds)
+        while (left := end - time.monotonic()) > 0:
+            event.wait(min(left, 0.05))
+            self._remaining(deadline, generation)
+        self._remaining(deadline, generation)
+
+    def _transcribe_with_retries(
+        self, audio: np.ndarray, probe: bool, deadline: float, generation: int,
+    ) -> str:
+        last_error: httpx.HTTPError
+        for attempt in range(4):
+            try:
+                return self._decode_with_recovery(audio, probe, deadline, generation)
+            except httpx.HTTPError as exc:
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                transient = (isinstance(exc, (httpx.TimeoutException, httpx.NetworkError,
+                                               httpx.RemoteProtocolError))
+                             or (status is not None and 500 <= status < 600))
+                if not transient:
+                    raise Qwen3ASRError(f"Qwen3-ASR permanent HTTP failure: {exc}") from exc
+                last_error = exc
+                log.warning("Qwen3-ASR transient HTTP failure (attempt %d/4): %s", attempt + 1, exc)
+            if attempt < 3:
+                self._wait_retry(0.5 * (attempt + 1), deadline, generation)
+
+        # Token-limit and malformed-response errors are utterance-local and
+        # never reach this transport restart path.
+        if self._remaining(deadline, generation) <= 0.5:
+            raise _UtteranceDeadline("Insufficient utterance budget to restart Qwen3-ASR")
+        if self._restarts >= 2:
+            raise Qwen3ASRError(f"Qwen3-ASR transcription failed: {last_error}") from last_error
+        try:
+            self._restart(deadline=deadline, generation=generation)
+        except (CancelledError, _UtteranceDeadline):
+            raise
+        except Exception as exc:
+            self._remaining(deadline, generation)
+            raise Qwen3ASRError(f"Qwen3-ASR restart failed: {exc}") from exc
+        if self._remaining(deadline, generation) <= 0.05:
+            raise _UtteranceDeadline("Insufficient utterance budget for a decode after restart")
+        try:
+            return self._decode_with_recovery(audio, probe, deadline, generation)
+        except httpx.HTTPError as exc:
+            raise Qwen3ASRError(f"Qwen3-ASR transcription failed after restart: {exc}") from exc
+
+    def _decode_with_recovery(
+        self, audio: np.ndarray, probe: bool, deadline: float, generation: int,
+    ) -> str:
+        try:
+            return self._decode(audio, probe=probe, deadline=deadline, generation=generation)
+        except Qwen3ASRTruncationError:
+            self._remaining(deadline, generation)
+            recovered = self._recover_truncated_utterance(
+                audio, probe=probe, deadline=deadline, generation=generation,
+            )
+            if recovered:
+                return recovered
+            if (getattr(self, "_prefer_split_on_truncation", False)
+                    and len(audio) >= LONG_TRUNCATION_SPLIT_MIN_S * 16000
+                    and self._remaining(deadline, generation) > 0.5):
+                try:
+                    fallback = self._decode(audio, probe=probe, deadline=deadline,
+                                            generation=generation, max_tokens=512)
+                except (Qwen3ASRTruncationError, Qwen3ASRResponseError, httpx.HTTPError) as exc:
+                    log.warning("Qwen3-ASR full-window fallback failed: %s", exc)
+                else:
+                    if fallback:
+                        return fallback
+            raise
+
+    def _reject_request(self, generation: int,
+                        exc: _UtteranceDeadline | Qwen3ASRResponseError | Qwen3ASRTruncationError) -> None:
+        with self._state_lock:
+            if self._cancelled(generation):
+                return
+            self.last_rejection = exc.reason
+            self.last_detected_language = "und"
+            self.last_raw_transcript = ""
+        log.warning("Qwen3-ASR skipped one utterance (%s): %s", exc.reason, exc)
+
+    def _should_salvage(self, audio: np.ndarray, probe: bool, deadline: float,
+                        reason: str | None) -> bool:
+        return (reason in {"repeated_character", "repeated_kana_loop",
+                           "implausible_length", "implausible_speech_rate"}
+                and self.cfg.recover_rejected_speech and not probe
+                and self.last_detected_language == "ja" and len(audio) >= 6 * 16000
+                and deadline - time.monotonic() > 1.25)
+
+    def _salvage(self, audio: np.ndarray, text: str, deadline: float, generation: int) -> str | None:
+        raw, language = self.last_raw_transcript, self.last_detected_language
+        try:
+            candidate = self._recover_truncated_utterance(
+                audio, probe=False, deadline=deadline, generation=generation,
+            )
+            self._remaining(deadline, generation)
+        except CancelledError:
+            # Discard partial recovery metadata before releasing inference
+            # to the next generation.
+            with self._state_lock:
+                self.last_raw_transcript, self.last_detected_language = raw, language
+                self.last_rejection = transcript_problem(text, len(audio) / 16000)
+            raise
+        except _UtteranceDeadline:
+            raise
+        except Exception as exc:
+            log.warning("Qwen3-ASR quality recovery unavailable: %s", exc)
+            candidate = None
+        with self._state_lock:
+            self._remaining(deadline, generation)
+            if (candidate and self.last_detected_language == "ja"
+                    and speech_key(candidate) != speech_key(text)
+                    and transcript_problem(candidate, len(audio) / 16000) is None):
+                return candidate
+            self.last_raw_transcript, self.last_detected_language = raw, language
+        return None
 
     def _recover_truncated_utterance(
         self, audio: np.ndarray, *, probe: bool, deadline: float, generation: int,
@@ -496,7 +459,7 @@ class Qwen3ASR:
         or the original deadline expires. This avoids leaking incomplete
         transcripts and does not restart an otherwise healthy server.
         """
-        if len(audio) < 4 * 16000 or self._closed or stopping.is_set():
+        if len(audio) < 4 * 16000 or self._remaining(deadline, generation) <= 0.5:
             return None
 
         # Production uses the exact former zero-overlap boundary. Test-only
@@ -509,16 +472,15 @@ class Qwen3ASR:
         transcripts: list[str] = []
         languages: list[str] = []
         for part in parts:
-            if (self._generation != generation or self._closed or stopping.is_set()
-                    or deadline - time.monotonic() <= 0.5):
+            if self._remaining(deadline, generation) <= 0.5:
                 return None
             try:
-                candidate = self._transcribe_impl(
-                    part, probe=probe, timeout=deadline - time.monotonic(),
-                    max_tokens=512,
+                candidate = self._decode(
+                    part, probe=probe, deadline=deadline, generation=generation, max_tokens=512,
                 )
-            except (Qwen3ASRError, httpx.TimeoutException, httpx.HTTPError,
-                    ValueError) as exc:
+            except _UtteranceDeadline:
+                raise
+            except (Qwen3ASRError, httpx.HTTPError, ValueError) as exc:
                 log.warning("Qwen3-ASR shortened-audio recovery failed: %s", exc)
                 return None
             lang = self.last_detected_language
@@ -527,9 +489,8 @@ class Qwen3ASR:
             transcripts.append(candidate)
             languages.append(lang)
 
-        if (len(transcripts) != 2 or languages[0] != languages[1]
-                or self._generation != generation or self._closed
-                or stopping.is_set() or time.monotonic() >= deadline):
+        self._remaining(deadline, generation)
+        if languages[0] != languages[1]:
             return None
         joined = ("" if languages[0] == "ja" else " ").join(transcripts)
         if transcript_problem(joined, len(audio) / 16000):
@@ -539,7 +500,8 @@ class Qwen3ASR:
         return joined
 
     def recover_japanese_from_mixed_audio(
-        self, audio: np.ndarray, probe: bool = False,
+        self, audio: np.ndarray, probe: bool = False, *,
+        generation: int | None = None, deadline: float | None = None,
     ) -> list[tuple[float, float, str]]:
         """Recheck short windows of a foreign-dominant segment for Japanese.
 
@@ -553,64 +515,82 @@ class Qwen3ASR:
         duration = len(audio) / 16000.0
         if self._closed or probe or duration < 2.2:
             return []
-        generation = self._generation
+        generation = self._generation if generation is None else generation
         budget_s = min(float(self.cfg.response_timeout_s), 12.0)
-        deadline = time.monotonic() + budget_s
+        recovery_deadline = time.monotonic() + budget_s
+        deadline = recovery_deadline if deadline is None else min(recovery_deadline, deadline)
         # At most four short automatic-language requests. Overlap boundaries
         # slightly to avoid cutting syllables; keep original media timestamps.
         num_windows = 2 if duration <= 4.5 else (3 if duration <= 9.0 else 4)
         step = duration / num_windows
         found: list[tuple[float, float, str]] = []
-        original_language = self.last_detected_language
-        original_raw = self.last_raw_transcript
         try:
-            with self._inference_lock:
-                for i in range(num_windows):
-                    if generation != self._generation or self._closed or stopping.is_set():
-                        return []
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0.15:
-                        break
-                    start_s = max(0.0, i * step - (0.25 if i else 0.0))
-                    end_s = min(duration, (i + 1) * step + (0.25 if i < num_windows - 1 else 0.0))
-                    left = round(start_s * 16000)
-                    right = round(end_s * 16000)
-                    if right - left < 16000:
-                        continue
-                    try:
-                        candidate = self._transcribe_impl(
-                            audio[left:right], timeout=remaining,
-                        )
-                    except (httpx.HTTPError, Qwen3ASRError, ValueError) as exc:
-                        log.debug("Qwen mixed-language window recovery unavailable: %s", exc)
-                        break
-                    if (self.last_detected_language != "ja"
-                            or len(_JAPANESE_KANA.findall(candidate)) < 2
-                            or transcript_problem(candidate, end_s - start_s)):
-                        continue
-                    key = speech_key(candidate)
-                    if not key:
-                        continue
-                    if any(
-                        speech_key(previous) == key and start_s < previous_end
-                        for _, previous_end, previous in found
-                    ):
-                        continue
-                    found.append((start_s, end_s, candidate))
-        finally:
-            # A supplemental decode must not overwrite the primary language
-            # label or raw transcript when the pipeline inspects the cue.
-            self.last_detected_language = original_language
-            self.last_raw_transcript = original_raw
+            with self._inference(deadline, generation):
+                original_language = self.last_detected_language
+                original_raw = self.last_raw_transcript
+                try:
+                    for i in range(num_windows):
+                        if self._remaining(deadline, generation) <= 0.15:
+                            break
+                        start_s = max(0.0, i * step - (0.25 if i else 0.0))
+                        end_s = min(duration, (i + 1) * step + (0.25 if i < num_windows - 1 else 0.0))
+                        left = round(start_s * 16000)
+                        right = round(end_s * 16000)
+                        if right - left < 16000:
+                            continue
+                        try:
+                            candidate = self._decode(
+                                audio[left:right], deadline=deadline, generation=generation,
+                            )
+                        except _UtteranceDeadline:
+                            raise
+                        except (httpx.HTTPError, Qwen3ASRError, ValueError) as exc:
+                            log.debug("Qwen mixed-language window recovery unavailable: %s", exc)
+                            break
+                        if (self.last_detected_language != "ja"
+                                or len(_JAPANESE_KANA.findall(candidate)) < 2
+                                or transcript_problem(candidate, end_s - start_s)):
+                            continue
+                        key = speech_key(candidate)
+                        if not key:
+                            continue
+                        if any(
+                            speech_key(previous) == key and start_s < previous_end
+                            for _, previous_end, previous in found
+                        ):
+                            continue
+                        found.append((start_s, end_s, candidate))
+                    self._remaining(deadline, generation)
+                finally:
+                    # Supplemental decode must not overwrite primary cue metadata.
+                    self.last_detected_language = original_language
+                    self.last_raw_transcript = original_raw
+        except (CancelledError, _UtteranceDeadline):
+            return []
         return found
 
-    def cancel_pending(self) -> None:
-        """Invalidate in-flight transcription requests."""
-        self._generation += 1
+    def bind_session_stop(self, stop: threading.Event) -> None:
+        self._session_stop = stop
+
+    def cancel_pending(self, generation: int | None = None) -> None:
+        """Invalidate earlier requests without stopping a healthy server.
+
+        Active HTTP exchanges observe the generation change and disconnect.
+        """
+        with self._state_lock:
+            if generation is None:
+                generation = self._generation + 1
+            if generation <= self._generation:
+                return
+            self._generation = generation
+            self._cancel_event.set()
+            self._cancel_event = threading.Event()
 
     def close(self) -> None:
-        """Stop the server and release resources."""
-        self._closed = True
+        """Make shutdown visible before waiting for any server lifecycle work."""
+        with self._state_lock:
+            self._closed = True
+            self._cancel_event.set()
         self.server.close()
         update_metrics(workers={"asr": "closed"})
 
@@ -654,51 +634,36 @@ class Qwen3ASR:
         self._vocabulary_hint = ", ".join(terms)
 
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
-                             vad_confidence: float | None = None,
-                             timeout: float = 0.0) -> str:
-        """Retry transcription to recover from context echo.
-
-        The optional vocabulary experiment is disabled for this retry, so
-        a possible hint echo is independently checked against the audio.
-        This method enforces the remaining timeout budget.
-
-        Enforces the supplied remaining timeout and never starts recovery when
-        the budget has expired. Cancellation is propagated via the generation
-        counter and the closed flag.
-        """
-        if timeout <= 0:
+                             vad_confidence: float | None = None, timeout: float = 0.0, *,
+                             generation: int | None = None, deadline: float | None = None) -> str:
+        """Retry without optional vocabulary using the original utterance budget."""
+        if not len(audio) or (deadline is None and timeout <= 0):
             return ""
-        with self._state_lock:
-            if self._closed:
-                return ""
-            gen = self._generation
-        if not len(audio):
-            return ""
+        generation = self._generation if generation is None else generation
+        deadline = time.monotonic() + timeout if deadline is None else deadline
         try:
-            text = self._transcribe_impl(audio, probe=probe, no_context=True,
-                                         timeout=timeout)
-        except Exception as exc:  # noqa: BLE001
+            with self._inference(deadline, generation):
+                text = self._decode(audio, probe=probe, no_context=True,
+                                    deadline=deadline, generation=generation)
+                with self._state_lock:
+                    self._remaining(deadline, generation)
+                    if not text:
+                        self.last_rejection = "no_speech"
+                    return text
+        except CancelledError:
+            return ""
+        except (Qwen3ASRError, httpx.HTTPError) as exc:
             log.warning("Qwen3-ASR context echo recovery failed: %s", exc)
             return ""
-        if self._generation != gen or self._closed:
-            return ""
-        text = re.sub(r"\s+", " ", text or "").strip()
-        if not text:
-            self.last_rejection = "no_speech"
-            return ""
-        return text
 
-    # ------------------------------------------------------------------ #
-    # Internal
-    # ------------------------------------------------------------------ #
-
-    def _warmup(self) -> None:
-        """Warmup with silent audio to reserve GPU memory."""
-        warmup_s = 2.0
-        silent = np.zeros(int(16000 * warmup_s), dtype=np.float32)
+    def _warmup(self, deadline: float, generation: int) -> None:
+        """Warm up within the caller's budget, without a token-limit retry."""
+        silent = np.zeros(2 * 16000, dtype=np.float32)
         try:
-            self._transcribe_impl(silent, probe=False)
-        except Exception as exc:  # noqa: BLE001
+            self._decode(silent, deadline=deadline, generation=generation, max_tokens=512)
+        except (CancelledError, _UtteranceDeadline):
+            raise
+        except (Qwen3ASRError, httpx.HTTPError) as exc:
             log.warning("Qwen3-ASR warmup failed (may still work): %s", exc)
 
     def _transcribe_impl(
@@ -708,6 +673,9 @@ class Qwen3ASR:
         no_context: bool = False,
         timeout: float | None = None,
         max_tokens: int = 256,
+        *,
+        generation: int | None = None,
+        deadline: float | None = None,
     ) -> str:
         """Send audio to the server and return transcribed text.
 
@@ -719,6 +687,10 @@ class Qwen3ASR:
         no_context=True omits it for independent echo recovery.
         """
         t0 = time.perf_counter()
+        generation = self._generation if generation is None else generation
+        if deadline is None:
+            deadline = time.monotonic() + (self.cfg.response_timeout_s if timeout is None else timeout)
+        self._remaining(deadline, generation)
 
         # Encode audio as WAV base64
         wav = wav_bytes(audio, normalize=True)
@@ -755,17 +727,22 @@ class Qwen3ASR:
             "stream": False,
         }
 
-        timeout = timeout if timeout is not None else self.cfg.response_timeout_s
         http_s = 0.0
         try:
-            resp = self.server.client.post(
+            client = self.server.client
+            options = ({"check": lambda: self._remaining(deadline, generation)}
+                       if isinstance(client, DeadlineHttpClient) else {})
+            resp = client.post(
                 f"{self.server.base_url}/v1/chat/completions",
                 json=payload,
-                timeout=timeout,
+                timeout=self._remaining(deadline, generation),
+                **options,
             )
             http_s = time.perf_counter() - t0
+            self._remaining(deadline, generation)
             resp.raise_for_status()
-            body = resp.json()
+        except httpx.DecodingError as exc:
+            raise Qwen3ASRResponseError("Invalid HTTP encoding in llama-server response") from exc
         except httpx.TimeoutException:
             elapsed_on_timeout = time.perf_counter() - t0
             log.warning("Qwen3-ASR HTTP timeout after %.1fs", elapsed_on_timeout)
@@ -776,21 +753,22 @@ class Qwen3ASR:
             log.error("Qwen3-ASR HTTP error after %.1fs: %s", elapsed_on_error, exc)
             raise
 
-        # Truncated ASR is not valid speech evidence: retry once within the
-        # original utterance timeout rather than emitting a partial transcript.
         try:
-            choice = body["choices"][0]
-            content = choice["message"]["content"]
-            text = content.strip()
-        except (KeyError, IndexError, AttributeError, TypeError) as exc:
-            raise Qwen3ASRError(f"Unexpected response format: {body}") from exc
-        if choice.get("finish_reason") == "length":
-            remaining = timeout - (time.perf_counter() - t0)
-            # Experimental *opt-in*: for long, dense speech that already hit
-            # the 256-token ceiling, skip another full-length 512-token decode
-            # and delegate to the existing guarded, two-window recovery in
-            # transcribe(). No effect on normal playback unless explicitly
-            # enabled by the diagnostic harness.
+            body = resp.json()
+        except ValueError as exc:
+            raise Qwen3ASRResponseError("Invalid JSON in llama-server response") from exc
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise Qwen3ASRResponseError("Invalid llama-server choices")
+        choice = choices[0]
+        finish = choice.get("finish_reason")
+        usage = body.get("usage")
+        tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        self._remaining(deadline, generation)
+        # llama.cpp chat completions use "stop" for a completed sequence and
+        # "length" for a limit. A missing finish reason is ambiguous, even
+        # below the cap. Reaching the cap is enough to try bounded recovery.
+        if finish == "length" or (finish is None and type(tokens) is int and tokens >= max_tokens):
             prefer_split = bool(getattr(self, "_prefer_split_on_truncation", False))
             if (prefer_split and max_tokens < 512
                     and len(audio) >= LONG_TRUNCATION_SPLIT_MIN_S * 16000):
@@ -801,17 +779,24 @@ class Qwen3ASR:
                 raise Qwen3ASRTruncationError(
                     "Qwen3-ASR long audio truncated; experimental split-first recovery"
                 )
-            if max_tokens < 512 and remaining > 0.5:
+            if max_tokens < 512 and self._remaining(deadline, generation) > 0.5:
                 log.warning("Qwen3-ASR hit %d-token limit; retrying with 512", max_tokens)
                 return self._transcribe_impl(audio, probe=probe, no_context=no_context,
-                                             timeout=remaining, max_tokens=512)
+                                             max_tokens=512, deadline=deadline, generation=generation)
             raise Qwen3ASRTruncationError("Qwen3-ASR output truncated at token limit")
 
+        if finish != "stop":
+            raise Qwen3ASRResponseError("Missing or unsupported llama-server finish_reason")
+        message = choice.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise Qwen3ASRResponseError("Invalid llama-server transcript content")
         # Keep model-detected language metadata separate from spoken text.
-        language, text = parse_qwen_asr_response(text)
-        self.last_detected_language = language
-        self.last_raw_transcript = text
-        self._failures = 0
+        language, text = parse_qwen_asr_response(content)
+        with self._state_lock:
+            self._remaining(deadline, generation)
+            self.last_detected_language = language
+            self.last_raw_transcript = text
 
         elapsed = time.perf_counter() - t0
         duration_s = len(audio) / 16000
@@ -827,27 +812,29 @@ class Qwen3ASR:
 
         return text
 
-    def _restart(self) -> None:
-        """Restart the server after a failure.
+    def _restart(self, *, deadline: float, generation: int) -> None:
+        """Recycle one open server under the same utterance deadline."""
+        def check():
+            self._remaining(deadline, generation)
 
-        Uses reset_for_restart() to clear the closed flag so start() can run
-        again. Bounds restart attempts and never revives the server when the
-        application is shutting down or the instance is closed.
-        """
+        check()
         if self._restarts >= 2:
             raise Qwen3ASRError("Qwen3-ASR restart limit reached (2 attempts); server is unstable")
-        if stopping.is_set() or self._closed:
-            raise Qwen3ASRError(
-                "Qwen3-ASR restart skipped: application is shutting down or server is closed"
-            )
         self._restarts += 1
         log.warning("Restarting Qwen3-ASR server (attempt %d)", self._restarts)
-        # reset_for_restart stops the old process, clears _closed flag, and recreates the HTTP client
-        self.server.reset_for_restart()
-        self.server.start()
-        self._warmup()
-        self._failures = 0
-        # Clear stale state to prevent context echo detection issues after restart
-        with self._state_lock:
-            self._accepted_keys.clear()
-            self._recent.clear()
+        try:
+            self.server.reset_for_restart(deadline=deadline, check=check)
+            check()
+            self.server.start(deadline=deadline, check=check)
+            check()
+            # A seek after startup cancels warmup work and leaves the healthy child.
+            self._warmup(deadline, generation)
+            with self._state_lock:
+                check()
+                self._accepted_keys.clear()
+                self._recent.clear()
+        except CancelledError:
+            # A seek interrupted the attempt. Leave recovery available to
+            # the new generation if there is no healthy child left.
+            self._restarts -= 1
+            raise

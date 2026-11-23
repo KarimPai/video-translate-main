@@ -101,6 +101,8 @@ def test_qwen3_truncation_is_retried_before_acceptance():
 
     calls = []
     asr = Qwen3ASR.__new__(Qwen3ASR)  # No model loading
+    asr._generation, asr._closed = 0, False
+    asr._state_lock = threading.Lock()
     asr.server = SimpleNamespace(base_url="http://127.0.0.1:0",
                                   client=SimpleNamespace(post=post))
     result = asr._transcribe_impl(np.zeros(16000, dtype=np.float32), timeout=10)
@@ -110,6 +112,7 @@ def test_qwen3_truncation_is_retried_before_acceptance():
 
 def test_qwen3_rejects_second_truncated_response():
     asr = Qwen3ASR.__new__(Qwen3ASR)
+    asr._generation, asr._closed = 0, False
     asr.server = SimpleNamespace(
         base_url="http://127.0.0.1:0",
         client=SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(

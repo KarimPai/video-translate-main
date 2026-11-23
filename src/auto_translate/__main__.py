@@ -50,6 +50,8 @@ def _main(resources: ExitStack) -> None:
                         help="previous dialogue lines given to the translator")
     parser.add_argument("--vad-max-utterance-s", type=float, metavar="SECONDS",
                         help="VOD stress-test override for VAD soft segment length; preserves config.toml")
+    parser.add_argument("--vad-threshold", type=float, metavar="PROBABILITY",
+                        help="benchmark-only VAD onset threshold override; preserves config.toml")
     parser.add_argument("--asr-model", type=Path, help="ASR model path")
     parser.add_argument("--speech-server", type=Path, help="speech.cpp executable path")
     parser.add_argument("--mt-model", type=Path, help="Translation GGUF model")
@@ -177,6 +179,13 @@ def _main(resources: ExitStack) -> None:
         if args.mode == "live":
             parser.error("--vad-max-utterance-s is a VOD-only benchmark override")
         cfg.vad.max_utterance_s = args.vad_max_utterance_s
+    if args.vad_threshold is not None:
+        if (not math.isfinite(args.vad_threshold)
+                or not cfg.vad.neg_threshold <= args.vad_threshold <= 1.0):
+            parser.error("--vad-threshold must be finite and between VAD neg_threshold and 1.0")
+        if args.mode == "live":
+            parser.error("--vad-threshold is a VOD-only benchmark override")
+        cfg.vad.threshold = args.vad_threshold
 
     # Collect explicit CLI overrides for backend config precedence.
     # These must override both common config AND backend-specific profiles.

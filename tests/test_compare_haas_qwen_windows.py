@@ -99,3 +99,106 @@ def test_dry_run_does_not_require_models_or_ffmpeg(tmp_path):
     clip.write_bytes(b"x")
     config.write_text("", encoding="utf-8")
     assert bench.main([str(clip), "--config", str(config), "--dry-run"]) == 0
+
+
+def test_qwen_ab_mode_completes_both_full_decodes_then_short_halves():
+    class FakeQwen:
+        last_rejection = None
+        last_detected_language = "ja"
+        _prefer_split_on_truncation = False
+
+        def __init__(self):
+            self.flags = []
+            self.forgot = 0
+
+        def forget(self):
+            self.forgot += 1
+
+        def transcribe(self, audio, probe=False):
+            self.flags.append(self._prefer_split_on_truncation)
+            return "次回ありがとうございます"
+
+    qwen = FakeQwen()
+    audio = np.zeros(16 * bench.SAMPLE_RATE, np.float32)
+    rows = bench.run_model(
+        qwen, "qwen3-asr", {"HG13": (425.0, audio)},
+        qwen_split_first=True,
+    )
+    assert [r["variant"] for r in rows] == [
+        "full", "split_first", "split", "split",
+    ]
+    assert qwen.flags == [False, True, False, False]
+    assert not qwen._prefer_split_on_truncation
+    assert qwen.forgot == 4
+    report = bench.english_report(rows, "clip.flac")
+    assert "Qwen experimental split-first" in report
+
+
+def test_qwen_truncation_opt_in_skips_redundant_512_long_decode():
+    from auto_translate.asr.qwen3_asr import Qwen3ASR, Qwen3ASRTruncationError
+
+    calls = []
+    responses = [
+        {"choices": [{"message": {"content": "language Japanese<asr_text>途中"}, "finish_reason": "length"}]},
+    ]
+
+    def post(url, *, json, timeout):
+        calls.append(json["max_tokens"])
+        return SimpleNamespace(json=lambda: responses.pop(0),
+                               raise_for_status=lambda: None)
+
+    backend = Qwen3ASR.__new__(Qwen3ASR)
+    backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
+                                     client=SimpleNamespace(post=post))
+    backend._prefer_split_on_truncation = True
+    with pytest.raises(Qwen3ASRTruncationError, match="experimental split-first"):
+        backend._transcribe_impl(np.zeros(16 * bench.SAMPLE_RATE, np.float32),
+                                 timeout=10.0)
+    assert calls == [256]
+
+
+def test_qwen_short_truncation_remains_on_original_512_retry():
+    from auto_translate.asr.qwen3_asr import Qwen3ASR
+
+    calls = []
+    responses = [
+        {"choices": [{"message": {"content": "途中"}, "finish_reason": "length"}]},
+        {"choices": [{"message": {"content": "language Japanese<asr_text>ありがとう"},
+                      "finish_reason": "stop"}]},
+    ]
+
+    def post(url, *, json, timeout):
+        calls.append(json["max_tokens"])
+        return SimpleNamespace(json=lambda: responses.pop(0),
+                               raise_for_status=lambda: None)
+
+    backend = Qwen3ASR.__new__(Qwen3ASR)
+    backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
+                                     client=SimpleNamespace(post=post))
+    backend._prefer_split_on_truncation = True
+    assert backend._transcribe_impl(np.zeros(8 * bench.SAMPLE_RATE, np.float32),
+                                    timeout=10.0) == "ありがとう"
+    assert calls == [256, 512]
+
+
+def test_qwen_experimental_flag_is_opt_in():
+    from auto_translate.asr.qwen3_asr import Qwen3ASR
+
+    calls = []
+    responses = [
+        {"choices": [{"message": {"content": "途中"}, "finish_reason": "length"}]},
+        {"choices": [{"message": {"content": "language Japanese<asr_text>続き"},
+                      "finish_reason": "stop"}]},
+    ]
+
+    def post(url, *, json, timeout):
+        calls.append(json["max_tokens"])
+        return SimpleNamespace(json=lambda: responses.pop(0),
+                               raise_for_status=lambda: None)
+
+    backend = Qwen3ASR.__new__(Qwen3ASR)
+    backend.server = SimpleNamespace(base_url="http://127.0.0.1:0",
+                                     client=SimpleNamespace(post=post))
+    assert backend._transcribe_impl(np.zeros(16 * bench.SAMPLE_RATE, np.float32),
+                                    timeout=10.0) == "続き"
+    assert calls == [256, 512]

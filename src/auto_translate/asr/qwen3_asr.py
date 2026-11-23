@@ -386,9 +386,51 @@ class Qwen3ASR:
         if self._generation != gen:
             return ""
 
-        # Quality guard
+        # Quality guard. Normal accepted speech is never retried. Optionally
+        # salvage only clearly mechanical Japanese decoder failures that the
+        # existing quality guard would discard anyway. This is intentionally
+        # NOT a detector of subtle name, number or negation errors.
         duration_s = len(audio) / 16000
         reason = transcript_problem(text, duration_s)
+        recoverable = {
+            "repeated_character", "repeated_kana_loop",
+            "implausible_length", "implausible_speech_rate",
+        }
+        if (reason in recoverable
+                and self.cfg.recover_rejected_speech
+                and not probe and self.last_detected_language == "ja"
+                and duration_s >= 6.0
+                and deadline - time.monotonic() > 1.25
+                and self._generation == gen and not self._closed
+                and not stopping.is_set()):
+            original_raw = self.last_raw_transcript
+            original_language = self.last_detected_language
+            candidate = None
+            try:
+                with self._inference_lock:
+                    if self._generation == gen and not self._closed and not stopping.is_set():
+                        candidate = self._recover_truncated_utterance(
+                            audio, probe=False, deadline=deadline, generation=gen,
+                        )
+            except Exception as exc:  # noqa: BLE001
+                # A diagnostic recovery must never turn a discarded utterance
+                # into a fatal server error or interrupt playback.
+                log.warning("Qwen3-ASR quality recovery unavailable: %s", exc)
+            if (candidate and self._generation == gen and not self._closed
+                    and not stopping.is_set() and self.last_detected_language == "ja"
+                    and speech_key(candidate) != speech_key(text)
+                    and transcript_problem(candidate, duration_s) is None):
+                log.info(
+                    "Qwen3-ASR recovered rejected %.1fs speech via two shorter "
+                    "decodes (original reason=%s)", duration_s, reason,
+                )
+                text = candidate
+                reason = None
+            else:
+                # Failed retries must not publish partial hypotheses, silently
+                # change the language tag, or mask the original rejection.
+                self.last_raw_transcript = original_raw
+                self.last_detected_language = original_language
         if reason:
             self.last_rejection = reason
             if reason in ("context_echo", "repeated_output"):
@@ -447,7 +489,8 @@ class Qwen3ASR:
                     part, probe=probe, timeout=deadline - time.monotonic(),
                     max_tokens=512,
                 )
-            except (Qwen3ASRTruncationError, httpx.TimeoutException, httpx.HTTPError) as exc:
+            except (Qwen3ASRError, httpx.TimeoutException, httpx.HTTPError,
+                    ValueError) as exc:
                 log.warning("Qwen3-ASR shortened-audio recovery failed: %s", exc)
                 return None
             lang = self.last_detected_language

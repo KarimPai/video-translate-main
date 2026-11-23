@@ -416,3 +416,35 @@ def test_whisper_very_long_syllabic_decoder_loops_remain_suspicious():
         "あ、これ" + "ちょ" * 32 + "次は",
     ):
         assert whisper_suspect_reason(text) == "whisper_phonetic_loop"
+
+
+def test_whisper_hologta_substantial_dialogue_survives_short_vowel_runs():
+    # Captured from the 2026-11-23 holoGTA 08:19.6-08:34.1 retest.
+    # The decoder changed a few words on independent retry (90% agreement),
+    # but both candidates contained substantive dialogue. The old absolute
+    # 5-character vowel-run rule dropped this complete cue.
+    first = (
+        "ああああああ 矢子いいですねえでもまたされすぎたから氏名変えちゃおうかなぁ "
+        "あなたせ 締めこれがあったんでしょ 締めないよああああああああ 僕にもそうよ水産"
+    )
+    retry = (
+        "ああああああ いや子いいですねえでもまたされすぎたから指名変えちゃおうかなぁ "
+        "あなたせ 締めこれがあったんでしょ 締めないよー 僕にもそうよ水産"
+    )
+    assert whisper_suspect_reason(first) is None
+    assert whisper_suspect_reason(retry) is None
+    w = _whisper()
+    w._model.transcribe.return_value = _output(retry, end=14.0)
+    assert w.transcribe(_audio(14.0)) == retry
+    assert w.last_rejection is None
+    w._model.transcribe.assert_called_once()
+
+
+def test_whisper_dominant_character_loops_still_require_confirmation():
+    # Preserve hallucination protection for isolated and dominant repetition.
+    for utterance in (
+        "あ" * 12 + "待って",
+        "待って" + "あ" * 24 + "ね",
+        "お" + "ぉ" * 90,
+    ):
+        assert whisper_suspect_reason(utterance) == "whisper_phonetic_loop"

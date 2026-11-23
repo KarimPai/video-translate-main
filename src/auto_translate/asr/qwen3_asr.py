@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import httpx
 import numpy as np
 
-from ..asr.haas import is_japanese_text, wav_bytes
+from ..asr.haas import wav_bytes
 from ..config import AsrConfig
 from ..llama_server import (
     DeadlineHttpClient,
@@ -59,9 +59,8 @@ _NON_SPEECH = {"none", "no speech", "no_speech", "silence", "null"}
 
 
 def has_japanese_recovery_text(text: str) -> bool:
-    """Check for Japanese-script letters after the audio is identified as Japanese."""
-    return any(char.isalpha() and is_japanese_text(char)
-               for char in unicodedata.normalize("NFKC", text))
+    """Require kana for recovered Japanese, matching the downstream subtitle gate."""
+    return bool(_JAPANESE_KANA.search(unicodedata.normalize("NFKC", text)))
 
 
 def recovery_split_ranges(audio: np.ndarray, overlap_s: float = 0.0) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -97,8 +96,8 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
     """Separate audio-derived language metadata from spoken text.
 
     Qwen3-ASR normally emits 'language English<asr_text>spoken words'.
-    Kana can classify untagged text. An explicit spoken-language tag can describe
-    the dominant voice in a mixed recording, so kana never overrides it.
+    Kana can classify untagged text. Clear Japanese dialogue must also survive
+    an English-dominant language tag in mixed gameplay audio.
     """
     if not isinstance(raw, str) or not raw.strip():
         return "none", ""
@@ -126,6 +125,11 @@ def parse_qwen_asr_response(raw: str) -> tuple[str, str]:
                 "indonesian": "id", "id": "id",
                 "malay": "ms", "ms": "ms",
             }.get(language, "und")
+            # The auto language tag describes the dominant voice, not every
+            # speaker. Preserve clearly recognized Japanese in mixed gameplay;
+            # plain English without kana continues to be marked foreign.
+            if language != "ja" and len(_JAPANESE_KANA.findall(text)) >= 2:
+                language = "ja"
         else:
             language = "und"
     else:
@@ -370,6 +374,23 @@ class Qwen3ASR:
         try:
             text = self._transcribe_impl(audio, timeout=timeout, generation=generation,
                                          deadline=deadline, **kwargs)
+        except httpx.HTTPError as exc:
+            # A real HTTP timeout can consume the deadline before the retry
+            # handler regains control. Preserve its transport origin instead
+            # of replacing it with an unclassified _UtteranceDeadline.
+            try:
+                self._remaining(deadline, generation)
+            except _UtteranceDeadline:
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                if (isinstance(exc, (httpx.TimeoutException, httpx.NetworkError,
+                                     httpx.RemoteProtocolError))
+                        or (status is not None and 500 <= status < 600)):
+                    raise _UtteranceDeadline(
+                        "Qwen3-ASR transport exhausted the utterance deadline",
+                        transport=True,
+                    ) from exc
+                raise
+            raise
         except Exception:
             self._remaining(deadline, generation)
             raise
@@ -405,11 +426,24 @@ class Qwen3ASR:
                 last_error = exc
                 log.warning("Qwen3-ASR transient HTTP failure (attempt %d/4): %s", attempt + 1, exc)
             if attempt < 3:
-                self._wait_retry(0.5 * (attempt + 1), deadline, generation)
+                try:
+                    self._wait_retry(0.5 * (attempt + 1), deadline, generation)
+                except _UtteranceDeadline as exc:
+                    raise _UtteranceDeadline(
+                        "Qwen3-ASR transport retries exhausted the utterance deadline",
+                        transport=True,
+                    ) from exc
 
         # Token-limit and malformed-response errors are utterance-local and
         # never reach this transport restart path.
-        if self._remaining(deadline, generation) <= 0.5:
+        try:
+            remaining = self._remaining(deadline, generation)
+        except _UtteranceDeadline as exc:
+            raise _UtteranceDeadline(
+                "Qwen3-ASR transport retries exhausted the utterance deadline",
+                transport=True,
+            ) from exc
+        if remaining <= 0.5:
             # The utterance budget was consumed by genuine transport failures
             # (HTTP timeouts, connection errors). Mark it so the caller counts
             # it toward the consecutive-transport-failure threshold.

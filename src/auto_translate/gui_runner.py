@@ -85,16 +85,14 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
                           asr_model: str | None = None, mt_model: str | None = None,
                           asr_backend: str | None = None,
                           translate_backend: str | None = None,
-                          safe_playback: bool = False, diagnostics: bool = True,
+                          diagnostics: bool = True,
                           executable: str | None = None):
     if not valid_youtube_url(url):
         raise ValueError("Enter a valid YouTube video or livestream URL.")
     if quality not in QUALITY_OPTIONS:
         raise ValueError("Unsupported video quality.")
-    for name, value in (("Safe Playback", safe_playback),
-                        ("Diagnostics", diagnostics)):
-        if type(value) is not bool:
-            raise ValueError(f"{name} selection must be a boolean.")
+    if type(diagnostics) is not bool:
+        raise ValueError("Diagnostics selection must be a boolean.")
     if type(context_lines) is not int or not 0 <= context_lines <= 20:
         raise ValueError("Translation context must be between 0 and 20 lines.")
     for name, value in (("ASR model", asr_model), ("Translation model", mt_model)):
@@ -124,9 +122,7 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
     for flag, value in (("--asr-backend", asr_backend), ("--translate-backend", translate_backend)):
         if value is not None:
             args.extend([flag, value.strip()])
-    for enabled, flag in ((safe_playback, "safe-playback"),
-                          (diagnostics, "diagnostics")):
-        args.append(f"--{flag}" if enabled else f"--no-{flag}")
+    args.append("--diagnostics" if diagnostics else "--no-diagnostics")
     return str(python), args
 
 

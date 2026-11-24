@@ -7,7 +7,7 @@ Tests cover:
 - GUI module imports
 - Ingest module imports
 - Config and registry integration
-- Supporting modules (VAD, safe_playback, gpu_budget, etc.)
+- Supporting modules (VAD, gpu_budget, etc.)
 - Bug fixes verification (lock handling, stale prompt, function attribute state)
 """
 
@@ -216,10 +216,14 @@ def test_vad_base_protocol():
     assert VADSegment is not None
 
 
-def test_safe_playback_import():
-    """Safe playback module imports correctly."""
-    from auto_translate.safe_playback import SafeInferenceGate
-    assert SafeInferenceGate is not None
+def test_removed_playback_config_is_ignored(tmp_path):
+    """Existing private configs remain loadable after feature removal."""
+    from auto_translate.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text("[safe_playback]\nenabled = true\n", encoding="utf-8")
+    config = load_config(path)
+    assert not hasattr(config, "safe_playback")
 
 
 def test_gpu_budget_import():
@@ -596,17 +600,6 @@ def test_gemma4_vs_plamo_prompt_isolation():
     assert plamo_prompt["messages"][0]["role"] == "user"
     assert "chat_template_kwargs" in plamo_prompt
     assert "chat_template_kwargs" not in gemma_prompt
-
-
-def test_safe_playback_class():
-    """SafeInferenceGate class is defined with correct signature."""
-    import inspect
-
-    from auto_translate.safe_playback import SafeInferenceGate
-
-    sig = inspect.signature(SafeInferenceGate.__init__)
-    params = list(sig.parameters.keys())
-    assert 'cfg' in params
 
 
 def test_gpu_budget_class():

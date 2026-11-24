@@ -42,10 +42,6 @@ def _main(resources: ExitStack) -> None:
                         help="watch in mpv, delayed so subtitles appear exactly when each line is spoken")
     parser.add_argument("--shared-gpu-playback", action="store_true",
                         help="limit VOD inference read-ahead during shared-GPU playback")
-    option = parser.add_mutually_exclusive_group()
-    option.add_argument("--safe-playback", dest="safe_playback", action="store_true", default=None,
-                        help="coordinate inference and bound audio read-ahead")
-    option.add_argument("--no-safe-playback", dest="safe_playback", action="store_false")
     parser.add_argument("--context-lines", type=int, choices=range(21), metavar="0..20",
                         help="previous dialogue lines given to the translator")
     parser.add_argument("--vad-max-utterance-s", type=float, metavar="SECONDS",
@@ -205,8 +201,6 @@ def _main(resources: ExitStack) -> None:
             str_value = str(value) if isinstance(value, Path) else value
             setattr(section, field_name, str_value)
             override_dict[field_name] = str_value
-    if args.safe_playback is not None:
-        cfg.safe_playback.enabled = args.safe_playback
     if args.diagnostics is not None:
         cfg.diagnostics.enabled = args.diagnostics
     if args.asr_backend is not None:
@@ -220,10 +214,7 @@ def _main(resources: ExitStack) -> None:
         from .windows_subprocess import owned_process_status
         record_event("subprocess_cleanup", processes=owned_process_status())
     resources.callback(record_cleanup)
-    record_event("application_start", safe_playback=cfg.safe_playback.enabled,
-                 context_lines=cfg.translate.context_lines)
-    from .safe_playback import SafeInferenceGate
-    gate = SafeInferenceGate(cfg.safe_playback, stop)
+    record_event("application_start", context_lines=cfg.translate.context_lines)
     if os.getenv("VIDEO_TRANSLATE_CLI_LOG"):
         import shutil
 
@@ -249,11 +240,6 @@ def _main(resources: ExitStack) -> None:
         cfg.mpv.window_id = args.mpv_wid
 
     log = logging.getLogger("auto_translate")
-    if cfg.safe_playback.enabled:
-        lead = cfg.ingest.vod_max_audio_lead_s
-        cfg.ingest.vod_max_audio_lead_s = min(lead, cfg.safe_playback.max_audio_lead_s) if lead else cfg.safe_playback.max_audio_lead_s
-        log.info("Safe Playback: at most %d simultaneous inference calls; audio lead %.1fs; MPV decoder settings preserved",
-                 cfg.safe_playback.max_inference_concurrency, cfg.ingest.vod_max_audio_lead_s)
     if args.shared_gpu_playback:
         cfg.ingest.vod_max_audio_lead_s = min(cfg.ingest.vod_max_audio_lead_s, 30.0)
         log.info("Shared GPU playback: VOD audio lead capped at %.1fs",
@@ -317,7 +303,6 @@ def _main(resources: ExitStack) -> None:
         raise SystemExit(f"VAD backend '{vad_backend_name}' is not available: {exc}") from exc
     budget = GpuBudget(cfg.gpu_budget)
     resources.callback(budget.close)
-    budget.operation = gate.operation
     glossary = Glossary.load(Path(cfg.translate.glossary))
     metadata = source.timeline
     meta = metadata or {}
@@ -437,7 +422,6 @@ def _main(resources: ExitStack) -> None:
         video_out="fmp4" if shared_live_hls else None,
         video_format=cfg.mpv.ytdlp_format if shared_live_hls else "",
     )
-    ingest.inference_gate = gate
 
     outputs: list[Output] = []
     subtitle_cache = SessionSubtitleCache() if use_mpv and not source.live else None
@@ -533,7 +517,6 @@ def _main(resources: ExitStack) -> None:
             session_cache=subtitle_cache,
             playback_position=playback_position,
             language_filter=language_filter,
-            gate=gate,
             diagnostics=diagnostics if cfg.diagnostics.enabled else None,
             name_fusion=name_fusion,
         )

@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         command = [
             sys.executable, "-m", "auto_translate", str(clip),
             "--config", str(config), "--mode", "vod", "--fast",
-            "--no-web", "--safe-playback", "--no-diagnostics",
+            "--no-web", "--no-diagnostics",
             "--asr-backend", asr, "--translate-backend", mt,
         ]
         if args.context_lines is not None:

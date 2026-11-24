@@ -16,10 +16,9 @@ import pytest
 
 from auto_translate import llama_server as ls
 from auto_translate.asr import qwen3_asr as qwen
-from auto_translate.config import AsrConfig, IngestConfig, SafePlaybackConfig
+from auto_translate.config import AsrConfig, IngestConfig
 from auto_translate.ingest import Ingest, Source
 from auto_translate.pipeline import run_asr
-from auto_translate.safe_playback import SafeInferenceGate
 from auto_translate.types import Transcript, Utterance
 
 
@@ -176,20 +175,6 @@ def test_seek_during_first_recovery_window_never_sends_second(backend):
         assert future.result(timeout=1) == ""
     assert backend.server.client.post.call_count == 2
     backend.server.reset_for_restart.assert_not_called()
-
-
-def test_utterance_expires_while_waiting_for_gpu_admission(backend):
-    backend.cfg.response_timeout_s = 0.1
-    gate = SafeInferenceGate(SafePlaybackConfig(max_inference_concurrency=1))
-    asr_in, asr_out = queue.Queue(), queue.Queue()
-    asr_in.put(Utterance(0, 1, PCM))
-    asr_in.put(None)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        with gate.operation("held"):
-            worker = pool.submit(run_asr, backend, asr_in, asr_out, gate=gate)
-            worker.result(timeout=0.75)
-    backend.server.client.post.assert_not_called()
-    assert not any(isinstance(item, Transcript) for item in list(asr_out.queue))
 
 
 @pytest.mark.parametrize("cancel", ["seek", "session_stop", "close"])

@@ -10,7 +10,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import CancelledError
-from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 
 from .asr.base import ASRBackend
@@ -371,7 +370,6 @@ def run_asr(
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
     language_filter=None,
-    gate=None,
     record_speech_cb: Callable[[float, float, int], int | None] | None = None,
     name_fusion=None,
     worker_state: "WorkerState | None" = None,
@@ -516,37 +514,34 @@ def run_asr(
         reviewed = False
         while True:
             try:
-                with (gate.operation("asr", current=get_generation, generation=utt.generation,
-                                     deadline=request.get("deadline"))
-                      if gate is not None else nullcontext()):
-                    if cancelled(utt.generation):
-                        break
-                    if live and _expired_live_cue(utt, playback_position, live_late_window_s):
-                        increment_counter("expired")
-                        break
-                    text = asr.transcribe(utt.audio, utt.probe, **request)
-                    if cancelled(utt.generation):
-                        break
-                    reason = _rejection_reason(asr, text)
-                    if not text and reason in ("context_echo", "repeated_output"):
-                        reviewed = True
-                        remaining = asr.cfg.response_timeout_s - (time.monotonic() - utt.timings.asr_start)
-                        retry = (asr.cfg.context_retry_limit and remaining > 0
-                                 and not cancelled(utt.generation)
-                                 and not (live and _expired_live_cue(utt, playback_position, live_late_window_s)))
-                        log.info("ASR_LEAK_DETECTED reason=%s segment_start=%.2f segment_end=%.2f "
-                                 "match_score=%.2f action=%s", reason, utt.start_s, utt.end_s,
-                                 asr.last_match_score, "retry_without_context" if retry else "discard")
-                        if retry:
-                            text = asr.recover_context_echo(
-                                utt.audio, utt.probe, utt.vad_confidence, remaining, **request,
-                            )
-                        if cancelled(utt.generation) or (live and _expired_live_cue(
-                                utt, playback_position, live_late_window_s)):
-                            text = ""
-                        log.info("ASR_LEAK_OUTCOME segment_start=%.2f segment_end=%.2f outcome=%s reason=%s",
-                                 utt.start_s, utt.end_s, "accepted" if text else "discarded",
-                                 "audio_recovery" if text else getattr(asr, "last_rejection", None) or "stale")
+                if cancelled(utt.generation):
+                    break
+                if live and _expired_live_cue(utt, playback_position, live_late_window_s):
+                    increment_counter("expired")
+                    break
+                text = asr.transcribe(utt.audio, utt.probe, **request)
+                if cancelled(utt.generation):
+                    break
+                reason = _rejection_reason(asr, text)
+                if not text and reason in ("context_echo", "repeated_output"):
+                    reviewed = True
+                    remaining = asr.cfg.response_timeout_s - (time.monotonic() - utt.timings.asr_start)
+                    retry = (asr.cfg.context_retry_limit and remaining > 0
+                             and not cancelled(utt.generation)
+                             and not (live and _expired_live_cue(utt, playback_position, live_late_window_s)))
+                    log.info("ASR_LEAK_DETECTED reason=%s segment_start=%.2f segment_end=%.2f "
+                             "match_score=%.2f action=%s", reason, utt.start_s, utt.end_s,
+                             asr.last_match_score, "retry_without_context" if retry else "discard")
+                    if retry:
+                        text = asr.recover_context_echo(
+                            utt.audio, utt.probe, utt.vad_confidence, remaining, **request,
+                        )
+                    if cancelled(utt.generation) or (live and _expired_live_cue(
+                            utt, playback_position, live_late_window_s)):
+                        text = ""
+                    log.info("ASR_LEAK_OUTCOME segment_start=%.2f segment_end=%.2f outcome=%s reason=%s",
+                             utt.start_s, utt.end_s, "accepted" if text else "discarded",
+                             "audio_recovery" if text else getattr(asr, "last_rejection", None) or "stale")
             except CancelledError:
                 break
             if cancelled(utt.generation):
@@ -776,7 +771,6 @@ def run_translate(
     playback_position: Callable[[], float | None] | None = None,
     live_late_window_s: float = 7.0,
     stop: threading.Event | None = None,
-    gate=None,
     merge: tuple[float, float] | None = None,
     live_merge_margin_s: float = 1.5,
     record_speech_cb: Callable[[float, float, int], None] | None = None,
@@ -940,19 +934,20 @@ def run_translate(
                 worker_state.record_queue_get(id(tr))
                 worker_state.enter_inference(id(tr), tr.generation)
             try:
-                with (gate.operation("mt", current=get_generation, generation=tr.generation)
-                      if gate is not None else nullcontext()):
-                    if live and _expired_live_cue(tr, playback_position, live_late_window_s):
-                        increment_counter("expired")
-                        if worker_state is not None:
-                            worker_state.leave_inference(success=False)
-                        _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
-                        continue
-                    model_started = time.monotonic()
-                    if callable(set_position):
-                        set_position(tr.start_s)
-                    en = translator.translate(tr.ja, list(history) if context_lines else [])
-                    update_metrics(stages={"mt_s": time.monotonic() - model_started})
+                if ((stop is not None and stop.is_set()) or
+                        (get_generation is not None and tr.generation != get_generation())):
+                    raise CancelledError("translation cancelled")
+                if live and _expired_live_cue(tr, playback_position, live_late_window_s):
+                    increment_counter("expired")
+                    if worker_state is not None:
+                        worker_state.leave_inference(success=False)
+                    _finalize_pending_speech(complete_speech_cb, tr.start_s, tr.end_s, tr.generation, speech_id)
+                    continue
+                model_started = time.monotonic()
+                if callable(set_position):
+                    set_position(tr.start_s)
+                en = translator.translate(tr.ja, list(history) if context_lines else [])
+                update_metrics(stages={"mt_s": time.monotonic() - model_started})
                 consecutive_failures = 0
             except CancelledError:
                 if worker_state is not None:
@@ -1236,7 +1231,6 @@ def run(
     playback_position: Callable[[], float | None] | None = None,
     language_filter=None,
     segmenter=None,
-    gate=None,
     diagnostics=None,
     name_fusion=None,
 ) -> None:
@@ -1270,9 +1264,8 @@ def run(
     # allowing memory use and subtitle age to grow without limit.
     # 64 audio chunks ~= 16.4 s at 4096 samples / 16 kHz; work queues hold
     # at most 16 complete utterances/transcripts/subtitles each.
-    safe = cfg.safe_playback
-    work_size = safe.queue_size if safe.enabled else 16
-    audio_q: queue.Queue[AudioChunk | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=safe.audio_chunks if safe.enabled else 64)
+    work_size = 16
+    audio_q: queue.Queue[AudioChunk | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=64)
     utt_q: queue.Queue[Utterance | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=work_size)
     text_q: queue.Queue[Transcript | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=work_size)
     sub_q: queue.Queue[Subtitle | AudioProgress | SourceEOF | None] = queue.Queue(maxsize=work_size)
@@ -1317,7 +1310,7 @@ def run(
             args=("vad", run_segmenter, failures,
                   segmenter if segmenter is not None else _create_vad_segmenter(vad_cfg, vad_backend_name),
                   audio_q, utt_q,
-                  lambda: ingest.generation, None, stop),
+                  lambda: ingest.generation, stop),
             name="vad",
             daemon=True,
         ),
@@ -1334,7 +1327,6 @@ def run(
                 cfg.mpv.live_late_window_s,
                 stop,
                 language_filter,
-                gate,
                 record_speech_cb,
                 name_fusion,
                 asr_worker_state,
@@ -1357,7 +1349,6 @@ def run(
                 playback_position,
                 cfg.mpv.live_late_window_s,
                 stop,
-                gate,
                 # Live holds a fragment only while playback is still short of its onset.
                 ((cfg.translate.merge_max_gap_s, cfg.translate.merge_max_s)
                  if cfg.translate.merge_fragments

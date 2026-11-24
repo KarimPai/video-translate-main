@@ -18,8 +18,6 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import CancelledError
-from contextlib import nullcontext
 
 import numpy as np
 
@@ -497,7 +495,6 @@ def run_segmenter(
     in_q: "queue.Queue[AudioChunk | AudioProgress | SourceEOF | None]",
     out_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
     get_generation: Callable[[], int] | None = None,
-    gate=None,
     stop: threading.Event | None = None,
 ) -> None:
     """Thread body."""
@@ -553,15 +550,7 @@ def run_segmenter(
             )
             continue
 
-        try:
-            operation = (gate.operation("vad", current=get_generation,
-                                        generation=item.generation)
-                         if gate is not None else nullcontext())
-            with operation:
-                utterances = seg.feed(item)
-        except CancelledError:
-            # A seek can invalidate a chunk while admission is waiting.
-            continue
+        utterances = seg.feed(item)
         if ((stop is not None and stop.is_set())
                 or (get_generation is not None and item.generation != get_generation())):
             continue

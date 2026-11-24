@@ -408,25 +408,6 @@ class MpvConfig:
 
 
 @dataclass
-class SafePlaybackConfig:
-    enabled: bool = True
-    max_inference_concurrency: int = 2
-    queue_size: int = 16
-    audio_chunks: int = 48
-    max_audio_lead_s: float = 30.0
-
-    def __post_init__(self):
-        if type(self.enabled) is not bool:
-            raise ValueError("safe_playback.enabled must be boolean")
-        for name, upper in (("max_inference_concurrency", 2), ("queue_size", 16), ("audio_chunks", 64)):
-            value = getattr(self, name)
-            if type(value) is not int or not 1 <= value <= upper:
-                raise ValueError(f"safe_playback.{name} must be in 1..{upper}")
-        if not math.isfinite(self.max_audio_lead_s) or not 1 <= self.max_audio_lead_s <= 75:
-            raise ValueError("safe_playback.max_audio_lead_s must be in 1..75")
-
-
-@dataclass
 class DiagnosticsConfig:
     enabled: bool = True
     sample_interval_s: float = 4.0
@@ -476,7 +457,6 @@ class Config:
     """Root configuration with backend-agnostic model selection."""
 
     models: ModelsConfig = field(default_factory=ModelsConfig)
-    safe_playback: SafePlaybackConfig = field(default_factory=SafePlaybackConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     language_filter: LanguageFilterConfig = field(default_factory=LanguageFilterConfig)
     name_fusion: NameFusionConfig = field(default_factory=NameFusionConfig)
@@ -560,7 +540,6 @@ def load_config(path: Path) -> Config:
 
     return Config(
         models=ModelsConfig(**data.get("models", {})),
-        safe_playback=SafePlaybackConfig(**data.get("safe_playback", {})),
         diagnostics=DiagnosticsConfig(**data.get("diagnostics", {})),
         language_filter=LanguageFilterConfig(**data.get("language_filter", {})),
         name_fusion=NameFusionConfig(**data.get("name_fusion", {})),
@@ -712,7 +691,6 @@ __all__ = [
     "ModelsConfig",
     "MpvConfig",
     "OutputConfig",
-    "SafePlaybackConfig",
     "TranslateConfig",
     "VadConfig",
     "get_backend_config",

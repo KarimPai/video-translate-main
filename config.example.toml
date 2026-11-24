@@ -184,13 +184,6 @@ background_opacity = 0.3
 vod_pause_threshold_s = 0.5
 vod_resume_threshold_s = 8.0
 
-[safe_playback]
-enabled = true
-max_inference_concurrency = 2
-queue_size = 16
-audio_chunks = 48
-max_audio_lead_s = 30.0
-
 [diagnostics]
 enabled = true
 sample_interval_s = 4.0

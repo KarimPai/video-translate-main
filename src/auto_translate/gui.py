@@ -366,11 +366,6 @@ class VideoTranslateWindow(QMainWindow):
             "Context clears on seeking, changing videos, or the configured audio-silence gap."
         )
         settings.addRow("Translation context", self.context_lines)
-        self.safe_playback_checkbox = QCheckBox("Safe Playback")
-        self.safe_playback_checkbox.setToolTip(
-            "Coordinate inference and bound queued audio while preserving hardware video decoding."
-        )
-        settings.addRow(self.safe_playback_checkbox)
         self.diagnostics_checkbox = QCheckBox("Diagnostic logging and resource dashboard")
         self.diagnostics_checkbox.setChecked(True)
         settings.addRow(self.diagnostics_checkbox)
@@ -482,7 +477,6 @@ class VideoTranslateWindow(QMainWindow):
             self.asr_model.setText(asr_identity.get("model_path", ""))
             self.mt_model.setText(mt_identity.get("model_path", ""))
             self.context_lines.setValue(cfg.translate.context_lines)
-            self.safe_playback_checkbox.setChecked(cfg.safe_playback.enabled)
             self.diagnostics_checkbox.setChecked(cfg.diagnostics.enabled)
             # Store config reference for backend switch handler
             self._cfg = cfg
@@ -810,7 +804,6 @@ class VideoTranslateWindow(QMainWindow):
                 asr_backend=self.asr_backend.currentData(),
                 translate_backend=self.mt_backend.currentData(),
                 context_lines=self.context_lines.value(),
-                safe_playback=self.safe_playback_checkbox.isChecked(),
                 diagnostics=self.diagnostics_checkbox.isChecked(),
             )
             env = subprocess_environment(self.root)

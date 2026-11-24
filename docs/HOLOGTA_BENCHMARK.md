@@ -54,7 +54,7 @@ Compare it against the unchanged baseline. Do not conclude that shorter
 cues are more accurate without listening to matched speech.
 
 The runner uses the existing CLI in local-file VOD mode, with fast processing,
-no web viewer, safe playback limits, and no shared diagnostics log. It does
+no web viewer and no shared diagnostics log. It does
 not launch MPV, isolating transcription and translation from player problems.
 
 ## Files created

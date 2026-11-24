@@ -587,8 +587,6 @@ class PlamoTranslator:
         only names actually spoken in the current utterance, using source context for
         disambiguation so that context-dependent nicknames (e.g. Miko) are recognized.
         """
-        if getattr(self.cfg, "plamo_context_only", False):
-            return [], [], []
         source_context = f"{context}\n{ja}"
         # Names in the current utterance with source context for disambiguation.
         # This lets context-dependent nicknames like Miko be recognized.
@@ -886,9 +884,7 @@ class PlamoTranslator:
                 output_issue = english_output_issue(english)
                 utterance_name_list = [en for _, en in utterance_names]
                 missing = missing_names(english, utterance_name_list)
-                if (not getattr(self.cfg, "plamo_context_only", False)
-                        and not self._closed and retries_left > 0
-                        and (output_issue or missing) and _elapsed_ok()):
+                if not self._closed and retries_left > 0 and (output_issue or missing) and _elapsed_ok():
                     req_key = "name_fix"
                     if not _repeated(english, req_key):
                         if output_issue:

@@ -72,7 +72,7 @@ vod_merge_timeout_s = 5.0
 # Place chat_template.jinja next to the model file for best results
 # To use PLaMo 2B, set translate_backend = "plamo" in [models] and uncomment:
 # [translate.plamo]
-# plamo_context_only = true  # native greedy decoding, context only (default)
+# style = ""  # Native translation style (no custom style prompt)
 # model_path = "models/plamo3/plamo-3-translate-2b-Q4_K_M.gguf"
 # gpu_layers = -1
 # context_size = 8192
@@ -84,7 +84,7 @@ vod_merge_timeout_s = 5.0
 # for improved accuracy on complex Japanese sentences and proper names.
 # To use PLaMo 8B, set translate_backend = "plamo8b" in [models] and uncomment:
 # [translate.plamo8b]
-# plamo_context_only = true  # native greedy decoding, context only (default)
+# style = ""  # Native translation style (no custom style prompt)
 # model_path = "models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"
 # gpu_layers = -1
 # context_size = 8192

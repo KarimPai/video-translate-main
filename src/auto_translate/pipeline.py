@@ -1175,7 +1175,7 @@ def run_translate(
                         tr.generation, tr.start_s, tr.end_s, en[:120],
                     )
                     en, suppressed = "", True
-                elif getattr(tcfg, "plamo_context_only", False) is not True:
+                else:
                     en_cleaned = clean_english_output(
                         en,
                         remove_fillers=getattr(tcfg, "remove_fillers", True),

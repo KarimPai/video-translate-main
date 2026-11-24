@@ -10,12 +10,12 @@ may still be misheard as Japanese; post-ASR guards remain in place.
 from __future__ import annotations
 
 import logging
-from difflib import SequenceMatcher
 import re
 import threading
 import time
 import unicodedata
 from collections import deque
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +53,8 @@ class WhisperASR:
     inference on CPU or CUDA. No external server process is needed.
     """
 
+    CLOSE_WAIT_S = 3.0
+
     def __init__(self, cfg: AsrConfig, context: str = "", *, is_explicit: bool = False) -> None:
         self.cfg = cfg
         self.context = context.strip()[: cfg.max_context_chars]
@@ -67,6 +69,7 @@ class WhisperASR:
         self._generation = 0
         self._closed = False
         self._failures = 0
+        self._release_thread: threading.Thread | None = None
         self.last_timing: dict | None = None
         self.last_detected_language: str = "und"
         self.last_detected_language_probability: float = 0.0
@@ -291,14 +294,9 @@ class WhisperASR:
                 return ""
             try:
                 text = self._transcribe_impl(audio, probe)
-            except Exception as exc:
-                self._failures += 1
+            except (OSError, RuntimeError, ValueError) as exc:
                 self.last_rejection = "error"
-                log.warning("Whisper request failed (%d consecutive): %s", self._failures, exc)
-                if self._failures >= 3:
-                    raise WhisperError(
-                        f"Whisper failed three consecutive utterances: {exc}"
-                    ) from exc
+                log.warning("Whisper request failed: %s", exc)
                 return ""
 
         self._failures = 0
@@ -329,7 +327,10 @@ class WhisperASR:
                 # _transcribe_impl() is called only with the inference lock.
                 # Probe=True here selects a different temperature; it does not
                 # re-enable VAD-negative audio processing in run_asr().
-                candidate = self._transcribe_impl(audio, probe=True, no_context=True)
+                with self._inference_lock:
+                    if generation != self._generation or self._closed:
+                        return ""
+                    candidate = self._transcribe_impl(audio, probe=True, no_context=True)
             except Exception as exc:  # noqa: BLE001
                 self.last_rejection = suspect
                 self.last_raw_transcript = original
@@ -384,10 +385,6 @@ class WhisperASR:
 
         # Accept
         with self._state_lock:
-            key = speech_key(text)
-            if key:
-                self._accepted_keys.append(key)
-            self._recent.append(text)
             self.last_rejection = None
 
         elapsed = time.monotonic() - started
@@ -419,13 +416,42 @@ class WhisperASR:
         self._closed = True
         with self._state_lock:
             self._generation += 1
-        model = getattr(self, "_model", None)
-        if model is not None:
-            # CTranslate2 models release GPU memory when garbage collected
-            del self._model
-            self._model = None
+        if not self._inference_lock.acquire(timeout=self.CLOSE_WAIT_S):
+            log.error("Whisper inference did not stop within %.1fs; deferring model release", self.CLOSE_WAIT_S)
+            release_thread = getattr(self, "_release_thread", None)
+            if release_thread is None or not release_thread.is_alive():
+                self._release_thread = threading.Thread(
+                    target=self._release_after_inference,
+                    name="whisper-model-release",
+                    daemon=True,
+                )
+                self._release_thread.start()
+            update_metrics(workers={"asr": "closing (inference still active)"})
+            return
+        try:
+            self._release_model()
+        finally:
+            self._inference_lock.release()
         update_metrics(workers={"asr": "closed"})
         log.info("Whisper ASR closed, GPU memory released")
+
+    def _release_after_inference(self) -> None:
+        with self._inference_lock:
+            self._release_model()
+        update_metrics(workers={"asr": "closed"})
+        log.info("Whisper ASR closed after active inference returned")
+
+    def _release_model(self) -> None:
+        model = getattr(self, "_model", None)
+        if model is not None:
+            self._model = None
+            del model
+
+    def note_utterance_failure(self) -> None:
+        """Count one exhausted utterance, not each request retry for it."""
+        self._failures += 1
+        if self._failures >= 3:
+            raise WhisperError("Whisper failed three consecutive utterances")
 
     def remember(self, text: str) -> None:
         """Record an accepted transcript for context echo detection."""
@@ -649,7 +675,7 @@ class WhisperASR:
                 initial_prompt = " ".join(list(self._recent)[-3:])[:256]
             self._last_decode_prompt = initial_prompt or ""
 
-            segments, info = self._model.transcribe(
+            segments, _ = self._model.transcribe(
                 samples,
                 language="ja",
                 task="transcribe",

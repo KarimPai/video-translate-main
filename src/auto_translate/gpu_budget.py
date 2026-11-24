@@ -154,7 +154,7 @@ class GpuBudget:
         if self._last_pressure == "critical":
             if self.free <= self.cfg.emergency_free_gb:
                 return "critical"
-            if self.free <= self.cfg.emergency_free_gb + hysteresis_gap:
+            if self.free <= self.cfg.low_free_gb + hysteresis_gap:
                 return "low"
             return "normal"
         if self._last_pressure == "low":
@@ -215,11 +215,14 @@ class GpuBudget:
                             log.warning("GPU free-memory pressure=%s; requesting model unload", level)
                             record_event("gpu_memory_pressure", **self.snapshot())
                             try:
-                                release()
-                                if level == "critical":
-                                    self._last_critical_relief_time = now
+                                requested = release() is not False
+                                if requested:
+                                    if level == "critical":
+                                        self._last_critical_relief_time = now
+                                    else:
+                                        self._last_low_relief_time = now
                                 else:
-                                    self._last_low_relief_time = now
+                                    record_event("gpu_headroom_relief_rejected", pressure=level)
                             except Exception:
                                 # Optional-model cleanup must not kill the sampler.
                                 log.exception("GPU pressure resource release failed")

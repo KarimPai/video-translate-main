@@ -425,7 +425,7 @@ class DiagnosticsConfig:
             raise ValueError("diagnostics.backups must be in 1..10")
 
 
-def vad_for_haas_game_audio(cfg: VadConfig) -> VadConfig:
+def vad_for_haas_game_audio(cfg: VadConfig, *, explicit_threshold: bool | None = None) -> VadConfig:
     """Slightly reduce VAD sensitivity to game engines when Haas is selected.
 
     The ordinary 0.24 threshold has false-positive exposure to revving engines.
@@ -436,7 +436,9 @@ def vad_for_haas_game_audio(cfg: VadConfig) -> VadConfig:
     copy; other ASR backends and config.toml are unaffected.
     """
     default_threshold = VadConfig.__dataclass_fields__["threshold"].default
-    threshold = 0.28 if abs(cfg.threshold - default_threshold) < 1e-9 else cfg.threshold
+    if explicit_threshold is None:
+        explicit_threshold = abs(cfg.threshold - default_threshold) >= 1e-9
+    threshold = cfg.threshold if explicit_threshold else 0.28
     return replace(cfg, threshold=threshold, fallback_s=0.0)
 
 
@@ -471,6 +473,7 @@ class Config:
     asr_profiles: dict[str, dict] = field(default_factory=dict)
     translate_profiles: dict[str, dict] = field(default_factory=dict)
     stats_interval_s: float = 30.0
+    vad_explicit_keys: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self):
         if not math.isfinite(self.stats_interval_s) or self.stats_interval_s <= 0:
@@ -552,6 +555,7 @@ def load_config(path: Path) -> Config:
         mpv=MpvConfig(**data.get("mpv", {})),
         asr_profiles=asr_profiles,
         translate_profiles=translate_profiles,
+        vad_explicit_keys=frozenset(data.get("vad", {})),
         stats_interval_s=data.get("stats_interval_s", 30.0),
     )
 
@@ -685,7 +689,6 @@ __all__ = [
     "Config",
     "DiagnosticsConfig",
     "GpuBudgetConfig",
-    "HolodexConfig",
     "IngestConfig",
     "LanguageFilterConfig",
     "ModelsConfig",

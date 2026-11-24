@@ -92,6 +92,68 @@ def _raise_worker_failure(
     raise RuntimeError(message) from exc
 
 
+def _current_inference_stall(worker_state: "WorkerState", deadline_s: float,
+                             current_generation: int) -> bool:
+    return (worker_state.is_stalled(deadline_s)
+            and not worker_state.stale_generation(current_generation))
+
+
+def _start_watchdog_recovery(name: str, backend, failures: queue.Queue,
+                             status: dict) -> threading.Thread:
+    def recover() -> None:
+        try:
+            recovery = getattr(backend, "recover_stalled", None)
+            if not callable(recovery) or recovery() is not True:
+                raise RuntimeError(f"{name} backend has no recoverable stalled-inference path")
+            record_event("inference_watchdog_recovered", worker=name,
+                         generation=status["key"][0], utterance_id=status["utterance_id"])
+        except Exception as exc:
+            log.exception("Watchdog recovery failed for %s", name)
+            close = getattr(backend, "interrupt", None) if name == "translate" else None
+            close = close or getattr(backend, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    log.exception("Watchdog cleanup failed for %s", name)
+            status["error"] = exc
+            failures.put(("watchdog", RuntimeError(f"{name} inference recovery failed: {exc}")))
+        finally:
+            status["finished_at"] = time.monotonic()
+            status["done"] = True
+
+    thread = threading.Thread(target=recover, name=f"watchdog-{name}-recovery", daemon=True)
+    status["thread"] = thread
+    thread.start()
+    return thread
+
+
+def _start_watchdog_abort(name: str, backend, failures: queue.Queue,
+                          generation: int, utterance_id: int) -> threading.Thread:
+    def abort() -> None:
+        cancel = getattr(backend, "cancel_pending", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                log.exception("Watchdog cancellation failed for %s", name)
+        close = getattr(backend, "interrupt", None) if name == "translate" else None
+        close = close or getattr(backend, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                log.exception("Watchdog abort cleanup failed for %s", name)
+        failures.put(("watchdog", RuntimeError(
+            f"{name} inference remained stalled after bounded recovery "
+            f"(generation={generation}, utterance={utterance_id})"
+        )))
+
+    thread = threading.Thread(target=abort, name=f"watchdog-{name}-abort", daemon=True)
+    thread.start()
+    return thread
+
+
 def _expected_vod_idle(ingest: Ingest, outputs: list[Output]) -> bool:
     if ingest.source.live:
         return False
@@ -178,6 +240,10 @@ def _credible_foreign_context(utt: Utterance, transcript: str) -> bool:
 
 ASR_CONTEXT_GAP_S = 15.0
 _SENTENCE_END = re.compile(r"[。．.！!？?…‥」』）)】♪〜～ー]\s*$")
+_INDEPENDENT_REPLY = re.compile(
+    r"^(?:はい|うん|ええ|いや|いいえ|そうですね|そうです|そうか|なるほど|ありがとう|"
+    r"大丈夫|ごめん|へえ|えっ|なに|なんで|あっ|うわ)(?=$|[、,。．.!！?？\s])"
+)
 MERGE_TICK_S = 0.25
 _TICK = object()
 
@@ -201,9 +267,11 @@ class WorkerState:
         "_lock",
         "active",
         "generation",
+        "inference_serial",
         "inference_start",
         "last_completion",
         "last_queue_get",
+        "probe",
         "utterance_id",
     )
 
@@ -212,16 +280,20 @@ class WorkerState:
         self.active = False
         self.utterance_id: int | None = None
         self.generation: int | None = None
+        self.inference_serial = 0
         self.inference_start: float | None = None
+        self.probe = False
         self.last_completion: float | None = None
         self.last_queue_get: float | None = None
 
-    def enter_inference(self, utterance_id: int, generation: int) -> None:
+    def enter_inference(self, utterance_id: int, generation: int, *, probe: bool = False) -> None:
         """Called before the worker begins ASR or translation inference."""
         with self._lock:
             self.active = True
             self.utterance_id = utterance_id
             self.generation = generation
+            self.inference_serial += 1
+            self.probe = probe
             self.inference_start = time.monotonic()
 
     def leave_inference(self, success: bool = True) -> None:
@@ -231,6 +303,7 @@ class WorkerState:
             self.utterance_id = None
             self.generation = None
             self.inference_start = None
+            self.probe = False
             if success:
                 self.last_completion = time.monotonic()
 
@@ -243,7 +316,7 @@ class WorkerState:
     def is_stalled(self, deadline_s: float) -> bool:
         """Check if the worker is stuck in inference past its deadline."""
         with self._lock:
-            if not self.active:
+            if not self.active or self.probe:
                 return False
             if self.inference_start is None:
                 return False
@@ -264,6 +337,8 @@ class WorkerState:
                 "active": self.active,
                 "utterance_id": self.utterance_id,
                 "generation": self.generation,
+                "inference_serial": self.inference_serial,
+                "probe": self.probe,
             }
             if self.inference_start is not None:
                 result["inference_elapsed_s"] = round(
@@ -338,7 +413,8 @@ def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None, on_hol
                 continue
             if (type(item) is Transcript and item.language == "ja"
                     and held.language == "ja" and item.generation == held.generation
-                    and item.start_s - held.end_s <= max_gap_s and item.end_s - held.start_s <= max_span_s):
+                    and item.start_s - held.end_s <= max_gap_s and item.end_s - held.start_s <= max_span_s
+                    and not _INDEPENDENT_REPLY.match(item.ja.strip())):
                 item = Transcript(held.start_s, item.end_s, held.ja + item.ja, held.timings,
                                   generation=held.generation, speech_start_s=held.speech_start_s)
                 increment_counter("merged_fragments")
@@ -407,6 +483,8 @@ def run_asr(
         cancel = getattr(asr, "cancel_pending", None)
         if not qwen and callable(cancel):
             cancel()
+        if callable(forget):
+            forget()
         if name_fusion is not None:
             name_fusion.reset()
             refresh_name_hints()
@@ -507,7 +585,7 @@ def run_asr(
         # Report to watchdog: this utterance is now in-flight for ASR
         if worker_state is not None:
             worker_state.record_queue_get(id(utt))
-            worker_state.enter_inference(id(utt), utt.generation)
+            worker_state.enter_inference(id(utt), utt.generation, probe=utt.probe)
         asr_max_retries = 2
         asr_attempt = 0
         text = ""
@@ -576,6 +654,10 @@ def run_asr(
             worker_state.leave_inference(success=bool(text and text.strip()))
         utt.timings.asr_end = time.monotonic()
         if not (isinstance(text, str) and text.strip()):
+            if getattr(asr, "last_rejection", None) == "error":
+                note_failure = getattr(asr, "note_utterance_failure", None)
+                if callable(note_failure):
+                    note_failure()
             continue
         # Haas can mishear revving engines as repeated "yeah" / イェー.
         # Call a backend-specific evidence gate before names/context/MT; no
@@ -1009,6 +1091,7 @@ def run_translate(
                         remove_fillers=getattr(tcfg, "remove_fillers", True),
                         collapse_repetitions=getattr(tcfg, "collapse_repetitions", True),
                         allow_japanese=allow_japanese,
+                        source_ja=tr.ja,
                     )
                     if not en_cleaned:
                         suppression_reason = "cleaned_to_empty"
@@ -1297,6 +1380,10 @@ def run(
     # Backend-specific settings may override the global timeout profile.
     asr_timeout_s = getattr(getattr(asr, "cfg", None), "response_timeout_s", cfg.asr.response_timeout_s)
     mt_timeout_s = getattr(getattr(translator, "cfg", None), "timeout_s", cfg.translate.timeout_s)
+    asr_startup_s = getattr(getattr(asr, "cfg", None), "startup_timeout_s", cfg.asr.startup_timeout_s)
+    mt_load_s = getattr(getattr(translator, "cfg", None), "load_timeout_s", cfg.translate.load_timeout_s)
+    asr_watchdog_s = max(asr_timeout_s, asr_startup_s) + 5.0
+    mt_watchdog_s = max(mt_timeout_s, mt_load_s) + 5.0
 
     threads = [
         threading.Thread(
@@ -1382,6 +1469,7 @@ def run(
     last_subtitle_at = started  # tracks last published subtitle, independent of AudioProgress
     last_warning = started
     last_recovery_at = -float("inf")
+    watchdog_recoveries: dict[str, dict] = {}
     last_guard_key = ""
     last_guard_start = -float("inf")
     last_guard_end = -float("inf")
@@ -1596,11 +1684,16 @@ def run(
                 # Compute backlog once for all checks below.
                 subtitle_backlog = {name: q.qsize() for name, q in queues.items() if q.qsize()}
                 has_backlog = bool(subtitle_backlog)
+                # Queued VOD work is handled by vod_deadlock_recovery below.
 
                 # Use explicit worker state to determine stall type.
                 # WorkerState tracks actual inference entry/exit, not heuristics.
-                asr_stalled = asr_worker_state.is_stalled(asr_timeout_s + 5.0)
-                mt_stalled = mt_worker_state.is_stalled(mt_timeout_s + 5.0)
+                asr_stalled = _current_inference_stall(
+                    asr_worker_state, asr_watchdog_s, ingest.generation,
+                )
+                mt_stalled = _current_inference_stall(
+                    mt_worker_state, mt_watchdog_s, ingest.generation,
+                )
                 asr_stale_gen = asr_worker_state.stale_generation(ingest.generation)
                 mt_stale_gen = mt_worker_state.stale_generation(ingest.generation)
                 any_worker_active = asr_worker_state.active or mt_worker_state.active
@@ -1660,6 +1753,59 @@ def run(
                             "ASR stale=%s MT stale=%s",
                             no_sub_s, asr_stale_gen, mt_stale_gen,
                         )
+
+                # Restart a backend-owned server after a current-generation
+                # inference exceeds its request and startup budgets. This is
+                # independent of MPV pause state and never treats silence or
+                # stale seek work as a stalled request.
+                if no_sub_s > 30.0 and is_in_flight_stall:
+                    candidates = (
+                        ("asr", asr_stalled, asr_worker_state, asr,
+                         max(asr_timeout_s, asr_startup_s) + 5.0),
+                        ("translate", mt_stalled, mt_worker_state, translator,
+                         max(mt_timeout_s, mt_load_s) + 5.0),
+                    )
+                    for name, stalled, state, backend, recovery_budget_s in candidates:
+                        if not stalled or backend is None:
+                            continue
+                        snapshot = state.summary()
+                        if (not snapshot["active"]
+                                or snapshot["generation"] != ingest.generation):
+                            continue
+                        key = (snapshot["generation"], snapshot["inference_serial"])
+                        previous = watchdog_recoveries.get(name)
+                        if previous is not None and previous["key"] == key:
+                            recovery_expired = (
+                                (not previous["done"] and now >= previous["deadline"])
+                                or (previous["done"] and previous["error"] is None
+                                    and now - previous["finished_at"] >= 5.0)
+                            )
+                            if recovery_expired and not previous.get("abort_started"):
+                                previous["abort_started"] = True
+                                _start_watchdog_abort(
+                                    name, backend, failures, snapshot["generation"],
+                                    snapshot["utterance_id"],
+                                )
+                            continue
+                        if (previous is not None
+                                and previous["thread"].is_alive()):
+                            continue
+                        status = {
+                            "key": key,
+                            "utterance_id": snapshot["utterance_id"],
+                            "deadline": now + recovery_budget_s,
+                            "done": False,
+                            "error": None,
+                        }
+                        watchdog_recoveries[name] = status
+                        record_event(
+                            "inference_watchdog_recovery_requested",
+                            worker=name,
+                            generation=snapshot["generation"],
+                            utterance_id=snapshot["utterance_id"],
+                            elapsed_s=snapshot.get("inference_elapsed_s"),
+                        )
+                        _start_watchdog_recovery(name, backend, failures, status)
 
                 # Recovery watchdog: VOD deadlock recovery when auto-pause is active
                 # and there is genuine work to process (not natural silence).

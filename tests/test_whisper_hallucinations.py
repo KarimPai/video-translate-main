@@ -5,19 +5,19 @@ benchmarked; synthetic tests cannot establish speech-vs-noise discrimination.
 """
 from __future__ import annotations
 
+import queue
+import threading
 from collections import deque
 from types import SimpleNamespace
 from unittest import mock
-import queue
-import threading
 
 import numpy as np
 
-from auto_translate.asr.whisper_turbo import WhisperASR
 from auto_translate.asr.quality_guard import whisper_suspect_reason
+from auto_translate.asr.whisper_turbo import WhisperASR
 from auto_translate.config import AsrConfig
 from auto_translate.pipeline import run_asr, run_translate
-from auto_translate.types import Transcript, Subtitle, Utterance
+from auto_translate.types import Subtitle, Transcript, Utterance
 
 
 def _seg(text, start=0.0, end=3.0, *, no_speech=0.02,
@@ -314,6 +314,24 @@ def test_whisper_one_recheck_can_rescue_stable_clear_japanese():
     assert w._model.transcribe.call_count == 2
     assert w._model.transcribe.call_args_list[1].kwargs["initial_prompt"] is None
     assert w.last_rejection is None
+
+
+def test_whisper_suspect_recheck_runs_under_inference_lock():
+    w = _whisper()
+    results = iter([
+        _output("ちょっと待って、じゃああの、キタッショキタッショキタッショキタッショ"),
+        _output("ちょっと待って、じゃああの、来たよ！"),
+    ])
+    lock_states = []
+
+    def decode(*_args, **_kwargs):
+        lock_states.append(w._inference_lock.locked())
+        return next(results)
+
+    w._model.transcribe.side_effect = decode
+
+    assert w.transcribe(_audio(6.0)) == "ちょっと待って、じゃああの、来たよ！"
+    assert lock_states == [True, True]
 
 
 def test_whisper_clean_short_reaction_does_not_need_second_decode():

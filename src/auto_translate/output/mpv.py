@@ -38,7 +38,7 @@ from ..runtime_diagnostics import (
     rotate_log,
     update_metrics,
 )
-from ..session_cache import SessionSubtitleCache
+from ..session_cache import SessionSubtitleCache, same_source_cue
 from ..subtitle_clean import sanitize_english_output
 from ..subtitle_layout import chunk_at, display_until, split_cue, wrap_lines
 from ..timeline import record_session_anchor
@@ -722,6 +722,13 @@ class MpvOutput:
             if sub.generation != getattr(self.ingest, "generation", sub.generation):
                 increment_counter("dropped")
                 return
+            self._lines = [
+                existing for existing in self._lines
+                if not (existing.sub.generation == sub.generation
+                        and same_source_cue(
+                            existing.sub, sub, SessionSubtitleCache.REPLACEMENT_TOLERANCE_S,
+                        ))
+            ]
             self._lines.append(line)
             pending = sum(ln.show_from > (self._now if self._now is not None else -1) for ln in self._lines)
         update_metrics(counters={"pending_subtitles": pending})
@@ -1594,19 +1601,20 @@ class MpvOutput:
                 log.info("GUI seek rejected: livestream")
                 emit_event("seek_ack", accepted=False, target=value)
                 continue
-            if self._now is None:
+            if value is None:
+                emit_event("seek_ack", accepted=False, target=None)
+                continue
+            base = self._seek_base()
+            if base is None:
                 # Queue again and wait for the video clock to become available.
                 # Return now to avoid spinning through the same request forever.
                 self._gui_commands.put_nowait((action, value))
                 return
-            if value is None:
-                emit_event("seek_ack", accepted=False, target=None)
-                continue
-            delta = value - self._now if action == "seek" else value
-            target = max(0.0, self._now + delta)
+            delta = value - base if action == "seek" else value
+            target = max(0.0, base + delta)
             if self.ingest.source.duration:
                 target = min(target, max(0.0, self.ingest.source.duration - 5))
-            if target == self._now and self._pending_seek is None:
+            if target == base and self._pending_seek is None:
                 emit_event("seek_ack", accepted=True, target=target)
                 continue
             log.info("GUI seek command: %s %+.2fs -> %.2fs", action, delta, target)
@@ -1676,10 +1684,11 @@ class MpvOutput:
             )
             return
 
-        if self._now is None:
+        base = self._seek_base()
+        if base is None:
             return
 
-        target = max(0.0, self._now + delta)
+        target = max(0.0, base + delta)
 
         if src.duration:
             target = min(target, max(0.0, src.duration - 5))
@@ -1695,8 +1704,18 @@ class MpvOutput:
             if gui:
                 emit_event("seek_ack", accepted=False, target=target)
             return
-        self._pending_seek = (mpv_target, time.monotonic() + 5.0, gui)
+        pending_gui = self._pending_seek[2] if self._pending_seek is not None else False
+        self._pending_seek = (mpv_target, time.monotonic() + 5.0, gui or pending_gui)
         self._native_seek_at = None
+
+    def _seek_base(self) -> float | None:
+        """Use the latest submitted target while a seek has not settled."""
+        pending = self._pending_seek
+        if pending is not None:
+            target = self._source_time_from_mpv(pending[0])
+            if target is not None:
+                return target
+        return self._now
 
     def _settle_seek(self, pos: float | None) -> bool:
         """Confirm once per tick so controls stay responsive during remote seeks."""

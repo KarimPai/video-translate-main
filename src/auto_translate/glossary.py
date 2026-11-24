@@ -126,7 +126,11 @@ class Glossary:
     def host_line(self, name: str) -> str:
         """Profile the streamer so dropped subjects and self-references resolve."""
         profile = self.talents[name]
-        line = f"配信者：{name}（{self._english[name]}、{_PRONOUNS[profile.get('pronoun', 'she')]}）"
+        line = f"配信者：{name}（{self._english[name]}"
+        pronoun = profile.get("pronoun")
+        if pronoun in _PRONOUNS:
+            line += f"、{_PRONOUNS[pronoun]}"
+        line += "）"
         if profile.get("self"):
             line += "。自称「" + "」「".join(profile["self"]) + "」は配信者本人"
         return line

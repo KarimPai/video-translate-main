@@ -7,6 +7,7 @@ words, negate speech, hallucinate shorter paraphrases, or remove profanity.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Isolated non-verbal subtitle output is not useful in the English overlay.
 _NONVERBAL_ONLY = re.compile(
@@ -73,6 +74,9 @@ _FILLER_ONLY = re.compile(r"(?i)^(?:um+|uh+|erm+|hmm+)(?:[\s,;:.!?…]*)$")
 _LEAD_FILLER = re.compile(
     r"(?i)^(?:(?:um+|uh+|erm+|hmm+)(?:\s*[,;:.!?…]+\s*|\s+))+"
 )
+_ENGLISH_REACTION = re.compile(r"(?i)^(?:hmm+|uh+|erm+|(?:ha){2,}|lol+|lmao)[.!?…]*$")
+_THINKING_SOUND = re.compile(r"^(?:うーん+|ううーん+|うーむ+)$")
+_SPOKEN_LAUGHTER = re.compile(r"^(?:(?:あ?は){2,}|あは+|わは+|ふふ+|へへ+|ほほ+|くく+)[っー〜～]*$")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'“‘])")
 _WORD = re.compile(r"[a-z0-9]+(?:['’][a-z0-9]+)?", re.IGNORECASE)
 
@@ -280,14 +284,36 @@ def sanitize_english_output(text: str, *, allow_japanese: bool = False) -> str:
     return "" if english_output_issue(value, allow_japanese=allow_japanese) else value
 
 
+def preserved_reaction(text: str, source_ja: str) -> str | None:
+    """Keep only English thinking sounds or laughter grounded in Japanese speech."""
+    value = " ".join(text.split())
+    if not _ENGLISH_REACTION.fullmatch(value):
+        return None
+    source = unicodedata.normalize("NFKC", source_ja)
+    source = "".join(chr(ord(char) - 0x60) if "ァ" <= char <= "ヶ" else char for char in source)
+    compact = re.sub(r"[\s、。！？!?…,.]+", "", source)
+    if re.fullmatch(r"(?i)hmm+[.!?…]*|uh+[.!?…]*|erm+[.!?…]*", value):
+        if _THINKING_SOUND.fullmatch(compact):
+            return "Uh..." if value.casefold().startswith(("uh", "erm")) else "Hmm..."
+        return ""
+    if re.fullmatch(r"(?i)(?:ha){2,}[.!?…]*|lol+[.!?…]*|lmao[.!?…]*", value):
+        return "Haha." if _SPOKEN_LAUGHTER.fullmatch(compact) else ""
+    return None
+
+
 def clean_english_output(
     text: str,
     *,
     remove_fillers: bool = True,
     collapse_repetitions: bool = True,
     allow_japanese: bool = False,
+    source_ja: str = "",
 ) -> str:
     """Discard nonverbal filler and repeated *identical* sentences only."""
+    if remove_fillers and source_ja:
+        reaction = preserved_reaction(text, source_ja)
+        if reaction is not None:
+            return reaction
     value = concise_english(
         sanitize_english_output(text, allow_japanese=allow_japanese),
         remove_fillers=remove_fillers,

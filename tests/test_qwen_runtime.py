@@ -4,6 +4,7 @@ import http.server
 import queue
 import threading
 import time
+from collections import deque
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -19,8 +20,7 @@ from auto_translate.asr import qwen3_asr as qwen
 from auto_translate.config import AsrConfig, IngestConfig
 from auto_translate.ingest import Ingest, Source
 from auto_translate.pipeline import run_asr
-from auto_translate.types import Transcript, Utterance
-
+from auto_translate.types import AudioProgress, Transcript, Utterance
 
 PCM = np.zeros(16000, dtype=np.float32)
 
@@ -79,6 +79,33 @@ def test_initial_warmup_timeout_keeps_healthy_server(monkeypatch):
         assert post.call_count == 2
     finally:
         asr.close()
+
+
+def test_recognize_defers_context_memory_until_pipeline_acceptance(backend, monkeypatch):
+    monkeypatch.setattr(backend, "_transcribe_with_retries", lambda *args: "今日はいい天気です")
+
+    result = backend._recognize(
+        PCM, probe=False, deadline=time.monotonic() + 2.0,
+        generation=backend._generation,
+    )
+
+    assert result == "今日はいい天気です"
+    assert not backend._recent
+    assert not backend._accepted_keys
+
+
+def test_seek_generation_clears_accepted_asr_context(backend):
+    backend._recent = deque(maxlen=4)
+    backend.remember("前の世代の発言です")
+    assert backend._recent
+    incoming, outgoing = queue.Queue(), queue.Queue()
+    incoming.put(AudioProgress(sample=0, reset=True, generation=0))
+    incoming.put(None)
+
+    run_asr(backend, incoming, outgoing, get_generation=lambda: 0)
+
+    assert not backend._recent
+    assert not backend._accepted_keys
 
 
 @pytest.mark.parametrize("old_reply", [
@@ -728,11 +755,10 @@ def test_restart_warmup_uses_only_remaining_wall_clock_budget(backend, owned_ser
 @pytest.mark.parametrize("operation", ["start", "reset_for_restart"])
 def test_lifecycle_lock_contention_cannot_outlast_utterance(owned_server, operation):
     server, spawned = owned_server
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        with server._lock:
-            result = pool.submit(getattr(server, operation), deadline=time.monotonic() + 0.1)
-            with pytest.raises(ls.LlamaServerError, match="deadline"):
-                result.result(timeout=0.75)
+    with ThreadPoolExecutor(max_workers=1) as pool, server._lock:
+        result = pool.submit(getattr(server, operation), deadline=time.monotonic() + 0.1)
+        with pytest.raises(ls.LlamaServerError, match="deadline"):
+            result.result(timeout=0.75)
     assert not spawned
 
 

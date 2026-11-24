@@ -181,6 +181,7 @@ class HaasASR:
     def forget(self) -> None:
         with self._state_lock:
             self._recent.clear()
+            self._accepted_keys.clear()
             self._recent_engine_interjections.clear()
 
     def reject_utterance(self, text: str, utt) -> str | None:
@@ -317,14 +318,17 @@ class HaasASR:
         return text
 
     def _failed(self, exc: Exception) -> str:
-        self._failures += 1
         self.last_rejection = "error"
-        log.warning("ASR request failed (%d consecutive): %s", self._failures, exc)
+        log.warning("ASR request failed: %s", exc)
         if not self.server.alive():
             self._restart(str(exc))
-        elif self._failures >= 3:
-            raise HaasError(f"Haas-ja-v1.0 failed three consecutive utterances: {exc}") from exc
         return ""
+
+    def note_utterance_failure(self) -> None:
+        """Count one exhausted utterance, not each request retry for it."""
+        self._failures += 1
+        if self._failures >= 3:
+            raise HaasError("Haas-ja-v1.0 failed three consecutive utterances")
 
     def _note_stable_decode(self) -> None:
         """Forgive old restarts once the server has decoded cleanly for a while.
@@ -349,6 +353,13 @@ class HaasASR:
         update_metrics(workers={"asr": "restarting"})
         self.server.start()
         update_metrics(workers={"asr": "ready (Haas-ja-v1.0)"})
+
+    def recover_stalled(self) -> bool:
+        """Restart the owned server after the watchdog confirms a live stall."""
+        with self._state_lock:
+            self._generation += 1
+        self._restart("watchdog detected stalled inference")
+        return True
 
     def close(self) -> None:
         self._closed = True

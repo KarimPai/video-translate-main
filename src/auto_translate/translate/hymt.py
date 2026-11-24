@@ -32,7 +32,13 @@ from ..runtime_diagnostics import increment_counter, record_event, update_metric
 from ..stream_context import StreamContext
 from ..subtitle_clean import english_output_issue, unmatched_double_quote_cleanup
 from ..windows_subprocess import check_running
-from .base import TranslatorUnavailable
+from .base import (
+    TranslatorUnavailable,
+    absolute_translation_deadline,
+    remaining_translation_timeout,
+    start_translation_server,
+    with_translation_deadline,
+)
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +85,7 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     for ja, en in reversed(recent[-lines:] if lines else []):
         line = f"{ja}（英訳：{en}）" if english and en else ja
         if used + len(line) + bool(used) > max_chars:
-            continue
+            break
         sources.insert(0, line)
         used += len(line) + bool(used)
     if header and sources:
@@ -262,7 +268,7 @@ class HymtTranslator:
             raise LlamaServerError("Hy-MT2 translator is closed")
         self.server.args = self._args()
         try:
-            self.server.start()
+            start_translation_server(self.server)
             # Reserve dialogue-sized prefill workspace before measuring GPU headroom.
             chars = min(self.cfg.max_context_chars, self.cfg.context_size // 2)
             context = ("これは以前の会話です。" * (chars // 11 + 1))[:chars]
@@ -285,17 +291,31 @@ class HymtTranslator:
     def reload(self, gpu_layers: int, reason: str) -> None:
         """Reload with different GPU layers. Uses separate lock to prevent deadlock."""
         with self._reload_lock:
+            previous_layers = self.gpu_layers
             self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
             log.warning("Reloading Hy-MT2 at %d GPU layers (%s)", self.gpu_layers, reason)
             record_event("mt_reload", gpu_layers=self.gpu_layers, reason=reason)
             update_metrics(workers={"mt": "reloading"})
             self._start()
+            if reason == "GPU headroom low":
+                record_event("gpu_headroom_relief_completed", previous_gpu_layers=previous_layers,
+                             gpu_layers=self.gpu_layers)
 
     def request_gpu_relief(self) -> bool:
         """Ask for fewer GPU layers; applied between cues by the translation thread."""
         if self._closed or self.gpu_layers == 0:
             return False
         self._relief.set()
+        return True
+
+    def recover_stalled(self) -> bool:
+        """Boundedly restart only this translator's server, preserving its GPU setup."""
+        with self._reload_lock:
+            if self._closed:
+                return False
+            self.server.reset_for_restart(deadline=time.monotonic() + self.cfg.load_timeout_s)
+            with absolute_translation_deadline(self.cfg.load_timeout_s):
+                self._start()
         return True
 
     def _chat(self, prompt: str, *, timeout: float, temperature: float | None = None,
@@ -316,7 +336,8 @@ class HymtTranslator:
         if self._closed:
             return "", ""
         started = time.monotonic()
-        payload = self.server.chat(body, timeout=timeout)
+        payload = self.server.chat(body, timeout=remaining_translation_timeout(timeout))
+        remaining_translation_timeout(float("inf"))
         check_running()
         request_time = time.monotonic() - started
         choice = payload["choices"][0]
@@ -411,6 +432,7 @@ class HymtTranslator:
     _MAX_RETRIES = 3
     _MAX_TRUNCATION_RETRIES = 1
 
+    @with_translation_deadline
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         # BUG FIX: Check relief and reload OUTSIDE the inference lock to prevent deadlock
         if self._relief.is_set():

@@ -9,41 +9,68 @@ from collections import defaultdict
 from dataclasses import replace
 from math import floor
 from threading import RLock
+from unicodedata import normalize
 
 from .subtitle_clean import sanitize_english_output
 from .types import Subtitle
+
+
+def same_source_cue(first: Subtitle, second: Subtitle, tolerance_s: float = 0.5) -> bool:
+    first_ja = "".join(normalize("NFKC", first.ja).split())
+    second_ja = "".join(normalize("NFKC", second.ja).split())
+    return (
+        bool(first_ja)
+        and first_ja == second_ja
+        and abs(first.start_s - second.start_s) <= tolerance_s
+        and abs(first.end_s - second.end_s) <= tolerance_s
+    )
 
 
 class SessionSubtitleCache:
     """Thread-safe, unbounded (text-only) cache for one currently loaded video."""
 
     MATCH_TOLERANCE_S = 0.15
+    REPLACEMENT_TOLERANCE_S = 0.5
 
     def __init__(self) -> None:
         self._lock = RLock()
-        self._entries: dict[tuple[int, int], Subtitle] = {}
+        self._entries: dict[int, Subtitle] = {}
         self._by_start: dict[int, list[Subtitle]] = defaultdict(list)
         self._by_second: dict[int, list[Subtitle]] = defaultdict(list)
         self._processed_ranges: list[tuple[float, float]] = []
 
     def add(self, sub: Subtitle) -> bool:
-        """Save one translated cue, keeping the first result for a timestamp."""
+        """Store one result per source cue, replacing retranslated corrections."""
         cleaned = sanitize_english_output(sub.en)
         if not cleaned:
             return False
         sub = replace(sub, en=cleaned)
         if sub.end_s <= sub.start_s:
             return False
-        key = (round(sub.start_s * 100), round(sub.end_s * 100))
         with self._lock:
-            if key in self._entries:
+            candidates = []
+            tolerance = self.REPLACEMENT_TOLERANCE_S
+            for second in range(floor(sub.start_s - tolerance), floor(sub.start_s + tolerance) + 1):
+                candidates.extend(self._by_start.get(second, ()))
+            replacements = [old for old in candidates if same_source_cue(old, sub, tolerance)]
+            if any(old.en == sub.en for old in replacements):
                 return False
-            self._entries[key] = sub
+            for old in replacements:
+                self._remove(old)
+            self._entries[id(sub)] = sub
             self._by_start[floor(sub.start_s)].append(sub)
             onset = sub.speech_start_s if sub.speech_start_s is not None else sub.start_s
             for second in range(floor(onset), floor(sub.end_s) + 1):
                 self._by_second[second].append(sub)
             return True
+
+    def _remove(self, sub: Subtitle) -> None:
+        self._entries.pop(id(sub), None)
+        start = floor(sub.start_s)
+        self._by_start[start] = [item for item in self._by_start[start] if item is not sub]
+        onset = sub.speech_start_s if sub.speech_start_s is not None else sub.start_s
+        for second in range(floor(onset), floor(sub.end_s) + 1):
+            self._by_second[second] = [item for item in self._by_second[second] if item is not sub]
 
     def match(self, start_s: float, end_s: float) -> Subtitle | None:
         """Find a previously processed utterance with matching timestamps.

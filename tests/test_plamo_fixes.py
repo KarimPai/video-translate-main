@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 from unittest import mock
 
+import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -142,7 +143,7 @@ class TestRetryDetection:
         translator._relief.is_set.return_value = False
         translator._lock = threading.Lock()
         translator._MAX_RETRIES = 3
-        translator._MAX_TRUNCATION_RETRIES = 1
+        translator._MAX_TRUNCATION_RETRIES = 2
         translator._MAX_ELAPSED_S = 30.0
         translator._is_invalid = PlamoTranslator._is_invalid
         translator._normalize = PlamoTranslator._normalize
@@ -193,6 +194,21 @@ class TestRetryDetection:
         from auto_translate.translate.plamo import PlamoTranslator
         PlamoTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
         assert call_index[0] == 2
+
+    def test_server_recovery_rejects_truncated_grammatical_translation(self):
+        from auto_translate.translate.plamo import PlamoTranslator
+
+        translator, _ = self._make_translator([])
+        translator.server.alive.return_value = False
+        translator._recover = mock.Mock()
+        translator._chat = mock.Mock(side_effect=[
+            httpx.ConnectError("server disconnected"),
+            ("The door is open.", "length"),
+        ])
+
+        result = PlamoTranslator.translate.__get__(translator, type(translator))("ドアが開いている", [])
+
+        assert result == ""
 
     def test_two_identical_truncated_then_higher_tokens(self):
         """Two identical truncated responses from different prompts should try higher tokens.
@@ -1292,7 +1308,7 @@ class TestPlamoTokenBudgeting:
         translator._relief.is_set.return_value = False
         translator._lock = threading.Lock()
         translator._MAX_RETRIES = 3
-        translator._MAX_TRUNCATION_RETRIES = 1
+        translator._MAX_TRUNCATION_RETRIES = 2
         translator._MAX_ELAPSED_S = 30.0
         translator._is_invalid = PlamoTranslator._is_invalid
         translator._normalize = PlamoTranslator._normalize
@@ -1983,8 +1999,9 @@ class TestBackendSwitching:
         assert entry is not None
         assert entry.capabilities.runtime == "faster_whisper"
 
-    def test_qwen3_asr_factory_requires_model_path(self):
+    def test_qwen3_asr_factory_requires_model_path(self, monkeypatch):
         """Qwen3-ASR factory must raise if model_path is missing."""
+        monkeypatch.setattr("auto_translate.registry._find_qwen3_asr_model", lambda: "")
         from auto_translate.registry import get_default_registry
         registry = get_default_registry()
         with pytest.raises(ValueError, match="Qwen3-ASR"):

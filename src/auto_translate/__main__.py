@@ -277,7 +277,9 @@ def _main(resources: ExitStack) -> None:
     if cfg.models.asr_backend == "haas":
         from .config import vad_for_haas_game_audio
         original_threshold = vad_cfg.threshold
-        vad_cfg = vad_for_haas_game_audio(vad_cfg)
+        vad_cfg = vad_for_haas_game_audio(
+            vad_cfg, explicit_threshold="threshold" in cfg.vad_explicit_keys,
+        )
         log.info(
             "Haas game-audio guard: VAD threshold %.2f -> %.2f; "
             "VAD-negative probing disabled; short Japanese replies preserved",
@@ -320,8 +322,8 @@ def _main(resources: ExitStack) -> None:
     # Create ASR backend via registry with backend-specific profile first,
     # then derive timeout from the effective merged profile.
     from .config import get_backend_config, resolve_model_identity
-    from .registry import get_default_registry
     from .llama_server import LlamaServerError
+    from .registry import get_default_registry
     registry = get_default_registry()
     asr_backend_name = cfg.models.asr_backend
     asr_profile = get_backend_config(cfg, "asr", asr_backend_name,
@@ -472,9 +474,9 @@ def _main(resources: ExitStack) -> None:
 
     def relieve_pressure():
         request = getattr(translator, "request_gpu_relief", None)
-        if callable(request):
-            request()
-        record_event("gpu_headroom_relief_requested", gpu=budget.snapshot())
+        accepted = bool(callable(request) and request())
+        record_event("gpu_headroom_relief_requested", accepted=accepted, gpu=budget.snapshot())
+        return accepted
 
     budget.refresh()
     if budget.pressure_level in ("low", "critical"):

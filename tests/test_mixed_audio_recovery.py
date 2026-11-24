@@ -200,3 +200,43 @@ def test_qwen_seek_during_second_pass_discards_japanese_recovery():
         asr, get_generation=lambda: current_generation[0],
     )
     assert not [tr for tr in transcripts if tr.language == "ja"]
+
+
+def test_qwen_deadline_keeps_validated_partial_japanese_recovery(monkeypatch):
+    import threading
+
+    from auto_translate.asr import qwen3_asr as qwen
+    from auto_translate.config import AsrConfig
+
+    model = object.__new__(qwen.Qwen3ASR)
+    model.cfg = AsrConfig(response_timeout_s=12.0)
+    model._generation = 0
+    model._closed = False
+    model._state_lock = threading.Lock()
+    model._inference_lock = threading.Lock()
+    model._cancel_event = threading.Event()
+    model.last_detected_language = "en"
+    model.last_raw_transcript = "Get in the car, quick!"
+    checks = 0
+
+    def remaining(_deadline, _generation):
+        nonlocal checks
+        checks += 1
+        if checks == 4:
+            raise qwen._UtteranceDeadline("window recovery exhausted its deadline")
+        return 10.0
+
+    def decode(_audio, **_kwargs):
+        model.last_detected_language = "ja"
+        return "危ない、逃げて！"
+
+    monkeypatch.setattr(model, "_remaining", remaining)
+    monkeypatch.setattr(model, "_decode", decode)
+
+    recovered = model.recover_japanese_from_mixed_audio(
+        np.zeros(6 * 16000, dtype=np.float32),
+    )
+
+    assert recovered == [(0.0, 2.25, "危ない、逃げて！")]
+    assert model.last_detected_language == "en"
+    assert model.last_raw_transcript == "Get in the car, quick!"

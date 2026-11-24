@@ -343,9 +343,6 @@ class Qwen3ASR:
             self.last_rejection = reason
             key = speech_key(text)
             if not reason:
-                if key:
-                    self._accepted_keys.append(key)
-                self._recent.append(text)
                 return text
             if reason in ("context_echo", "repeated_output") and key and key not in self._accepted_keys:
                 self._accepted_keys.append(key)
@@ -417,7 +414,6 @@ class Qwen3ASR:
     def _transcribe_with_retries(
         self, audio: np.ndarray, probe: bool, deadline: float, generation: int,
     ) -> str:
-        last_error: httpx.HTTPError
         for attempt in range(4):
             try:
                 return self._decode_with_recovery(audio, probe, deadline, generation)
@@ -428,7 +424,6 @@ class Qwen3ASR:
                              or (status is not None and 500 <= status < 600))
                 if not transient:
                     raise Qwen3ASRError(f"Qwen3-ASR permanent HTTP failure: {exc}") from exc
-                last_error = exc
                 log.warning("Qwen3-ASR transient HTTP failure (attempt %d/4): %s", attempt + 1, exc)
             if attempt < 3:
                 try:
@@ -462,7 +457,9 @@ class Qwen3ASR:
             raise
         except Exception as exc:
             self._remaining(deadline, generation)
-            raise Qwen3ASRError(f"Qwen3-ASR restart failed: {exc}") from exc
+            raise Qwen3ASRError(
+                f"Qwen3-ASR transcription failed after retries; restart failed: {exc}"
+            ) from exc
         if self._remaining(deadline, generation) <= 0.05:
             raise _UtteranceDeadline(
                 "Insufficient utterance budget for a decode after restart",
@@ -532,7 +529,7 @@ class Qwen3ASR:
             raise
         except _UtteranceDeadline:
             raise
-        except Exception as exc:
+        except (RuntimeError, httpx.HTTPError, ValueError) as exc:
             log.warning("Qwen3-ASR quality recovery unavailable: %s", exc)
             candidate = None
         with self._state_lock:
@@ -625,7 +622,10 @@ class Qwen3ASR:
                 original_raw = self.last_raw_transcript
                 try:
                     for i in range(num_windows):
-                        if self._remaining(deadline, generation) <= 0.15:
+                        try:
+                            if self._remaining(deadline, generation) <= 0.15:
+                                break
+                        except _UtteranceDeadline:
                             break
                         start_s = max(0.0, i * step - (0.25 if i else 0.0))
                         end_s = min(duration, (i + 1) * step + (0.25 if i < num_windows - 1 else 0.0))
@@ -639,7 +639,7 @@ class Qwen3ASR:
                                 language="auto",
                             )
                         except _UtteranceDeadline:
-                            raise
+                            break
                         except (httpx.HTTPError, Qwen3ASRError, ValueError) as exc:
                             log.debug("Qwen mixed-language window recovery unavailable: %s", exc)
                             break
@@ -656,7 +656,8 @@ class Qwen3ASR:
                         ):
                             continue
                         found.append((start_s, end_s, candidate))
-                    self._remaining(deadline, generation)
+                    if self._cancelled(generation):
+                        raise CancelledError("Qwen3-ASR recovery became stale")
                 finally:
                     # Supplemental decode must not overwrite primary cue metadata.
                     self.last_detected_language = original_language
@@ -708,10 +709,16 @@ class Qwen3ASR:
         with self._state_lock:
             if n is None:
                 self._recent.clear()
+                accepted_keys = getattr(self, "_accepted_keys", None)
+                if accepted_keys is not None:
+                    accepted_keys.clear()
             else:
                 for _ in range(n):
                     if self._recent:
                         self._recent.pop()
+                    accepted_keys = getattr(self, "_accepted_keys", None)
+                    if accepted_keys:
+                        accepted_keys.pop()
 
     def set_vocabulary_hint(self, words: str) -> None:
         """Set a bounded *experimental* ASR vocabulary, or clear with ''.
@@ -823,7 +830,7 @@ class Qwen3ASR:
         # Forced Japanese continues from the model's own language header.
         # Probes and the mixed-audio recovery pass stay automatic because
         # their purpose is to discover the language.
-        mode = getattr(self.cfg, "language", "auto") if language is None else language
+        mode = getattr(getattr(self, "cfg", None), "language", "auto") if language is None else language
         forced_prefix = "" if probe else _FORCED_LANGUAGE_PREFIX.get(mode, "")
         if forced_prefix:
             messages.append({"role": "assistant", "content": forced_prefix})
@@ -964,3 +971,25 @@ class Qwen3ASR:
                 self._restart_timestamps.pop()
             self._restarts = len(self._restart_timestamps)
             raise
+
+    def recover_stalled(self) -> bool:
+        """Restart the owned server without invalidating the current session generation."""
+        now = time.monotonic()
+        while self._restart_timestamps and self._restart_timestamps[0] < now - 300:
+            self._restart_timestamps.popleft()
+        if len(self._restart_timestamps) >= 2:
+            raise Qwen3ASRError("Qwen3-ASR watchdog restart limit reached within five minutes")
+        self._restart_timestamps.append(now)
+        self._restarts = len(self._restart_timestamps)
+        deadline = now + self.cfg.startup_timeout_s
+
+        def check():
+            if self._closed:
+                raise CancelledError("Qwen3-ASR is closing")
+            check_running()
+
+        self.server.reset_for_restart(deadline=deadline, check=check)
+        check()
+        self.server.start(deadline=deadline, check=check)
+        check()
+        return True

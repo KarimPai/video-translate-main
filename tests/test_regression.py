@@ -8,6 +8,7 @@ implementation and PASS after the correction.
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -189,6 +190,7 @@ def _make_qwen3(cfg=None):
     from collections import deque
     inst._recent = deque(maxlen=4)
     inst._accepted_keys = deque(maxlen=32)
+    inst._restart_timestamps = deque()
     inst.last_rejection = None
     inst.last_raw_transcript = ""
     return inst
@@ -261,6 +263,7 @@ def test_qwen3_asr_all_failures_no_recovery():
     """When every request fails and restart also fails, a terminal error is raised."""
     inst = _make_qwen3()
     inst._restarts = 2  # already at restart limit
+    inst._restart_timestamps.extend([time.monotonic(), time.monotonic()])
 
     def fake_impl(audio, probe=False, no_context=False, timeout=None, **kwargs):
         raise httpx.TimeoutException("always failing")
@@ -1484,13 +1487,14 @@ def test_backend_startup_receives_correct_model_identity():
 # They would have caught the AsrConfig.model_path.default AttributeError.
 # ---------------------------------------------------------------------------
 
-def test_registry_factory_plamo_raises_on_empty_model():
+def test_registry_factory_plamo_raises_on_empty_model(monkeypatch):
     """PLaMo factory must raise ValueError when no model is configured."""
     from auto_translate.config import Config, get_backend_config
     from auto_translate.registry import get_default_registry
 
     cfg = Config()
     cfg.translate.model_path = "C:/models/gemma4/model.gguf"
+    monkeypatch.setattr("auto_translate.registry.resolve_local_plamo_model_path", lambda *_args: "")
     merged = get_backend_config(cfg, "translate", "plamo")
     assert merged.get("model_path", "") == "", \
         "PLaMo should not inherit Gemma4's model_path"
@@ -3201,6 +3205,18 @@ def test_join_fragments_never_merges_english_and_japanese():
     assert len(items) == 2
     assert items[0].language == "en"
     assert items[1].ja == "行こう"
+
+
+def test_join_fragments_keeps_short_japanese_reply_separate():
+    from auto_translate.pipeline import _join_fragments
+    from auto_translate.types import SourceEOF
+
+    first = Transcript(0.0, 1.0, "別の話ですが", generation=0)
+    reply = Transcript(1.1, 1.7, "はい、そうです", generation=0)
+    emitted = list(_join_fragments([first, reply, SourceEOF(0)], 0.6, 16.0))
+    items = [item for item in emitted if isinstance(item, Transcript)]
+
+    assert [item.ja for item in items] == ["別の話ですが", "はい、そうです"]
 
 
 # ---------------------------------------------------------------------------

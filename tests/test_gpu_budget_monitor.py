@@ -35,3 +35,32 @@ def test_monitor_survives_refresh_exception(monkeypatch):
     finally:
         budget.close()
     assert budget.thread is not None and not budget.thread.is_alive()
+
+
+def test_critical_pressure_relaxes_to_low_before_normal():
+    budget = gb.GpuBudget.__new__(gb.GpuBudget)
+    budget.cfg = SimpleNamespace(emergency_free_gb=0.25, low_free_gb=0.8)
+    budget._last_pressure = "critical"
+    budget.free = 0.5
+
+    assert budget.pressure_level == "low"
+
+
+def test_rejected_relief_is_not_counted_as_a_request(monkeypatch):
+    monkeypatch.setattr(gb, "gpu_memory_gb", lambda: (7.5, 8.0))
+    cfg = SimpleNamespace(sample_interval_s=0.01, emergency_free_gb=0.3,
+                          low_free_gb=0.8, startup_headroom_gb=0.2)
+    budget = gb.GpuBudget(cfg)
+    attempted = threading.Event()
+
+    def reject_relief():
+        attempted.set()
+        return False
+
+    budget.start(reject_relief)
+    try:
+        assert attempted.wait(2.0)
+    finally:
+        budget.close()
+
+    assert budget._last_low_relief_time == 0.0

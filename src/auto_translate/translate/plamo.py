@@ -39,7 +39,13 @@ from ..subtitle_clean import (
     unmatched_double_quote_cleanup,
 )
 from ..windows_subprocess import check_running
-from .base import TranslatorUnavailable
+from .base import (
+    TranslatorUnavailable,
+    absolute_translation_deadline,
+    remaining_translation_timeout,
+    start_translation_server,
+    with_translation_deadline,
+)
 
 log = logging.getLogger(__name__)
 
@@ -286,7 +292,7 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     for ja, en in reversed(recent[-lines:] if lines else []):
         line = f"{ja}（英訳：{en}）" if english and en else ja
         if used + len(line) + bool(used) > max_chars:
-            continue
+            break
         sources.insert(0, line)
         used += len(line) + bool(used)
     if header and sources:
@@ -415,7 +421,7 @@ class PlamoTranslator:
             raise LlamaServerError("PLaMo 3 Translate translator is closed")
         self.server.args = self._args()
         try:
-            self.server.start()
+            start_translation_server(self.server)
             # Warmup with a simple translation
             prompt = build_plamo_prompt("こんにちは。今日はみんなでゲームをします。よろしくお願いします。", [], "")
             self._chat(prompt, timeout=self.cfg.load_timeout_s)
@@ -433,17 +439,31 @@ class PlamoTranslator:
     def reload(self, gpu_layers: int, reason: str) -> None:
         """Reload with different GPU layers. Uses separate lock to prevent deadlock."""
         with self._reload_lock:
+            previous_layers = self.gpu_layers
             self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
             log.warning("Reloading PLaMo 3 Translate at %d GPU layers (%s)", self.gpu_layers, reason)
             record_event("mt_reload", gpu_layers=self.gpu_layers, reason=reason)
             update_metrics(workers={"mt": "reloading"})
             self._start()
+            if reason == "GPU headroom low":
+                record_event("gpu_headroom_relief_completed", previous_gpu_layers=previous_layers,
+                             gpu_layers=self.gpu_layers)
 
     def request_gpu_relief(self) -> bool:
         """Ask for fewer GPU layers; applied between cues by the translation thread."""
         if self._closed or self.gpu_layers == 0:
             return False
         self._relief.set()
+        return True
+
+    def recover_stalled(self) -> bool:
+        """Boundedly restart only this translator's server, preserving its GPU setup."""
+        with self._reload_lock:
+            if self._closed:
+                return False
+            self.server.reset_for_restart(deadline=time.monotonic() + self.cfg.load_timeout_s)
+            with absolute_translation_deadline(self.cfg.load_timeout_s):
+                self._start()
         return True
 
     def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None,
@@ -466,7 +486,8 @@ class PlamoTranslator:
             return "", ""
 
         started = time.monotonic()
-        payload = self.server.chat(body, timeout=timeout)
+        payload = self.server.chat(body, timeout=remaining_translation_timeout(timeout))
+        remaining_translation_timeout(float("inf"))
         check_running()
         request_time = time.monotonic() - started
 
@@ -585,7 +606,7 @@ class PlamoTranslator:
         return build_plamo_prompt(ja, terms, context)
 
     _MAX_RETRIES = 3
-    _MAX_TRUNCATION_RETRIES = 1
+    _MAX_TRUNCATION_RETRIES = 2
     _MAX_ELAPSED_S = 30.0
 
     @staticmethod
@@ -598,6 +619,7 @@ class PlamoTranslator:
         """Normalize output for deterministic comparison."""
         return " ".join(output.split())
 
+    @with_translation_deadline
     def translate(self, ja: str, history: list[tuple[str, str]]) -> str:
         # Check relief and reload OUTSIDE the inference lock to prevent deadlock
         if self._relief.is_set():
@@ -764,7 +786,12 @@ class PlamoTranslator:
                         increment_counter("mt_retries")
                     # Recovery must preserve the original context-budget decision.
                     recovery_prompt = simplified_prompt if skip_full_prompt else prompt
-                    english, _ = self._chat(recovery_prompt, timeout=self.cfg.timeout_s)
+                    english, finish_reason = self._chat(recovery_prompt, timeout=self.cfg.timeout_s)
+                    if finish_reason == "length":
+                        record_event("mt_truncation_failed", strategy="recovery",
+                                     max_tokens=self.cfg.max_tokens)
+                        increment_counter("mt_rejected")
+                        return ""
                     _record(english, "recovery")
                     english = clean_output(english)
 

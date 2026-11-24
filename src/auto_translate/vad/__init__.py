@@ -308,7 +308,6 @@ class Segmenter:
             )
 
     def _step(self, frame: np.ndarray, prob: float) -> None:
-        cfg = self.cfg
         # The upstream postprocessor's smoothed flags are not used by this
         # project: smooth raw probabilities here before deciding on utterances.
         self._prob_history.append(prob)
@@ -496,6 +495,8 @@ def run_segmenter(
     out_q: "queue.Queue[Utterance | AudioProgress | SourceEOF | None]",
     get_generation: Callable[[], int] | None = None,
     stop: threading.Event | None = None,
+    *,
+    gate=None,
 ) -> None:
     """Thread body."""
     awaiting_first_utterance = False

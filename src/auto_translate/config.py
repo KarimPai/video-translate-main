@@ -192,6 +192,8 @@ class TranslateConfig:
     context_max_gap_s: float = 15.0
     context_english: bool = False
     style: str = "Plain and concise"
+    # Resolved to True by default for both PLaMo backend profiles.
+    plamo_context_only: bool = False
     merge_fragments: bool = True
     merge_max_gap_s: float = 0.6
     merge_max_s: float = 16.0
@@ -244,7 +246,7 @@ class TranslateConfig:
                 or not math.isfinite(self.context_max_gap_s) or self.context_max_gap_s <= 0):
             raise ValueError("translate.context_max_gap_s must be finite and positive")
         for name in ("context_english", "merge_fragments", "suppress_empty_translation",
-                      "suppress_japanese_in_english"):
+                      "suppress_japanese_in_english", "plamo_context_only"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"translate.{name} must be boolean")
         if (type(self.merge_max_gap_s) not in (int, float) or not 0 <= self.merge_max_gap_s <= 3
@@ -665,6 +667,12 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
             # Not the default backend — remove incompatible identity from common
             merged.pop(field_name, None)
 
+    # Both PLaMo backends use native translation with context as the only
+    # optional prompt guidance unless a backend profile opts into legacy tuning.
+    is_plamo = backend_type == "translate" and backend_name in {"plamo", "plamo8b"}
+    if is_plamo:
+        merged["plamo_context_only"] = True
+
     # Layer 2: backend-specific profile overrides common
     merged.update(profile)
     # Layer 3: explicit GUI/CLI overrides (highest priority)
@@ -681,6 +689,11 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
                 and "mmproj_path" not in scoped_overrides):
             merged.pop("mmproj_path", None)
         merged.update(scoped_overrides)
+    if is_plamo and merged.get("plamo_context_only") is True:
+        # Greedy decoding, without sampling filters or repetition penalties.
+        # Keep context, model paths, resource limits and timeouts untouched.
+        merged.update(temperature=0.0, top_k=0, top_p=1.0, repeat_penalty=1.0,
+                      style="", remove_fillers=False, collapse_repetitions=False)
     return merged
 
 

@@ -47,6 +47,8 @@ Before launching:
 
 The example defaults under `[models]` are `haas` ASR and `gemma4` translation; the built-in VAD default is `silero`. Back up your existing local `config.toml` before pulling the change that stops tracking it. Backend-specific overrides live under sections such as `[asr.qwen3-asr]`, `[asr.whisper]`, `[translate.plamo]`, and `[translate.plamo8b]`.
 
+Both PLaMo profiles default to `plamo_context_only = true`: native greedy decoding (temperature 0, no repetition penalty), existing stream/dialogue context, no glossary terms or name-correction retries, and no optional filler/repetition rewriting. Output validation, token budgets, recovery and playback safeguards remain active. Set `plamo_context_only = false` in an individual PLaMo profile to restore the legacy tuned behavior.
+
 ## Run
 
 **GUI:**

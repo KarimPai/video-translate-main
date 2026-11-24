@@ -181,48 +181,51 @@ class GpuBudget:
     def start(self, release):
         def monitor():
             while not self.stop.is_set():
-                self.refresh()
-                level = self.pressure_level
-                from .runtime_diagnostics import record_event, update_metrics
-                update_metrics(gpu=self.snapshot())
-                log.info("GPU 0 used=%s GB total=%s GB free=%s GB; pressure=%s (no hard software cap)",
-                         None if self.used is None else round(self.used, 3),
-                         None if self.total is None else round(self.total, 3),
-                         None if self.free is None else round(self.free, 3), level)
-                if level in ("low", "critical"):
-                    now = time.monotonic()
-                    cooldown = (
-                        self.CRITICAL_RELIEF_COOLDOWN_S
-                        if level == "critical"
-                        else self.LOW_RELIEF_COOLDOWN_S
-                    )
-                    # Use separate cooldown timers per pressure level
-                    last_relief = (
-                        self._last_critical_relief_time
-                        if level == "critical"
-                        else self._last_low_relief_time
-                    )
-                    within_cooldown = now - last_relief < cooldown
-                    # Request relief when cooldown expires and pressure persists,
-                    # regardless of whether the level changed. Allow immediate
-                    # escalation from low to critical.
-                    escalated = level != self._last_pressure
-                    if escalated and level == "critical":
-                        # Immediate escalation: bypass cooldown
-                        within_cooldown = False
-                    if not within_cooldown:
-                        log.warning("GPU free-memory pressure=%s; requesting model unload", level)
-                        record_event("gpu_memory_pressure", **self.snapshot())
-                        try:
-                            release()
-                            if level == "critical":
-                                self._last_critical_relief_time = now
-                            else:
-                                self._last_low_relief_time = now
-                        except Exception:
-                            # Optional-model cleanup must not kill the sampler.
-                            log.exception("GPU pressure resource release failed")
-                self._last_pressure = level
+                try:
+                    self.refresh()
+                    level = self.pressure_level
+                    from .runtime_diagnostics import record_event, update_metrics
+                    update_metrics(gpu=self.snapshot())
+                    log.info("GPU 0 used=%s GB total=%s GB free=%s GB; pressure=%s (no hard software cap)",
+                             None if self.used is None else round(self.used, 3),
+                             None if self.total is None else round(self.total, 3),
+                             None if self.free is None else round(self.free, 3), level)
+                    if level in ("low", "critical"):
+                        now = time.monotonic()
+                        cooldown = (
+                            self.CRITICAL_RELIEF_COOLDOWN_S
+                            if level == "critical"
+                            else self.LOW_RELIEF_COOLDOWN_S
+                        )
+                        # Use separate cooldown timers per pressure level
+                        last_relief = (
+                            self._last_critical_relief_time
+                            if level == "critical"
+                            else self._last_low_relief_time
+                        )
+                        within_cooldown = now - last_relief < cooldown
+                        # Request relief when cooldown expires and pressure persists,
+                        # regardless of whether the level changed. Allow immediate
+                        # escalation from low to critical.
+                        escalated = level != self._last_pressure
+                        if escalated and level == "critical":
+                            # Immediate escalation: bypass cooldown
+                            within_cooldown = False
+                        if not within_cooldown:
+                            log.warning("GPU free-memory pressure=%s; requesting model unload", level)
+                            record_event("gpu_memory_pressure", **self.snapshot())
+                            try:
+                                release()
+                                if level == "critical":
+                                    self._last_critical_relief_time = now
+                                else:
+                                    self._last_low_relief_time = now
+                            except Exception:
+                                # Optional-model cleanup must not kill the sampler.
+                                log.exception("GPU pressure resource release failed")
+                    self._last_pressure = level
+                except Exception:
+                    log.exception("GPU budget monitor iteration failed")
                 self.stop.wait(self.cfg.sample_interval_s)
 
         self.thread = threading.Thread(target=monitor, daemon=True, name="gpu-budget")

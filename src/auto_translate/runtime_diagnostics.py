@@ -40,7 +40,18 @@ _SECRETS = re.compile(
 )
 
 
+_URL = re.compile(r"""(?i)\b(https?)://(?:[^/\s'"><]*@)?([\w.\-:\[\]]+)[^\s'"><]*""")
+_SIGNED_PARAMETER = re.compile(
+    r"(?i)(\b(?:sig|signature|lsig|x-goog-signature|x-amz-signature|access_token|"
+    r"refresh_token|key-pair-id|policy)(?:=|/))[^&/\s'\"<>]+"
+)
+
+
 def _redact(text: str) -> str:
+    # Retain the protocol and host for network diagnosis. Media providers can
+    # put credentials in arbitrary path segments as well as query parameters.
+    text = _URL.sub(r"\1://\2/[redacted]", text)
+    text = _SIGNED_PARAMETER.sub(r"\1[redacted]", text)
     text = _SECRETS.sub(r"\1[redacted]", text)
     text = re.sub(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"]+", r"\1[user]", text)
     return re.sub(r"(/(?:home|Users)/)[^/\s\"]+", r"\1[user]", text)
@@ -393,7 +404,14 @@ def export_diagnostics(destination: Path, log_dir: Path = Path("logs"), *,
                     break
                 try:
                     with path.open("rb") as stream:
-                        stream.seek(max(0, path.stat().st_size - allowance))
+                        offset = max(0, path.stat().st_size - allowance)
+                        if offset:
+                            stream.seek(offset - 1)
+                            if stream.read(1) != b"\n":
+                                # A partial first line could start inside a sensitive locator.
+                                stream.readline(allowance)
+                        else:
+                            stream.seek(0)
                         content = _redact(stream.read(allowance).decode("utf-8", errors="replace"))
                 except OSError:
                     continue

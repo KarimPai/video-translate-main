@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from auto_translate.config import load_config, resolve_model_identity
+from auto_translate.config import get_backend_config, load_config, resolve_model_identity
 from auto_translate.gui_control import GUI_SHUTDOWN_MS, parse_event
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS,
@@ -367,7 +367,8 @@ class VideoTranslateWindow(QMainWindow):
         settings.addRow("Translation model path", self.mt_model)
         self.context_lines = QSpinBox()
         self.context_lines.setRange(0, 20)
-        self.context_lines.setValue(6)
+        self._profile_context_lines = 6
+        self.context_lines.setValue(self._profile_context_lines)
         self.context_lines.setSuffix(" lines")
         self.context_lines.setToolTip(
             "Previous Japanese dialogue lines, without earlier English translations. "
@@ -484,7 +485,7 @@ class VideoTranslateWindow(QMainWindow):
             mt_identity = resolve_model_identity(cfg, "translate", mt_backend_name)
             self.asr_model.setText(asr_identity.get("model_path", ""))
             self.mt_model.setText(mt_identity.get("model_path", ""))
-            self.context_lines.setValue(cfg.translate.context_lines)
+            self._set_context_profile(cfg, mt_backend_name)
             self.diagnostics_checkbox.setChecked(cfg.diagnostics.enabled)
             # Store config reference for backend switch handler
             self._cfg = cfg
@@ -549,6 +550,11 @@ class VideoTranslateWindow(QMainWindow):
         self._last_asr_backend = new_backend
         self._remember_backend("asr_backend", new_backend)
 
+    def _set_context_profile(self, cfg, backend: str) -> None:
+        profile = get_backend_config(cfg, "translate", backend)
+        self._profile_context_lines = profile["context_lines"]
+        self.context_lines.setValue(self._profile_context_lines)
+
     def _on_mt_backend_changed(self, index: int) -> None:
         """Update translation model path when backend selection changes.
 
@@ -572,6 +578,7 @@ class VideoTranslateWindow(QMainWindow):
 
         # Load the new backend's model path
         if new_backend is not None and hasattr(self, "_cfg"):
+            self._set_context_profile(self._cfg, new_backend)
             identity = resolve_model_identity(self._cfg, "translate", new_backend)
             model_path = identity.get("model_path", "")
             # Use stored override if available, otherwise use resolved identity
@@ -811,7 +818,8 @@ class VideoTranslateWindow(QMainWindow):
                 mt_model=self._get_mt_model_override(),
                 asr_backend=self.asr_backend.currentData(),
                 translate_backend=self.mt_backend.currentData(),
-                context_lines=self.context_lines.value(),
+                context_lines=(self.context_lines.value()
+                               if self.context_lines.value() != self._profile_context_lines else None),
                 diagnostics=self.diagnostics_checkbox.isChecked(),
             )
             env = subprocess_environment(self.root)

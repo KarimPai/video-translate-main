@@ -207,9 +207,9 @@ class DeadlineHttpClient:
     def get(self, url: str, *, timeout: float, check: Callable[[], None] | None = None) -> httpx.Response:
         return self._request("GET", url, timeout, check)
 
-    def post(self, url: str, *, json: dict, timeout: float,
-             check: Callable[[], None] | None = None) -> httpx.Response:
-        return self._request("POST", url, timeout, check, json=json)
+    def post(self, url: str, *, timeout: float, json: dict | None = None,
+             files: dict | None = None, check: Callable[[], None] | None = None) -> httpx.Response:
+        return self._request("POST", url, timeout, check, json=json, files=files)
 
     def _request(self, method: str, url: str, timeout: float,
                  check: Callable[[], None] | None, **kwargs) -> httpx.Response:
@@ -217,7 +217,7 @@ class DeadlineHttpClient:
 
         def check_request() -> None:
             if self._closed.is_set():
-                raise CancelledError("llama-server HTTP client is closed")
+                raise CancelledError("model server HTTP client is closed")
             if check is not None:
                 check()
 
@@ -248,7 +248,7 @@ class DeadlineHttpClient:
         try:
             return asyncio.run(exchange())
         except TimeoutError as exc:
-            raise httpx.TimeoutException("llama-server HTTP wall-clock deadline exceeded") from exc
+            raise httpx.TimeoutException("model server HTTP wall-clock deadline exceeded") from exc
 
     def close(self) -> None:
         # Each exchange observes this signal and closes its own connection.

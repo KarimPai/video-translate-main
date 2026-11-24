@@ -7,6 +7,7 @@ and transient CUDA allocations; never abort playback due to a fixed cap.
 import importlib
 import logging
 import math
+import os
 import subprocess
 import threading
 import time
@@ -17,43 +18,52 @@ _NVML_LOCK = threading.Lock()
 _SAMPLE_LOCK = threading.RLock()
 _NVML_UNTRIED = object()
 _NVML = _NVML_UNTRIED
-_NVML_HANDLE = None
+_NVML_HANDLES = {}
 _LAST_METRICS = {}
 
 
-def _nvml_metrics():
+def _nvml_metrics(device=0):
     """One persistent NVML connection; unsupported per-device fields stay unknown.
 
     NVML reports dedicated device memory. In particular, a WDDM driver may not
     expose a particular measurement; zero must never stand in for missing data.
     Initialization failures are cached to avoid repeated DLL loading each poll.
     """
-    global _NVML, _NVML_HANDLE
+    global _NVML
     with _NVML_LOCK:
         if _NVML is _NVML_UNTRIED:
             try:
                 module = importlib.import_module("pynvml")
                 module.nvmlInit()
-                handle = module.nvmlDeviceGetHandleByIndex(0)
-                _NVML, _NVML_HANDLE = module, handle
+                _NVML = module
             except Exception:  # noqa: BLE001
                 _NVML = None
         if _NVML is None:
             return None
+        try:
+            if device not in _NVML_HANDLES:
+                if isinstance(device, int):
+                    handle = _NVML.nvmlDeviceGetHandleByIndex(device)
+                else:
+                    handle = _NVML.nvmlDeviceGetHandleByUUID(device)
+                _NVML_HANDLES[device] = handle
+            handle = _NVML_HANDLES[device]
+        except Exception:  # noqa: BLE001
+            return None
         metrics = {"source": "nvml", "used_gb": None, "total_gb": None, "free_gb": None,
                    "utilization_pct": None, "temperature_c": None, "power_w": None}
         try:
-            memory = _NVML.nvmlDeviceGetMemoryInfo(_NVML_HANDLE)
+            memory = _NVML.nvmlDeviceGetMemoryInfo(handle)
             used, total = memory.used / 1e9, memory.total / 1e9
             if math.isfinite(used) and math.isfinite(total) and 0 <= used <= total and total > 0:
                 metrics.update(used_gb=used, total_gb=total, free_gb=total - used)
         except Exception:  # noqa: S110, BLE001
             pass
         for field, getter in (
-            ("utilization_pct", lambda: _NVML.nvmlDeviceGetUtilizationRates(_NVML_HANDLE).gpu),
+            ("utilization_pct", lambda: _NVML.nvmlDeviceGetUtilizationRates(handle).gpu),
             ("temperature_c", lambda: _NVML.nvmlDeviceGetTemperature(
-                _NVML_HANDLE, _NVML.NVML_TEMPERATURE_GPU)),
-            ("power_w", lambda: _NVML.nvmlDeviceGetPowerUsage(_NVML_HANDLE) / 1000),
+                handle, _NVML.NVML_TEMPERATURE_GPU)),
+            ("power_w", lambda: _NVML.nvmlDeviceGetPowerUsage(handle) / 1000),
         ):
             try:
                 value = float(getter())
@@ -64,15 +74,32 @@ def _nvml_metrics():
         return metrics
 
 
-def gpu_memory_gb():
+def gpu_memory_gb(device=0):
     """Return (used, total) decimal GB, or (None, None) on unavailable data."""
     with _SAMPLE_LOCK:
-        return _read_gpu_memory_gb()
+        return _read_gpu_memory_gb(device)
 
 
-def _read_gpu_memory_gb():
+def _read_gpu_memory_gb(device=0):
     global _LAST_METRICS
-    measured = _nvml_metrics()
+    if device == -1:
+        _LAST_METRICS = {"source": "cpu"}
+        return None, None
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        devices = [entry.strip() for entry in visible.split(",")]
+        if device >= len(devices) or not devices[device]:
+            _LAST_METRICS = {"source": "unavailable"}
+            return None, None
+        selected = devices[device]
+        if selected.isdecimal():
+            device = int(selected)
+        elif selected.startswith(("GPU-", "MIG-")):
+            device = selected
+        else:
+            _LAST_METRICS = {"source": "unavailable"}
+            return None, None
+    measured = _nvml_metrics(device)
     if measured is not None and measured["used_gb"] is not None:
         _LAST_METRICS = measured
         return measured["used_gb"], measured["total_gb"]
@@ -80,7 +107,7 @@ def _read_gpu_memory_gb():
                                  "temperature_c": None, "power_w": None}
     try:
         output = subprocess.check_output(
-            ["nvidia-smi", "--id=0", "--query-gpu=memory.used,memory.total",
+            ["nvidia-smi", f"--id={device}", "--query-gpu=memory.used,memory.total",
              "--format=csv,noheader,nounits"],
             text=True, timeout=2, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -108,8 +135,9 @@ class GpuBudget:
     RELIEF_COOLDOWN_S = LOW_RELIEF_COOLDOWN_S  # backwards-compatible alias
     CRITICAL_RELIEF_COOLDOWN_S = 5.0
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, device=0):
         self.cfg = cfg
+        self.device = device
         self.used = None
         self.total = None
         self.free = None
@@ -129,7 +157,7 @@ class GpuBudget:
         # Admission and background sampling may coincide; keep their readings
         # together without ever placing a GPU call in snapshot()/the GUI.
         with _SAMPLE_LOCK:
-            used, total = gpu_memory_gb()
+            used, total = gpu_memory_gb(self.device) if self.device else gpu_memory_gb()
             self.used, self.total = used, total
             self.free = None if used is None else max(0., total - used)
             if self.used is not None:
@@ -188,7 +216,8 @@ class GpuBudget:
                     level = self.pressure_level
                     from .runtime_diagnostics import record_event, update_metrics
                     update_metrics(gpu=self.snapshot())
-                    log.info("GPU 0 used=%s GB total=%s GB free=%s GB; pressure=%s (no hard software cap)",
+                    log.info("GPU %s used=%s GB total=%s GB free=%s GB; pressure=%s (no hard software cap)",
+                             self.device,
                              None if self.used is None else round(self.used, 3),
                              None if self.total is None else round(self.total, 3),
                              None if self.free is None else round(self.free, 3), level)

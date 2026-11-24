@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 
+from .llama_server import DeadlineHttpClient
 from .runtime_diagnostics import rotate_log
 from .windows_subprocess import (
     check_running,
@@ -83,7 +84,7 @@ class SpeechCppServer:
         self._closed = False
         self._shutdown = threading.Event()
         self._cancel_thread = None
-        self.client = httpx.Client(trust_env=False)
+        self.client = DeadlineHttpClient()
         self.log_path = Path("logs") / "haas-server.log"
 
     @property

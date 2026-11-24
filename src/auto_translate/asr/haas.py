@@ -140,9 +140,7 @@ class HaasASR:
 
         # --speech-server / asr.speech_server_path overrides the shared server_path.
         executable = resolve_speech_executable(cfg.speech_server_path or cfg.server_path or None)
-        device = "cpu"
-        if cfg.cuda_device is not None:
-            device = "gpu"
+        device = "gpu" if cfg.cuda_device >= 0 else "cpu"
 
         self.server = SpeechCppServer(
             model_name="haas-ja-v1.0",
@@ -242,8 +240,8 @@ class HaasASR:
         if deadline <= time.monotonic() or not _acquire_until(self._inference_lock, deadline):
             self.last_rejection = "error"
             return ""
-        wav = wav_bytes(audio, normalize=not probe)
         try:
+            wav = wav_bytes(audio, normalize=not probe)
             if self._closed:
                 return ""
             if not self.server.alive():

@@ -1100,13 +1100,14 @@ class Ingest:
                 self._vod_resume_s = None
                 retries = 0
                 give_up = False
+                direct_live = self.source.live and not self.video_out
                 while True:
                     try:
                         read_failed = self._read_session(out_q)
-                    except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
-                        if not (self.source.live and self.video_out):
+                    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                        if not self.source.live:
                             raise
-                        log.warning("shared live HLS read failed: %s", exc)
+                        log.warning("Live audio read failed: %s", exc)
                         read_failed = True
 
                     with self._proc_lock:
@@ -1122,10 +1123,16 @@ class Ingest:
                         # Retry remote VOD audio when FFmpeg fails (expired URL,
                         # HTTP 403, or premature EOF). video_out is only set for
                         # shared livestreams, so this branch covers direct VOD audio.
-                        should_retry = current and read_failed and remote_vod and retries < 2
+                        should_retry = (current and read_failed and retries < 2
+                                        and (remote_vod or direct_live))
                         if should_retry:
                             self._vod_audio_url = None
-                            self._audio_client_fallback = retries >= 1
+                            self._audio_client_fallback = remote_vod and retries >= 1
+                            if direct_live:
+                                self._generation += 1
+                                generation = self._generation
+                                if self._generation_listener is not None:
+                                    self._generation_listener(generation)
                         # Shared livestream FFmpeg failures should NOT give_up
                         # here — they need coordinated MPV recovery via
                         # _wait_for_shared_live_restart(). Only direct VOD should
@@ -1134,13 +1141,19 @@ class Ingest:
                     if not should_retry:
                         break
                     retries += 1
+                    if direct_live:
+                        out_q.put(AudioChunk(round(self._audio_start_s() * SAMPLE_RATE),
+                                             np.zeros(0, dtype=np.float32), time.monotonic(),
+                                             reset=True, generation=generation))
                     log.warning(
-                        "YouTube VOD audio interrupted at %.3fs; refreshing signed URL "
+                        "Remote audio interrupted at %.3fs; refreshing signed URL "
                         "(retry %d/2, alternate client=%s)",
                         self._audio_start_s(), retries, self._audio_client_fallback,
                     )
                     time.sleep(0.5)
                 if give_up:
+                    if direct_live:
+                        raise RuntimeError("Live audio stopped after two FFmpeg reconnect attempts")
                     raise RuntimeError(
                         "YouTube VOD audio inaccessible: FFmpeg could not sustain "
                         "audio after URL refresh and alternate-client retry. "
@@ -1328,7 +1341,7 @@ class Ingest:
         finished = threading.Event()
         shared_live = bool(self.source.live and self.video_out)
         remote_vod = not self.source.live and not self.video_out and not Path(self.source.location).exists()
-        watch_reads = shared_live or remote_vod
+        watch_reads = self.source.live or remote_vod
 
         def watch_pcm(pcm_process):
             while not finished.wait(1.0):
@@ -1447,15 +1460,15 @@ class Ingest:
         premature_eof = False
         if not failed and not self.source.live and self.source.duration is not None:
             expected = self.source.duration - start_s
-            if expected > 60.0 and processed_seconds < expected * 0.9:
-                # Decoded less than 90% of remaining VOD — likely expired URL
+            # Allow normal track-duration differences without ignoring long tails.
+            if expected - processed_seconds > 3.0:
                 premature_eof = True
                 log.warning(
                     "Premature VOD EOF: decoded %.1fs of %.1fs expected "
                     "(FFmpeg exit code 0, likely expired URL)",
                     processed_seconds, expected,
                 )
-        if (failed or premature_eof) and remote_vod:
+        if (failed or premature_eof) and (remote_vod or (self.source.live and not self.video_out)):
             self._vod_resume_s = start_s + processed_seconds
         return failed or premature_eof
 

@@ -77,11 +77,11 @@ def backend_python(root: Path, frozen: bool = False, executable: str | None = No
         path = Path(executable or sys.executable).resolve()
         if path.exists():
             return path
-    raise FileNotFoundError("Python environment missing. Run scripts/Setup-Windows.ps1 or uv sync in this folder first.")
+    raise FileNotFoundError("Python environment missing. Run uv sync --extra gui --extra diagnostics --extra asr in this folder.")
 
 
 def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
-                          *, frozen: bool = False, context_lines: int = 6,
+                          *, frozen: bool = False, context_lines: int | None = None,
                           asr_model: str | None = None, mt_model: str | None = None,
                           asr_backend: str | None = None,
                           translate_backend: str | None = None,
@@ -93,7 +93,7 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
         raise ValueError("Unsupported video quality.")
     if type(diagnostics) is not bool:
         raise ValueError("Diagnostics selection must be a boolean.")
-    if type(context_lines) is not int or not 0 <= context_lines <= 20:
+    if context_lines is not None and (type(context_lines) is not int or not 0 <= context_lines <= 20):
         raise ValueError("Translation context must be between 0 and 20 lines.")
     for name, value in (("ASR model", asr_model), ("Translation model", mt_model)):
         if value is not None and (not isinstance(value, str) or not value.strip() or "\x00" in value):
@@ -115,7 +115,8 @@ def build_backend_command(root: Path, url: str, quality: int, hwnd: int,
             "--no-web", "--hwdec", "auto-safe",
             "--video-quality", str(quality), "--mpv-wid", str(hwnd),
             "--gui-control", "--simple-terminal"]
-    args.extend(["--context-lines", str(context_lines)])
+    if context_lines is not None:
+        args.extend(["--context-lines", str(context_lines)])
     for flag, value in (("--asr-model", asr_model), ("--mt-model", mt_model)):
         if value is not None:
             args.extend([flag, value.strip()])

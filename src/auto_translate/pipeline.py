@@ -11,6 +11,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import CancelledError
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 
 from .asr.base import ASRBackend
@@ -44,6 +45,7 @@ from .types import (
     Utterance,
 )
 from .vad import run_segmenter
+from .vod_coverage import SourceSubtitle, SourceTranscript, VodCoverage
 
 log = logging.getLogger(__name__)
 
@@ -432,19 +434,22 @@ def _join_fragments(items, max_gap_s: float, max_span_s: float, due=None, on_hol
                     and item.sample / SAMPLE_RATE <= held.end_s + max_gap_s):
                 parked.append(item)
                 continue
-            if (type(item) is Transcript and item.language == "ja"
+            if (isinstance(item, Transcript) and item.language == "ja"
                     and held.language == "ja" and item.generation == held.generation
                     and item.start_s - held.end_s <= max_gap_s and item.end_s - held.start_s <= max_span_s
                     and not _INDEPENDENT_REPLY.match(item.ja.strip())):
-                item = Transcript(held.start_s, item.end_s, held.ja + item.ja, held.timings,
-                                  generation=held.generation, speech_start_s=held.speech_start_s)
+                item = SourceTranscript(
+                    held.start_s, item.end_s, held.ja + item.ja, held.timings,
+                    generation=held.generation, speech_start_s=held.speech_start_s,
+                    cache_ids=getattr(held, "cache_ids", ()) + getattr(item, "cache_ids", ()),
+                )
                 increment_counter("merged_fragments")
             else:
                 yield held
                 yield from parked
                 parked.clear()
             held = None
-        if (type(item) is Transcript and item.language == "ja"
+        if (isinstance(item, Transcript) and item.language == "ja"
                 and not _SENTENCE_END.search(item.ja)
                 and not (due is not None and due(item))):
             held = item
@@ -470,6 +475,7 @@ def run_asr(
     record_speech_cb: Callable[[float, float, int], int | None] | None = None,
     name_fusion=None,
     worker_state: "WorkerState | None" = None,
+    vod_work: VodCoverage | None = None,
 ) -> None:
     """Recognize complete VAD utterances, retaining their original media times."""
     import numpy as np
@@ -491,8 +497,11 @@ def run_asr(
     # must never supply cues for a different live generation. A Qwen3-ASR
     # auto-language session must also recheck audio rather than trusting old
     # VOD subtitle caches created with forced Japanese decoding.
-    if live or hasattr(asr, "last_detected_language"):
+    if live:
         session_cache = None
+    if session_cache is not None and vod_work is None:
+        vod_work = VodCoverage(session_cache)
+    reuse_asr = session_cache is not None and not hasattr(asr, "last_detected_language")
 
     def cancelled(generation):
         return ((stop is not None and stop.is_set())
@@ -558,10 +567,11 @@ def run_asr(
                 source_end_s=utt.end_s,
             )
             continue
-        if session_cache is not None and not utt.probe:
-            session_cache.record_unprocessed(utt.start_s, utt.end_s)
-        cached = (session_cache.match(utt.start_s, utt.end_s)
-                  if session_cache is not None else None)
+        cache_ids = (vod_work.register(utt.start_s, utt.end_s, utt.generation)
+                     if vod_work is not None else ())
+        cached = None
+        if reuse_asr and not vod_work.needs_retry(utt.start_s, utt.end_s):
+            cached = session_cache.match(utt.start_s, utt.end_s)
         if cached is not None:
             cleaned = sanitize_english_output(cached.en)
             cached = replace(cached, en=cleaned) if cleaned else None
@@ -579,7 +589,6 @@ def run_asr(
         if cached is not None:
             accepted(cached.ja, utt.end_s, vad_confidence=utt.vad_confidence,
                      probe=utt.probe, acoustic_evidence=False)
-            session_cache.record_translated(utt.start_s, utt.end_s)
             # Record this speech region as pending so the watermark knows
             # about it. The cached subtitle must complete this exact pending
             # entry, not some other utterance with similar timestamps.
@@ -588,8 +597,9 @@ def run_asr(
                 result = record_speech_cb(utt.start_s, utt.end_s, utt.generation)
                 if result is not None:
                     cached_speech_id = result
-            out_q.put(replace(cached, generation=utt.generation, timings=utt.timings,
-                              speech_id=cached_speech_id))
+            out_q.put(SourceSubtitle(cached.start_s, cached.end_s, cached.ja, cached.en,
+                                     utt.timings, generation=utt.generation, speech_start_s=cached.speech_start_s,
+                                     speech_id=cached_speech_id, cache_ids=cache_ids))
             continue
         if cancelled(utt.generation):
             continue
@@ -702,11 +712,12 @@ def run_asr(
                 note_failure = getattr(asr, "note_utterance_failure", None)
                 if callable(note_failure):
                     note_failure()
-            elif (session_cache is not None
-                  and getattr(asr, "last_rejection", None) == "no_speech"):
-                session_cache.record_confirmed_silence(utt.start_s, utt.end_s)
-            elif session_cache is not None and getattr(asr, "last_rejection", None):
-                session_cache.record_rejected(utt.start_s, utt.end_s)
+            elif vod_work is not None:
+                reason = getattr(asr, "last_rejection", None)
+                if reason and reason not in {
+                    "deadline", "empty", "invalid_response", "token_limit", "transport_error", "truncated",
+                }:
+                    vod_work.resolve(cache_ids, utt.generation)
             continue
         # Haas can mishear revving engines as repeated "yeah" / イェー.
         # Call a backend-specific evidence gate before names/context/MT; no
@@ -714,8 +725,8 @@ def run_asr(
         check_utterance = getattr(asr, "reject_utterance", None)
         utterance_reason = check_utterance(text, utt) if callable(check_utterance) else None
         if utterance_reason:
-            if session_cache is not None:
-                session_cache.record_rejected(utt.start_s, utt.end_s)
+            if vod_work is not None:
+                vod_work.resolve(cache_ids, utt.generation)
             increment_counter("asr_rejected")
             record_event("asr_rejected", generation=utt.generation,
                          reason=utterance_reason, source_start_s=utt.start_s,
@@ -759,8 +770,10 @@ def run_asr(
                              probe=utt.probe)
                 elif not _credible_foreign_context(utt, part):
                     continue
-                out_q.put(Transcript(
-                    start_s, end_s, part, replace(utt.timings),
+                span_ids = (vod_work.register(start_s, end_s, utt.generation)
+                            if cache_ids and lang == "ja" else ())
+                out_q.put(SourceTranscript(
+                    start_s, end_s, part, replace(utt.timings), cache_ids=span_ids,
                     generation=utt.generation,
                     speech_start_s=max(start_s, min(end_s, utt.speech_start_s or start_s)),
                     language=lang,
@@ -770,6 +783,8 @@ def run_asr(
                     generation=utt.generation,
                     source_start_s=start_s, source_end_s=end_s,
                 )
+            if vod_work is not None and not cancelled(utt.generation):
+                vod_work.resolve(cache_ids, utt.generation)
             continue
 
         # Mixed output without reliable spans should not be treated as a
@@ -811,6 +826,7 @@ def run_asr(
                     utt, playback_position, live_late_window_s
                 ))
             )
+            recovery_failed = False
             if recovery_allowed:
                 if worker_state is not None:
                     worker_state.enter_inference(id(utt), utt.generation)
@@ -821,6 +837,7 @@ def run_asr(
                     # Extra mixed-language recovery must never shut down the
                     # underlying ASR worker; the original English still exists
                     # as context and playback can proceed.
+                    recovery_failed = True
                     log.warning("Mixed-language Japanese recovery failed: %s", exc)
                     record_event("mixed_language_recovery_failed",
                                  generation=utt.generation, error=str(exc)[:120])
@@ -844,8 +861,10 @@ def run_asr(
                             continue
                         accepted(japanese, end_s, vad_confidence=utt.vad_confidence,
                                  probe=True)  # never seed speculative name hints
-                        out_q.put(Transcript(
-                            start_s, end_s, japanese, replace(utt.timings),
+                        span_ids = (vod_work.register(start_s, end_s, utt.generation)
+                                    if cache_ids else ())
+                        out_q.put(SourceTranscript(
+                            start_s, end_s, japanese, replace(utt.timings), cache_ids=span_ids,
                             generation=utt.generation,
                             speech_start_s=max(start_s, min(
                                 end_s, utt.speech_start_s or start_s
@@ -855,10 +874,14 @@ def run_asr(
                                      generation=utt.generation,
                                      source_start_s=start_s, source_end_s=end_s,
                                      ja=japanese[:100])
+            if vod_work is not None and not recovery_failed and not cancelled(utt.generation):
+                vod_work.resolve(cache_ids, utt.generation)
             continue
         if language_filter is not None:
             duration_s = utt.end_s - utt.start_s
             if not language_filter.filter(text, duration_s):
+                if vod_work is not None:
+                    vod_work.resolve(cache_ids, utt.generation)
                 record_event("language_filtered", generation=utt.generation,
                              source_start_s=utt.start_s, source_end_s=utt.end_s)
                 continue
@@ -875,6 +898,8 @@ def run_asr(
         issue = transcript_problem(text, utt.end_s - utt.start_s)
         if issue:
             increment_counter("dropped")
+            if vod_work is not None:
+                vod_work.resolve(cache_ids, utt.generation)
             record_event("asr_suppressed", reason=issue, generation=utt.generation)
             continue
         # Familiar hallucinated outros on faint, sub-second non-speech are
@@ -889,8 +914,8 @@ def run_asr(
             continue
         accepted(text, utt.end_s, vad_confidence=utt.vad_confidence,
                  probe=utt.probe)
-        out_q.put(Transcript(utt.start_s, utt.end_s, text, utt.timings,
-                             generation=utt.generation, speech_start_s=utt.speech_start_s))
+        out_q.put(SourceTranscript(utt.start_s, utt.end_s, text, utt.timings, cache_ids=cache_ids,
+                                   generation=utt.generation, speech_start_s=utt.speech_start_s))
     out_q.put(None)
 
 
@@ -1225,7 +1250,7 @@ def run_translate(
         # Japanese fallback is no longer used; translation failures are suppressed.
 
         out_q.put(
-            Subtitle(
+            SourceSubtitle(
                 tr.start_s,
                 tr.end_s,
                 tr.ja,
@@ -1234,6 +1259,7 @@ def run_translate(
                 generation=tr.generation,
                 speech_start_s=tr.speech_start_s,
                 speech_id=speech_id,
+                cache_ids=getattr(tr, "cache_ids", ()),
             )
         )
 
@@ -1373,6 +1399,8 @@ def run(
     if ingest.source.live:
         session_cache = None
 
+    vod_work = VodCoverage(session_cache) if session_cache is not None else None
+
     # Prefer the actual instantiated segmenter's settings. ASR-specific guards
     # (e.g. Haas game-audio threshold) use a session-only VAD config and must
     # not be misreported as the unchanged config.toml values.
@@ -1453,9 +1481,9 @@ def run(
             daemon=True,
         ),
         threading.Thread(
-            target=_guard_stage,
+            target=copy_context().run,
             args=(
-                "asr", run_asr, failures, asr,
+                _guard_stage, "asr", run_asr, failures, asr,
                 utt_q,
                 text_q,
                 lambda: ingest.generation,
@@ -1468,6 +1496,7 @@ def run(
                 record_speech_cb,
                 name_fusion,
                 asr_worker_state,
+                vod_work,
             ),
             name="asr",
             daemon=True,
@@ -1476,9 +1505,9 @@ def run(
 
     threads.append(
         threading.Thread(
-            target=_guard_stage,
+            target=copy_context().run,
             args=(
-                "translate", run_translate, failures, translator,
+                _guard_stage, "translate", run_translate, failures, translator,
                 cfg.translate.context_lines,
                 text_q,
                 sub_q,
@@ -1504,7 +1533,14 @@ def run(
     qwen = isinstance(asr, Qwen3ASR)
     if qwen:
         asr.bind_session_stop(stop)
-        ingest.set_generation_listener(asr.cancel_pending)
+    if qwen or vod_work is not None:
+        def generation_changed(generation):
+            if vod_work is not None:
+                vod_work.set_generation(generation)
+            if qwen:
+                asr.cancel_pending(generation)
+
+        ingest.set_generation_listener(generation_changed)
     for thread in threads:
         thread.start()
 
@@ -1594,13 +1630,13 @@ def run(
                         last_guard_generation = item.generation
                         processed_generation = item.generation
                         processed_from = progress_s
-                    elif session_cache is not None:
+                    elif vod_work is not None:
                         if processed_generation != item.generation:
                             # Reset marker not yet delivered: don't invent a
                             # processed range across a discontinuous seek.
                             processed_generation = item.generation
                             processed_from = progress_s
-                        session_cache.record_processed(processed_from, progress_s)
+                        vod_work.advance(processed_from, progress_s, item.generation)
                         processed_from = progress_s
                     for out in outputs:
                         if item.reset:
@@ -1683,9 +1719,13 @@ def run(
                 if latency is not None and latency > max(30., cfg.mpv.delay_s):
                     record_event("subtitle_latency_spike", latency_s=round(latency, 3), generation=item.generation)
 
-                if session_cache is not None:
-                    session_cache.add(item)
-                    session_cache.record_translated(item.start_s, item.end_s)
+                cache_ids = getattr(item, "cache_ids", ())
+                if isinstance(item, SourceSubtitle):
+                    item = Subtitle(item.start_s, item.end_s, item.ja, item.en, item.timings,
+                                    generation=item.generation, speech_start_s=item.speech_start_s,
+                                    speech_id=item.speech_id)
+                if vod_work is not None:
+                    vod_work.publish(item, cache_ids)
 
                 record_event("subtitle_published", generation=item.generation,
                              speech_start_s=item.speech_start_s,
@@ -1994,7 +2034,7 @@ def run(
                     log.exception("output shutdown failed")
         finally:
             try:
-                if qwen:
+                if qwen or vod_work is not None:
                     ingest.set_generation_listener(None)
                 ingest.stop()
             except Exception:

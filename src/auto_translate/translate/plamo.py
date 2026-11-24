@@ -547,7 +547,8 @@ class PlamoTranslator:
             has_content=bool(content.strip()),
         )
 
-        return content, finish_reason
+        # Keep the reason for bounded truncation retries. Partial text is never a candidate.
+        return ("" if finish_reason == "length" else content), finish_reason
 
     def set_position(self, start_s: float | None) -> None:
         self._position = start_s

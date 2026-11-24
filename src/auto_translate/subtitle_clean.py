@@ -8,6 +8,21 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_ALLOW_JAPANESE = ContextVar("subtitle_allow_japanese", default=False)
+
+
+@contextmanager
+def subtitle_language_policy(allow_japanese: bool):
+    """Use the session policy for model checks, cached subtitles and renderers."""
+    token = _ALLOW_JAPANESE.set(allow_japanese)
+    try:
+        yield
+    finally:
+        _ALLOW_JAPANESE.reset(token)
+
 
 # Isolated non-verbal subtitle output is not useful in the English overlay.
 _NONVERBAL_ONLY = re.compile(
@@ -239,10 +254,12 @@ def has_special_token_flood(text: str) -> bool:
     return bool(len(all_tokens) >= 4 and len(matches) / len(all_tokens) > _DOMINANCE_THRESHOLD)
 
 
-def english_output_issue(text: str, *, allow_japanese: bool = False) -> str | None:
+def english_output_issue(text: str, *, allow_japanese: bool | None = None) -> str | None:
     """Return a hard output failure, independent of proper-name validation."""
     if not text.strip():
         return "empty_english"
+    if allow_japanese is None:
+        allow_japanese = _ALLOW_JAPANESE.get()
     if not allow_japanese and _JAPANESE_OUTPUT.search(text):
         return "untranslated_japanese"
     if has_generation_loop(text) or looks_like_prompt_echo(text):
@@ -278,7 +295,7 @@ def has_slash_alternatives(text: str) -> bool:
     return len(matches) > 0
 
 
-def sanitize_english_output(text: str, *, allow_japanese: bool = False) -> str:
+def sanitize_english_output(text: str, *, allow_japanese: bool | None = None) -> str:
     """Shared final boundary for models, history, caches, and all renderers."""
     value = unmatched_double_quote_cleanup(text)
     return "" if english_output_issue(value, allow_japanese=allow_japanese) else value

@@ -117,6 +117,10 @@ class VadConfig:
         for key in ("speech_pad_ms", "split_context_ms", "max_split_extension_s", "live_max_split_extension_s", "fallback_s"):
             if not getattr(self, key) >= 0:
                 raise ValueError(f"vad.{key} must be nonnegative")
+        if not math.isfinite(self.fallback_s) or not math.isfinite(self.fallback_min_s):
+            raise ValueError("vad.fallback_s and vad.fallback_min_s must be finite")
+        if self.fallback_s > 0 and self.fallback_min_s > self.fallback_s:
+            raise ValueError("vad.fallback_min_s cannot exceed vad.fallback_s when probing is enabled")
         if self.device != "cpu":
             raise ValueError("SileroVAD must use cpu to preserve GPU memory for the models and playback")
 
@@ -212,6 +216,8 @@ class TranslateConfig:
         # model_path must be a string but may be empty
         if not isinstance(self.model_path, str):
             raise TypeError("translate.model_path must be a string")
+        if type(self.cuda_device) is not int or self.cuda_device < -1:
+            raise ValueError("translate.cuda_device must be -1 (CPU) or a nonnegative CUDA device index")
         if type(self.gpu_layers) is not int or self.gpu_layers < -1:
             raise ValueError("translate.gpu_layers must be -1 (auto) or a nonnegative integer")
         if type(self.context_size) is not int or not 512 <= self.context_size <= 32768:
@@ -494,6 +500,9 @@ def load_config(path: Path) -> Config:
 
     # Validate known sections
     known_sections = {section.name for section in fields(Config)}
+    for key, value in data.items():
+        if (key in known_sections or key.startswith(("asr.", "translate."))) and not isinstance(value, dict):
+            raise ValueError(f"Expected a TOML table [{key}], got {type(value).__name__}")
     for key in data.keys() - known_sections - {"models"}:
         # Allow [asr.*] and [translate.*] as backend profiles
         if not key.startswith("asr.") and not key.startswith("translate."):

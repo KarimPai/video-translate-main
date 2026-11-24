@@ -456,7 +456,8 @@ class Segmenter:
             self._idle = self._idle[excess:]
         if len(self._idle) >= self.fallback_frames:
             # Cut at the quietest frame in the last ~2 s, so a word is less likely to be split.
-            lo = max(self.fallback_min, len(self._idle) - self.split_search)
+            # The selected frame is included in the cut.
+            lo = max(self.fallback_min - 1, len(self._idle) - self.split_search)
             rms = [float(np.sqrt(np.mean(f * f))) for f in self._idle[lo:]]
             self._emit_probe(lo + int(np.argmin(rms)) + 1)
 

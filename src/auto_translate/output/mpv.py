@@ -14,6 +14,7 @@ import ctypes
 import json
 import logging
 import math
+from contextvars import copy_context
 import os
 import queue
 import shutil
@@ -632,7 +633,8 @@ class MpvOutput:
         )
 
         self._thread = threading.Thread(
-            target=self._run,
+            target=copy_context().run,
+            args=(self._run,),
             name="mpv",
             daemon=True,
         )
@@ -1669,7 +1671,14 @@ class MpvOutput:
                 ev.get("event") == "client-message"
                 and args[:1] == [JUMP_MESSAGE]
             ):
-                delta += float(args[1])
+                if len(args) < 2:
+                    continue
+                try:
+                    jump = float(args[1])
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(delta + jump):
+                    delta += jump
         return requested, delta
 
     def _jump(self, delta: float, *, gui: bool = False) -> None:

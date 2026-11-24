@@ -278,7 +278,7 @@ def _main(resources: ExitStack) -> None:
         from .config import vad_for_haas_game_audio
         original_threshold = vad_cfg.threshold
         vad_cfg = vad_for_haas_game_audio(
-            vad_cfg, explicit_threshold="threshold" in cfg.vad_explicit_keys,
+            vad_cfg, explicit_threshold=(args.vad_threshold is not None or "threshold" in cfg.vad_explicit_keys),
         )
         log.info(
             "Haas game-audio guard: VAD threshold %.2f -> %.2f; "
@@ -303,7 +303,10 @@ def _main(resources: ExitStack) -> None:
     except ValueError as exc:
         log.error("Failed to create VAD backend '%s': %s", vad_backend_name, exc)
         raise SystemExit(f"VAD backend '{vad_backend_name}' is not available: {exc}") from exc
-    budget = GpuBudget(cfg.gpu_budget)
+    from .config import get_backend_config, resolve_model_identity
+    mt_profile = get_backend_config(cfg, "translate", cfg.models.translate_backend,
+                                    explicit_overrides=translate_cli_overrides)
+    budget = GpuBudget(cfg.gpu_budget, device=mt_profile["cuda_device"])
     resources.callback(budget.close)
     glossary = Glossary.load(Path(cfg.translate.glossary))
     metadata = source.timeline
@@ -321,7 +324,6 @@ def _main(resources: ExitStack) -> None:
 
     # Create ASR backend via registry with backend-specific profile first,
     # then derive timeout from the effective merged profile.
-    from .config import get_backend_config, resolve_model_identity
     from .llama_server import LlamaServerError
     from .registry import get_default_registry
     registry = get_default_registry()
@@ -409,6 +411,8 @@ def _main(resources: ExitStack) -> None:
              cfg.models.translate_backend, layers_str, len(glossary.terms),
              time.perf_counter()-t0, budget.free)
     resources.callback(translator.close)
+    from .subtitle_clean import subtitle_language_policy
+    resources.enter_context(subtitle_language_policy(not mt_profile["suppress_japanese_in_english"]))
     use_mpv = args.mpv or cfg.mpv.enabled
     if use_mpv and not source.live and source.paced:
         from dataclasses import replace as dc_replace
@@ -489,7 +493,6 @@ def _main(resources: ExitStack) -> None:
     # sees backend-specific settings (context_lines, merge_fragments, timeouts, etc.)
     # instead of only common defaults. This preserves the precedence:
     # explicit CLI override > backend profile > common config.
-    from .config import get_backend_config
     translate_profile = get_backend_config(cfg, "translate", cfg.models.translate_backend,
                                            explicit_overrides=translate_cli_overrides,
                                            selected_backend=cfg.models.translate_backend)

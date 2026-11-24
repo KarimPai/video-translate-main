@@ -47,6 +47,11 @@ class _QuietHLSHandler(http.server.SimpleHTTPRequestHandler):
 CHUNK_SAMPLES = 4096
 PCM_READ_TIMEOUT_S = 60.0
 
+
+def _vod_eof_tolerance_s(duration_s: float) -> float:
+    """Allow bounded track-duration and metadata differences at normal VOD EOF."""
+    return min(10.0, max(5.0, 3.0 + max(0.0, duration_s) * 0.001))
+
 @dataclass
 class Source:
     location: str
@@ -1450,9 +1455,9 @@ class Ingest:
 
         failed = any(p.returncode for p in procs)
         # Detect premature VOD EOF even when FFmpeg exits cleanly (code 0).
-        # If the source has a known duration and we decoded significantly less,
-        # the signed URL likely expired mid-stream — treat it as a failure so
-        # the retry loop can refresh the URL and resume.
+        # yt-dlp duration metadata is approximate and selected audio/video
+        # tracks can differ, so use a bounded, duration-aware margin rather
+        # than treating every shortfall as an expired URL.
         # Use `start_s` (the actual session start, which may include a resume
         # offset) instead of `self.source.start_s` (the original video start).
         # After a retry, the session starts later, so the expected remaining
@@ -1460,13 +1465,13 @@ class Ingest:
         premature_eof = False
         if not failed and not self.source.live and self.source.duration is not None:
             expected = self.source.duration - start_s
-            # Allow normal track-duration differences without ignoring long tails.
-            if expected - processed_seconds > 3.0:
+            tolerance_s = _vod_eof_tolerance_s(self.source.duration)
+            if expected - processed_seconds > tolerance_s:
                 premature_eof = True
                 log.warning(
                     "Premature VOD EOF: decoded %.1fs of %.1fs expected "
-                    "(FFmpeg exit code 0, likely expired URL)",
-                    processed_seconds, expected,
+                    "(tolerance %.1fs, FFmpeg exit code 0, likely expired URL)",
+                    processed_seconds, expected, tolerance_s,
                 )
         if (failed or premature_eof) and (remote_vod or (self.source.live and not self.video_out)):
             self._vod_resume_s = start_s + processed_seconds

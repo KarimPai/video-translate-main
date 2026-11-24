@@ -482,7 +482,10 @@ class Config:
     vad_explicit_keys: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self):
-        if not math.isfinite(self.stats_interval_s) or self.stats_interval_s <= 0:
+        if (isinstance(self.stats_interval_s, bool)
+                or not isinstance(self.stats_interval_s, (int, float))
+                or not math.isfinite(self.stats_interval_s)
+                or self.stats_interval_s <= 0):
             raise ValueError("stats_interval_s must be finite and positive")
 
 
@@ -498,10 +501,14 @@ def load_config(path: Path) -> Config:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    # Validate known sections
+    # Validate configuration tables separately from root scalar settings.
     known_sections = {section.name for section in fields(Config)}
+    table_sections = {
+        "models", "diagnostics", "language_filter", "name_fusion", "gpu_budget",
+        "ingest", "vad", "asr", "translate", "output", "mpv",
+    }
     for key, value in data.items():
-        if (key in known_sections or key.startswith(("asr.", "translate."))) and not isinstance(value, dict):
+        if (key in table_sections or key.startswith(("asr.", "translate."))) and not isinstance(value, dict):
             raise ValueError(f"Expected a TOML table [{key}], got {type(value).__name__}")
     for key in data.keys() - known_sections - {"models"}:
         # Allow [asr.*] and [translate.*] as backend profiles
@@ -513,6 +520,8 @@ def load_config(path: Path) -> Config:
     # but [asr] creates data["asr"] with common keys. Extract profiles from subtables.
     asr_profiles = {}
     translate_profiles = {}
+    known_asr_profiles = {"haas", "qwen3-asr", "whisper"}
+    known_translate_profiles = {"gemma4", "plamo", "plamo8b", "hymt"}
     
     # Check for top-level keys like "asr.qwen3-asr" (non-standard but possible)
     for key in list(data.keys()):
@@ -529,9 +538,11 @@ def load_config(path: Path) -> Config:
         if key not in {f.name for f in fields(AsrConfig)}:
             value = asr_section.pop(key)
             if not isinstance(value, dict):
+                if key in known_asr_profiles:
+                    raise ValueError(f"Expected a TOML table [asr.{key}], got {type(value).__name__}")
                 logger.warning("Ignoring unknown [asr] setting %s (possible typo)", key)
             else:
-                if key not in {"haas", "qwen3-asr", "whisper"}:
+                if key not in known_asr_profiles:
                     logger.warning("Unregistered ASR backend profile [asr.%s]", key)
                 asr_profiles[key] = value
     
@@ -543,9 +554,11 @@ def load_config(path: Path) -> Config:
         if key not in {f.name for f in fields(TranslateConfig)}:
             value = translate_section.pop(key)
             if not isinstance(value, dict):
+                if key in known_translate_profiles:
+                    raise ValueError(f"Expected a TOML table [translate.{key}], got {type(value).__name__}")
                 logger.warning("Ignoring unknown [translate] setting %s (possible typo)", key)
             else:
-                if key not in {"gemma4", "plamo", "plamo8b", "hymt"}:
+                if key not in known_translate_profiles:
                     logger.warning("Unregistered translation backend profile [translate.%s]", key)
                 translate_profiles[key] = value
 

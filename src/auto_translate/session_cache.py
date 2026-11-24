@@ -38,7 +38,7 @@ class SessionSubtitleCache:
         self._by_start: dict[int, list[Subtitle]] = defaultdict(list)
         self._by_second: dict[int, list[Subtitle]] = defaultdict(list)
         self._processed_ranges: list[tuple[float, float]] = []
-        self._unprocessed_ranges: list[tuple[float, float]] = []
+        self._unprocessed_ranges: dict[int, tuple[float, float]] = {}
 
     def add(self, sub: Subtitle) -> bool:
         """Store one result per source cue, replacing retranslated corrections."""
@@ -146,39 +146,39 @@ class SessionSubtitleCache:
                 end_pos += 1
             ranges[pos:end_pos] = [(new_start, new_end)]
 
-    def record_unprocessed(self, start_s: float, end_s: float) -> None:
+    def record_unprocessed(
+        self,
+        start_s: float,
+        end_s: float,
+        identity: int,
+        *,
+        replacing: int | None = None,
+    ) -> None:
         """Keep failed or rejected speech out of reusable processed coverage."""
         if end_s <= start_s:
             return
         with self._lock:
-            pos = bisect_left(self._unprocessed_ranges, (start_s, end_s))
-            self._unprocessed_ranges.insert(pos, (start_s, end_s))
+            if replacing is not None:
+                self._unprocessed_ranges.pop(replacing, None)
+            self._unprocessed_ranges[identity] = (start_s, end_s)
 
-    def _resolve_unprocessed(self, start_s: float, end_s: float) -> None:
-        tolerance = self.MATCH_TOLERANCE_S
-        candidates = [
-            (abs(start - start_s) + abs(end - end_s), index)
-            for index, (start, end) in enumerate(self._unprocessed_ranges)
-            if abs(start - start_s) <= tolerance and abs(end - end_s) <= tolerance
-        ]
-        if candidates:
-            _, index = min(candidates)
-            self._unprocessed_ranges.pop(index)
+    def _resolve_unprocessed(self, identity: int) -> None:
+        self._unprocessed_ranges.pop(identity, None)
 
-    def record_confirmed_silence(self, start_s: float, end_s: float) -> None:
+    def record_confirmed_silence(self, identity: int) -> None:
         """Resolve one known non-speech interval; no subtitle is expected."""
         with self._lock:
-            self._resolve_unprocessed(start_s, end_s)
+            self._resolve_unprocessed(identity)
 
-    def record_rejected(self, start_s: float, end_s: float) -> None:
+    def record_rejected(self, identity: int) -> None:
         """Resolve speech deliberately rejected by transcript quality guards."""
         with self._lock:
-            self._resolve_unprocessed(start_s, end_s)
+            self._resolve_unprocessed(identity)
 
-    def record_translated(self, start_s: float, end_s: float) -> None:
+    def record_translated(self, identity: int) -> None:
         """Resolve one failed interval after a valid translated cue is stored."""
         with self._lock:
-            self._resolve_unprocessed(start_s, end_s)
+            self._resolve_unprocessed(identity)
 
     def covered_until(self, position_s: float) -> float:
         """Return the end of cached continuous processed audio at position."""
@@ -192,7 +192,7 @@ class SessionSubtitleCache:
                         covered = max(position_s, end_s)
                         unresolved = [
                             max(position_s, start)
-                            for start, end in self._unprocessed_ranges
+                            for start, end in self._unprocessed_ranges.values()
                             if end > position_s and start <= covered + 0.02
                         ]
                         return min(covered, min(unresolved)) if unresolved else covered

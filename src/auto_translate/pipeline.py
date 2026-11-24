@@ -211,6 +211,17 @@ def _rejection_reason(asr, text) -> str:
     return "empty" if not isinstance(text, str) or not text.strip() else "unsupported_language"
 
 
+_INTENTIONAL_ASR_REJECTIONS = frozenset({
+    "blocklist", "empty_after_normalization", "implausible_length",
+    "implausible_speech_rate", "laughter_only", "no_speech", "not_japanese",
+    "phantom_outro", "repeated_character", "repeated_kana_loop", "symbol_noise",
+})
+
+
+def _intentional_asr_rejection(reason: str | None) -> bool:
+    return reason in _INTENTIONAL_ASR_REJECTIONS
+
+
 def _raw_transcript(asr) -> str:
     raw = getattr(asr, "last_raw_transcript", "")
     return raw if isinstance(raw, str) else ""
@@ -714,9 +725,7 @@ def run_asr(
                     note_failure()
             elif vod_work is not None:
                 reason = getattr(asr, "last_rejection", None)
-                if reason and reason not in {
-                    "deadline", "empty", "invalid_response", "token_limit", "transport_error", "truncated",
-                }:
+                if _intentional_asr_rejection(reason):
                     vod_work.resolve(cache_ids, utt.generation)
             continue
         # Haas can mishear revving engines as repeated "yeah" / イェー.
@@ -909,6 +918,8 @@ def run_asr(
                 and utt.vad_confidence is not None and utt.vad_confidence < .55
                 and len(utt.audio) and float(np.mean(np.square(utt.audio))) < .0001):
             increment_counter("dropped")
+            if vod_work is not None:
+                vod_work.resolve(cache_ids, utt.generation)
             continue
         if cancelled(utt.generation):
             continue

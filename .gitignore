@@ -27,6 +27,7 @@ models/
 dist/
 build/
 *.spec.backup
+*.backup
 
 # IDE
 .idea/

@@ -275,7 +275,7 @@ def smoke_config_profile():
     section("5. Config Profile Loading")
 
     try:
-        from auto_translate.config import load_config, get_backend_config
+        from auto_translate.config import get_backend_config, load_config
 
         config = load_config(Path("config.toml"))
 
@@ -410,7 +410,7 @@ def test_text_filter():
     section("8. Text Filter")
 
     try:
-        from auto_translate.text_filter import rejection_reason, is_usable_transcript
+        from auto_translate.text_filter import is_usable_transcript, rejection_reason
 
         # Laughter-only should be rejected
         reason = rejection_reason("あはははははは")

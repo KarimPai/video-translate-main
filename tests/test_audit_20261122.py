@@ -127,6 +127,7 @@ def test_qwen3_rejects_second_truncated_response():
 def _make_qwen3_for_truncation_test():
     """Create a model-free Qwen instance with the normal retry state."""
     from collections import deque
+
     from auto_translate.config import AsrConfig
 
     asr = Qwen3ASR.__new__(Qwen3ASR)
@@ -259,6 +260,7 @@ def test_gui_control_close_does_not_mark_natural_end_as_stopped():
 def test_unexpected_gui_control_loss_stops_backend():
     pytest.importorskip("PySide6")
     from PySide6.QtCore import QProcess
+
     from auto_translate.gui import VideoTranslateWindow
 
     fake = SimpleNamespace(

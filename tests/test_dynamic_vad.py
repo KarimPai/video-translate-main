@@ -19,7 +19,7 @@ class _SilentModel:
 
 @pytest.fixture
 def segmenter(monkeypatch):
-    import auto_translate.vad as vad
+    from auto_translate import vad
 
     monkeypatch.setattr(vad, "StreamingSileroVAD", lambda *_args, **_kwargs: _SilentModel())
 

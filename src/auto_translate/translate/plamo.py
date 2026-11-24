@@ -41,9 +41,11 @@ from ..subtitle_clean import (
 from ..windows_subprocess import check_running
 from .base import (
     TranslatorUnavailable,
-    absolute_translation_deadline,
+    acquire_until,
+    active_translation_deadline,
     remaining_translation_timeout,
     start_translation_server,
+    translation_deadline,
     with_translation_deadline,
 )
 
@@ -354,7 +356,8 @@ class PlamoTranslator:
         self._restarts = 0
         self.executable = resolve_executable(cfg.server_path)
         self.server = LlamaServer("mt", self.executable, self._args(),
-                                  startup_timeout_s=cfg.load_timeout_s)
+                                  startup_timeout_s=cfg.load_timeout_s,
+                                  strict_http_deadlines=True)
         try:
             self._start()
         except BaseException:
@@ -416,6 +419,13 @@ class PlamoTranslator:
         return None
 
     def _start(self) -> None:
+        deadline = active_translation_deadline()
+        if deadline is None:
+            deadline = time.monotonic() + self.cfg.load_timeout_s
+        with translation_deadline(deadline):
+            self._start_with_deadline()
+
+    def _start_with_deadline(self) -> None:
         check_running()
         if self._closed:
             raise LlamaServerError("PLaMo 3 Translate translator is closed")
@@ -438,7 +448,7 @@ class PlamoTranslator:
 
     def reload(self, gpu_layers: int, reason: str) -> None:
         """Reload with different GPU layers. Uses separate lock to prevent deadlock."""
-        with self._reload_lock:
+        with acquire_until(self._reload_lock, active_translation_deadline()):
             previous_layers = self.gpu_layers
             self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
             log.warning("Reloading PLaMo 3 Translate at %d GPU layers (%s)", self.gpu_layers, reason)
@@ -456,14 +466,15 @@ class PlamoTranslator:
         self._relief.set()
         return True
 
-    def recover_stalled(self) -> bool:
+    def recover_stalled(self, deadline: float | None = None) -> bool:
         """Boundedly restart only this translator's server, preserving its GPU setup."""
-        with self._reload_lock:
+        if deadline is None:
+            deadline = time.monotonic() + self.cfg.load_timeout_s + 6.0
+        with translation_deadline(deadline), acquire_until(self._reload_lock, deadline):
             if self._closed:
                 return False
-            self.server.reset_for_restart(deadline=time.monotonic() + self.cfg.load_timeout_s)
-            with absolute_translation_deadline(self.cfg.load_timeout_s):
-                self._start()
+            self.server.reset_for_restart(deadline=deadline)
+            self._start()
         return True
 
     def _chat(self, prompt: dict, *, timeout: float, temperature: float | None = None,

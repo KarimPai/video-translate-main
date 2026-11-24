@@ -32,6 +32,37 @@ def test_cache_keeps_overlapping_different_dialogue():
     assert len(cache) == 2
 
 
+def test_timestamp_match_declines_ambiguous_overlapping_sources():
+    cache = SessionSubtitleCache()
+    assert cache.add(_sub(1.0, 2.0, "ありがとう", "Thank you."))
+    assert cache.add(_sub(1.05, 2.05, "何してるの", "What are you doing?"))
+
+    assert cache.match(1.02, 2.02) is None
+
+
+def test_unresolved_speech_clips_reusable_coverage_until_resolved():
+    cache = SessionSubtitleCache()
+    cache.record_processed(0.0, 10.0)
+    cache.record_unprocessed(4.0, 5.0)
+
+    assert cache.covered_until(2.0) == 4.0
+    assert cache.covered_until(4.5) == 4.5
+
+    cache.record_confirmed_silence(4.0, 5.0)
+    assert cache.covered_until(2.0) == 10.0
+
+
+def test_translated_speech_resolves_only_one_matching_failed_interval():
+    cache = SessionSubtitleCache()
+    cache.record_processed(0.0, 10.0)
+    cache.record_unprocessed(4.0, 5.0)
+    cache.record_unprocessed(4.0, 5.0)
+
+    cache.record_translated(4.0, 5.0)
+
+    assert cache.covered_until(2.0) == 4.0
+
+
 def test_mpv_replaces_visible_copy_of_corrected_same_source_cue():
     output = object.__new__(MpvOutput)
     output._session_start = 0.0

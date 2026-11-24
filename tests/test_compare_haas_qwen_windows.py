@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import compare_haas_qwen_windows as bench  # noqa: E402
+import compare_haas_qwen_windows as bench
 
 
 def test_two_halves_overlap_without_leaving_a_gap():
@@ -279,8 +279,9 @@ def test_qwen_ab_control_disables_production_default():
 def test_qwen_split_first_failure_falls_back_to_full_512(monkeypatch):
     """Do not drop a long utterance if split recovery fails but full retry works."""
     from collections import deque
-    from auto_translate.config import AsrConfig
+
     from auto_translate.asr.qwen3_asr import Qwen3ASR, Qwen3ASRTruncationError
+    from auto_translate.config import AsrConfig
 
     model = Qwen3ASR.__new__(Qwen3ASR)
     model.cfg = AsrConfig(response_timeout_s=15.0)

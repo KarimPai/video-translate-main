@@ -1,9 +1,12 @@
-name: Universal branch checks
+name: CI
 
 on:
   push:
     branches:
-      - video-translate-universal
+      - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -11,40 +14,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - name: Install lint tool
-        run: python -m pip install ruff
-      - name: Check changed source and regression tests
+          enable-cache: true
+      - name: Install locked CI dependencies
+        run: uv sync --locked --group ci
+      - name: Lint the complete source and test trees
+        run: uv run --locked --group ci ruff check src tests
+      - name: Compile source and tests
         run: |
-          ruff check src/auto_translate/pipeline.py src/auto_translate/asr/qwen3_asr.py src/auto_translate/output/mpv.py src/auto_translate/output/coverage.py tests/test_regression.py tests/test_mixed_audio_recovery.py
-          python -m compileall -q src tests
-      - name: Install lightweight test requirements
-        run: python -m pip install pytest numpy httpx huggingface-hub
-      - name: Run subtitle lifecycle behavioral regressions
-        env:
-          PYTHONPATH: src
-        run: |
-          python -m pytest -q tests/test_regression.py -k "cancelled_translation_releases_reserved_coverage or live_cue_expired_after_reservation_releases_coverage or translation_failure_exhaustion_finalizes_all_reserved_intervals or discarded_output_releases_coverage_by_speech_identity or vad_progress_does_not_expire_legitimately_pending_translation"
-          python -m pytest -q tests/test_mixed_audio_recovery.py
+          uv run --locked --group ci python -m compileall -q src tests
 
-  full-unit-tests:
+  ubuntu-cpu-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
-      PYTHONPATH: src
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+          enable-cache: true
       - name: Install Qt runtime libraries
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libegl1 libopengl0 libxkbcommon-x11-0
-      - name: Install test dependencies
-        run: python -m pip install pytest numpy httpx huggingface-hub PySide6 silero-vad-lite faster-whisper
+      - name: Install locked CPU-only test dependencies
+        run: uv sync --locked --group ci --extra gui --extra asr
       - name: Run full CPU-safe test suite
-        run: python -m pytest -q tests --disable-warnings
+        run: uv run --locked --group ci --extra gui --extra asr python -m pytest -q
+
+  windows-cpu-tests:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked CPU-only test dependencies
+        run: uv sync --locked --group ci --extra gui --extra asr
+      - name: Run full CPU-safe test suite
+        run: uv run --locked --group ci --extra gui --extra asr python -m pytest -q

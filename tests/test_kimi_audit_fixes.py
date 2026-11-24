@@ -8,7 +8,6 @@ Covers:
 
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -32,11 +31,9 @@ class TestSeekResetRace:
         3. pipeline.py:1460 calls reset_buffer(progress_s) — second reset
         4. The second reset must NOT clear the pending speech from step 2
         """
-        from auto_translate.output.mpv import MpvOutput
-        from auto_translate.config import Config, MpvConfig
         from auto_translate.ingest import Source
+        from auto_translate.output.mpv import MpvOutput
 
-        cfg = Config()
         source = Source(location="test.mp4", live=False)
 
         with patch.object(MpvOutput, "__init__", lambda self, *a, **k: None):
@@ -75,9 +72,10 @@ class TestSeekResetRace:
     def test_seek_reset_preserves_real_coverage_and_blocks_early_resume(self):
         """Real CoverageTracker reproduces the double-reset interleaving."""
         from types import SimpleNamespace
+
+        from auto_translate.ingest import Source
         from auto_translate.output.coverage import CoverageTracker
         from auto_translate.output.mpv import MpvOutput
-        from auto_translate.ingest import Source
 
         mpv = MpvOutput.__new__(MpvOutput)
         mpv._buffer_condition = threading.Condition()
@@ -115,11 +113,9 @@ class TestSeekResetRace:
 
     def test_reset_buffer_different_generation(self):
         """A reset for a new generation must still perform the full destructive reset."""
-        from auto_translate.output.mpv import MpvOutput
-        from auto_translate.config import Config
         from auto_translate.ingest import Source
+        from auto_translate.output.mpv import MpvOutput
 
-        cfg = Config()
         source = Source(location="test.mp4", live=False)
 
         with patch.object(MpvOutput, "__init__", lambda self, *a, **k: None):
@@ -145,8 +141,8 @@ class TestSeekResetRace:
 
     def test_record_speech_rejects_stale_generation(self):
         """record_speech must reject callbacks from a previous generation."""
-        from auto_translate.output.mpv import MpvOutput
         from auto_translate.ingest import Source
+        from auto_translate.output.mpv import MpvOutput
 
         with patch.object(MpvOutput, "__init__", lambda self, *a, **k: None):
             mpv = MpvOutput.__new__(MpvOutput)
@@ -170,8 +166,8 @@ class TestSeekResetRace:
 
     def test_complete_speech_rejects_stale_generation(self):
         """complete_speech must reject callbacks from a previous generation."""
-        from auto_translate.output.mpv import MpvOutput
         from auto_translate.ingest import Source
+        from auto_translate.output.mpv import MpvOutput
 
         with patch.object(MpvOutput, "__init__", lambda self, *a, **k: None):
             mpv = MpvOutput.__new__(MpvOutput)
@@ -189,8 +185,8 @@ class TestSeekResetRace:
 
     def test_advance_to_subtitle_rejects_stale_generation(self):
         """advance_to_subtitle must reject callbacks from a previous generation."""
-        from auto_translate.output.mpv import MpvOutput
         from auto_translate.ingest import Source
+        from auto_translate.output.mpv import MpvOutput
 
         with patch.object(MpvOutput, "__init__", lambda self, *a, **k: None):
             mpv = MpvOutput.__new__(MpvOutput)
@@ -216,8 +212,8 @@ class TestSeekResetRace:
         4. AudioProgress reset marker arrives, pipeline calls reset_buffer(100)
         5. Pending speech must survive
         """
-        from auto_translate.output.mpv import MpvOutput
         from auto_translate.ingest import Source
+        from auto_translate.output.mpv import MpvOutput
 
         with patch.object(MpvOutput, "__init__", lambda self, *a, **k: None):
             mpv = MpvOutput.__new__(MpvOutput)
@@ -268,7 +264,7 @@ class TestCudaDeviceSelection:
 
     def test_detect_device_cuda0(self):
         """cuda_device=0 must return 'CUDA0' when verification is unavailable."""
-        from auto_translate.llama_server import detect_device, LlamaServerError
+        from auto_translate.llama_server import LlamaServerError, detect_device
         # Without an executable to verify, should return the requested device
         with patch("auto_translate.llama_server.resolve_executable", side_effect=LlamaServerError("not found")):
             result = detect_device(cuda_device=0)
@@ -276,21 +272,21 @@ class TestCudaDeviceSelection:
 
     def test_detect_device_cuda1(self):
         """cuda_device=1 must return 'CUDA1' when verification is unavailable."""
-        from auto_translate.llama_server import detect_device, LlamaServerError
+        from auto_translate.llama_server import LlamaServerError, detect_device
         with patch("auto_translate.llama_server.resolve_executable", side_effect=LlamaServerError("not found")):
             result = detect_device(cuda_device=1)
             assert result == "CUDA1"
 
     def test_detect_device_cuda2(self):
         """cuda_device=2 must return 'CUDA2' when verification is unavailable."""
-        from auto_translate.llama_server import detect_device, LlamaServerError
+        from auto_translate.llama_server import LlamaServerError, detect_device
         with patch("auto_translate.llama_server.resolve_executable", side_effect=LlamaServerError("not found")):
             result = detect_device(cuda_device=2)
             assert result == "CUDA2"
 
     def test_detect_device_auto_no_executable(self):
         """Auto-detect with no executable and no cuda_device must return 'CUDA0'."""
-        from auto_translate.llama_server import detect_device, LlamaServerError
+        from auto_translate.llama_server import LlamaServerError, detect_device
         # When cuda_device is None (auto) and no executable, falls back to CUDA0
         with patch("auto_translate.llama_server.resolve_executable", side_effect=LlamaServerError("not found")), \
              patch("auto_translate.llama_server.subprocess.run", side_effect=OSError("no exe")):
@@ -329,7 +325,7 @@ class TestCudaDeviceSelection:
 
     def test_detect_device_requested_not_found(self):
         """An unavailable explicitly requested GPU must never fall back."""
-        from auto_translate.llama_server import detect_device, LlamaServerError
+        from auto_translate.llama_server import LlamaServerError, detect_device
 
         mock_exe = Path("/fake/llama-server")
         with patch("auto_translate.llama_server.subprocess.run") as mock_run:
@@ -372,8 +368,8 @@ class TestCudaDeviceSelection:
 
     def test_gemma4_server_args_use_explicit_cuda0(self):
         """Verify constructed llama-server arguments, not source-text presence."""
-        from auto_translate.translate.gemma4 import Gemma4Translator
         from auto_translate.config import TranslateConfig
+        from auto_translate.translate.gemma4 import Gemma4Translator
 
         translator = Gemma4Translator.__new__(Gemma4Translator)
         translator.cfg = TranslateConfig(cuda_device=0)
@@ -388,25 +384,26 @@ class TestCudaDeviceSelection:
 
     def test_gemma4_passes_cuda_device(self):
         """Gemma4Translator must pass cuda_device to detect_device."""
-        from auto_translate.translate.gemma4 import Gemma4Translator
-        from auto_translate.config import TranslateConfig
-
         # Check that _args method uses self.cfg.cuda_device
         import inspect
+
+        from auto_translate.translate.gemma4 import Gemma4Translator
         source = inspect.getsource(Gemma4Translator._args)
         assert "cuda_device" in source, "Gemma4Translator._args must reference cuda_device"
 
     def test_plamo_passes_cuda_device(self):
         """PlamoTranslator must pass cuda_device to detect_device."""
-        from auto_translate.translate.plamo import PlamoTranslator
         import inspect
+
+        from auto_translate.translate.plamo import PlamoTranslator
         source = inspect.getsource(PlamoTranslator._args)
         assert "cuda_device" in source, "PlamoTranslator._args must reference cuda_device"
 
     def test_hymt_passes_cuda_device(self):
         """HyMT translator must pass cuda_device to detect_device."""
-        from auto_translate.translate import hymt
         import inspect
+
+        from auto_translate.translate import hymt
         # Find the translator class in the module
         translator_cls = None
         for name in dir(hymt):
@@ -420,8 +417,9 @@ class TestCudaDeviceSelection:
 
     def test_qwen3_asr_passes_cuda_device(self):
         """Qwen3ASR must pass cuda_device to detect_device."""
-        from auto_translate.asr.qwen3_asr import Qwen3ASR
         import inspect
+
+        from auto_translate.asr.qwen3_asr import Qwen3ASR
         source = inspect.getsource(Qwen3ASR)
         assert "cuda_device" in source, "Qwen3ASR must reference cuda_device"
 
@@ -460,9 +458,11 @@ class TestQwen3ASRStartup:
             "/models/first/Qwen3-ASR-1.7B-Q8_0.gguf",
             "/models/second/Qwen3-ASR-1.7B-Q8_0.gguf",
         ]
-        with patch("auto_translate.registry._qwen3_asr_candidates", return_value=candidates):
-            with pytest.raises(ValueError, match="Multiple Qwen3-ASR GGUF"):
-                _find_qwen3_asr_model()
+        with (
+            patch("auto_translate.registry._qwen3_asr_candidates", return_value=candidates),
+            pytest.raises(ValueError, match="Multiple Qwen3-ASR GGUF"),
+        ):
+            _find_qwen3_asr_model()
 
     def test_qwen3_asr_missing_model_error(self):
         """Missing model must raise ValueError with actionable message."""
@@ -494,8 +494,9 @@ class TestQwen3ASRStartup:
 
     def test_qwen3_asr_model_search(self):
         """_find_qwen3_asr_model must search common directories."""
-        from auto_translate.registry import _find_qwen3_asr_model
         from pathlib import Path
+
+        from auto_translate.registry import _find_qwen3_asr_model
 
         with patch("pathlib.Path.cwd") as mock_cwd:
             root = Path("/fake/project")
@@ -521,8 +522,9 @@ class TestQwen3ASRStartup:
 
     def test_qwen3_asr_model_search_excludes_mmproj(self):
         """Model search must not return mmproj files."""
-        from auto_translate.registry import _find_qwen3_asr_model
         from pathlib import Path
+
+        from auto_translate.registry import _find_qwen3_asr_model
 
         with patch("pathlib.Path.cwd") as mock_cwd:
             root = Path("/fake/project")
@@ -538,7 +540,6 @@ class TestQwen3ASRStartup:
     def test_qwen3_asr_resolved_paths_used(self):
         """When model is found by search, resolved paths must be used."""
         from auto_translate.registry import _qwen3_asr_factory
-        from auto_translate.config import AsrConfig
 
         mock_asr = MagicMock()
 
@@ -569,9 +570,9 @@ class TestCoverageTrackerGeneration:
         tracker.set_generation(2)
 
         # Register intervals from different generations
-        sid1 = tracker.record_speech(0.0, 5.0, generation=1)
-        sid2 = tracker.record_speech(5.0, 10.0, generation=2)
-        sid3 = tracker.record_speech(10.0, 15.0, generation=1)
+        tracker.record_speech(0.0, 5.0, generation=1)
+        tracker.record_speech(5.0, 10.0, generation=2)
+        tracker.record_speech(10.0, 15.0, generation=1)
 
         assert tracker.pending_count() == 3
 
@@ -612,8 +613,8 @@ class TestPipelineGenerationFiltering:
 
     def test_audio_progress_reset_generation_check(self):
         """AudioProgress reset markers must carry correct generation."""
+
         from auto_translate.types import AudioProgress
-        import numpy as np
 
         progress = AudioProgress(
             sample=int(100.0 * 16000),
@@ -697,6 +698,7 @@ class TestPlamoModelDiscovery:
     def test_plamo_resolution_happens_before_budget_allocation(self, tmp_path, monkeypatch):
         """A discovered model must reach _load_translator's effective profile."""
         import importlib
+
         from auto_translate.config import Config
 
         folder = self._models_dir(tmp_path, monkeypatch)
@@ -732,7 +734,6 @@ def pytest_raises():
 
 # Make pytest.raises available for test classes
 import pytest
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -13,7 +13,7 @@ from auto_translate.asr.qwen3_asr import Qwen3ASR
 from auto_translate.config import AsrConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import compare_haas_qwen_windows as bench  # noqa: E402
+import compare_haas_qwen_windows as bench
 
 
 def fake_backend():

@@ -269,7 +269,8 @@ class WhisperASR:
     # ASRBackend protocol
     # ------------------------------------------------------------------ #
 
-    def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
+    def transcribe(self, audio: np.ndarray, probe: bool = False, *,
+                   deadline: float | None = None) -> str:
         """Transcribe 16 kHz mono float32 audio to Japanese text."""
         with self._state_lock:
             generation = self._generation
@@ -289,7 +290,13 @@ class WhisperASR:
             return ""
 
         started = time.monotonic()
-        with self._inference_lock:
+        request_deadline = started + self.cfg.response_timeout_s
+        if deadline is not None:
+            request_deadline = min(request_deadline, deadline)
+        if not self._acquire_inference_until(request_deadline):
+            self.last_rejection = "error"
+            return ""
+        try:
             if generation != self._generation or self._closed:
                 return ""
             try:
@@ -298,6 +305,12 @@ class WhisperASR:
                 self.last_rejection = "error"
                 log.warning("Whisper request failed: %s", exc)
                 return ""
+        finally:
+            self._inference_lock.release()
+
+        if time.monotonic() >= request_deadline:
+            self._discard_late_result()
+            return ""
 
         self._failures = 0
         with self._state_lock:
@@ -317,25 +330,33 @@ class WhisperASR:
                 float(self.cfg.live_response_timeout_s if duration_s <= 8
                       else self.cfg.response_timeout_s),
             )
-            if probe or time.monotonic() - started >= retry_budget:
+            retry_deadline = min(request_deadline, started + retry_budget)
+            if probe or time.monotonic() >= retry_deadline:
                 self.last_rejection = suspect
                 self.last_raw_transcript = original
                 self.last_language_spans = []
                 log.info("Whisper rejected %s on unverified audio", suspect)
                 return ""
+            if not self._acquire_inference_until(retry_deadline):
+                self._discard_late_result()
+                return ""
             try:
                 # _transcribe_impl() is called only with the inference lock.
                 # Probe=True here selects a different temperature; it does not
                 # re-enable VAD-negative audio processing in run_asr().
-                with self._inference_lock:
-                    if generation != self._generation or self._closed:
-                        return ""
-                    candidate = self._transcribe_impl(audio, probe=True, no_context=True)
+                if generation != self._generation or self._closed:
+                    return ""
+                candidate = self._transcribe_impl(audio, probe=True, no_context=True)
             except Exception as exc:  # noqa: BLE001
                 self.last_rejection = suspect
                 self.last_raw_transcript = original
                 self.last_language_spans = []
                 log.warning("Whisper suspect recheck failed (%s): %s", suspect, exc)
+                return ""
+            finally:
+                self._inference_lock.release()
+            if time.monotonic() >= retry_deadline:
+                self._discard_late_result()
                 return ""
             # Only a clean, independently produced Japanese hypothesis may be
             # accepted. Do not keep a looping result even when both passes
@@ -345,7 +366,7 @@ class WhisperASR:
             agreement = SequenceMatcher(None, first, second, autojunk=False).ratio()
             stable_prefix = len(second) >= 8 and first.startswith(second[:8])
             if (generation != self._generation or self._closed
-                    or time.monotonic() - started >= retry_budget
+                    or time.monotonic() >= request_deadline
                     or not candidate or whisper_suspect_reason(candidate)
                     or transcript_problem(candidate, duration_s)
                     or not (agreement >= 0.72 or stable_prefix)):
@@ -411,6 +432,14 @@ class WhisperASR:
             self.last_detected_language = "und"
             self.last_detected_language_probability = 0.0
 
+    def recover_stalled(self, deadline: float | None = None) -> bool:
+        """Cancel stale output; CTranslate2 inference itself cannot be interrupted."""
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        self.cancel_pending()
+        log.error("Whisper inference is non-interruptible; invalidated output and failing the session")
+        return False
+
     def close(self) -> None:
         """Release the model and free GPU memory."""
         self._closed = True
@@ -440,6 +469,22 @@ class WhisperASR:
             self._release_model()
         update_metrics(workers={"asr": "closed"})
         log.info("Whisper ASR closed after active inference returned")
+
+    def _acquire_inference_until(self, deadline: float) -> bool:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._inference_lock.acquire(timeout=min(remaining, 0.05)):
+                return True
+
+    def _discard_late_result(self) -> None:
+        with self._state_lock:
+            self.last_rejection = "error"
+            self.last_raw_transcript = ""
+            self.last_language_spans = []
+            self.last_detected_language = "und"
+            self.last_detected_language_probability = 0.0
 
     def _release_model(self) -> None:
         model = getattr(self, "_model", None)
@@ -474,7 +519,8 @@ class WhisperASR:
 
     def recover_context_echo(self, audio: np.ndarray, probe: bool = False,
                               vad_confidence: float | None = None,
-                              timeout: float = 0.0) -> str:
+                              timeout: float = 0.0, *,
+                              deadline: float | None = None) -> str:
         """Retry transcription without context to recover from echo.
 
         Enforces the supplied remaining timeout budget. If the budget has
@@ -496,16 +542,23 @@ class WhisperASR:
             self.last_rejection = None
         if not len(audio):
             return ""
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if deadline is None else min(
+            deadline, time.monotonic() + timeout,
+        )
+        if not self._acquire_inference_until(deadline):
+            self.last_rejection = "error"
+            return ""
         try:
-            with self._inference_lock:
-                if gen != self._generation or self._closed:
-                    return ""
-                text = self._transcribe_impl(audio, probe, no_context=True)
+            if gen != self._generation or self._closed:
+                return ""
+            text = self._transcribe_impl(audio, probe, no_context=True)
         except Exception as exc:  # noqa: BLE001
             log.warning("Whisper context echo recovery failed: %s", exc)
             return ""
+        finally:
+            self._inference_lock.release()
         if time.monotonic() >= deadline:
+            self._discard_late_result()
             return ""
         if gen != self._generation or self._closed:
             return ""

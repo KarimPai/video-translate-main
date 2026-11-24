@@ -218,6 +218,7 @@ class Qwen3ASR:
         self.last_rejection: str | None = None
         self._state_lock = threading.Lock()
         self._inference_lock = threading.Lock()
+        self._restart_lock = threading.Lock()
         self._generation = 0
         self._cancel_event = threading.Event()
         self._closed = False
@@ -940,6 +941,19 @@ class Qwen3ASR:
         within any preceding 300 seconds. Old timestamps are pruned on each
         call so the window is truly rolling rather than fixed.
         """
+        restart_lock = getattr(self, "_restart_lock", None)
+        if restart_lock is None:
+            restart_lock = self._restart_lock = threading.Lock()
+        remaining = self._remaining(deadline, generation)
+        if not restart_lock.acquire(timeout=remaining):
+            self._remaining(deadline, generation)
+            raise _UtteranceDeadline("Qwen3-ASR restart lock exceeded utterance deadline")
+        try:
+            self._restart_locked(deadline=deadline, generation=generation)
+        finally:
+            restart_lock.release()
+
+    def _restart_locked(self, *, deadline: float, generation: int) -> None:
         def check():
             self._remaining(deadline, generation)
 
@@ -972,24 +986,16 @@ class Qwen3ASR:
             self._restarts = len(self._restart_timestamps)
             raise
 
-    def recover_stalled(self) -> bool:
+    def recover_stalled(self, deadline: float | None = None) -> bool:
         """Restart the owned server without invalidating the current session generation."""
         now = time.monotonic()
         while self._restart_timestamps and self._restart_timestamps[0] < now - 300:
             self._restart_timestamps.popleft()
         if len(self._restart_timestamps) >= 2:
             raise Qwen3ASRError("Qwen3-ASR watchdog restart limit reached within five minutes")
-        self._restart_timestamps.append(now)
-        self._restarts = len(self._restart_timestamps)
-        deadline = now + self.cfg.startup_timeout_s
-
-        def check():
-            if self._closed:
-                raise CancelledError("Qwen3-ASR is closing")
-            check_running()
-
-        self.server.reset_for_restart(deadline=deadline, check=check)
-        check()
-        self.server.start(deadline=deadline, check=check)
-        check()
+        if deadline is None:
+            deadline = now + self.cfg.startup_timeout_s + 6.0
+        with self._state_lock:
+            generation = self._generation
+        self._restart(deadline=deadline, generation=generation)
         return True

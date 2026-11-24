@@ -18,11 +18,40 @@ _TRANSLATION_DEADLINE: ContextVar[float | None] = ContextVar(
 
 @contextmanager
 def absolute_translation_deadline(timeout_s: float):
-    token = _TRANSLATION_DEADLINE.set(time.monotonic() + timeout_s)
+    with translation_deadline(time.monotonic() + timeout_s):
+        yield
+
+
+@contextmanager
+def translation_deadline(deadline: float | None):
+    current = _TRANSLATION_DEADLINE.get()
+    effective = min(current, deadline) if current is not None and deadline is not None else (
+        current if deadline is None else deadline
+    )
+    token = _TRANSLATION_DEADLINE.set(effective)
     try:
         yield
     finally:
         _TRANSLATION_DEADLINE.reset(token)
+
+
+@contextmanager
+def acquire_until(lock, deadline: float | None):
+    acquired = False
+    if deadline is None:
+        lock.acquire()
+        acquired = True
+    else:
+        while time.monotonic() < deadline:
+            acquired = lock.acquire(timeout=min(deadline - time.monotonic(), 0.05))
+            if acquired:
+                break
+    if not acquired:
+        raise TimeoutError("Translation deadline exceeded while acquiring backend recovery lock")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def remaining_translation_timeout(timeout_s: float) -> float:
@@ -89,8 +118,10 @@ __all__ = [
     "TranslationBackend",
     "TranslatorUnavailable",
     "absolute_translation_deadline",
+    "acquire_until",
     "active_translation_deadline",
     "remaining_translation_timeout",
     "start_translation_server",
+    "translation_deadline",
     "with_translation_deadline",
 ]

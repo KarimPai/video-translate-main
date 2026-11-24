@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import compare_qwen_ja as cmp  # noqa: E402
+import compare_qwen_ja as cmp
 
 
 def record(label: str, text: str, *, language: str = "ja",
@@ -161,6 +161,7 @@ def test_both_models_are_selected_explicitly_and_closed_sequentially(
         tmp_path, monkeypatch):
     """CPU-only integration: compare runner does not use registry auto-discovery."""
     import numpy as np
+
     import auto_translate.config as cfg_module
     import auto_translate.registry as reg_module
 

@@ -11,7 +11,8 @@ from auto_translate.config import NameFusionConfig, load_config
 from auto_translate.glossary import Glossary
 from auto_translate.name_fusion import NameFusion
 from auto_translate.pipeline import run_asr
-from auto_translate.types import AudioProgress, Transcript, Utterance
+from auto_translate.session_cache import SessionSubtitleCache
+from auto_translate.types import AudioProgress, Subtitle, Transcript, Utterance
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -225,6 +226,21 @@ def test_run_asr_does_not_promote_low_confidence_or_probe_names():
     incoming.put(None)
     run_asr(asr, incoming, outgoing, name_fusion=fusion)
     # Only the last utterance counts as an acoustic observation.
+    assert fusion.prompt() == ""
+
+
+def test_cached_transcript_does_not_count_as_new_name_observation():
+    fusion = NameFusion(Glossary({"ルシア": "Lucia"}), "", "", confirmations=1)
+    cache = SessionSubtitleCache()
+    cache.add(Subtitle(0.0, 2.0, "ルシアがいる", "Lucia is here."))
+    asr = FakeASR([])
+    incoming, outgoing = queue.Queue(), queue.Queue()
+    incoming.put(_speech(0))
+    incoming.put(None)
+
+    run_asr(asr, incoming, outgoing, session_cache=cache, name_fusion=fusion)
+
+    assert asr._i == 0
     assert fusion.prompt() == ""
 
 

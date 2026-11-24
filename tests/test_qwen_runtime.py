@@ -762,6 +762,63 @@ def test_lifecycle_lock_contention_cannot_outlast_utterance(owned_server, operat
     assert not spawned
 
 
+def test_normal_and_watchdog_recovery_are_serialized(backend, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    state_lock = threading.Lock()
+    state = {"active": 0, "max_active": 0, "calls": 0}
+
+    def reset(*, deadline, check=None):
+        with state_lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+            state["calls"] += 1
+            call_number = state["calls"]
+        try:
+            if call_number == 1:
+                entered.set()
+                assert release.wait(2.0)
+            if check is not None:
+                check()
+        finally:
+            with state_lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr(backend.server, "reset_for_restart", reset)
+    monkeypatch.setattr(backend, "_warmup", lambda *_args: None)
+    errors = []
+    deadline = time.monotonic() + 3.0
+
+    def normal_recovery():
+        try:
+            backend._restart(deadline=deadline, generation=backend._generation)
+        except Exception as exc:
+            errors.append(exc)
+
+    def watchdog_recovery():
+        try:
+            backend.recover_stalled(deadline=deadline)
+        except Exception as exc:
+            errors.append(exc)
+
+    normal = threading.Thread(target=normal_recovery)
+    watchdog = threading.Thread(target=watchdog_recovery)
+    normal.start()
+    try:
+        assert entered.wait(1.0)
+        watchdog.start()
+        time.sleep(0.03)
+        assert state["calls"] == 1
+    finally:
+        release.set()
+    normal.join(2.0)
+    watchdog.join(2.0)
+
+    assert not normal.is_alive() and not watchdog.is_alive()
+    assert not errors
+    assert state["calls"] == 2
+    assert state["max_active"] == 1
+
+
 def test_startup_unwinds_while_concurrent_close_owns_reap(owned_server):
     server, spawned = owned_server
     checking, release_health = threading.Event(), threading.Event()

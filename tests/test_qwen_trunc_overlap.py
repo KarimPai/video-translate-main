@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -13,7 +13,7 @@ import pytest
 from auto_translate.asr.qwen3_asr import Qwen3ASR, recovery_split_ranges
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import compare_haas_qwen_windows as bench  # noqa: E402
+import compare_haas_qwen_windows as bench
 
 
 @pytest.mark.parametrize("seconds", [4, 8, 15, 16, 20])

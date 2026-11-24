@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from concurrent.futures import CancelledError
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,6 +106,20 @@ def test_health_timeout_kills_child_and_remains_restartable(make_server):
     server.start()
     assert len(make_server.spawned) == 2
     assert make_server.spawned[-1].returncode is None
+
+
+def test_start_lock_wait_obeys_operation_deadline(make_server):
+    server = make_server(timeout=5.0)
+    server._lock.acquire()
+    deadline = time.monotonic() + 0.03
+    started = time.monotonic()
+    try:
+        with pytest.raises(ss.SpeechServerError, match="deadline"):
+            server.start(deadline=deadline)
+        assert time.monotonic() - started < 0.2
+        assert make_server.spawned == []
+    finally:
+        server._lock.release()
 
 
 def test_unexpected_error_while_waiting_kills_child(make_server):

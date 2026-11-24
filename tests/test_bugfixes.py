@@ -243,8 +243,10 @@ def test_llama_server_start_refuses_after_close():
 
 def test_llama_server_reset_refuses_after_close():
     """Neither recycle nor start may resurrect a closed server."""
-    import pytest
     from pathlib import Path
+
+    import pytest
+
     from auto_translate.llama_server import LlamaServer, LlamaServerError
 
     server = LlamaServer(
@@ -499,17 +501,17 @@ def test_mpv_resume_from_auto_pause():
 
 
 def test_qwen3_asr_restart_method():
-    """Qwen3-ASR _restart must exist and use reset_for_restart."""
+    """Qwen3-ASR recovery must use the bounded server lifecycle operation."""
     from auto_translate.asr.qwen3_asr import Qwen3ASR
     assert hasattr(Qwen3ASR, "_restart")
-    source = inspect.getsource(Qwen3ASR._restart)
+    source = inspect.getsource(Qwen3ASR._restart) + inspect.getsource(Qwen3ASR._restart_locked)
     assert "reset_for_restart" in source
 
 
 def test_qwen3_asr_restart_limits_attempts():
     """Qwen3-ASR _restart must bound restart attempts."""
     from auto_translate.asr.qwen3_asr import Qwen3ASR
-    source = inspect.getsource(Qwen3ASR._restart)
+    source = inspect.getsource(Qwen3ASR._restart) + inspect.getsource(Qwen3ASR._restart_locked)
     assert "restart limit" in source.lower() or "_restarts >= 2" in source
 
 

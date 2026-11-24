@@ -480,6 +480,7 @@ def test_cli_help():
             [sys.executable, "-m", "auto_translate", "--help"],
             capture_output=True, text=True, timeout=10,
             cwd=Path(__file__).parent.parent,
+            check=False,
         )
         if result.returncode == 0 and "usage" in result.stdout.lower():
             record("CLI --help", True)
@@ -496,6 +497,7 @@ def test_list_backends():
             [sys.executable, "-m", "auto_translate", "--list-backends"],
             capture_output=True, text=True, timeout=15,
             cwd=Path(__file__).parent.parent,
+            check=False,
         )
         if result.returncode == 0:
             has_asr = "haas" in result.stdout.lower() or "asr" in result.stdout.lower()

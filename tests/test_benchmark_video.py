@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 from benchmark_video import main, parse_log, seconds, summarize
 
-
 FAKE_LOG = (
     "[25:01.1–25:03.5] ここにいる。    "
     "(vad 0.40s · wait 0.03s · asr 0.12s · mt 0.06s)\n"

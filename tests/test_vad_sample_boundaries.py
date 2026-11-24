@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 
 from auto_translate.config import VadConfig
-from auto_translate.types import SAMPLE_RATE, AudioChunk, AudioProgress, SourceEOF, Utterance
+from auto_translate.types import (
+    SAMPLE_RATE,
+    AudioChunk,
+    AudioProgress,
+    SourceEOF,
+    Utterance,
+)
 from auto_translate.vad import FRAME, Segmenter, run_segmenter
 
 

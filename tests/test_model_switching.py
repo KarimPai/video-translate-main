@@ -249,6 +249,7 @@ def test_cli_invalid_source():
             [sys.executable, "-m", "auto_translate", "not_a_file_or_url"],
             capture_output=True, text=True, timeout=10,
             cwd=Path(__file__).parent.parent,
+            check=False,
         )
         if result.returncode != 0:
             record("CLI rejects invalid source", True, f"exit={result.returncode}")
@@ -276,7 +277,7 @@ def test_process_cleanup():
         # Count processes before
         before = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq speech.exe", "/FI", "IMAGENAME eq llama-server.exe"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         before_count = len([l for l in before.stdout.split("\n") if "speech.exe" in l or "llama-server.exe" in l])
         
@@ -291,7 +292,7 @@ def test_process_cleanup():
         time.sleep(1)
         during = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq speech.exe", "/FI", "IMAGENAME eq llama-server.exe"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         during_count = len([l for l in during.stdout.split("\n") if "speech.exe" in l or "llama-server.exe" in l])
         record("Processes during run", True, f"before={before_count}, during={during_count}")
@@ -303,7 +304,7 @@ def test_process_cleanup():
         time.sleep(2)
         after = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq speech.exe", "/FI", "IMAGENAME eq llama-server.exe"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         after_count = len([l for l in after.stdout.split("\n") if "speech.exe" in l or "llama-server.exe" in l])
         

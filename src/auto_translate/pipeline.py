@@ -1,6 +1,7 @@
 
 """Wire the stages together with threads and queues."""
 
+import inspect
 import logging
 import math
 import queue
@@ -13,8 +14,10 @@ from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 
 from .asr.base import ASRBackend
+from .asr.haas import HaasASR
 from .asr.quality_guard import transcript_problem
 from .asr.qwen3_asr import Qwen3ASR
+from .asr.whisper_turbo import WhisperASR
 from .config import Config, vad_for_source
 from .gui_control import emit_event
 from .ingest import Ingest
@@ -98,17 +101,37 @@ def _current_inference_stall(worker_state: "WorkerState", deadline_s: float,
             and not worker_state.stale_generation(current_generation))
 
 
+def _active_inference_watchdog_timeout(response_timeout_s: float) -> float:
+    """Allow a small return/cleanup margin, never the model startup budget."""
+    return max(0.0, response_timeout_s) + 5.0
+
+
 def _start_watchdog_recovery(name: str, backend, failures: queue.Queue,
                              status: dict) -> threading.Thread:
     def recover() -> None:
         try:
             recovery = getattr(backend, "recover_stalled", None)
-            if not callable(recovery) or recovery() is not True:
+            if not callable(recovery):
+                raise TypeError(f"{name} backend has no recoverable stalled-inference path")
+            try:
+                signature = inspect.signature(recovery)
+                accepts_deadline = (
+                    "deadline" in signature.parameters
+                    or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                           for p in signature.parameters.values())
+                )
+            except (TypeError, ValueError):
+                accepts_deadline = False
+            recovered = (recovery(deadline=status.get("deadline")) if accepts_deadline
+                         else recovery())
+            if recovered is not True:
                 raise RuntimeError(f"{name} backend has no recoverable stalled-inference path")
             record_event("inference_watchdog_recovered", worker=name,
                          generation=status["key"][0], utterance_id=status["utterance_id"])
         except Exception as exc:
             log.exception("Watchdog recovery failed for %s", name)
+            status["error"] = exc
+            failures.put(("watchdog", RuntimeError(f"{name} inference recovery failed: {exc}")))
             close = getattr(backend, "interrupt", None) if name == "translate" else None
             close = close or getattr(backend, "close", None)
             if callable(close):
@@ -116,8 +139,6 @@ def _start_watchdog_recovery(name: str, backend, failures: queue.Queue,
                     close()
                 except Exception:
                     log.exception("Watchdog cleanup failed for %s", name)
-            status["error"] = exc
-            failures.put(("watchdog", RuntimeError(f"{name} inference recovery failed: {exc}")))
         finally:
             status["finished_at"] = time.monotonic()
             status["done"] = True
@@ -131,6 +152,10 @@ def _start_watchdog_recovery(name: str, backend, failures: queue.Queue,
 def _start_watchdog_abort(name: str, backend, failures: queue.Queue,
                           generation: int, utterance_id: int) -> threading.Thread:
     def abort() -> None:
+        failures.put(("watchdog", RuntimeError(
+            f"{name} inference remained stalled after bounded recovery "
+            f"(generation={generation}, utterance={utterance_id})"
+        )))
         cancel = getattr(backend, "cancel_pending", None)
         if callable(cancel):
             try:
@@ -144,10 +169,6 @@ def _start_watchdog_abort(name: str, backend, failures: queue.Queue,
                 close()
             except Exception:
                 log.exception("Watchdog abort cleanup failed for %s", name)
-        failures.put(("watchdog", RuntimeError(
-            f"{name} inference remained stalled after bounded recovery "
-            f"(generation={generation}, utterance={utterance_id})"
-        )))
 
     thread = threading.Thread(target=abort, name=f"watchdog-{name}-abort", daemon=True)
     thread.start()
@@ -490,16 +511,17 @@ def run_asr(
             refresh_name_hints()
         current_generation = generation
 
-    def accepted(text, end_s, *, vad_confidence=None, probe=False):
+    def accepted(text, end_s, *, vad_confidence=None, probe=False,
+                 acoustic_evidence=True):
         nonlocal last_accepted_end_s
         last_accepted_end_s = end_s
-        if callable(remember):
+        if acoustic_evidence and callable(remember):
             remember(text)
         # Name memory needs evidence independent of model output: only a
         # non-probe VAD-positive utterance with adequate speech confidence
         # may count toward the repeated-observation threshold. A cached or
         # low-confidence ASR guess cannot seed self-reinforcing prompts.
-        if (name_fusion is not None and not probe
+        if (acoustic_evidence and name_fusion is not None and not probe
                 and vad_confidence is not None and vad_confidence >= 0.35
                 and name_fusion.observe(text)):
             refresh_name_hints()
@@ -536,6 +558,8 @@ def run_asr(
                 source_end_s=utt.end_s,
             )
             continue
+        if session_cache is not None and not utt.probe:
+            session_cache.record_unprocessed(utt.start_s, utt.end_s)
         cached = (session_cache.match(utt.start_s, utt.end_s)
                   if session_cache is not None else None)
         if cached is not None:
@@ -554,7 +578,8 @@ def run_asr(
                 cached = None
         if cached is not None:
             accepted(cached.ja, utt.end_s, vad_confidence=utt.vad_confidence,
-                     probe=utt.probe)
+                     probe=utt.probe, acoustic_evidence=False)
+            session_cache.record_translated(utt.start_s, utt.end_s)
             # Record this speech region as pending so the watermark knows
             # about it. The cached subtitle must complete this exact pending
             # entry, not some other utterance with similar timestamps.
@@ -579,9 +604,12 @@ def run_asr(
         # Record queue wait time: time from segmented to ASR start (waiting for inference slot)
         utt.timings.asr_queue_wait = time.monotonic() - utt.timings.segmented
         utt.timings.asr_start = time.monotonic()
+        utterance_deadline = utt.timings.asr_start + asr.cfg.response_timeout_s
         request = ({"generation": utt.generation,
-                    "deadline": utt.timings.asr_start + asr.cfg.response_timeout_s}
+                    "deadline": utterance_deadline}
                    if qwen else {})
+        if isinstance(asr, (HaasASR, WhisperASR)):
+            request = {"deadline": utterance_deadline}
         # Report to watchdog: this utterance is now in-flight for ASR
         if worker_state is not None:
             worker_state.record_queue_get(id(utt))
@@ -603,7 +631,7 @@ def run_asr(
                 reason = _rejection_reason(asr, text)
                 if not text and reason in ("context_echo", "repeated_output"):
                     reviewed = True
-                    remaining = asr.cfg.response_timeout_s - (time.monotonic() - utt.timings.asr_start)
+                    remaining = max(0.0, utterance_deadline - time.monotonic())
                     retry = (asr.cfg.context_retry_limit and remaining > 0
                              and not cancelled(utt.generation)
                              and not (live and _expired_live_cue(utt, playback_position, live_late_window_s)))
@@ -611,8 +639,18 @@ def run_asr(
                              "match_score=%.2f action=%s", reason, utt.start_s, utt.end_s,
                              asr.last_match_score, "retry_without_context" if retry else "discard")
                     if retry:
+                        if qwen:
+                            recovery_request = {
+                                "generation": utt.generation,
+                                "deadline": utterance_deadline,
+                            }
+                        elif isinstance(asr, (HaasASR, WhisperASR)):
+                            recovery_request = {"deadline": utterance_deadline}
+                        else:
+                            recovery_request = {}
                         text = asr.recover_context_echo(
-                            utt.audio, utt.probe, utt.vad_confidence, remaining, **request,
+                            utt.audio, utt.probe, utt.vad_confidence, remaining,
+                            **recovery_request,
                         )
                     if cancelled(utt.generation) or (live and _expired_live_cue(
                             utt, playback_position, live_late_window_s)):
@@ -635,7 +673,13 @@ def run_asr(
                 record_event("asr_retry", generation=utt.generation, attempt=asr_attempt,
                              source_start_s=utt.start_s, source_end_s=utt.end_s,
                              reason=reason)
-                time.sleep(0.25 * asr_attempt)
+                retry_delay = min(0.25 * asr_attempt,
+                                  max(0.0, utterance_deadline - time.monotonic()))
+                if retry_delay <= 0:
+                    break
+                time.sleep(retry_delay)
+                if time.monotonic() >= utterance_deadline:
+                    break
                 continue
             increment_counter("asr_rejected")
             record_event("asr_rejected", generation=utt.generation, reason=reason,
@@ -658,6 +702,11 @@ def run_asr(
                 note_failure = getattr(asr, "note_utterance_failure", None)
                 if callable(note_failure):
                     note_failure()
+            elif (session_cache is not None
+                  and getattr(asr, "last_rejection", None) == "no_speech"):
+                session_cache.record_confirmed_silence(utt.start_s, utt.end_s)
+            elif session_cache is not None and getattr(asr, "last_rejection", None):
+                session_cache.record_rejected(utt.start_s, utt.end_s)
             continue
         # Haas can mishear revving engines as repeated "yeah" / イェー.
         # Call a backend-specific evidence gate before names/context/MT; no
@@ -665,6 +714,8 @@ def run_asr(
         check_utterance = getattr(asr, "reject_utterance", None)
         utterance_reason = check_utterance(text, utt) if callable(check_utterance) else None
         if utterance_reason:
+            if session_cache is not None:
+                session_cache.record_rejected(utt.start_s, utt.end_s)
             increment_counter("asr_rejected")
             record_event("asr_rejected", generation=utt.generation,
                          reason=utterance_reason, source_start_s=utt.start_s,
@@ -1382,8 +1433,8 @@ def run(
     mt_timeout_s = getattr(getattr(translator, "cfg", None), "timeout_s", cfg.translate.timeout_s)
     asr_startup_s = getattr(getattr(asr, "cfg", None), "startup_timeout_s", cfg.asr.startup_timeout_s)
     mt_load_s = getattr(getattr(translator, "cfg", None), "load_timeout_s", cfg.translate.load_timeout_s)
-    asr_watchdog_s = max(asr_timeout_s, asr_startup_s) + 5.0
-    mt_watchdog_s = max(mt_timeout_s, mt_load_s) + 5.0
+    asr_watchdog_s = _active_inference_watchdog_timeout(asr_timeout_s)
+    mt_watchdog_s = _active_inference_watchdog_timeout(mt_timeout_s)
 
     threads = [
         threading.Thread(
@@ -1634,6 +1685,7 @@ def run(
 
                 if session_cache is not None:
                     session_cache.add(item)
+                    session_cache.record_translated(item.start_s, item.end_s)
 
                 record_event("subtitle_published", generation=item.generation,
                              speech_start_s=item.speech_start_s,
@@ -1755,15 +1807,15 @@ def run(
                         )
 
                 # Restart a backend-owned server after a current-generation
-                # inference exceeds its request and startup budgets. This is
+                # inference exceeds its active request budget. This is
                 # independent of MPV pause state and never treats silence or
                 # stale seek work as a stalled request.
                 if no_sub_s > 30.0 and is_in_flight_stall:
                     candidates = (
                         ("asr", asr_stalled, asr_worker_state, asr,
-                         max(asr_timeout_s, asr_startup_s) + 5.0),
+                         asr_startup_s + 6.0),
                         ("translate", mt_stalled, mt_worker_state, translator,
-                         max(mt_timeout_s, mt_load_s) + 5.0),
+                         mt_load_s + 6.0),
                     )
                     for name, stalled, state, backend, recovery_budget_s in candidates:
                         if not stalled or backend is None:

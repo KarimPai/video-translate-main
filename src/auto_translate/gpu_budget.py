@@ -120,6 +120,8 @@ class GpuBudget:
         self._last_pressure = "normal"
         self._last_low_relief_time = 0.0
         self._last_critical_relief_time = 0.0
+        self._last_low_relief_attempt_time = 0.0
+        self._last_critical_relief_attempt_time = 0.0
         self.metrics = {}
         self.refresh()
 
@@ -203,7 +205,13 @@ class GpuBudget:
                             if level == "critical"
                             else self._last_low_relief_time
                         )
-                        within_cooldown = now - last_relief < cooldown
+                        last_attempt = (
+                            self._last_critical_relief_attempt_time
+                            if level == "critical"
+                            else self._last_low_relief_attempt_time
+                        )
+                        last_action = max(last_relief, last_attempt)
+                        within_cooldown = last_action > 0.0 and now - last_action < cooldown
                         # Request relief when cooldown expires and pressure persists,
                         # regardless of whether the level changed. Allow immediate
                         # escalation from low to critical.
@@ -212,6 +220,10 @@ class GpuBudget:
                             # Immediate escalation: bypass cooldown
                             within_cooldown = False
                         if not within_cooldown:
+                            if level == "critical":
+                                self._last_critical_relief_attempt_time = now
+                            else:
+                                self._last_low_relief_attempt_time = now
                             log.warning("GPU free-memory pressure=%s; requesting model unload", level)
                             record_event("gpu_memory_pressure", **self.snapshot())
                             try:

@@ -93,9 +93,8 @@ def _resolve_gguf(configured: str, root: Path) -> str:
     if not configured:
         return configured
     explicit = Path(configured).expanduser()
-    if explicit.is_file():
-        if explicit.is_absolute() or _inside(explicit, root):
-            return configured
+    if explicit.is_file() and (explicit.is_absolute() or _inside(explicit, root)):
+        return configured
     if not configured.casefold().endswith(".gguf"):
         return configured
     suffix = _relative_model_path(configured)

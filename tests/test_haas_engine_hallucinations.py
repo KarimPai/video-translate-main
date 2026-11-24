@@ -6,9 +6,9 @@ real audio / labels.
 """
 from __future__ import annotations
 
-from collections import deque
 import queue
 import threading
+from collections import deque
 from unittest import mock
 
 import numpy as np

@@ -7,7 +7,6 @@ from PySide6.QtWidgets import QApplication
 
 from auto_translate.gui import VideoTranslateWindow
 
-
 _CONFIG = """[models]
 asr_backend = "haas"
 translate_backend = "gemma4"

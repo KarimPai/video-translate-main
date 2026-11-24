@@ -72,11 +72,9 @@ def make_server(tmp_path, monkeypatch):
 
 def test_cancellation_during_startup_reaps_child_and_stays_restartable(make_server, monkeypatch):
     server = make_server(timeout=5.0)
-    calls = {"n": 0}
 
     def cancel_on_third(*_a):
-        calls["n"] += 1
-        if calls["n"] >= 3:
+        if make_server.spawned:
             raise CancelledError("stopping")
 
     monkeypatch.setattr(ls, "check_running", cancel_on_third)

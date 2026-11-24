@@ -64,3 +64,29 @@ def test_rejected_relief_is_not_counted_as_a_request(monkeypatch):
         budget.close()
 
     assert budget._last_low_relief_time == 0.0
+
+
+def test_rejected_relief_attempt_is_throttled(monkeypatch):
+    monkeypatch.setattr(gb, "gpu_memory_gb", lambda: (7.5, 8.0))
+    cfg = SimpleNamespace(sample_interval_s=0.01, emergency_free_gb=0.3,
+                          low_free_gb=0.8, startup_headroom_gb=0.2)
+    budget = gb.GpuBudget(cfg)
+    attempted = threading.Event()
+    attempts = 0
+
+    def reject_relief():
+        nonlocal attempts
+        attempts += 1
+        attempted.set()
+        return False
+
+    budget.start(reject_relief)
+    try:
+        assert attempted.wait(2.0)
+        threading.Event().wait(0.08)
+    finally:
+        budget.close()
+
+    assert attempts == 1
+    assert budget._last_low_relief_time == 0.0
+    assert budget._last_low_relief_attempt_time > 0.0

@@ -17,7 +17,15 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QProcess,
+    QProcessEnvironment,
+    QSettings,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QCursor,
@@ -873,8 +881,7 @@ class VideoTranslateWindow(QMainWindow):
                 self._session_ready()
             elif (event := parse_event(line.strip())) is not None:
                 self._on_player_event(event)
-            elif (line.startswith("Error: ASR backend '")
-                  or line.startswith("Error: Translation backend '")):
+            elif line.startswith(("Error: ASR backend '", "Error: Translation backend '")):
                 # Preserve actionable backend initialization failures in the
                 # GUI status, not only in the console log.
                 self._session_error = line.strip()

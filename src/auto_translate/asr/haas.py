@@ -103,6 +103,15 @@ def is_japanese_text(text: str) -> bool:
 _RESTART_STABLE_S = 120.0
 
 
+def _acquire_until(lock: threading.Lock, deadline: float) -> bool:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if lock.acquire(timeout=min(remaining, 0.05)):
+            return True
+
+
 class HaasASR:
     """Haas-ja-v1.0 ASR via speech.cpp HTTP server."""
 
@@ -121,6 +130,7 @@ class HaasASR:
         self.last_rejection: str | None = None
         self._state_lock = threading.Lock()
         self._inference_lock = threading.Lock()
+        self._recovery_lock = threading.Lock()
         self._generation = 0
         self._closed = False
         self._failures = 0
@@ -213,11 +223,12 @@ class HaasASR:
             return "haas_repeated_engine_interjection"
         return None
 
-    def transcribe(self, audio: np.ndarray, probe: bool = False) -> str:
-        return self._decode(audio, probe, self.cfg.response_timeout_s)
+    def transcribe(self, audio: np.ndarray, probe: bool = False, *,
+                   deadline: float | None = None) -> str:
+        return self._decode(audio, probe, self.cfg.response_timeout_s, deadline=deadline)
 
     def recover_context_echo(self, audio: np.ndarray, probe: bool, vad_confidence: float | None,
-                             timeout: float) -> str:
+                             timeout: float, *, deadline: float | None = None) -> str:
         """Decode identical PCM without hints/history. Retain a spoken list if corroborated."""
         with self._state_lock:
             self.last_raw_transcript = ""
@@ -225,18 +236,31 @@ class HaasASR:
         duration_s = len(audio) / 16000
         if not len(audio):
             return ""
+        deadline = min(deadline, time.monotonic() + timeout) if deadline is not None else (
+            time.monotonic() + timeout
+        )
+        if deadline <= time.monotonic() or not _acquire_until(self._inference_lock, deadline):
+            self.last_rejection = "error"
+            return ""
         wav = wav_bytes(audio, normalize=not probe)
-        with self._inference_lock:
+        try:
             if self._closed:
                 return ""
             if not self.server.alive():
-                self._restart("server exited")
+                self._restart("server exited", deadline=deadline)
             try:
-                text, timing = self.server.transcribe_with_timing(wav, timeout=timeout)
-            except (httpx.HTTPError, SpeechServerError, ValueError) as exc:
+                text, timing = self.server.transcribe_with_timing(
+                    wav, timeout=max(0.0, deadline - time.monotonic()),
+                )
+            except (httpx.HTTPError, SpeechServerError, TimeoutError, ValueError) as exc:
                 if self._closed:
                     return ""
-                return self._failed(exc)
+                return self._failed(exc, deadline=deadline)
+            if time.monotonic() >= deadline:
+                self.last_rejection = "error"
+                return ""
+        finally:
+            self._inference_lock.release()
         http_s = timing.get("http_request_s", 0.0)
         if http_s > 2.0:
             log.warning(
@@ -254,7 +278,11 @@ class HaasASR:
         self.last_rejection = "not_japanese"
         return ""
 
-    def _decode(self, audio: np.ndarray, probe: bool, timeout: float) -> str:
+    def _decode(self, audio: np.ndarray, probe: bool, timeout: float,
+                *, deadline: float | None = None) -> str:
+        deadline = min(deadline, time.monotonic() + timeout) if deadline is not None else (
+            time.monotonic() + timeout
+        )
         with self._state_lock:
             generation = self._generation
             self.last_raw_transcript = ""
@@ -269,18 +297,30 @@ class HaasASR:
         wav = wav_bytes(audio, normalize=not probe)
         prep_time = time.monotonic() - prep_start
         started = time.monotonic()
-        with self._inference_lock:
+        if not _acquire_until(self._inference_lock, deadline):
+            self.last_rejection = "error"
+            return ""
+        try:
             if generation != self._generation or self._closed:
                 return ""
             check_running()
             if not self.server.alive():
-                self._restart("server exited")
+                self._restart("server exited", deadline=deadline)
             try:
-                text, timing = self.server.transcribe_with_timing(wav, timeout=timeout)
-            except (httpx.HTTPError, SpeechServerError, ValueError) as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.last_rejection = "error"
+                    return ""
+                text, timing = self.server.transcribe_with_timing(wav, timeout=remaining)
+            except (httpx.HTTPError, SpeechServerError, TimeoutError, ValueError) as exc:
                 if self._closed:
                     return ""
-                return self._failed(exc)
+                return self._failed(exc, deadline=deadline)
+            if time.monotonic() >= deadline:
+                self.last_rejection = "error"
+                return ""
+        finally:
+            self._inference_lock.release()
         self._failures = 0
         self._note_stable_decode()
         with self._state_lock:
@@ -317,11 +357,14 @@ class HaasASR:
         )
         return text
 
-    def _failed(self, exc: Exception) -> str:
+    def _failed(self, exc: Exception, *, deadline: float | None = None) -> str:
         self.last_rejection = "error"
         log.warning("ASR request failed: %s", exc)
         if not self.server.alive():
-            self._restart(str(exc))
+            try:
+                self._restart(str(exc), deadline=deadline)
+            except (HaasError, SpeechServerError, TimeoutError) as restart_exc:
+                log.warning("Haas recovery failed before deadline: %s", restart_exc)
         return ""
 
     def note_utterance_failure(self) -> None:
@@ -344,21 +387,34 @@ class HaasASR:
                      _RESTART_STABLE_S, self._restarts)
             self._restarts = 0
 
-    def _restart(self, reason: str) -> None:
+    def _restart(self, reason: str, *, deadline: float | None = None) -> None:
+        if deadline is None:
+            deadline = time.monotonic() + self.cfg.startup_timeout_s + 6.0
+        recovery_lock = getattr(self, "_recovery_lock", None)
+        if recovery_lock is None:
+            recovery_lock = self._recovery_lock = threading.Lock()
+        if not _acquire_until(recovery_lock, deadline):
+            raise TimeoutError("Haas recovery deadline expired while waiting for recovery lock")
+        try:
+            self._restart_locked(reason, deadline)
+        finally:
+            recovery_lock.release()
+
+    def _restart_locked(self, reason: str, deadline: float) -> None:
         if self._restarts >= 2:
             raise HaasError(f"Haas-ja-v1.0 server stopped again ({reason}). {self.server.log_tail()}")
         self._restarts += 1
         self._last_restart_at = time.monotonic()
         log.warning("Restarting Haas-ja-v1.0 server (%s)", reason)
         update_metrics(workers={"asr": "restarting"})
-        self.server.start()
+        self.server.start(deadline=deadline)
         update_metrics(workers={"asr": "ready (Haas-ja-v1.0)"})
 
-    def recover_stalled(self) -> bool:
+    def recover_stalled(self, deadline: float | None = None) -> bool:
         """Restart the owned server after the watchdog confirms a live stall."""
         with self._state_lock:
             self._generation += 1
-        self._restart("watchdog detected stalled inference")
+        self._restart("watchdog detected stalled inference", deadline=deadline)
         return True
 
     def close(self) -> None:

@@ -65,6 +65,19 @@ class SessionSubtitleCache:
                 self._by_second[second].append(sub)
             return True
 
+    def has_equivalent(self, sub: Subtitle) -> bool:
+        """Check for the same source cue and validated English already cached."""
+        cleaned = sanitize_english_output(sub.en)
+        if not cleaned or sub.end_s <= sub.start_s:
+            return False
+        tolerance = self.REPLACEMENT_TOLERANCE_S
+        with self._lock:
+            return any(
+                same_source_cue(old, sub, tolerance) and old.en == cleaned
+                for second in range(floor(sub.start_s - tolerance), floor(sub.start_s + tolerance) + 1)
+                for old in self._by_start.get(second, ())
+            )
+
     def _remove(self, sub: Subtitle) -> None:
         self._entries.pop(id(sub), None)
         start = floor(sub.start_s)

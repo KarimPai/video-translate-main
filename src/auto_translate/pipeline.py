@@ -578,10 +578,13 @@ def run_asr(
                 source_end_s=utt.end_s,
             )
             continue
+        retry_required = (
+            vod_work is not None and vod_work.needs_retry(utt.start_s, utt.end_s)
+        )
         cache_ids = (vod_work.register(utt.start_s, utt.end_s, utt.generation)
                      if vod_work is not None else ())
         cached = None
-        if reuse_asr and not vod_work.needs_retry(utt.start_s, utt.end_s):
+        if reuse_asr and not retry_required:
             cached = session_cache.match(utt.start_s, utt.end_s)
         if cached is not None:
             cleaned = sanitize_english_output(cached.en)
@@ -1708,6 +1711,8 @@ def run(
                         "Suppressed repeat subtitle: gen=%d count=%d overlap=%s text=%r",
                         item.generation, identical_count, overlap, item.en[:110],
                     )
+                    if vod_work is not None:
+                        vod_work.resolve_duplicate(item, getattr(item, "cache_ids", ()))
                     _finalize_discarded_subtitle(item, complete_speech_cb)
                     increment_counter("dropped")
                     continue

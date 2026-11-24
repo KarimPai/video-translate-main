@@ -48,8 +48,10 @@ CHUNK_SAMPLES = 4096
 PCM_READ_TIMEOUT_S = 60.0
 
 
-def _vod_eof_tolerance_s(duration_s: float) -> float:
-    """Allow bounded track-duration and metadata differences at normal VOD EOF."""
+def _vod_eof_tolerance_s(duration_s: float, *, remote: bool = False) -> float:
+    """Keep remote retry detection strict; allow local track metadata differences."""
+    if remote:
+        return 3.0
     return min(10.0, max(5.0, 3.0 + max(0.0, duration_s) * 0.001))
 
 @dataclass
@@ -1465,7 +1467,7 @@ class Ingest:
         premature_eof = False
         if not failed and not self.source.live and self.source.duration is not None:
             expected = self.source.duration - start_s
-            tolerance_s = _vod_eof_tolerance_s(self.source.duration)
+            tolerance_s = _vod_eof_tolerance_s(self.source.duration, remote=remote_vod)
             if expected - processed_seconds > tolerance_s:
                 premature_eof = True
                 log.warning(

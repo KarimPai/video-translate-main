@@ -52,6 +52,11 @@ LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
 # Restrict the production fast path to the longer, tested class of cues.
 LONG_TRUNCATION_SPLIT_MIN_S = 15.0
 
+# Optional forced language (asr.language = "ja"). The assistant turn is
+# prefilled with the model's own language header so the decoder skips language
+# identification and starts directly on the transcript.
+_FORCED_LANGUAGE_PREFIX = {"ja": "language Japanese<asr_text>"}
+
 
 _LANGUAGE_HEADER = re.compile(r"^\s*language\s+([A-Za-z][A-Za-z ,\-]*)\s*$", re.IGNORECASE)
 _JAPANESE_KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
@@ -631,6 +636,7 @@ class Qwen3ASR:
                         try:
                             candidate = self._decode(
                                 audio[left:right], deadline=deadline, generation=generation,
+                                language="auto",
                             )
                         except _UtteranceDeadline:
                             raise
@@ -766,8 +772,11 @@ class Qwen3ASR:
         *,
         generation: int | None = None,
         deadline: float | None = None,
+        language: str | None = None,
     ) -> str:
         """Send audio to the server and return transcribed text.
+
+        ``language`` overrides ``cfg.language`` for this call ("auto" or "ja").
 
         ``timeout`` overrides the configured response timeout (used by context
         echo recovery to enforce the remaining time budget).
@@ -786,9 +795,10 @@ class Qwen3ASR:
         wav = wav_bytes(audio, normalize=True)
         b64 = base64.b64encode(wav).decode("ascii")
 
-        # No forced assistant prefix: Qwen must detect the language from audio.
-        # Forcing Japanese converts English dialogue and game sounds into
-        # misleading Japanese hypotheses.
+        # Default (asr.language = "auto"): no forced assistant prefix, so Qwen
+        # detects the language from audio. Forcing Japanese can turn English
+        # dialogue and game sounds into misleading Japanese hypotheses, so
+        # "ja" is opt-in (see forced_prefix below).
         messages = []
         hint = getattr(self, "_vocabulary_hint", "")
         if hint and not no_context and not probe:
@@ -809,6 +819,14 @@ class Qwen3ASR:
                 ],
             },
         )
+
+        # Forced Japanese continues from the model's own language header.
+        # Probes and the mixed-audio recovery pass stay automatic because
+        # their purpose is to discover the language.
+        mode = getattr(self.cfg, "language", "auto") if language is None else language
+        forced_prefix = "" if probe else _FORCED_LANGUAGE_PREFIX.get(mode, "")
+        if forced_prefix:
+            messages.append({"role": "assistant", "content": forced_prefix})
 
         payload = {
             "messages": messages,
@@ -872,7 +890,8 @@ class Qwen3ASR:
             if max_tokens < 512 and self._remaining(deadline, generation) > 0.5:
                 log.warning("Qwen3-ASR hit %d-token limit; retrying with 512", max_tokens)
                 return self._transcribe_impl(audio, probe=probe, no_context=no_context,
-                                             max_tokens=512, deadline=deadline, generation=generation)
+                                             max_tokens=512, deadline=deadline, generation=generation,
+                                             language=language)
             raise Qwen3ASRTruncationError("Qwen3-ASR output truncated at token limit")
 
         if finish != "stop":
@@ -881,6 +900,11 @@ class Qwen3ASR:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
             raise Qwen3ASRResponseError("Invalid llama-server transcript content")
+        # A prefilled turn normally returns only the continuation. Restore the
+        # header so the existing parser sees a normal response; if the server
+        # echoed the header already, leave it alone.
+        if forced_prefix and "<asr_text>" not in content:
+            content = forced_prefix + content
         # Keep model-detected language metadata separate from spoken text.
         language, text = parse_qwen_asr_response(content)
         with self._state_lock:

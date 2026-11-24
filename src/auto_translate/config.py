@@ -274,6 +274,10 @@ class AsrConfig:
     # Qwen-only experimental: re-decode two shorter windows after a mechanically
     # invalid Japanese hypothesis; off until verified against real audio.
     recover_rejected_speech: bool = False
+    # Qwen3-ASR only: "auto" lets the model detect the spoken language; "ja"
+    # prefills Japanese so English game audio can no longer flip a cue to
+    # another language (other backends ignore it).
+    language: str = "auto"
     context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8
@@ -303,6 +307,8 @@ class AsrConfig:
             raise ValueError("asr.context_retry_limit must be 0 or 1")
         if type(self.recover_rejected_speech) is not bool:
             raise ValueError("asr.recover_rejected_speech must be a boolean")
+        if self.language not in ("auto", "ja"):
+            raise ValueError("asr.language must be 'auto' or 'ja'")
         if type(self.context_size) is not int or not 1024 <= self.context_size <= 32768:
             raise ValueError("asr.context_size must be an integer in 1024..32768")
         if type(self.cuda_device) is not int or self.cuda_device < -1:

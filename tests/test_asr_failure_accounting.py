@@ -11,7 +11,8 @@ from auto_translate.asr.haas import HaasASR, HaasError
 from auto_translate.asr.whisper_turbo import WhisperASR, WhisperError
 from auto_translate.pipeline import run_asr
 from auto_translate.session_cache import SessionSubtitleCache
-from auto_translate.types import Utterance
+from auto_translate.types import Subtitle, Utterance
+from auto_translate.vod_coverage import VodCoverage
 
 
 class AlwaysFailingASR:
@@ -109,3 +110,26 @@ def test_consecutive_failure_limit_counts_utterances(backend_type, error_type):
     backend.note_utterance_failure()
     with pytest.raises(error_type):
         backend.note_utterance_failure()
+
+
+def test_exact_retry_bypasses_existing_cached_asr(monkeypatch):
+    from auto_translate import pipeline
+
+    monkeypatch.setattr(pipeline.time, "sleep", lambda _delay: None)
+    cache = SessionSubtitleCache()
+    assert cache.add(Subtitle(4.0, 5.0, "ありがとう", "Thanks."))
+    work = VodCoverage(cache)
+    work.set_generation(1)
+    work.register(4.0, 5.0, 1)
+    work.advance(0.0, 10.0, 1)
+    work.set_generation(2)
+    incoming, outgoing = queue.Queue(), queue.Queue()
+    incoming.put(Utterance(4.0, 5.0, np.zeros(16000, dtype=np.float32), generation=2))
+    incoming.put(None)
+    asr = AlwaysFailingASR()
+
+    run_asr(asr, incoming, outgoing, get_generation=lambda: 2,
+            session_cache=cache, vod_work=work)
+
+    assert asr.request_attempts == 3
+    assert cache.covered_until(0.0) == 4.0

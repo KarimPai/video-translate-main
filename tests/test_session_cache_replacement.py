@@ -161,3 +161,28 @@ def test_remote_eof_tolerance_does_not_scale_with_duration():
     assert _vod_eof_tolerance_s(21600.0, remote=True) == 3.0
     assert _vod_eof_tolerance_s(60.0) == 5.0
     assert _vod_eof_tolerance_s(21600.0) == 10.0
+
+
+
+def test_invalid_publication_does_not_resolve_pending_speech():
+    cache = SessionSubtitleCache()
+    work = VodCoverage(cache)
+    work.set_generation(1)
+    work.advance(0.0, 10.0, 1)
+    ids = work.register(4.0, 5.0, 1)
+    work.publish(_sub(4.0, 5.0, "ありがとう", "", generation=1), ids)
+    assert cache.covered_until(0.0) == 4.0
+
+
+def test_overlapping_retry_identities_remain_ambiguous():
+    cache = SessionSubtitleCache()
+    work = VodCoverage(cache)
+    work.set_generation(1)
+    work.register(4.0, 6.0, 1)
+    work.register(5.0, 7.0, 1)
+    work.advance(0.0, 10.0, 1)
+    work.set_generation(2)
+    ids = work.register(4.0, 7.0, 2)
+    work.resolve(ids, 2)
+    assert cache.covered_until(0.0) == 4.0
+    assert work.needs_retry(5.0, 6.0)

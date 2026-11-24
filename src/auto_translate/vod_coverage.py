@@ -66,18 +66,29 @@ class VodCoverage:
         ]
         # One new result cannot establish which of two overlapping failed cues
         # it represents. Keep those identities outstanding rather than guessing.
-        for key, left, right, gen in overlaps:
-            if any(other != key and max(left, a, start) < min(right, b, end)
-                   for other, a, b, _ in overlaps):
+        overlaps.sort(key=lambda item: item[1])
+        previous_end = float("-inf")
+        for i, (key, left, right, gen) in enumerate(overlaps):
+            clipped_start = max(start, left)
+            clipped_end = min(end, right)
+            ambiguous = (
+                previous_end > clipped_start
+                or (i + 1 < len(overlaps)
+                    and max(start, overlaps[i + 1][1]) < clipped_end)
+            )
+            previous_end = max(previous_end, clipped_end)
+            if ambiguous:
                 continue
-            self._retry.pop(key)
-            self.cache.record_translated(key)
+            # Reserve residuals before retiring the original so concurrent
+            # cache readers can never observe a transient coverage gap.
             for a, b in ((left, min(start, right)), (max(end, left), right)):
                 if a < b:
                     self._next_id += 1
                     identity = self._next_id
                     self._retry[identity] = (a, b, gen)
                     self.cache.record_unprocessed(a, b, identity)
+            self._retry.pop(key)
+            self.cache.record_translated(key)
 
     def resolve(self, ids: tuple[int, ...], generation: int) -> None:
         with self._lock:

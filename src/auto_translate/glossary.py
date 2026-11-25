@@ -14,7 +14,7 @@ _BUTTON = re.compile(r"ぼたん(?:を|は|が|に)?(?:押|おす|くりっく|�
                      r"(?:電源|再生|停止|決定|戻る|すたーと|りせっと|[ABXYLR])ぼたん")
 _FESTIVAL = re.compile(r"(?:まつり|祭り)(?:に|へ)(?:行|い[くこ])")
 _PLANET = re.compile(r"水星の魔女|惑星|太陽系|金星|火星|木星|土星|天王星|海王星|宇宙|ロケット")
-AMBIGUOUS = frozenset({"ぼたん", "みこ", "まつり", "祭り"})
+AMBIGUOUS = frozenset({"ぼたん", "みこ", "まつり", "水星"})
 _HONORIFIC = re.compile(r"(?:ちゃん|さん|様|さま)$")
 _SUFFIXED = re.compile(r"(?:ちゃん|さん|様|さま|先輩|せんぱい|くん|君)$")
 
@@ -22,6 +22,29 @@ _SUFFIXED = re.compile(r"(?:ちゃん|さん|様|さま|先輩|せんぱい|く�
 def kana_key(text: str) -> str:
     # Character-for-character folding preserves source offsets and kanji meanings.
     return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text)
+
+
+def _script_group(char: str) -> str | None:
+    if "ぁ" <= char <= "ゖ":
+        return "hiragana"
+    if "ァ" <= char <= "ヶ" or "ｦ" <= char <= "ﾟ":
+        return "katakana"
+    if "一" <= char <= "鿿":
+        return "kanji"
+    if char.isascii() and char.isalnum():
+        return "latin"
+    return None
+
+
+def _term_boundary(text: str, start: int, end: int, term: str) -> bool:
+    first_group, last_group = _script_group(term[0]), _script_group(term[-1])
+    left_group = _script_group(text[start - 1]) if start else None
+    right_group = _script_group(text[end]) if end < len(text) else None
+    left_matches_word = first_group is not None and left_group == first_group
+    right_matches_word = last_group is not None and right_group == last_group
+    if right_matches_word and last_group == "hiragana" and text[end] in "がはをにものとでへやも":
+        right_matches_word = False
+    return not left_matches_word and not right_matches_word
 
 
 def nickname_boundary(text: str, start: int, end: int, *, joined=False, marine=False,
@@ -96,8 +119,15 @@ class Glossary:
     def for_stream(self, metadata_text: str) -> "Glossary":
         """Enable topic vocabulary (e.g. GTA role-play) named in the stream title or tags."""
         folded = metadata_text.casefold()
-        active = [name for name, topic in self.topics.items()
-                  if any(word.casefold() in folded for word in topic["match"])]
+        matched = {
+            name: [word.casefold() for word in topic["match"] if word.casefold() in folded]
+            for name, topic in self.topics.items()
+        }
+        active = [name for name, words in matched.items() if words]
+        active = [name for name in active if not any(
+            other != name and len(other_word) > len(word) and word in other_word
+            for other in active for word in matched[name] for other_word in matched[other]
+        )]
         if not active:
             return self
         terms, vocabulary = dict(self._base_terms), []
@@ -196,18 +226,16 @@ class Glossary:
                     continue
                 # Specific context checks first: skip only when the ordinary meaning is clear.
                 if ((key == "ぼたん" and _BUTTON.search(kana_key(source)))
-                        or (key in {"まつり", "祭り"} and _FESTIVAL.search(kana_key(source)))
+                        or (key == "まつり" and _FESTIVAL.search(kana_key(source)))
                         or (key.startswith("水星") and _PLANET.search(source))):
                     continue
                 # Ambiguous nicknames without a specific guard still need talent context.
                 if key in AMBIGUOUS and self._identity(term, en) not in talents:
                     if en == "Miko" and _SHRINE.search(source):
                         continue
-                    # For matsuri/botan/mi ko with a specific guard above, the regex already
-                    # filtered the ordinary meaning; allow the nickname as a glossary hint
-                    # so the translator can disambiguate.  Miko lacks a permissive guard
-                    # (shrine context rejects it above), so it stays talent-gated.
-                    if key not in {"まつり", "祭り", "ぼたん"}:
+                    # Botan can be a name when no button context is present; Matsuri
+                    # and Suisei require a confirmed talent identity.
+                    if key != "ぼたん":
                         continue
                 matches = []
                 for m in re.finditer(re.escape(needle), text):
@@ -228,13 +256,9 @@ class Glossary:
                     for m in reversed(matches):
                         ja = ja[:m.start()] + "\0" * len(needle) + ja[m.end():]
                 continue
-            if re.fullmatch(r"[一-鿿]", term):
-                pattern = rf"(?<![一-鿿]){re.escape(term)}(?![一-鿿])"
-                ja, count = re.subn(pattern, "\0", ja)
-                if count:
-                    hits.append((term, en))
-            else:
-                matches = list(re.finditer(re.escape(needle), text))
+            matches = [m for m in re.finditer(re.escape(needle), text)
+                       if _term_boundary(text, m.start(), m.end(), term)]
+            if matches:
                 hits.append((source[matches[0].start():matches[0].end()], en))
                 for m in reversed(matches):
                     ja = ja[:m.start()] + "\0" * len(needle) + ja[m.end():]

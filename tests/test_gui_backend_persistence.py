@@ -22,6 +22,9 @@ model_path = "C:/models/gemma4"
 
 [translate.plamo]
 model_path = "C:/models/plamo"
+
+[translate.hymt3]
+model_path = "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"
 """
 
 
@@ -46,33 +49,34 @@ def test_last_picked_asr_and_translator_survive_gui_reopen(tmp_path):
         assert first.mt_backend.currentData() == "gemma4"
 
         first.asr_backend.setCurrentIndex(first.asr_backend.findData("whisper"))
-        first.mt_backend.setCurrentIndex(first.mt_backend.findData("plamo"))
+        first.mt_backend.setCurrentIndex(first.mt_backend.findData("hymt3"))
         assert first.asr_model.text() == "C:/models/whisper"
-        assert first.mt_model.text() == "C:/models/plamo"
+        assert first.mt_model.text() == "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"
+        assert first.mt_backend.currentText().startswith("Hy-MT3 1.8B")
         # Saves on change; no translation needs to start.
         assert prefs.value(first._preference_key("asr_backend")) == "whisper"
-        assert prefs.value(first._preference_key("translate_backend")) == "plamo"
+        assert prefs.value(first._preference_key("translate_backend")) == "hymt3"
         assert (root / "config.toml").read_bytes() == original
 
         first.close()
         second = _make_window(root)
         try:
             assert second.asr_backend.currentData() == "whisper"
-            assert second.mt_backend.currentData() == "plamo"
+            assert second.mt_backend.currentData() == "hymt3"
             assert second._last_asr_backend == "whisper"
-            assert second._last_mt_backend == "plamo"
+            assert second._last_mt_backend == "hymt3"
             assert second.asr_model.text() == "C:/models/whisper"
-            assert second.mt_model.text() == "C:/models/plamo"
+            assert second.mt_model.text() == "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"
             # Last picked (even before pressing Start) should be remembered.
             second.asr_backend.setCurrentIndex(second.asr_backend.findData("haas"))
             assert prefs.value(second._preference_key("asr_backend")) == "haas"
-            assert prefs.value(second._preference_key("translate_backend")) == "plamo"
+            assert prefs.value(second._preference_key("translate_backend")) == "hymt3"
         finally:
             second.close()
         third = _make_window(root)
         try:
             assert third.asr_backend.currentData() == "haas"
-            assert third.mt_backend.currentData() == "plamo"
+            assert third.mt_backend.currentData() == "hymt3"
         finally:
             third.close()
     finally:

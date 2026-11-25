@@ -77,7 +77,7 @@ def _main(resources: ExitStack) -> None:
     parser.add_argument("--asr-backend", type=str,
                         help="ASR backend name (e.g. haas, qwen3-asr)")
     parser.add_argument("--translate-backend", type=str,
-                        help="Translation backend name (e.g. gemma4, plamo, plamo8b)")
+                        help="Translation backend name (e.g. gemma4, plamo, hymt, hymt3)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 

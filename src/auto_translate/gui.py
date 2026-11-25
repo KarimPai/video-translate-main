@@ -60,7 +60,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from auto_translate.config import get_backend_config, load_config, resolve_model_identity
+from auto_translate.config import (
+    get_backend_config,
+    load_config,
+    resolve_model_identity,
+)
 from auto_translate.gui_control import GUI_SHUTDOWN_MS, parse_event
 from auto_translate.gui_runner import (
     QUALITY_OPTIONS,
@@ -467,7 +471,8 @@ class VideoTranslateWindow(QMainWindow):
             self.mt_backend.clear()
             for name in backends.get("translate", []):
                 caps = registry.get_capabilities("translate", name)
-                label = f"{name} — {caps.description}" if caps else name
+                display_name = "Hy-MT3 1.8B" if name == "hymt3" else name
+                label = f"{display_name} — {caps.description}" if caps else display_name
                 self.mt_backend.addItem(label, name)
             # Restore last selected backends only if they still exist in the
             # registry; otherwise fall back to the configured defaults.
@@ -510,7 +515,8 @@ class VideoTranslateWindow(QMainWindow):
                 self.mt_backend.clear()
                 for name in backends.get("translate", []):
                     caps = registry.get_capabilities("translate", name)
-                    label = f"{name} — {caps.description}" if caps else name
+                    display_name = "Hy-MT3 1.8B" if name == "hymt3" else name
+                    label = f"{display_name} — {caps.description}" if caps else display_name
                     self.mt_backend.addItem(label, name)
             except Exception:
                 log.exception("Failed to populate backend dropdowns")

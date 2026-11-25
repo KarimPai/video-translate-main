@@ -13,6 +13,7 @@ class ModelFile:
     directory: str
     size: int
     sha256: str
+    backend: str
 
 
 MODELS = (
@@ -25,6 +26,16 @@ MODELS = (
         directory="models/gemma4",
         size=5392788480,  # actual file size: ~5.15 GB
         sha256="e54d38075373dfd089db97c3d706efa52ba687f3bda71a99b912739953b064f1",
+        backend="gemma4",
+    ),
+    ModelFile(
+        repo_id="tencent/Hy-MT3-1.8B-GGUF",
+        revision="main",
+        filename="Hy-MT3-1.8B-Q8_0.gguf",
+        directory="models/hy-mt",
+        size=1908528448,
+        sha256="03e246991a57d31fe01ac203331e032eabd327ffd0098e570411b811f6119af8",
+        backend="hymt3",
     ),
 )
 
@@ -54,6 +65,10 @@ def model_at_default_path(path: str) -> ModelFile | None:
                  if candidate == (Path(model.directory) / model.filename).resolve()), None)
 
 
+def models_for_backend(backend: str) -> tuple[ModelFile, ...]:
+    return tuple(model for model in MODELS if model.backend == backend)
+
+
 def ensure_model(model: ModelFile, project_dir: Path, configured: str = "") -> Path:
     default = project_dir / model.directory / model.filename
     destination = Path(configured).expanduser().resolve() if configured else default
@@ -72,12 +87,16 @@ def ensure_model(model: ModelFile, project_dir: Path, configured: str = "") -> P
 
 
 def main() -> None:
-    from .config import load_config
+    from .config import get_backend_config, load_config
 
     cfg = load_config(Path("config.toml"))
-    # Only the translation model needs GGUF verification; Haas is built-in to speech.cpp
-    paths = (cfg.translate.model_path,)
-    for model, configured in zip(MODELS, paths, strict=True):
+    backend = cfg.models.translate_backend
+    models = models_for_backend(backend)
+    if not models:
+        raise ValueError(f"No downloadable model is registered for translation backend {backend!r}")
+    profile = get_backend_config(cfg, "translate", backend)
+    configured = profile.get("model_path", "")
+    for model in models:
         print(f"Verified {model.filename}: {ensure_model(model, Path.cwd(), configured)}", flush=True)
 
 

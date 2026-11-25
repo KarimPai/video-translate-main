@@ -4,7 +4,7 @@ import pytest
 from auto_translate.config import Config, TranslateConfig, get_backend_config
 
 
-@pytest.mark.parametrize("backend", ["plamo", "plamo8b"])
+@pytest.mark.parametrize("backend", ["plamo", "plamo8b", "hymt3"])
 def test_plamo_native_style_preserves_translation_settings(backend):
     cfg = Config()
     cfg.translate_profiles[backend] = {
@@ -22,6 +22,22 @@ def test_plamo_native_style_preserves_translation_settings(backend):
     assert effective["glossary"] == cfg.translate.glossary
     assert effective["remove_fillers"] == cfg.translate.remove_fillers
     assert effective["collapse_repetitions"] == cfg.translate.collapse_repetitions
+    TranslateConfig(**effective)
+
+
+def test_hymt3_uses_official_inference_profile_without_inheriting_gemma_model():
+    effective = get_backend_config(Config(), "translate", "hymt3")
+
+    assert effective["model_path"] == "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"
+    assert effective["context_size"] == 8192
+    assert effective["parallel_slots"] == 1
+    assert effective["max_tokens"] == 4096
+    assert effective["temperature"] == 0.7
+    assert effective["top_p"] == 0.6
+    assert effective["top_k"] == 20
+    assert effective["repeat_penalty"] == 1.05
+    assert effective["seed"] == 42
+    assert effective["style"] == ""
     TranslateConfig(**effective)
 
 

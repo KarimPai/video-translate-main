@@ -77,6 +77,16 @@ def test_relocate_translator_gguf_from_old_project_directory(tmp_path):
     assert result["model_path"] == str(model.resolve())
 
 
+def test_relocate_hymt3_model_from_old_project_directory(tmp_path):
+    model = _gguf(tmp_path / "hy-mt" / "Hy-MT3-1.8B-Q8_0.gguf")
+    result = resolve_selected_model_paths(
+        "translate", "hymt3",
+        {"model_path": r"C:\Games\video-translate-universal\models\hy-mt\Hy-MT3-1.8B-Q8_0.gguf"},
+        root=tmp_path,
+    )
+    assert result["model_path"] == str(model.resolve())
+
+
 def test_gguf_requires_valid_header(tmp_path):
     _gguf(tmp_path / "plamo3" / "broken.gguf", valid=False)
     profile = {"model_path": "models/plamo3/broken.gguf"}

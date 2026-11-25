@@ -19,6 +19,7 @@ from auto_translate.config import Config, get_backend_config, load_config
 from auto_translate.glossary import Glossary
 from auto_translate.translate.gemma4 import Gemma4Translator
 from auto_translate.translate.hymt import HymtTranslator
+from auto_translate.translate.hymt3 import HyMT3Translator
 from auto_translate.translate.plamo import PlamoTranslator
 
 
@@ -32,7 +33,9 @@ def test_miko_and_mikochi_resolve_to_sakura_miko():
     assert not any(en == "Sora" for _, en in glossary.name_terms("みこちだよ", context="さくらみこ"))
 
 
-@pytest.mark.parametrize("backend", [PlamoTranslator, Gemma4Translator, HymtTranslator])
+@pytest.mark.parametrize(
+    "backend", [PlamoTranslator, Gemma4Translator, HymtTranslator, HyMT3Translator]
+)
 def test_spoken_glossary_term_survives_sixteen_contextual_names(backend):
     class DenseContext:
         def name_terms(self, text, *, context=""):
@@ -301,7 +304,7 @@ def test_expired_cached_live_subtitle_releases_pending_coverage():
     assert completed == [(0.0, 1.0, 0, 42)]
 
 
-@pytest.mark.parametrize("backend", [Gemma4Translator, HymtTranslator])
+@pytest.mark.parametrize("backend", [Gemma4Translator, HymtTranslator, HyMT3Translator])
 def test_oversized_translation_prompt_uses_simplified_request(backend):
     from auto_translate.config import TranslateConfig
 

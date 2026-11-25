@@ -482,6 +482,59 @@ def test_models_import():
     assert callable(ensure_model)
 
 
+def test_hymt3_is_in_model_catalog_and_uses_cache_before_download(tmp_path, monkeypatch):
+    import auto_translate.models as model_manager
+
+    models = model_manager.models_for_backend("hymt3")
+    assert len(models) == 1
+    model = models[0]
+    assert model.repo_id == "tencent/Hy-MT3-1.8B-GGUF"
+    assert model.filename == "Hy-MT3-1.8B-Q8_0.gguf"
+    assert model.directory == "models/hy-mt"
+    assert model.size == 1_908_528_448
+    assert model.sha256 == "03e246991a57d31fe01ac203331e032eabd327ffd0098e570411b811f6119af8"
+    assert model.backend == "hymt3"
+
+    cached = tmp_path / "hf-cache" / model.filename
+    checked = []
+
+    def fake_verify(path, _model):
+        checked.append(Path(path))
+        return Path(path) == cached
+
+    def unexpected_download(**_kwargs):
+        raise AssertionError("A cached model must be used before downloading")
+
+    monkeypatch.setattr(model_manager, "verify_file", fake_verify)
+    monkeypatch.setattr(model_manager, "cached_model", lambda _model: cached)
+    monkeypatch.setattr(model_manager, "hf_hub_download", unexpected_download)
+
+    assert model_manager.ensure_model(model, tmp_path) == cached
+    assert checked == [tmp_path / model.directory / model.filename, cached]
+
+
+def test_model_downloader_selects_the_configured_backend(monkeypatch):
+    from types import SimpleNamespace
+
+    import auto_translate.config as config_module
+    import auto_translate.models as model_manager
+
+    cfg = SimpleNamespace(models=SimpleNamespace(translate_backend="hymt3"))
+    monkeypatch.setattr(config_module, "load_config", lambda _path: cfg)
+    monkeypatch.setattr(
+        config_module, "get_backend_config",
+        lambda _cfg, _type, _backend: {"model_path": "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"},
+    )
+    selected = []
+    monkeypatch.setattr(
+        model_manager, "ensure_model",
+        lambda model, _root, path: selected.append((model.backend, path)) or Path(path),
+    )
+
+    model_manager.main()
+    assert selected == [("hymt3", "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf")]
+
+
 def test_ytdlp_import():
     """yt-dlp wrapper module imports correctly."""
     from auto_translate.ytdlp import extract
@@ -789,6 +842,119 @@ def test_hymt_prompt_format():
     prompt = build_prompt("こんにちは", [], "前の会話")
     assert "【背景信息】" in prompt
     assert "【待翻译文本】" in prompt
+
+
+def test_hymt3_prompt_uses_official_english_templates():
+    from auto_translate.translate.hymt3 import build_hymt3_prompt, clean_hymt3_output
+
+    plain = build_hymt3_prompt("こんにちは", [], "")
+    assert plain == (
+        "Translate the following text into English. Note that you should only output "
+        "the translated result without any additional explanation:こんにちは"
+    )
+
+    contextual = build_hymt3_prompt(
+        "みこちだよ", [("みこち", "Mikochi")], "Previous dialogue:\nさくらみこ"
+    )
+    assert contextual == (
+        "[Background Information]Previous dialogue:\nさくらみこ\n\n"
+        "Reference the following translations:\nみこち translates to Mikochi\n\n"
+        "Please translate the following text into English, taking the provided "
+        "background information into consideration.\n[Source Text]みこちだよ"
+    )
+    assert clean_hymt3_output("[Source Text]Hello.") == "Hello."
+    assert clean_hymt3_output("[Linguistic Source Text]\nHello.") == "Hello."
+    assert clean_hymt3_output(
+        "[Background Information]Stream Title: HoloGTA\n"
+        "Please translate this. [Source Text]Hello."
+    ) == "Hello."
+    assert clean_hymt3_output("Read the source text carefully.") == "Read the source text carefully."
+
+    from auto_translate.translate.hymt3 import build_hymt3_context
+    assert build_hymt3_context("", [("こんにちは", "Hello")], 1, 200) == "こんにちは"
+    assert build_hymt3_context("stream", [("こんにちは", "Hello")], 1, 200) == (
+        "stream\nPrevious dialogue:\nこんにちは"
+    )
+
+
+def test_hymt3_registry_and_capabilities():
+    from auto_translate.registry import get_default_registry
+
+    registry = get_default_registry()
+    assert "hymt3" in registry.list_backends().get("translate", [])
+    caps = registry.get_capabilities("translate", "hymt3")
+    assert caps is not None
+    assert (caps.runtime, caps.device, caps.source_lang, caps.target_lang) == (
+        "llama_cpp", "cuda", "ja", "en"
+    )
+    assert "Hy-MT3 1.8B" in caps.description
+
+
+def test_hymt3_runtime_arguments_enable_flash_attention_and_q8_kv():
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from auto_translate.config import TranslateConfig
+    from auto_translate.translate.hymt3 import HyMT3Translator
+
+    translator = HyMT3Translator.__new__(HyMT3Translator)
+    translator.cfg = TranslateConfig(context_size=8192, parallel_slots=1, max_tokens=4096)
+    translator.model = Path("Hy-MT3-1.8B-Q8_0.gguf")
+    translator.layer_count = translator.gpu_layers = 24
+    translator.executable = Path("llama-server.exe")
+    with patch("auto_translate.translate.hymt.detect_device", return_value="CUDA0"):
+        args = translator._args()
+
+    assert args[args.index("-np") + 1] == "1"
+    assert args[args.index("-fa") + 1] == "on"
+    assert args[args.index("-ctk") + 1] == "q8_0"
+    assert args[args.index("-ctv") + 1] == "q8_0"
+    assert "--system-prompt" not in args
+
+
+def test_hymt_seed_is_only_sent_when_configured():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from auto_translate.config import TranslateConfig
+    from auto_translate.translate.hymt3 import HyMT3Translator
+
+    translator = HyMT3Translator.__new__(HyMT3Translator)
+    translator.cfg = TranslateConfig(seed=42)
+    translator._closed = False
+    request = {}
+
+    def chat(body, *, timeout):
+        request.update(body)
+        return {"choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}]}
+
+    translator.server = SimpleNamespace(chat=chat)
+    with patch("auto_translate.translate.hymt.check_running"):
+        assert translator._chat("prompt", timeout=1) == ("Hello", "stop")
+    assert request["seed"] == 42
+
+
+def test_transcript_only_benchmark_reads_fixed_japanese_inputs(tmp_path):
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from scripts.benchmark_video import arguments, read_transcripts
+
+    transcript_path = tmp_path / "transcripts.csv"
+    transcript_path.write_text(
+        "id,start_s,end_s,focus,haas_ja\n"
+        "A,1.0,2.0,name,Miko is here\n"
+        "B,4.0,5.0,empty,\n",
+        encoding="utf-8-sig",
+    )
+    rows = read_transcripts(transcript_path)
+    assert rows == [{
+        "id": "A", "start_s": 1.0, "end_s": 2.0,
+        "focus": "name", "ja": "Miko is here",
+    }]
+
+    args = arguments(["--transcripts", str(transcript_path), "--mt", "hymt3", "plamo"])
+    assert args.clip is None
+    assert args.transcripts == transcript_path
+    assert args.mt == ["hymt3", "plamo"]
 
 
 def test_hymt_clean_output():

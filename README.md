@@ -27,6 +27,7 @@ The `main` branch is the active implementation. Models run locally; YouTube play
 | Translation | `plamo` | PLaMo 3 Translate 2B / llama.cpp |
 | Translation | `plamo8b` | PLaMo 3 Translate 8B / llama.cpp |
 | Translation | `hymt` | Hy-MT2 7B / llama.cpp |
+| Translation | `hymt3` | Hy-MT3 1.8B Q8_0 / llama.cpp |
 
 Available combinations depend on installed model files, compatible executables, and available memory. The defaults above refer to the repository configuration, not necessarily your private `config.toml`.
 
@@ -82,6 +83,7 @@ translate_backend = "plamo"
 - Configure `[asr.qwen3-asr]` with a compatible GGUF model, its matching `mmproj_path`, and server executable. If multiple checkpoints exist, explicitly select the matching model/projector pair. Japanese decoding (`language = "ja"`) is the default; set `language = "auto"` for automatic detection if English dialogue or game audio produces false Japanese text.
 - Configure `[translate.plamo]` with the desired PLaMo 2B model and compatible llama.cpp runtime. PLaMo 8B uses `[translate.plamo8b]`.
 - Both PLaMo backends use native translation style without a custom style prompt; glossary, context and decoding settings are retained.
+- Hy-MT3 uses Tencent's official English translation template and recommended 1.8B decoding parameters. Put the official GGUF at `models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf` and select `hymt3`; it uses one slot, Flash Attention, and Q8 KV cache. After selecting `hymt3` in `config.toml`, `uv run python -m auto_translate.models` verifies the configured file, checks the Hugging Face cache, and downloads only if needed. Hy-MT2 remains available as `hymt`.
 - Silero VAD runs on CPU by default. Adaptive thresholding is optional; fixed thresholding is the default.
 - `glossary.toml` stores names and terminology. GPU and playback settings can be adjusted in the local configuration.
 
@@ -163,6 +165,14 @@ Benchmarks are separate from routine regression tests and normal playback. They 
 - [Japanese ASR reference workflow](docs/HOLOGTA_ASR_REFERENCE.md): 30 fixed review windows and human-verified CER scoring.
 - [Qwen checkpoint comparison](docs/QWEN_JA_AB.md): standard versus Japanese fine-tuned Qwen ASR.
 - [Additional controlled experiments](docs/): vocabulary, segmentation, crosstalk and truncation recovery.
+
+For translator-only comparisons on identical saved Japanese transcripts, the existing benchmark runner accepts a CSV column and bypasses ASR:
+
+```powershell
+uv run python scripts/benchmark_video.py --transcripts benchmarks/reference/working/hologta_30_review.csv --transcript-column haas_ja --mt hymt3 plamo --stream-title "HoloGTA stress test"
+```
+
+This mode measures latency, sampled total VRAM, empty/invalid outputs and exact glossary-name retention. Hy-MT3 uses a fixed seed (`42`) with the recommended sampling settings for repeatability. It does not score translation accuracy or hallucinations without human-verified English references.
 
 Generated benchmark runs are ignored by Git. Preserve the reference manifest and manually verified transcripts. Cue counts, model agreement and output length alone are not accuracy measurements.
 

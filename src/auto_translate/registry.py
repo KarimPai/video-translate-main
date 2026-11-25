@@ -309,6 +309,19 @@ def _register_builtin_backends(registry: ModelRegistry) -> None:
         ),
     )
 
+    registry.register_translate(
+        "hymt3",
+        factory=_hymt3_translate_factory,
+        capabilities=BackendCapabilities(
+            runtime="llama_cpp",
+            device="cuda",
+            source_lang="ja",
+            target_lang="en",
+            vram_gb=3.5,
+            description="Hy-MT3 1.8B Q8_0 via llama.cpp (CUDA GPU)",
+        ),
+    )
+
 
 def _silero_vad_factory(config: Any, **kwargs: Any) -> Any:
     """Factory for Silero VAD Segmenter."""
@@ -592,6 +605,28 @@ def _hymt_translate_factory(config: Any, **kwargs: Any) -> Any:
     stream = kwargs.get("stream", StreamContext())
     gpu_layers = kwargs.get("gpu_layers", None)
     return HymtTranslator(config, glossary, stream=stream, gpu_layers=gpu_layers)
+
+
+def _hymt3_translate_factory(config: Any, **kwargs: Any) -> Any:
+    """Factory for Hy-MT3 1.8B translation using the shared Hy-MT runtime."""
+    from .config import TranslateConfig
+    from .glossary import Glossary
+    from .stream_context import StreamContext
+    from .translate.hymt3 import HyMT3Translator
+    if isinstance(config, dict):
+        config = dict(config)
+        config.setdefault("model_path", "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf")
+        config = TranslateConfig(**config)
+    if not config.model_path or not config.model_path.strip():
+        raise ValueError(
+            "Hy-MT3 translation backend selected but no Hy-MT3 model is configured. "
+            "Set translate.model_path to the official Hy-MT3 1.8B Q8_0 GGUF file, "
+            "or configure [translate.hymt3] model_path in config.toml."
+        )
+    glossary = kwargs.get("glossary", Glossary({}))
+    stream = kwargs.get("stream", StreamContext())
+    gpu_layers = kwargs.get("gpu_layers", None)
+    return HyMT3Translator(config, glossary, stream=stream, gpu_layers=gpu_layers)
 
 
 def _plamo8b_translate_factory(config: Any, **kwargs: Any) -> Any:

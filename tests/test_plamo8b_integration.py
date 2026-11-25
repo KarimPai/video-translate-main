@@ -294,6 +294,29 @@ def test_plamo8b_factory_raises_without_model(monkeypatch):
         _plamo8b_translate_factory({})
 
 
+def test_hymt3_factory_uses_its_default_model_without_starting_a_server(monkeypatch):
+    from types import SimpleNamespace
+
+    from auto_translate.registry import _hymt3_translate_factory
+
+    calls = {}
+
+    def make_translator(config, glossary, *, stream, gpu_layers):
+        calls.update(config=config, glossary=glossary, stream=stream, gpu_layers=gpu_layers)
+        return SimpleNamespace(backend="hymt3")
+
+    monkeypatch.setattr("auto_translate.translate.hymt3.HyMT3Translator", make_translator)
+    assert _hymt3_translate_factory({}).backend == "hymt3"
+    assert calls["config"].model_path == "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"
+
+
+def test_hymt3_factory_rejects_an_explicitly_cleared_model():
+    from auto_translate.registry import _hymt3_translate_factory
+
+    with pytest.raises(ValueError, match="no Hy-MT3 model is configured"):
+        _hymt3_translate_factory({"model_path": ""})
+
+
 def test_plamo8b_factory_accepts_model_path():
     """Test that plamo8b factory accepts config with model_path."""
     from auto_translate.llama_server import LlamaServerError
@@ -581,6 +604,7 @@ def test_documented_plamo8b_profile_loads_from_example(tmp_path):
     # Uncomment only the 8B block; identical keys exist under other profiles.
     block = (
         "# [translate.plamo8b]\n"
+        '# style = ""  # Native translation style (no custom style prompt)\n'
         '# model_path = "models/plamo3/plamo-3-translate-8b-Q3_K_M.gguf"\n'
         "# gpu_layers = -1\n"
         "# context_size = 8192\n"

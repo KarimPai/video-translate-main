@@ -41,7 +41,6 @@ from .base import (
     translation_deadline,
     with_translation_deadline,
 )
-
 from .common import missing_names, useful_context
 
 log = logging.getLogger(__name__)
@@ -73,20 +72,21 @@ build_hymt_prompt = build_prompt
 
 
 def build_context(header: str, history: list[tuple[str, str]], lines: int, max_chars: int,
-                  *, english: bool = False) -> str:
+                  *, english: bool = False, dialogue_label: str = _DIALOGUE,
+                  english_translation_label: str = "英訳：") -> str:
     """Budgeted dialogue; English is opt-in because it can recycle translation errors."""
     header = header[:max_chars]
     sources: list[str] = []
-    used = len(header) + (len(_DIALOGUE) + 1 if header else 0)
+    used = len(header) + (len(dialogue_label) + 1 if header else 0)
     recent = [(ja, en) for ja, en in history if useful_context(ja)]
     for ja, en in reversed(recent[-lines:] if lines else []):
-        line = f"{ja}（英訳：{en}）" if english and en else ja
+        line = f"{ja}（{english_translation_label}{en}）" if english and en else ja
         if used + len(line) + bool(used) > max_chars:
             break
         sources.insert(0, line)
         used += len(line) + bool(used)
     if header and sources:
-        return "\n".join((header, _DIALOGUE, *sources))
+        return "\n".join((header, dialogue_label, *sources))
     return "\n".join(part for part in (header, *sources) if part)
 
 
@@ -193,8 +193,17 @@ def clean_output(text: str) -> str:
     return unmatched_double_quote_cleanup(line.strip("「」『』"))
 
 
+def _clean_backend_output(translator: object, text: str) -> str:
+    cleaner = getattr(type(translator), "output_cleaner", clean_output)
+    return cleaner(text)
+
+
 class HymtTranslator:
     """Tencent Hy-MT2-7B translator for Japanese-to-English subtitles."""
+
+    model_description = "Hy-MT2-7B"
+    prompt_builder = staticmethod(build_prompt)
+    context_builder = staticmethod(build_context)
 
     def __init__(self, cfg: TranslateConfig, glossary: Glossary, *, stream: StreamContext | None = None,
                  gpu_layers: int | None = None) -> None:
@@ -204,7 +213,7 @@ class HymtTranslator:
         self._position: float | None = None
         self._anchor: tuple[str, str] | None = None
         self._newest: tuple[str, str] | None = None
-        self.model = require_gguf(cfg.model_path, "Hy-MT2 model")
+        self.model = require_gguf(cfg.model_path, f"{self.model_description} model")
         self.layer_count = gguf_block_count(self.model) or 32
         requested = cfg.gpu_layers if gpu_layers is None else gpu_layers
         self.gpu_layers = self.layer_count if requested < 0 else min(requested, self.layer_count)
@@ -223,7 +232,7 @@ class HymtTranslator:
             raise
 
     def _args(self) -> list[str]:
-        """Build llama-server arguments for Hy-MT2 translation."""
+        """Build llama-server arguments for Hy-MT translation."""
         # Offload all layers +1 so the output layer also stays on the GPU.
         if self.gpu_layers >= self.layer_count:
             layers = self.gpu_layers + 1
@@ -254,35 +263,41 @@ class HymtTranslator:
     def _start_with_deadline(self) -> None:
         check_running()
         if self._closed:
-            raise LlamaServerError("Hy-MT2 translator is closed")
+            raise LlamaServerError(f"{self.model_description} translator is closed")
         self.server.args = self._args()
         try:
             start_translation_server(self.server)
             # Reserve dialogue-sized prefill workspace before measuring GPU headroom.
             chars = min(self.cfg.max_context_chars, self.cfg.context_size // 2)
             context = ("これは以前の会話です。" * (chars // 11 + 1))[:chars]
-            prompt = build_prompt("こんにちは。今日はみんなでゲームをします。よろしくお願いします。",
-                                  self.glossary.terms[:MAX_TERMS], context, self.cfg.style)
+            prompt = self.prompt_builder("こんにちは。今日はみんなでゲームをします。よろしくお願いします。",
+                                         self.glossary.terms[:MAX_TERMS], context, self.cfg.style)
             self._chat(prompt, timeout=self.cfg.load_timeout_s)
             check_running()
             # Short batches use a different CUDA workspace than dialogue prefill.
-            self._chat(build_prompt("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], "",
-                                    self.cfg.style),
+            self._chat(self.prompt_builder("みんな、スパチャありがとう！今日はマインクラフトで遊びます。", [], "",
+                                           self.cfg.style),
                        timeout=self.cfg.load_timeout_s)
             check_running()
         except (httpx.HTTPError, ValueError) as exc:
             check_running()
-            raise LlamaServerError(f"Hy-MT2 startup request failed: {exc}. {self.server.log_tail()}") from exc
+            raise LlamaServerError(
+                f"{self.model_description} startup request failed: {exc}. {self.server.log_tail()}"
+            ) from exc
         self._relief.clear()
-        update_metrics(workers={"mt": f"ready (Hy-MT2-7B, {self.gpu_layers}/{self.layer_count} GPU layers)"})
-        log.info("Hy-MT2 ready with %d/%d GPU layers (slots=%d)", self.gpu_layers, self.layer_count, self.cfg.parallel_slots)
+        update_metrics(workers={
+            "mt": f"ready ({self.model_description}, {self.gpu_layers}/{self.layer_count} GPU layers)"
+        })
+        log.info("%s ready with %d/%d GPU layers (slots=%d)", self.model_description,
+                 self.gpu_layers, self.layer_count, self.cfg.parallel_slots)
 
     def reload(self, gpu_layers: int, reason: str) -> None:
         """Reload with different GPU layers. Uses separate lock to prevent deadlock."""
         with acquire_until(self._reload_lock, active_translation_deadline()):
             previous_layers = self.gpu_layers
             self.gpu_layers = max(0, min(gpu_layers, self.layer_count))
-            log.warning("Reloading Hy-MT2 at %d GPU layers (%s)", self.gpu_layers, reason)
+            log.warning("Reloading %s at %d GPU layers (%s)", self.model_description,
+                        self.gpu_layers, reason)
             record_event("mt_reload", gpu_layers=self.gpu_layers, reason=reason)
             update_metrics(workers={"mt": "reloading"})
             self._start()
@@ -322,6 +337,9 @@ class HymtTranslator:
             "stream": False,
             "cache_prompt": True,
         }
+        seed = getattr(self.cfg, "seed", None)
+        if seed is not None:
+            body["seed"] = seed
         check_running()
         if self._closed:
             return "", ""
@@ -375,8 +393,8 @@ class HymtTranslator:
     def _context(self, history: list[tuple[str, str]]) -> str:
         header = "\n".join(self.stream.lines(self._position))
         window = self._window(history)
-        return build_context(header, window, len(window), self.cfg.max_context_chars,
-                             english=self.cfg.context_english)
+        return self.context_builder(header, window, len(window), self.cfg.max_context_chars,
+                                    english=self.cfg.context_english)
 
     def _terms_for(self, ja: str, context: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
         """Return (terms, all_names, utterance_names).
@@ -418,7 +436,7 @@ class HymtTranslator:
     def prompt_for(self, ja: str, history: list[tuple[str, str]]) -> str:
         context = self._context(history)
         terms, _, _ = self._terms_for(ja, context)
-        return build_prompt(ja, terms, context, self.cfg.style)
+        return self.prompt_builder(ja, terms, context, self.cfg.style)
 
     _MAX_RETRIES = 3
     _MAX_TRUNCATION_RETRIES = 1
@@ -439,7 +457,7 @@ class HymtTranslator:
                     self._recover("server exited")
                 context = self._context(history)
                 terms, _all_names, utterance_names = self._terms_for(ja, context)
-                prompt = build_prompt(ja, terms, context, self.cfg.style)
+                prompt = self.prompt_builder(ja, terms, context, self.cfg.style)
 
                 started = time.monotonic()
                 latency_budget = self.cfg.timeout_s * 0.7
@@ -470,7 +488,7 @@ class HymtTranslator:
                     return ""
                 skip_full_prompt = not _fits_context(input_tokens, self.cfg.max_tokens)
                 if skip_full_prompt:
-                    prompt = build_prompt(ja, [], "", self.cfg.style)
+                    prompt = self.prompt_builder(ja, [], "", self.cfg.style)
                     record_event("mt_request", strategy="simplified_first",
                                  estimated_input_tokens=input_tokens)
 
@@ -515,12 +533,12 @@ class HymtTranslator:
                         # 2. Glossary-only: keeps names, drops dialogue context
                         elif glossary_output_budget > self.cfg.max_tokens:
                             retry_max_tokens = min(desired_output, glossary_output_budget)
-                            retry_prompt = build_prompt(ja, terms, "", self.cfg.style)
+                            retry_prompt = self.prompt_builder(ja, terms, "", self.cfg.style)
                             retry_strategy = "glossary_only"
                         # 3. Simplified: no glossary, no context — last resort
                         elif simplified_output_budget > self.cfg.max_tokens:
                             retry_max_tokens = min(desired_output, simplified_output_budget)
-                            retry_prompt = build_prompt(ja, [], "", self.cfg.style)
+                            retry_prompt = self.prompt_builder(ja, [], "", self.cfg.style)
                             retry_strategy = "simplified"
 
                         # Execute retry only if it meaningfully increases output allowance
@@ -544,7 +562,7 @@ class HymtTranslator:
                             increment_counter("mt_rejected")
                             return ""
 
-                    english = clean_output(english)
+                    english = _clean_backend_output(self, english)
                 except (httpx.HTTPError, LlamaServerError, ValueError) as exc:
                     if self._closed:
                         return ""
@@ -553,13 +571,13 @@ class HymtTranslator:
                         raise
                     self._recover(str(exc))
                     # BUG FIX: Rebuild prompt after recovery — server state may have changed
-                    prompt = (build_prompt(ja, [], "", self.cfg.style) if skip_full_prompt
-                              else build_prompt(ja, terms, context, self.cfg.style))
+                    prompt = (self.prompt_builder(ja, [], "", self.cfg.style) if skip_full_prompt
+                              else self.prompt_builder(ja, terms, context, self.cfg.style))
                     if retries_left > 0:
                         retries_left -= 1
                         increment_counter("mt_retries")
                     english, _ = self._chat(prompt, timeout=self.cfg.timeout_s)
-                    english = clean_output(english)
+                    english = _clean_backend_output(self, english)
 
                 elapsed = time.monotonic() - started
                 if elapsed > latency_budget:
@@ -571,11 +589,11 @@ class HymtTranslator:
                     issue = english_output_issue(english)
                     if issue:
                         record_event("mt_rejected", reason=issue, retry=True)
-                    minimal = build_prompt(ja, [], "")
+                    minimal = self.prompt_builder(ja, [], "")
                     retries_left -= 1
                     increment_counter("mt_retries")
                     english, _ = self._chat(minimal, timeout=self.cfg.timeout_s)
-                    english = clean_output(english)
+                    english = _clean_backend_output(self, english)
 
                 # Retry 2: untranslated Japanese — try deterministically
                 if retries_left > 0 and english:
@@ -583,11 +601,11 @@ class HymtTranslator:
                     if output_issue == "untranslated_japanese":
                         record_event("mt_rejected", reason=output_issue, retry=True)
                         increment_counter("mt_rejected")
-                        minimal = build_prompt(ja, [], "")
+                        minimal = self.prompt_builder(ja, [], "")
                         retries_left -= 1
                         increment_counter("mt_retries")
                         candidate, _ = self._chat(minimal, timeout=self.cfg.timeout_s, temperature=0.0)
-                        cleaned = clean_output(candidate)
+                        cleaned = _clean_backend_output(self, candidate)
                         if cleaned and not english_output_issue(cleaned):
                             english = cleaned
 
@@ -601,7 +619,7 @@ class HymtTranslator:
                     if output_issue:
                         record_event("mt_rejected", reason=output_issue, retry=True)
                         increment_counter("mt_rejected")
-                    fallback = build_prompt(ja, terms, "", self.cfg.style)
+                    fallback = self.prompt_builder(ja, terms, "", self.cfg.style)
                     fallback_tokens = simplified_input + glossary_tokens
                     fallback_fits = _fits_context(fallback_tokens, self.cfg.max_tokens)
                     candidates = [english]
@@ -611,7 +629,7 @@ class HymtTranslator:
                         if missing:
                             record_event("mt_name_retry", names=missing)
                         candidate, _ = self._chat(fallback, timeout=self.cfg.timeout_s, temperature=0.0)
-                        candidates.append(clean_output(candidate))
+                        candidates.append(_clean_backend_output(self, candidate))
                     english = self._best(candidates, utterance_name_list)
 
                 retry_count = self._MAX_RETRIES - retries_left
@@ -663,7 +681,9 @@ class HymtTranslator:
         try:
             self.reload(self.gpu_layers - RELIEF_LAYERS * 2, reason)
         except LlamaServerError as exc:
-            raise TranslatorUnavailable(f"Hy-MT2 server could not restart: {exc}") from exc
+            raise TranslatorUnavailable(
+                f"{self.model_description} server could not restart: {exc}"
+            ) from exc
 
     def interrupt(self) -> None:
         self._closed = True

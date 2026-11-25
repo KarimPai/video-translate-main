@@ -5,7 +5,7 @@
 # Available backends are registered in the model registry.
 [models]
 asr_backend = "haas"            # ASR backend: "haas" (Haas-ja-v1.0 via speech.cpp)
-translate_backend = "gemma4"    # Translation backend: "gemma4" or "plamo"
+translate_backend = "gemma4"    # Translation backend: "gemma4", "plamo", "hymt", or "hymt3"
 # translate_backend = "plamo"   # PLaMo 3 Translate 2B (lighter, ~1.8GB VRAM)
 
 # Common ASR settings (shared across backends; backend-specific overrides below)
@@ -117,6 +117,25 @@ style = ""
 # context_size = 4096
 # max_tokens = 128
 # load_timeout_s = 300
+
+# Hy-MT3 1.8B Q8_0 — official Tencent GGUF (1,908,528,448 bytes, about 1.78 GiB)
+# Source: https://huggingface.co/tencent/Hy-MT3-1.8B-GGUF
+# Select hymt3 in [models], then use `uv run python -m auto_translate.models` to verify/cache/download it.
+# Uses Tencent's English translation prompt, native style, and one inference slot.
+# The backend enables Flash Attention and Q8_0 KV cache in llama.cpp.
+# To use it, set translate_backend = "hymt3" in [models] and uncomment:
+# [translate.hymt3]
+# model_path = "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf"
+# gpu_layers = -1
+# context_size = 8192
+# parallel_slots = 1
+# max_tokens = 4096
+# temperature = 0.7
+# top_p = 0.6
+# top_k = 20
+# repeat_penalty = 1.05
+# seed = 42  # Reproducible sampling; set -1 for random sampling.
+# style = ""
 
 # Whisper Large-v3 Turbo profile — Japanese-only decoding via faster-whisper
 # Uses h2oai/faster-whisper-large-v3-turbo (CTranslate2 format).

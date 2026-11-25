@@ -190,7 +190,8 @@ def resolve_selected_model_paths(
         return resolved
     if backend_type == "asr" and backend_name == "qwen3-asr":
         keys = ("model_path", "mmproj_path")
-    elif backend_type == "translate" and backend_name in ("gemma4", "plamo", "plamo8b", "hymt"):
+    elif backend_type == "translate" and backend_name in (
+            "gemma4", "plamo", "plamo8b", "hymt", "hymt3"):
         keys = ("model_path",)
     for key in keys:
         old = str(resolved.get(key) or "")

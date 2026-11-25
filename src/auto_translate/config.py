@@ -187,6 +187,7 @@ class TranslateConfig:
     top_k: int = 20
     top_p: float = 0.6
     repeat_penalty: float = 1.05
+    seed: int | None = None
     context_lines: int = 6
     max_context_chars: int = 600
     context_max_gap_s: float = 15.0
@@ -207,7 +208,7 @@ class TranslateConfig:
     vod_merge_timeout_s: float = 5.0
 
     def __post_init__(self):
-        # model_path may be empty for non-default backends (PLaMo, Hy-MT2) —
+        # model_path may be empty for non-default backends (PLaMo, Hy-MT2, Hy-MT3) —
         # the backend factory or constructor will raise a clear error if needed.
         for name in ("server_path", "glossary"):
             value = getattr(self, name)
@@ -226,14 +227,16 @@ class TranslateConfig:
             raise ValueError("translate.context_lines must be an integer in 0..20")
         if type(self.max_context_chars) is not int or not 0 <= self.max_context_chars <= 4000:
             raise ValueError("translate.max_context_chars must be an integer in 0..4000")
-        if type(self.max_tokens) is not int or not 16 <= self.max_tokens <= 1024:
-            raise ValueError("translate.max_tokens must be in 16..1024")
+        if type(self.max_tokens) is not int or not 16 <= self.max_tokens <= 4096:
+            raise ValueError("translate.max_tokens must be in 16..4096")
         if self.max_tokens >= self.context_size:
             raise ValueError("translate.max_tokens must leave room for input in context_size")
         if type(self.parallel_slots) is not int or self.parallel_slots not in (1, 2):
             raise ValueError("translate.parallel_slots must be 1 or 2")
         if type(self.top_k) is not int or self.top_k < 0:
             raise ValueError("translate.top_k must be a nonnegative integer")
+        if self.seed is not None and (type(self.seed) is not int or self.seed < -1):
+            raise ValueError("translate.seed must be -1 (random) or a nonnegative integer")
         for name, low, high in (("temperature", 0, 2), ("top_p", 0, 1), ("repeat_penalty", 1, 2)):
             value = getattr(self, name)
             if type(value) not in (int, float) or not low <= value <= high:
@@ -521,7 +524,7 @@ def load_config(path: Path) -> Config:
     asr_profiles = {}
     translate_profiles = {}
     known_asr_profiles = {"haas", "qwen3-asr", "whisper"}
-    known_translate_profiles = {"gemma4", "plamo", "plamo8b", "hymt"}
+    known_translate_profiles = {"gemma4", "plamo", "plamo8b", "hymt", "hymt3"}
     
     # Check for top-level keys like "asr.qwen3-asr" (non-standard but possible)
     for key in list(data.keys()):
@@ -592,9 +595,20 @@ _MODEL_IDENTITY_TRANSLATE = {"model_path"}
 # Backends that are compatible with each other for model-identity inheritance.
 # Haas is the default ASR; its model identity may be used by haas backend only.
 # Gemma4 is the default translation; its model identity may be used by gemma4 only.
-# Qwen3-ASR, Whisper, PLaMo, Hy-MT2 must never inherit another backend's model.
+# Qwen3-ASR, Whisper, PLaMo, Hy-MT2, and Hy-MT3 must never inherit another backend's model.
 _DEFAULT_ASR_BACKEND = "haas"
 _DEFAULT_TRANSLATE_BACKEND = "gemma4"
+_HYMT3_TRANSLATE_DEFAULTS = {
+    "model_path": "models/hy-mt/Hy-MT3-1.8B-Q8_0.gguf",
+    "context_size": 8192,
+    "parallel_slots": 1,
+    "max_tokens": 4096,
+    "temperature": 0.7,
+    "top_p": 0.6,
+    "top_k": 20,
+    "repeat_penalty": 1.05,
+    "seed": 42,
+}
 
 
 def _is_compatible_identity(backend_name: str, field: str, common_value: str,
@@ -665,6 +679,13 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
             # Not the default backend — remove incompatible identity from common
             merged.pop(field_name, None)
 
+    # Apply Tencent's documented 1.8B/7B inference settings as Hy-MT3 defaults.
+    # A backend profile can override these, and explicit CLI overrides still win.
+    if backend_type == "translate" and backend_name == "hymt3":
+        for field_name, default in _HYMT3_TRANSLATE_DEFAULTS.items():
+            if field_name not in profile:
+                merged[field_name] = default
+
     # Layer 2: backend-specific profile overrides common
     merged.update(profile)
     # Layer 3: explicit GUI/CLI overrides (highest priority)
@@ -681,8 +702,8 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
                 and "mmproj_path" not in scoped_overrides):
             merged.pop("mmproj_path", None)
         merged.update(scoped_overrides)
-    # Gemma 4 and PLaMo use native translation styles rather than style guidance.
-    if backend_type == "translate" and backend_name in {"gemma4", "plamo", "plamo8b"}:
+    # Gemma 4, PLaMo, and Hy-MT3 use their native translation styles.
+    if backend_type == "translate" and backend_name in {"gemma4", "plamo", "plamo8b", "hymt3"}:
         merged["style"] = ""
     return merged
 

@@ -2,7 +2,9 @@
 
 Windows-oriented local video translation project with **interchangeable speech recognition and translation models**, English-only subtitles, and an embedded MPV player.
 
-The **`main`** branch now contains the universal implementation previously developed on `video-translate-main`. The older Haas/PLaMo-only code is preserved on `backup/main-before-universal-20261122`.
+[![CI](https://github.com/KarimPai/video-translate-main/actions/workflows/universal-checks.yml/badge.svg?branch=main)](https://github.com/KarimPai/video-translate-main/actions/workflows/universal-checks.yml)
+
+The `main` branch is the active implementation. Models run locally; YouTube playback requires network access.
 
 ## Features
 
@@ -10,12 +12,31 @@ The **`main`** branch now contains the universal implementation previously devel
 - **Playback:** MPV hardware decoding, video-quality choices (360p, 480p, 720p, 1080p), VOD seeking, pause/resume, fullscreen, and subtitle synchronization.
 - **GUI:** PySide6 application with YouTube URL entry, ASR/translator selectors, embedded video, controls, and diagnostics/console views.
 - **Speech detection:** Silero VAD, with adjustable splitting and buffering.
-- **ASR choices:** Haas-ja-v1.0 (speech.cpp/Vulkan), Qwen3-ASR 1.7B (llama.cpp/CUDA), and Whisper Large-v3 Turbo (faster-whisper).
-- **Japanese → English translation:** PLaMo 3 Translate 2B, PLaMo 3 Translate 8B, Gemma 4 E4B, or Hy-MT2 (GGUF via llama.cpp).
+- **ASR and translation:** Independently selectable local models (see the backend table below).
 - **Quality safeguards:** Japanese glossary/nickname support, contextual translation, constrained retries, output filtering, and session subtitle caching.
 - **Optional diagnostics:** Runtime logs and NVIDIA GPU memory observations when the required package is installed.
 
-Models are selected independently. Available combinations depend on the installed model files, backend executables, and system memory.
+## Supported backends
+
+| Type | Backend ID | Model / runtime |
+| --- | --- | --- |
+| ASR | `haas` (default) | Haas-ja-v1.0 / speech.cpp (Vulkan) |
+| ASR | `qwen3-asr` | Qwen3-ASR 1.7B / llama.cpp (CUDA), matching audio projector required |
+| ASR | `whisper` | Whisper Large-v3 Turbo / faster-whisper |
+| Translation | `gemma4` (default) | Gemma 4 E4B / llama.cpp |
+| Translation | `plamo` | PLaMo 3 Translate 2B / llama.cpp |
+| Translation | `plamo8b` | PLaMo 3 Translate 8B / llama.cpp |
+| Translation | `hymt` | Hy-MT2 7B / llama.cpp |
+
+Available combinations depend on installed model files, compatible executables, and available memory. The defaults above refer to the repository configuration, not necessarily your private `config.toml`.
+
+```text
+Video/audio → Silero VAD → selected ASR → selected translator → English subtitles
+                                                               ↓
+                                                     MPV / terminal / web
+```
+
+This is a single-ASR pipeline: choosing one backend does not automatically run another for reconciliation.
 
 ## Requirements
 
@@ -40,12 +61,28 @@ uv sync --extra gui --extra diagnostics --extra asr
 
 Before launching:
 
-1. Create your private local config: `Copy-Item config.example.toml config.toml` in PowerShell (the GUI creates it automatically if absent). Set model and runtime paths for your machine. `config.toml` is intentionally gitignored and must never be committed.
+1. If you do not already have a local configuration, run `Copy-Item config.example.toml config.toml` in PowerShell (the GUI also creates it if absent). Set model and runtime paths for your machine. Keep `config.toml` private and untracked; do not overwrite your existing settings during updates.
 2. Supply the Haas model and compatible speech.cpp executable if using the default ASR backend.
 3. Supply the selected translation model and a compatible CUDA `llama-server` executable (or configure another supported backend).
 4. Confirm that FFmpeg, MPV, and yt-dlp are installed and discoverable.
 
-The example defaults under `[models]` are `haas` ASR and `gemma4` translation; the built-in VAD default is `silero`. Back up your existing local `config.toml` before pulling the change that stops tracking it. Backend-specific overrides live under sections such as `[asr.qwen3-asr]`, `[asr.whisper]`, `[translate.plamo]`, and `[translate.plamo8b]`. Both PLaMo backends use their native translation style (no custom style prompt), while retaining normal glossary, context, decoding and output-cleanup settings.
+## Configuration
+
+Use [`config.example.toml`](config.example.toml) as the reference for supported settings. Backend-specific overrides belong under `[asr.<backend>]` and `[translate.<backend>]`.
+
+For example, to select Qwen3-ASR and PLaMo 2B in an existing local configuration, update its `[models]` section:
+
+```toml
+[models]
+asr_backend = "qwen3-asr"
+translate_backend = "plamo"
+```
+
+- Configure `[asr.qwen3-asr]` with a compatible GGUF model, its matching `mmproj_path`, and server executable. If multiple checkpoints exist, explicitly select the matching model/projector pair.
+- Configure `[translate.plamo]` with the desired PLaMo 2B model and compatible llama.cpp runtime. PLaMo 8B uses `[translate.plamo8b]`.
+- Both PLaMo backends use native translation style without a custom style prompt; glossary, context and decoding settings are retained.
+- Silero VAD runs on CPU by default. Adaptive thresholding is optional; fixed thresholding is the default.
+- `glossary.toml` stores names and terminology. GPU and playback settings can be adjusted in the local configuration.
 
 ## Run
 
@@ -61,6 +98,7 @@ Paste a YouTube livestream or VOD URL, select the desired backends/video quality
 
 ```powershell
 uv run video-translate --list-backends
+uv run video-translate --list-models
 ```
 
 **CLI — translate with MPV playback:**
@@ -72,7 +110,7 @@ uv run video-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv --video-
 **CLI — select models explicitly:**
 
 ```powershell
-uv run video-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv --asr-backend haas --translate-backend plamo
+uv run video-translate "https://www.youtube.com/watch?v=VIDEO_ID" --mpv --asr-backend qwen3-asr --translate-backend plamo
 ```
 
 Use `uv run video-translate --help` for playback, live/VOD, model-path, and diagnostics options. The CLI accepts a local media path as its positional source argument.
@@ -89,18 +127,47 @@ uv run --with pyinstaller python -m PyInstaller --noconfirm VideoTranslate.spec
 
 The expected output is under `dist/VideoTranslate/`. Packaging and GPU behavior should be tested on the target Windows machine; a successful build is not a guarantee of a working model environment.
 
-## Tests and diagnostics
+## Development and tests
 
-Lightweight source checks:
+Routine CPU-oriented regression checks (PowerShell):
 
 ```powershell
-uv run --group ci ruff check src tests
-uv run --with pytest --group ci python -m pytest -q
+Remove-Item Env:VIDEO_TRANSLATE_RUN_REAL_MODELS -ErrorAction SilentlyContinue
+uv sync --locked --group ci --extra gui --extra asr
+uv run --locked --group ci ruff check src tests
+uv run --locked --group ci python -m compileall -q src tests
+uv run --locked --group ci --extra gui --extra asr python -m pytest -q
 ```
 
-The repository also contains **integration/runtime tests** that may launch external processes or load models. Do not run the full suite while gaming or when GPU resources are constrained; select mock-based tests if you need a low-impact check. Tests requiring optional dependencies or actual model installations may need additional environment setup.
+GitHub Actions runs lint and compilation checks, plus CPU test suites on Windows and Ubuntu for pushes and pull requests to `main`. The default pytest suite excludes the two real-model test modules; `tests/conftest.py` also blocks real llama-server process launches unless explicitly enabled.
 
-See the GUI's Console/Diagnostics area and generated `logs/` files when troubleshooting translation or MPV startup failures. Model loads can consume significant RAM, VRAM, and CPU.
+Real-model integration tests are optional and require the appropriate installed models, executables and sufficient GPU memory. Run them intentionally and separately from routine checks:
+
+```powershell
+$env:VIDEO_TRANSLATE_RUN_REAL_MODELS = "1"
+try {
+    uv run --group ci --extra gui --extra asr python -m pytest -q tests/test_model_switching.py tests/test_e2e_runtime.py
+} finally {
+    Remove-Item Env:VIDEO_TRANSLATE_RUN_REAL_MODELS -ErrorAction SilentlyContinue
+}
+```
+
+Do not enable real-model tests when GPU resources are constrained. CPU tests do not establish real-world translation quality, playback stability or VRAM requirements.
+
+## Benchmarks and quality evaluation
+
+Benchmarks are separate from routine regression tests and normal playback. They use fixed clips and model settings to compare ASR, translation and segmentation.
+
+- [holoGTA stress-test benchmark](docs/HOLOGTA_BENCHMARK.md): repeatable full-pipeline comparisons.
+- [Japanese ASR reference workflow](docs/HOLOGTA_ASR_REFERENCE.md): 30 fixed review windows and human-verified CER scoring.
+- [Qwen checkpoint comparison](docs/QWEN_JA_AB.md): standard versus Japanese fine-tuned Qwen ASR.
+- [Additional controlled experiments](docs/): vocabulary, segmentation, crosstalk and truncation recovery.
+
+Generated benchmark runs are ignored by Git. Preserve the reference manifest and manually verified transcripts. Cue counts, model agreement and output length alone are not accuracy measurements.
+
+## Diagnostics
+
+Use the GUI Console/Diagnostics views and generated `logs/` files to investigate playback, model startup and translation failures. Model loading can consume significant RAM, VRAM and CPU. Optional NVIDIA GPU observations require the diagnostics dependency.
 
 ## Notes and limitations
 
@@ -112,17 +179,34 @@ See the GUI's Console/Diagnostics area and generated `logs/` files when troubles
 
 ## Project layout
 
-- `src/auto_translate/` — CLI, GUI, model registry, pipeline, configuration, and diagnostics.
-- `src/auto_translate/asr/` — selectable speech-recognition backends.
-- `src/auto_translate/translate/` — selectable translation backends.
-- `src/auto_translate/output/` — MPV integration and English subtitles.
-- `tests/` — regression and integration tests.
-- `config.toml` — model selection, paths, and runtime settings.
-- `glossary.toml` — Japanese/English names and terminology.
-- `VideoTranslate.spec` — optional GUI-only PyInstaller configuration.
+```text
+src/auto_translate/
+  asr/                Speech recognition backends
+  translate/          Translation backends and shared text checks
+  vad/                Speech detection
+  output/             MPV, terminal and web subtitle output
+  ...                 GUI, pipeline, configuration and runtime management
+tests/                Automated regression and optional integration tests
+scripts/              Benchmark tools and shared evaluation metrics
+benchmarks/reference/ Fixed evaluation-window manifest
+benchmarks/runs/      Local generated benchmark results (ignored)
+docs/                 Evaluation guides and experiment reports
+config.example.toml   Example configuration
+glossary.toml         Names and terminology
+VideoTranslate.spec   Optional GUI-only packaging
+pyproject.toml        Dependencies and tooling
+uv.lock               Locked dependencies
+```
 
-## Tests
+Local configuration, model files, runtime binaries, virtual environments and logs are not tracked.
 
-The default `pytest` run excludes `tests/test_model_switching.py` and `tests/test_e2e_runtime.py` because they launch real inference servers. Their failures are assertions, not silently passing log records. To run these GPU/model integration tests intentionally, set `VIDEO_TRANSLATE_RUN_REAL_MODELS=1` in the shell first, then run the specific test files. Do **not** enable this flag for routine CPU-only regression tests.
+## Updating an existing checkout
 
-The audit regression tests are in `tests/test_audit_20261122.py`. The GitHub commits do not themselves execute local Windows, MPV, or GPU runtime checks.
+From the project directory:
+
+```powershell
+git pull --ff-only origin main
+uv sync --extra gui --extra diagnostics --extra asr
+```
+
+If local tracked changes prevent a fast-forward update, review or back them up before resetting. Keep your private configuration, model files and runtime binaries.

@@ -82,6 +82,14 @@ from auto_translate.windows_job import WindowsJob, bind_process_tree
 
 log = logging.getLogger(__name__)
 
+_PLAYER_KEY_COMMANDS = {
+    Qt.Key.Key_Left: ("seek_relative", -10),
+    Qt.Key.Key_Right: ("seek_relative", 10),
+    Qt.Key.Key_Up: ("volume_relative", 5),
+    Qt.Key.Key_Down: ("volume_relative", -5),
+    Qt.Key.Key_Space: ("pause", None),
+}
+
 _STYLE = """
 QMainWindow, QWidget { background: #141820; color: #e8ecf3; font-size: 13px; }
 QLineEdit, QComboBox, QPlainTextEdit {
@@ -142,8 +150,6 @@ class SeekSlider(QSlider):
         super().keyReleaseEvent(event)
         if (self.isEnabled() and not event.isAutoRepeat() and
                 event.key() in (
-                    Qt.Key.Key_Left, Qt.Key.Key_Right,
-                    Qt.Key.Key_Up, Qt.Key.Key_Down,
                     Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
                     Qt.Key.Key_Home, Qt.Key.Key_End,
                 )):
@@ -218,20 +224,31 @@ class VideoTranslateWindow(QMainWindow):
 
     def eventFilter(self, widget, event):
         kind = event.type()
+        if (kind == QEvent.Type.MouseButtonDblClick and widget is self.video_surface
+                and self._ready and not self._stopping and event.button() == Qt.MouseButton.LeftButton):
+            self.toggle_fullscreen()
+            return True
         if (kind in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
                 and self._ready and not self._stopping
                 and isinstance(widget, QWidget) and widget.window() is self
                 and self.tabs.currentWidget() is self.player_tab
-                and event.modifiers() == Qt.KeyboardModifier.NoModifier
-                and event.key() in (Qt.Key.Key_F, Qt.Key.Key_Space)):
-            # Consume the release too: a focused QPushButton activates on Space.
-            event.accept()
-            if kind == QEvent.Type.KeyPress and not event.isAutoRepeat():
-                if event.key() == Qt.Key.Key_F:
-                    self.toggle_fullscreen()
-                else:
-                    self._send_player_command("pause")
-            return True
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            key = event.key()
+            command = _PLAYER_KEY_COMMANDS.get(key)
+            if key == Qt.Key.Key_F or command is not None:
+                # Consume the full key sequence so focused controls don't also act on it.
+                event.accept()
+                if kind == QEvent.Type.KeyPress:
+                    if key == Qt.Key.Key_F:
+                        if not event.isAutoRepeat():
+                            self.toggle_fullscreen()
+                    else:
+                        action, value = command
+                        if ((not event.isAutoRepeat() or action == "volume_relative")
+                                and (action != "seek_relative" or self.seek_slider.isEnabled())
+                                and self._send_player_command(action, value)):
+                            self._reveal_fullscreen_controls()
+                return True
         return super().eventFilter(widget, event)
 
     def _build_ui(self):
@@ -299,8 +316,10 @@ class VideoTranslateWindow(QMainWindow):
         self.pause_button.setToolTip("Play / pause (Space)")
         self.pause_button.clicked.connect(lambda: self._send_player_command("pause"))
         self.rewind_button = QPushButton("-10s")
+        self.rewind_button.setToolTip("Seek backward 10 seconds (Left)")
         self.rewind_button.clicked.connect(lambda: self._send_player_command("seek_relative", -10))
         self.forward_button = QPushButton("+10s")
+        self.forward_button.setToolTip("Seek forward 10 seconds (Right)")
         self.forward_button.clicked.connect(lambda: self._send_player_command("seek_relative", 10))
         self.seek_slider = SeekSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 0)
@@ -310,13 +329,15 @@ class VideoTranslateWindow(QMainWindow):
         self.seek_slider.seekRequested.connect(self._request_seek)
         self.time_label = QLabel("--:-- / --:--")
         self.time_label.setMinimumWidth(112)
+        self.volume_label = QLabel("Volume —")
+        self.volume_label.setToolTip("Volume (Up / Down)")
         self.fullscreen_button = QPushButton("Fullscreen")
-        self.fullscreen_button.setToolTip("Fullscreen player (F11, F or double-click MPV; Esc exits)")
+        self.fullscreen_button.setToolTip("Enter fullscreen (F11, F or double-click the video)")
         self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
         for widget in (self.pause_button, self.rewind_button, self.forward_button, self.seek_slider, self.fullscreen_button):
             widget.setEnabled(False)
         for widget in (self.pause_button, self.rewind_button, self.seek_slider, self.forward_button,
-                       self.time_label, self.fullscreen_button):
+                       self.time_label, self.volume_label, self.fullscreen_button):
             playback_row.addWidget(widget, 1 if widget is self.seek_slider else 0)
         player_layout.addWidget(self.video_controls)
         self.tabs.addTab(self.player_tab, "Player")
@@ -939,6 +960,7 @@ class VideoTranslateWindow(QMainWindow):
         self.seek_slider.setRange(0, 0)
         self.seek_slider.setEnabled(False)
         self.time_label.setText("--:-- / --:--")
+        self.volume_label.setText("Volume —")
         for widget in (self.rewind_button, self.forward_button, self.pause_button, self.fullscreen_button):
             widget.setEnabled(False)
         self.pause_button.setText("Pause")
@@ -1003,6 +1025,14 @@ class VideoTranslateWindow(QMainWindow):
         raw_duration = event.get("duration")
         if isinstance(raw_duration, (int, float)) and 0 < raw_duration < 1e8:
             self._duration_s = float(raw_duration)
+        volume = event.get("volume")
+        if isinstance(volume, (int, float)) and 0 <= volume < float("inf"):
+            label = f"Volume {volume:.0f}%"
+            if event.get("muted") is True:
+                label += " (muted)"
+            if label != self.volume_label.text():
+                self.volume_label.setText(label)
+                self._reveal_fullscreen_controls()
         self._update_seek_buttons()
         if self._duration_s is not None:
             maximum = max(1, int(self._duration_s))
@@ -1054,11 +1084,14 @@ class VideoTranslateWindow(QMainWindow):
                 f"{self._format_time(value)} / {self._format_time(self._duration_s)}"
             )
 
-    def _request_seek(self, value: float):
-        """Submit a completed timeline action; never seek live streams."""
+    def _reveal_fullscreen_controls(self):
         if self._fullscreen:
             self.video_controls.show()
             self._player_activity_at = time.monotonic()
+
+    def _request_seek(self, value: float):
+        """Submit a completed timeline action; never seek live streams."""
+        self._reveal_fullscreen_controls()
         if self._live or self._duration_s is None or not self._ready:
             self.status.setText("Seeking unavailable for live or uninitialized playback.")
             return
@@ -1134,7 +1167,7 @@ class VideoTranslateWindow(QMainWindow):
         # only mouse-accessible way to exit fullscreen.
         self.video_controls.show()
         self.fullscreen_button.setText("Exit Fullscreen")
-        self.fullscreen_button.setToolTip("Exit fullscreen (F, F11 or Esc). Move mouse to reveal controls.")
+        self.fullscreen_button.setToolTip("Exit fullscreen (Esc, F11, F or double-click the video)")
         self.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
         self.centralWidget().layout().setSpacing(0)
         self.player_tab.layout().setContentsMargins(0, 0, 0, 0)
@@ -1158,7 +1191,7 @@ class VideoTranslateWindow(QMainWindow):
         self.footer_panel.show()
         self.video_controls.show()
         self.fullscreen_button.setText("Fullscreen")
-        self.fullscreen_button.setToolTip("Fullscreen player (F11, F or double-click MPV; Esc exits)")
+        self.fullscreen_button.setToolTip("Enter fullscreen (F11, F or double-click the video)")
         self.centralWidget().layout().setContentsMargins(14, 12, 14, 12)
         self.centralWidget().layout().setSpacing(10)
         self.player_tab.layout().setContentsMargins(5, 5, 5, 5)

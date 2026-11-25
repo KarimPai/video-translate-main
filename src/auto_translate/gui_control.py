@@ -31,17 +31,22 @@ def parse_command(line: str) -> tuple[str, float | None] | None:
     action = obj.get("action")
     if action in ("pause", "quit"):
         return (action, None)
-    if action not in ("seek", "seek_relative"):
+    if action not in ("seek", "seek_relative", "volume_relative"):
         return None
     raw = obj.get("value")
     if not isinstance(raw, (int, float)) or isinstance(raw, bool):
         return None
-    value = float(raw)
+    try:
+        value = float(raw)
+    except OverflowError:
+        return None
     if not math.isfinite(value):
         return None
     if action == "seek" and 0 <= value <= 1e8:
         return (action, value)
     if action == "seek_relative" and abs(value) <= 3600:
+        return (action, value)
+    if action == "volume_relative" and abs(value) <= 100:
         return (action, value)
     return None
 

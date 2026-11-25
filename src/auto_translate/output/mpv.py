@@ -602,8 +602,11 @@ class MpvOutput:
         try:
             self.ipc = MpvIpc(ipc_path)
 
-            for observer, prop in enumerate(("time-pos", "pause", "paused-for-cache", "eof-reached",
-                                              "video-params", "video-codec", "hwdec-current"), start=1):
+            properties = ("time-pos", "pause", "paused-for-cache", "eof-reached",
+                          "video-params", "video-codec", "hwdec-current")
+            if cfg.window_id:
+                properties += ("volume", "mute")
+            for observer, prop in enumerate(properties, start=1):
                 self.ipc.command("observe_property", observer, prop)
             # Wait for the idle MPV IPC endpoint to become responsive.
             deadline = time.monotonic() + 10
@@ -1219,7 +1222,8 @@ class MpvOutput:
                 from ..gui_runner import READY_MARKER
                 print(READY_MARKER, flush=True)
                 emit_event("ready", live=bool(self.ingest.source.live),
-                           duration=self.ingest.source.duration)
+                           duration=self.ingest.source.duration,
+                           volume=self.ipc.get("volume"), muted=self.ipc.get("mute"))
                 self._gui_ready_emitted = True
             if self._session_start > 0 and not self.ingest.source.live:
                 self._player_command("seek", self._session_start, "absolute+exact")
@@ -1565,11 +1569,11 @@ class MpvOutput:
         if now - self._last_gui_status_at < 0.5:
             return
         self._last_gui_status_at = now
+        properties = getattr(self.ipc, "_properties", {})
         if now - getattr(self, "_last_diagnostics_at", 0.) >= 2.:
             self._last_diagnostics_at = now
             # These are observer-fed cache reads; monitoring adds no blocking
             # MPV requests or NVIDIA calls to the scheduling loop.
-            properties = getattr(self.ipc, "_properties", {})
             params = properties.get("video-params")
             params = params if isinstance(params, dict) else {}
             width, height = params.get("w"), params.get("h")
@@ -1588,6 +1592,8 @@ class MpvOutput:
             position=round(self._now, 2) if self._now is not None else None,
             duration=duration,
             paused=paused,
+            volume=properties.get("volume"),
+            muted=properties.get("mute"),
         )
 
     def _handle_gui_commands(self) -> None:
@@ -1604,6 +1610,9 @@ class MpvOutput:
                 break
             if action == "pause":
                 self._toggle_user_pause()
+                continue
+            if action == "volume_relative":
+                self._player_command("add", "volume", value)
                 continue
             if self.ingest.source.live:
                 log.info("GUI seek rejected: livestream")

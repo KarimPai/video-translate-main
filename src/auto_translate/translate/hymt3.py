@@ -46,7 +46,11 @@ def clean_hymt3_output(text: str) -> str:
     source_marker = re.search(
         r"\[(?:Linguistic\s+)?Source Text\]\s*", value, flags=re.IGNORECASE
     )
-    return value[source_marker.end():].strip() if source_marker else value
+    if source_marker:
+        return value[source_marker.end():].strip()
+    if re.match(r"\[Background Information\]\s*", value, flags=re.IGNORECASE):
+        return ""
+    return value
 
 
 class HyMT3Translator(HymtTranslator):

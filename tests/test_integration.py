@@ -868,6 +868,10 @@ def test_hymt3_prompt_uses_official_english_templates():
         "[Background Information]Stream Title: HoloGTA\n"
         "Please translate this. [Source Text]Hello."
     ) == "Hello."
+    assert clean_hymt3_output(
+        "[Background Information] Stream Title: HoloGTA\n"
+        "Previous dialogue: I see. So I also want to go to the Black Market."
+    ) == ""
     assert clean_hymt3_output("Read the source text carefully.") == "Read the source text carefully."
 
     from auto_translate.translate.hymt3 import build_hymt3_context

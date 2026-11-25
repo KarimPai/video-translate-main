@@ -46,7 +46,7 @@ _QWEN3_SYSTEM = (
 )
 
 # Default llama-server path for Qwen3-ASR
-LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
+LLAMA_SERVER_DEFAULT = ".runtime/llama-b12719-cuda12/llama-server.exe"
 
 # Measured holoGTA: 14.4s split-first lost dialogue; 15.8s preserved it.
 # Restrict the production fast path to the longer, tested class of cues.

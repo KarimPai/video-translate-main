@@ -125,7 +125,7 @@ class VadConfig:
             raise ValueError("SileroVAD must use cpu to preserve GPU memory for the models and playback")
 
 
-LLAMA_SERVER_PATH = ".runtime/llama-b12318-cuda12/llama-server.exe"
+LLAMA_SERVER_PATH = ".runtime/llama-b12719-cuda12/llama-server.exe"
 
 
 @dataclass
@@ -681,8 +681,8 @@ def get_backend_config(cfg: Config, backend_type: str, backend_name: str,
                 and "mmproj_path" not in scoped_overrides):
             merged.pop("mmproj_path", None)
         merged.update(scoped_overrides)
-    # PLaMo uses its native translation template rather than style guidance.
-    if backend_type == "translate" and backend_name in {"plamo", "plamo8b"}:
+    # Gemma 4 and PLaMo use native translation styles rather than style guidance.
+    if backend_type == "translate" and backend_name in {"gemma4", "plamo", "plamo8b"}:
         merged["style"] = ""
     return merged
 

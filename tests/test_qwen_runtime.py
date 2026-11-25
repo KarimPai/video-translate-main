@@ -17,12 +17,18 @@ import pytest
 
 from auto_translate import llama_server as ls
 from auto_translate.asr import qwen3_asr as qwen
-from auto_translate.config import AsrConfig, IngestConfig
+from auto_translate.config import LLAMA_SERVER_PATH, AsrConfig, IngestConfig
 from auto_translate.ingest import Ingest, Source
 from auto_translate.pipeline import run_asr
 from auto_translate.types import AudioProgress, Transcript, Utterance
 
 PCM = np.zeros(16000, dtype=np.float32)
+
+
+def test_llama_server_defaults_use_b12719_cuda12_runtime():
+    expected = ".runtime/llama-b12719-cuda12/llama-server.exe"
+    assert LLAMA_SERVER_PATH == expected
+    assert qwen.LLAMA_SERVER_DEFAULT == expected
 
 
 def completion(text="はい。", *, finish="stop", tokens=None):

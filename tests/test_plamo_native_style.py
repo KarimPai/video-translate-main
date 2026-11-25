@@ -25,7 +25,32 @@ def test_plamo_native_style_preserves_translation_settings(backend):
     TranslateConfig(**effective)
 
 
-@pytest.mark.parametrize("backend", ["gemma4", "hymt"])
-def test_other_backends_keep_style(backend):
+def test_hymt_keeps_common_style():
     cfg = Config()
-    assert get_backend_config(cfg, "translate", backend)["style"] == cfg.translate.style
+    assert get_backend_config(cfg, "translate", "hymt")["style"] == cfg.translate.style
+
+
+@pytest.mark.parametrize(
+    ("profile", "overrides"),
+    [
+        ({}, None),
+        ({"style": "Profile style"}, None),
+        ({}, {"style": "Explicit style"}),
+    ],
+)
+def test_gemma4_uses_native_style_without_inherited_guidance(profile, overrides):
+    from auto_translate.translate.gemma4 import build_prompt
+
+    cfg = Config()
+    cfg.translate_profiles["gemma4"] = profile
+    effective = get_backend_config(
+        cfg, "translate", "gemma4", explicit_overrides=overrides,
+        selected_backend="gemma4",
+    )
+
+    assert effective["style"] == ""
+    prompt = build_prompt("こんにちは", [("ゆき", "Yuki")], "前の会話", effective["style"])
+    user_content = prompt["messages"][1]["content"]
+    assert "Translation style:" not in user_content
+    assert "前の会話" in user_content
+    assert "ゆき → Yuki" in user_content

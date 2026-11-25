@@ -28,7 +28,7 @@ blocklist = []
 # Common translation settings (shared across backends; backend-specific overrides below)
 [translate]
 model_path = "models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
-server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+server_path = ".runtime/llama-b12719-cuda12/llama-server.exe"
 gpu_layers = 42
 context_size = 4096
 cuda_device = 0
@@ -58,10 +58,14 @@ suppress_japanese_in_english = true
 vod_merge_timeout_s = 5.0
 
 # Backend-specific overrides (optional — only values that differ from common settings)
+# Gemma 4 uses its native translation style; this prevents the common style from
+# adding an extra instruction to its prompt.
+[translate.gemma4]
+style = ""
+
 # [asr.haas]
 # model_path = "haas-ja-v1.0"
 
-# [translate.gemma4]
 # gpu_layers = 42
 # context_size = 4096
 # max_tokens = 128
@@ -99,7 +103,7 @@ vod_merge_timeout_s = 5.0
 # language = "ja"  # Default; set "auto" for spoken-language detection.
 # model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
 # mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-# server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"
+# server_path = ".runtime/llama-b12719-cuda12/llama-server.exe"
 # threads = 4
 # cuda_device = 0
 # startup_timeout_s = 180

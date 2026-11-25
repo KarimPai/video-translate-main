@@ -8,6 +8,7 @@ dependencies = [
     "silero-vad-lite>=0.4.0",
     "httpx>=0.27",
     "huggingface-hub>=0.34.0",
+    "yt-dlp==2026.11.23",
 ]
 
 [dependency-groups]

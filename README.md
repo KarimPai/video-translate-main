@@ -63,7 +63,7 @@ Before launching:
 
 1. If you do not already have a local configuration, run `Copy-Item config.example.toml config.toml` in PowerShell (the GUI also creates it if absent). Set model and runtime paths for your machine. Keep `config.toml` private and untracked; do not overwrite your existing settings during updates.
 2. Supply the Haas model and compatible speech.cpp executable if using the default ASR backend.
-3. Supply the selected translation model and a compatible CUDA `llama-server` executable (or configure another supported backend).
+3. For GGUF backends, extract the official [llama.cpp b12719 Windows x64 CUDA 12.4 binary](https://github.com/ggml-org/llama.cpp/releases/download/b12719/llama-b12719-bin-win-cuda-12.4-x64.zip) and its matching [CUDA runtime DLL archive](https://github.com/ggml-org/llama.cpp/releases/download/b12719/cudart-llama-bin-win-cuda-12.4-x64.zip) into `.runtime/llama-b12719-cuda12/`; keep the DLLs beside `llama-server.exe`. This is the configured default. Preserve older versioned runtime folders for rollback by changing `server_path` in `config.toml`.
 4. Confirm that FFmpeg, MPV, and yt-dlp are installed and discoverable.
 
 ## Configuration

@@ -2,6 +2,7 @@
 import hashlib
 import re
 import subprocess
+import sys
 from pathlib import PureWindowsPath
 
 from .windows_subprocess import hidden_console_flags
@@ -15,7 +16,9 @@ def cache_key(video_id: str) -> str:
 
 
 def extract(cfg, url, options, *, check=True):
-    command = ["yt-dlp", "--no-warnings", "--js-runtimes", "deno", *options]
+    command = [
+        sys.executable, "-m", "yt_dlp", "--no-warnings", "--js-runtimes", "deno", *options
+    ]
     if cfg.cookies_from_browser:
         command += ["--cookies-from-browser", cfg.cookies_from_browser]
     result = subprocess.run(

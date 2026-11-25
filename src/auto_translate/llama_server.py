@@ -38,7 +38,7 @@ def resolve_executable(path: str) -> Path:
     found = shutil.which(path) or shutil.which("llama-server")
     if found:
         return Path(found)
-    raise LlamaServerError(f"llama-server not found: {path}. Install llama.cpp via scripts/Setup-Windows.ps1.")
+    raise LlamaServerError(f"llama-server not found: {path}. See README.md for runtime setup.")
 
 
 def detect_device(executable: Path | None = None, cuda_device: int | None = None) -> str:
@@ -143,11 +143,11 @@ def require_gguf(path: str, label: str) -> Path:
         spec = model_at_default_path(path)
         cached = cached_model(spec) if spec is not None else None
         if cached is None:
-            raise LlamaServerError(f"{label} not found: {model}. Configure an existing model path or install via scripts/Setup-Windows.ps1.")
+            raise LlamaServerError(f"{label} not found: {model}. Configure an existing model path or local cache.")
         model = cached
     with model.open("rb") as stream:
         if stream.read(4) != b"GGUF":
-            raise LlamaServerError(f"{label} is not a GGUF file: {model}. Reinstall via scripts/Setup-Windows.ps1.")
+            raise LlamaServerError(f"{label} is not a GGUF file: {model}. Select a valid GGUF file.")
     return model
 
 

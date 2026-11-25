@@ -1,6 +1,7 @@
 """CLI entry point: uv run video-translate <youtube-url | audio file> [options]."""
 
 import argparse
+import importlib.util
 import logging
 import math
 import os
@@ -219,9 +220,11 @@ def _main(resources: ExitStack) -> None:
         import shutil
 
         from .output.mpv import find_mpv
-        for tool in ("ffmpeg", "yt-dlp", "deno"):
+        for tool in ("ffmpeg", "deno"):
             if not shutil.which(tool):
-                parser.error(f"{tool} missing from PATH. Install via scripts/Setup-Windows.ps1")
+                parser.error(f"{tool} missing from PATH. See README.md for runtime setup.")
+        if importlib.util.find_spec("yt_dlp") is None:
+            parser.error("yt-dlp is not installed in this Python environment")
         if args.mpv or cfg.mpv.enabled:
             find_mpv(cfg.mpv.path)
 

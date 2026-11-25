@@ -24,8 +24,6 @@ models/
 .runtime/
 
 # Distribution & PyInstaller
-dist/
-build/
 *.spec.backup
 *.backup
 

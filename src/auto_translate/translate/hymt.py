@@ -42,6 +42,8 @@ from .base import (
     with_translation_deadline,
 )
 
+from .common import missing_names, useful_context
+
 log = logging.getLogger(__name__)
 
 MAX_TERMS = 16
@@ -70,13 +72,6 @@ def build_prompt(text: str, terms: list[tuple[str, str]], context: str, style: s
 build_hymt_prompt = build_prompt
 
 
-def useful_context(text: str) -> bool:
-    compact = re.sub(r"[\s、。！？!?…ー〜～]+", "", text)
-    return bool(compact) and compact not in {
-        "はい", "うん", "ううん", "え", "ええ", "あ", "ああ", "お", "おお", "そう", "そうそう",
-    }
-
-
 def build_context(header: str, history: list[tuple[str, str]], lines: int, max_chars: int,
                   *, english: bool = False) -> str:
     """Budgeted dialogue; English is opt-in because it can recycle translation errors."""
@@ -93,22 +88,6 @@ def build_context(header: str, history: list[tuple[str, str]], lines: int, max_c
     if header and sources:
         return "\n".join((header, _DIALOGUE, *sources))
     return "\n".join(part for part in (header, *sources) if part)
-
-
-def missing_names(english: str, names: list[str]) -> list[str]:
-    """Find names that are missing in the translation.
-
-    Args:
-        english: the translated English text.
-        names: English name strings to check for (e.g. ["Miko", "Subaru"]).
-    """
-    missing = []
-    for name in names:
-        tokens = re.split(r"[- ]+", name)
-        pattern = r"(?<!\w)" + r"[\s\-‐‑–—]+".join(re.escape(token) for token in tokens) + r"(?!\w)"
-        if not re.search(pattern, english, re.IGNORECASE):
-            missing.append(name)
-    return missing
 
 
 def garbled_name(english: str, missing: list[str], present: list[str] = (),

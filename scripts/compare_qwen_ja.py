@@ -16,11 +16,11 @@ import csv
 import json
 import shutil
 import sys
-import unicodedata
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from benchmark_metrics import normalize_text
 from compare_haas_qwen_windows import decode_window, run_case, SAMPLE_RATE
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,9 +63,7 @@ def load_reference_windows(path: Path = REFERENCE_WINDOWS) -> dict[str, dict]:
 
 def normalize_for_agreement(text: str) -> str:
     """NFKC and punctuation/space folding; preserve digits and Latin names."""
-    text = unicodedata.normalize("NFKC", text or "")
-    return "".join(ch for ch in text if not ch.isspace()
-                   and not unicodedata.category(ch).startswith("P"))
+    return normalize_text(text or "")
 
 
 def agreement(left: str, right: str) -> float | None:

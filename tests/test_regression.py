@@ -3729,13 +3729,11 @@ class TestGarbledNameFalsePositives:
 class TestTokenBudgetBoundaries:
     """Verify each backend handles zero or insufficient context capacity safely."""
 
-    @pytest.mark.parametrize("context_size", [512, 1024, 2048, 4096, 8192])
-    def test_gemma4_context_sizes(self, context_size):
-        """Gemma4 must handle various context sizes without zero-token retries."""
+    @staticmethod
+    def _make_translator(backend_cls, context_size, parallel_slots=1):
         from auto_translate.config import TranslateConfig
         from auto_translate.glossary import Glossary
         from auto_translate.stream_context import StreamContext
-        from auto_translate.translate.gemma4 import Gemma4Translator
 
         cfg = TranslateConfig(
             model_path=str(Path(__file__).parent / "dummy.gguf"),
@@ -3748,123 +3746,6 @@ class TestTokenBudgetBoundaries:
             top_p=0.6,
             repeat_penalty=1.05,
             context_size=context_size,
-            parallel_slots=1,
-            threads=4,
-            gpu_layers=-1,
-            load_timeout_s=60,
-            context_lines=3,
-            max_context_chars=500,
-            context_english=False,
-        )
-        glossary = Glossary({})
-        translator = mock.MagicMock()
-        translator.cfg = cfg
-        translator.glossary = glossary
-        translator.stream = StreamContext()
-        translator._closed = False
-        translator._relief = mock.MagicMock()
-        translator._relief.is_set.return_value = False
-        translator._lock = threading.Lock()
-        translator._MAX_RETRIES = 3
-        translator._MAX_TRUNCATION_RETRIES = 1
-        translator._best = Gemma4Translator._best
-        translator.server = mock.MagicMock()
-        translator.server.alive.return_value = True
-        translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], [], []))
-
-        call_log = []
-        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
-            call_log.append(max_tokens)
-            idx = len(call_log) - 1
-            if idx == 0:
-                return ("truncated", "length")
-            return ("complete translation", "stop")
-        translator._chat = mock_chat
-
-        Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
-        # Should not crash; result may be empty if context too small, but no zero-token calls
-        for tokens in call_log:
-            if tokens is not None:
-                assert tokens > 0, f"Zero-token call with context_size={context_size}"
-
-    @pytest.mark.parametrize("context_size", [512, 1024, 2048, 4096, 8192])
-    def test_hymt_context_sizes(self, context_size):
-        """Hy-MT2 must handle various context sizes without zero-token retries."""
-        from auto_translate.config import TranslateConfig
-        from auto_translate.glossary import Glossary
-        from auto_translate.stream_context import StreamContext
-        from auto_translate.translate.hymt import HymtTranslator
-
-        cfg = TranslateConfig(
-            model_path=str(Path(__file__).parent / "dummy.gguf"),
-            server_path="llama-server",
-            glossary=str(Path(__file__).parent / "glossary.toml"),
-            max_tokens=128,
-            timeout_s=10,
-            temperature=0.0,
-            top_k=20,
-            top_p=0.6,
-            repeat_penalty=1.05,
-            context_size=context_size,
-            parallel_slots=1,
-            threads=4,
-            gpu_layers=-1,
-            load_timeout_s=60,
-            context_lines=3,
-            max_context_chars=500,
-            context_english=False,
-        )
-        glossary = Glossary({})
-        translator = mock.MagicMock()
-        translator.cfg = cfg
-        translator.glossary = glossary
-        translator.stream = StreamContext()
-        translator._closed = False
-        translator._relief = mock.MagicMock()
-        translator._relief.is_set.return_value = False
-        translator._lock = threading.Lock()
-        translator._MAX_RETRIES = 3
-        translator._MAX_TRUNCATION_RETRIES = 1
-        translator._best = HymtTranslator._best
-        translator.server = mock.MagicMock()
-        translator.server.alive.return_value = True
-        translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], [], []))
-
-        call_log = []
-        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
-            call_log.append(max_tokens)
-            idx = len(call_log) - 1
-            if idx == 0:
-                return ("truncated", "length")
-            return ("complete translation", "stop")
-        translator._chat = mock_chat
-
-        HymtTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
-        for tokens in call_log:
-            if tokens is not None:
-                assert tokens > 0, f"Zero-token call with context_size={context_size}"
-
-    @pytest.mark.parametrize("parallel_slots", [1, 2])
-    def test_gemma4_parallel_slots_budget(self, parallel_slots):
-        """Gemma4 must correctly budget per-slot context with parallel slots."""
-        from auto_translate.config import TranslateConfig
-        from auto_translate.glossary import Glossary
-        from auto_translate.stream_context import StreamContext
-        from auto_translate.translate.gemma4 import Gemma4Translator
-
-        cfg = TranslateConfig(
-            model_path=str(Path(__file__).parent / "dummy.gguf"),
-            server_path="llama-server",
-            glossary=str(Path(__file__).parent / "glossary.toml"),
-            max_tokens=128,
-            timeout_s=10,
-            temperature=0.0,
-            top_k=20,
-            top_p=0.6,
-            repeat_penalty=1.05,
-            context_size=4096,
             parallel_slots=parallel_slots,
             threads=4,
             gpu_layers=-1,
@@ -3884,7 +3765,7 @@ class TestTokenBudgetBoundaries:
         translator._lock = threading.Lock()
         translator._MAX_RETRIES = 3
         translator._MAX_TRUNCATION_RETRIES = 1
-        translator._best = Gemma4Translator._best
+        translator._best = backend_cls._best
         translator.server = mock.MagicMock()
         translator.server.alive.return_value = True
         translator._context = mock.MagicMock(return_value="")
@@ -3898,6 +3779,39 @@ class TestTokenBudgetBoundaries:
                 return ("truncated", "length")
             return ("complete translation", "stop")
         translator._chat = mock_chat
+        return cfg, translator, call_log
+
+    @pytest.mark.parametrize("context_size", [512, 1024, 2048, 4096, 8192])
+    def test_gemma4_context_sizes(self, context_size):
+        """Gemma4 must handle various context sizes without zero-token retries."""
+        from auto_translate.translate.gemma4 import Gemma4Translator
+
+        _cfg, translator, call_log = self._make_translator(Gemma4Translator, context_size, 1)
+
+        Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
+        # Should not crash; result may be empty if context too small, but no zero-token calls
+        for tokens in call_log:
+            if tokens is not None:
+                assert tokens > 0, f"Zero-token call with context_size={context_size}"
+
+    @pytest.mark.parametrize("context_size", [512, 1024, 2048, 4096, 8192])
+    def test_hymt_context_sizes(self, context_size):
+        """Hy-MT2 must handle various context sizes without zero-token retries."""
+        from auto_translate.translate.hymt import HymtTranslator
+
+        _cfg, translator, call_log = self._make_translator(HymtTranslator, context_size, 1)
+
+        HymtTranslator.translate.__get__(translator, type(translator))("こんにちは", [])
+        for tokens in call_log:
+            if tokens is not None:
+                assert tokens > 0, f"Zero-token call with context_size={context_size}"
+
+    @pytest.mark.parametrize("parallel_slots", [1, 2])
+    def test_gemma4_parallel_slots_budget(self, parallel_slots):
+        """Gemma4 must correctly budget per-slot context with parallel slots."""
+        from auto_translate.translate.gemma4 import Gemma4Translator
+
+        _cfg, translator, call_log = self._make_translator(Gemma4Translator, 4096, parallel_slots)
 
         Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
         for tokens in call_log:
@@ -3906,56 +3820,9 @@ class TestTokenBudgetBoundaries:
 
     def test_simplified_retry_uses_own_budget(self):
         """Simplified retries must use their own recalculated token budget."""
-        from auto_translate.config import TranslateConfig
-        from auto_translate.glossary import Glossary
-        from auto_translate.stream_context import StreamContext
         from auto_translate.translate.gemma4 import Gemma4Translator
 
-        # Small context size where full prompt barely fits but simplified has more room
-        cfg = TranslateConfig(
-            model_path=str(Path(__file__).parent / "dummy.gguf"),
-            server_path="llama-server",
-            glossary=str(Path(__file__).parent / "glossary.toml"),
-            max_tokens=128,
-            timeout_s=10,
-            temperature=0.0,
-            top_k=20,
-            top_p=0.6,
-            repeat_penalty=1.05,
-            context_size=1024,
-            parallel_slots=1,
-            threads=4,
-            gpu_layers=-1,
-            load_timeout_s=60,
-            context_lines=3,
-            max_context_chars=500,
-            context_english=False,
-        )
-        glossary = Glossary({})
-        translator = mock.MagicMock()
-        translator.cfg = cfg
-        translator.glossary = glossary
-        translator.stream = StreamContext()
-        translator._closed = False
-        translator._relief = mock.MagicMock()
-        translator._relief.is_set.return_value = False
-        translator._lock = threading.Lock()
-        translator._MAX_RETRIES = 3
-        translator._MAX_TRUNCATION_RETRIES = 1
-        translator._best = Gemma4Translator._best
-        translator.server = mock.MagicMock()
-        translator.server.alive.return_value = True
-        translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], [], []))
-
-        call_log = []
-        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
-            call_log.append(max_tokens)
-            idx = len(call_log) - 1
-            if idx == 0:
-                return ("truncated", "length")
-            return ("complete translation", "stop")
-        translator._chat = mock_chat
+        _cfg, translator, call_log = self._make_translator(Gemma4Translator, 1024, 1)
 
         Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
         # The retry should have a valid positive token count
@@ -3967,56 +3834,9 @@ class TestTokenBudgetBoundaries:
 
     def test_truncated_generation_not_shorter_retry(self):
         """A truncated generation must not become a shorter, equally truncated retry."""
-        from auto_translate.config import TranslateConfig
-        from auto_translate.glossary import Glossary
-        from auto_translate.stream_context import StreamContext
         from auto_translate.translate.gemma4 import Gemma4Translator
 
-        cfg = TranslateConfig(
-            model_path=str(Path(__file__).parent / "dummy.gguf"),
-            server_path="llama-server",
-            glossary=str(Path(__file__).parent / "glossary.toml"),
-            max_tokens=128,
-            timeout_s=10,
-            temperature=0.0,
-            top_k=20,
-            top_p=0.6,
-            repeat_penalty=1.05,
-            context_size=4096,
-            parallel_slots=1,
-            threads=4,
-            gpu_layers=-1,
-            load_timeout_s=60,
-            context_lines=3,
-            max_context_chars=500,
-            context_english=False,
-        )
-        glossary = Glossary({})
-        translator = mock.MagicMock()
-        translator.cfg = cfg
-        translator.glossary = glossary
-        translator.stream = StreamContext()
-        translator._closed = False
-        translator._relief = mock.MagicMock()
-        translator._relief.is_set.return_value = False
-        translator._lock = threading.Lock()
-        translator._MAX_RETRIES = 3
-        translator._MAX_TRUNCATION_RETRIES = 1
-        translator._best = Gemma4Translator._best
-        translator.server = mock.MagicMock()
-        translator.server.alive.return_value = True
-        translator._context = mock.MagicMock(return_value="")
-        translator._terms_for = mock.MagicMock(return_value=([], [], []))
-
-        call_log = []
-        def mock_chat(prompt, timeout=10, temperature=None, max_tokens=None):
-            call_log.append(max_tokens)
-            # First call truncated, second call succeeds
-            idx = len(call_log) - 1
-            if idx == 0:
-                return ("truncated", "length")
-            return ("complete translation", "stop")
-        translator._chat = mock_chat
+        cfg, translator, call_log = self._make_translator(Gemma4Translator, 4096, 1)
 
         Gemma4Translator.translate.__get__(translator, type(translator))("こんにちは", [])
         # Retry tokens should be >= original max_tokens

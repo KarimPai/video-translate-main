@@ -24,6 +24,8 @@ def test_edit_distance():
     assert ref.edit_distance("ラミィ", "ラミィ") == 0
     assert ref.edit_distance("ラミィ", "ラミー") == 1
     assert ref.edit_distance("こんにちは", "") == 5
+    assert ref.edit_distance("", "こんにちは") == 5
+    assert ref.edit_distance("みこ", "みこち") == ref.edit_distance("みこち", "みこ") == 1
 
 
 def test_score_only_verified_and_detects_empty_speech():

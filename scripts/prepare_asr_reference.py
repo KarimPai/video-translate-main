@@ -10,8 +10,9 @@ import csv
 import json
 import re
 import subprocess
-import unicodedata
 from pathlib import Path
+
+from benchmark_metrics import edit_distance, normalize_text as normalize_ja
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "benchmarks" / "reference" / "hologta_30.csv"
@@ -141,24 +142,6 @@ def prepare(args: argparse.Namespace) -> int:
             subprocess.run(command, check=True)
         print(f"Extracted {len(result)} WAVs: {audio}")
     return 0
-
-
-def normalize_ja(text: str) -> str:
-    """Remove spacing and punctuation; retain kana, kanji, and actual words."""
-    value = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in value if not ch.isspace()
-                   and not unicodedata.category(ch).startswith("P"))
-
-
-def edit_distance(reference: str, hypothesis: str) -> int:
-    prev = list(range(len(hypothesis) + 1))
-    for index, char in enumerate(reference, 1):
-        curr = [index]
-        for col, other in enumerate(hypothesis, 1):
-            curr.append(min(curr[-1] + 1, prev[col] + 1,
-                            prev[col - 1] + (char != other)))
-        prev = curr
-    return prev[-1]
 
 
 def score_rows(rows: list[dict[str, str]]) -> tuple[list[dict], list[dict]]:

@@ -179,7 +179,8 @@ def explicit_model_configs(config: object, standard_dir: Path, ja_dir: Path) -> 
     """
     from auto_translate.config import get_backend_config
 
-    shared = get_backend_config(config, "asr", "qwen3-asr")
+    shared = get_backend_config(config, "asr", "qwen3-asr",
+                                explicit_overrides={"language": "auto"})
     current = dict(shared)
     current.update(
         model_path=str(standard_dir / STANDARD_MODEL),

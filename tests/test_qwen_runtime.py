@@ -43,7 +43,7 @@ def backend(monkeypatch):
     monkeypatch.setattr(qwen, "resolve_executable", Path)
     monkeypatch.setattr(qwen, "detect_device", lambda *args: "CUDA0")
     monkeypatch.setattr(qwen, "LlamaServer", lambda **kwargs: server)
-    asr = qwen.Qwen3ASR(AsrConfig(model_path="q.gguf", mmproj_path="mq.gguf"))
+    asr = qwen.Qwen3ASR(AsrConfig(language="auto", model_path="q.gguf", mmproj_path="mq.gguf"))
     server.reset_mock()
     yield asr
     asr.close()
@@ -71,7 +71,7 @@ def test_initial_warmup_timeout_keeps_healthy_server(monkeypatch):
         return completion()
 
     post.side_effect = reply
-    asr = qwen.Qwen3ASR(AsrConfig(model_path="q.gguf", mmproj_path="mq.gguf", response_timeout_s=0.08))
+    asr = qwen.Qwen3ASR(AsrConfig(language="auto", model_path="q.gguf", mmproj_path="mq.gguf", response_timeout_s=0.08))
     try:
         server.start.assert_called_once_with()
         server.close.assert_not_called()

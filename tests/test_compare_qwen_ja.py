@@ -149,6 +149,7 @@ def test_explicit_paths_prevent_ambiguous_registry_discovery(tmp_path):
     japanese = tmp_path / "japanese"
     selected = cmp.explicit_model_configs(config, standard, japanese)
     assert set(selected) == {"current", "qwen-ja"}
+    assert selected["current"]["language"] == selected["qwen-ja"]["language"] == "auto"
     assert selected["current"]["model_path"] == str(standard / cmp.STANDARD_MODEL)
     assert selected["current"]["mmproj_path"] == str(standard / cmp.STANDARD_MMPROJ)
     assert selected["qwen-ja"]["model_path"] == str(japanese / cmp.JA_MODEL)

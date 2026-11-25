@@ -18,7 +18,7 @@ import compare_haas_qwen_windows as bench
 
 def fake_backend():
     instance = Qwen3ASR.__new__(Qwen3ASR)
-    instance.cfg = AsrConfig()
+    instance.cfg = AsrConfig(language="auto")
     instance._generation, instance._closed = 0, False
     instance._inference_lock = threading.Lock()
     instance._state_lock = threading.Lock()

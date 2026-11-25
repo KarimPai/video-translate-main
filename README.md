@@ -78,7 +78,7 @@ asr_backend = "qwen3-asr"
 translate_backend = "plamo"
 ```
 
-- Configure `[asr.qwen3-asr]` with a compatible GGUF model, its matching `mmproj_path`, and server executable. If multiple checkpoints exist, explicitly select the matching model/projector pair.
+- Configure `[asr.qwen3-asr]` with a compatible GGUF model, its matching `mmproj_path`, and server executable. If multiple checkpoints exist, explicitly select the matching model/projector pair. Japanese decoding (`language = "ja"`) is the default; set `language = "auto"` for automatic detection if English dialogue or game audio produces false Japanese text.
 - Configure `[translate.plamo]` with the desired PLaMo 2B model and compatible llama.cpp runtime. PLaMo 8B uses `[translate.plamo8b]`.
 - Both PLaMo backends use native translation style without a custom style prompt; glossary, context and decoding settings are retained.
 - Silero VAD runs on CPU by default. Adaptive thresholding is optional; fixed thresholding is the default.

@@ -283,7 +283,7 @@ class AsrConfig:
     # Qwen3-ASR only: "auto" lets the model detect the spoken language; "ja"
     # prefills Japanese so English game audio can no longer flip a cue to
     # another language (other backends ignore it).
-    language: str = "auto"
+    language: str = "ja"
     context_size: int = 4096
     cuda_device: int = 0
     threads: int = 8

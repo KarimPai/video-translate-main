@@ -96,6 +96,7 @@ vod_merge_timeout_s = 5.0
 # Set asr_backend = "qwen3-asr" in [models] to use the standard Q8_0 pair.
 # To pin another checkpoint, set its path and the matching mmproj-<checkpoint filename>.
 # [asr.qwen3-asr]
+# language = "ja"  # Default; set "auto" for spoken-language detection.
 # model_path = "models/qwen3-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
 # mmproj_path = "models/qwen3-asr/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
 # server_path = ".runtime/llama-b12318-cuda12/llama-server.exe"

@@ -5,8 +5,8 @@ both a main model GGUF and an audio projector GGUF (mmproj). Audio is sent
 as base64 WAV via the ``/v1/chat/completions`` endpoint with ``input_audio``
 content type.
 
-Supports 52 languages. Keep automatic spoken-language detection; an optional
-bounded vocabulary system turn can be used in a controlled A/B experiment.
+Supports 52 languages. Japanese decoding is the project default; automatic
+language detection remains available for multilingual audio and experiments.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ LLAMA_SERVER_DEFAULT = ".runtime/llama-b12318-cuda12/llama-server.exe"
 # Restrict the production fast path to the longer, tested class of cues.
 LONG_TRUNCATION_SPLIT_MIN_S = 15.0
 
-# Optional forced language (asr.language = "ja"). The assistant turn is
+# Forced language (asr.language = "ja", the project default). The assistant turn is
 # prefilled with the model's own language header so the decoder skips language
 # identification and starts directly on the transcript.
 _FORCED_LANGUAGE_PREFIX = {"ja": "language Japanese<asr_text>"}
@@ -803,10 +803,9 @@ class Qwen3ASR:
         wav = wav_bytes(audio, normalize=True)
         b64 = base64.b64encode(wav).decode("ascii")
 
-        # Default (asr.language = "auto"): no forced assistant prefix, so Qwen
-        # detects the language from audio. Forcing Japanese can turn English
-        # dialogue and game sounds into misleading Japanese hypotheses, so
-        # "ja" is opt-in (see forced_prefix below).
+        # With asr.language = "auto", Qwen detects the language from audio.
+        # The project defaults to "ja"; forcing Japanese can turn English
+        # dialogue and game sounds into misleading Japanese hypotheses.
         messages = []
         hint = getattr(self, "_vocabulary_hint", "")
         if hint and not no_context and not probe:

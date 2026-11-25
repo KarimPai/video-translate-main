@@ -43,8 +43,8 @@ def fake_backend(language: str = "ja", reply: str = "みこさん"):
     return instance, sent
 
 
-def test_default_language_is_auto():
-    assert AsrConfig().language == "auto"
+def test_default_language_is_ja():
+    assert AsrConfig().language == "ja"
 
 
 def test_invalid_language_is_rejected():

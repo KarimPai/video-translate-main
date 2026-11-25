@@ -778,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
                     backend_config = dict(backend_config)
                     backend_config.update(
                         model_path=str(qwen_model), mmproj_path=str(qwen_mmproj),
+                        language="auto",
                     )
                 model = get_default_registry().create_asr(model_name, backend_config)
                 rows.extend(run_model(

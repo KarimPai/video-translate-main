@@ -3,7 +3,7 @@ import hashlib
 import re
 import subprocess
 import sys
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 from .windows_subprocess import hidden_console_flags
 
@@ -13,6 +13,15 @@ def cache_key(video_id: str) -> str:
             and not PureWindowsPath(video_id).is_reserved()):
         return video_id
     return "id." + hashlib.sha256(video_id.encode()).hexdigest()
+
+
+def executable_path() -> str:
+    """Return the yt-dlp launcher installed beside the active Python."""
+    name = "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp"
+    executable = Path(sys.executable).with_name(name)
+    if not executable.is_file():
+        raise RuntimeError(f"project-managed yt-dlp executable not found: {executable}")
+    return str(executable)
 
 
 def extract(cfg, url, options, *, check=True):

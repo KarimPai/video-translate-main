@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from auto_translate import ytdlp
+from auto_translate.output.mpv import _youtube_hook_options
 
 
 def test_extract_uses_project_python_yt_dlp(monkeypatch):
@@ -21,3 +22,27 @@ def test_extract_uses_project_python_yt_dlp(monkeypatch):
         python, "-m", "yt_dlp", "--no-warnings", "--js-runtimes", "deno",
         "--dump-json", "--", url,
     ]
+
+
+def test_mpv_hook_uses_project_managed_yt_dlp(monkeypatch, tmp_path):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    windows = sys.platform == "win32"
+    python = scripts / ("python.exe" if windows else "python")
+    executable = scripts / ("yt-dlp.exe" if windows else "yt-dlp")
+    executable.touch()
+    monkeypatch.setattr(sys, "executable", str(python))
+
+    options = _youtube_hook_options(SimpleNamespace(ytdlp_format="best"), "https://youtube.com/watch?v=example")
+
+    assert options == [
+        f"--script-opts=ytdl_hook-ytdl_path={executable}",
+        "--ytdl-format=best",
+    ]
+
+
+def test_mpv_hook_does_not_add_ytdlp_options_for_local_media(tmp_path):
+    media = tmp_path / "clip.mp4"
+    media.touch()
+
+    assert _youtube_hook_options(SimpleNamespace(ytdlp_format="best"), str(media)) == []

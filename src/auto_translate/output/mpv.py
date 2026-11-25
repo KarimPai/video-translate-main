@@ -14,7 +14,6 @@ import ctypes
 import json
 import logging
 import math
-from contextvars import copy_context
 import os
 import queue
 import shutil
@@ -23,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextvars import copy_context
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -45,6 +45,7 @@ from ..subtitle_layout import chunk_at, display_until, split_cue, wrap_lines
 from ..timeline import record_session_anchor
 from ..types import Subtitle
 from ..windows_subprocess import hidden_console_flags, owned_popen
+from ..ytdlp import executable_path as ytdlp_executable_path
 
 log = logging.getLogger(__name__)
 
@@ -403,6 +404,15 @@ def find_mpv(configured: str) -> str:
     )
 
 
+def _youtube_hook_options(cfg: MpvConfig, location: str) -> list[str]:
+    if Path(location).exists():
+        return []
+    return [
+        f"--script-opts=ytdl_hook-ytdl_path={ytdlp_executable_path()}",
+        f"--ytdl-format={cfg.ytdlp_format}",
+    ]
+
+
 def _mpv_media_url(ingest: Ingest) -> str:
     """Share media segments in live mode; preserve original VOD playback."""
     if ingest.source.live and ingest.video_out:
@@ -559,11 +569,7 @@ class MpvOutput:
             # Let MPV's yt-dlp hook open the original YouTube page URL.
             # This preserves the full VOD timeline and lets MPV select both
             # video and audio tracks with the required HTTP headers.
-            *(
-                [f"--ytdl-format={cfg.ytdlp_format}"]
-                if not Path(ingest.source.location).exists()
-                else []
-            ),
+            *_youtube_hook_options(cfg, ingest.source.location),
 
             # The embedded player already has a Qt timeline.
             "--osc=no" if cfg.window_id else "--osc=yes",

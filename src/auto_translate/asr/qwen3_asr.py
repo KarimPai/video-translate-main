@@ -24,7 +24,7 @@ import httpx
 import numpy as np
 
 from ..asr.haas import wav_bytes
-from ..config import AsrConfig
+from ..config import LLAMA_SERVER_PATH, AsrConfig
 from ..llama_server import (
     DeadlineHttpClient,
     LlamaServer,
@@ -44,9 +44,6 @@ _QWEN3_SYSTEM = (
     "You are a speech recognition assistant. Transcribe the audio exactly as "
     "spoken. Do not add commentary, translations, or descriptions."
 )
-
-# Default llama-server path for Qwen3-ASR
-LLAMA_SERVER_DEFAULT = ".runtime/llama-b12719-cuda12/llama-server.exe"
 
 # Measured holoGTA: 14.4s split-first lost dialogue; 15.8s preserved it.
 # Restrict the production fast path to the longer, tested class of cues.
@@ -237,7 +234,7 @@ class Qwen3ASR:
         mmproj_path = require_gguf(cfg.mmproj_path, "Qwen3-ASR mmproj")
 
         # Resolve llama-server executable
-        server_path = cfg.server_path or LLAMA_SERVER_DEFAULT
+        server_path = cfg.server_path or LLAMA_SERVER_PATH
         executable = resolve_executable(server_path)
         device = detect_device(executable, cfg.cuda_device)
 

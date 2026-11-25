@@ -42,7 +42,8 @@ This is a single-ASR pipeline: choosing one backend does not automatically run a
 
 - **Python 3.12+** and [uv](https://docs.astral.sh/uv/).
 - **Windows** for the bundled Qt/MPV embedding and process-management implementation.
-- [FFmpeg](https://ffmpeg.org/), [yt-dlp](https://github.com/yt-dlp/yt-dlp), and [MPV](https://mpv.io/) installed and available to the application.
+- [FFmpeg](https://ffmpeg.org/) and [MPV](https://mpv.io/) available to the application; yt-dlp is installed in the project environment with its default EJS support.
+- [Deno](https://deno.com/) `2.3+` available on `PATH` for YouTube extraction and MPV playback.
 - The corresponding **speech.cpp Vulkan** runtime for Haas, **llama.cpp CUDA** `llama-server` for GGUF backends, and/or **faster-whisper** for Whisper.
 - Locally available model files matching whichever ASR and translation backends are selected.
 - A compatible GPU and sufficient VRAM for GPU-enabled model combinations; offloading and performance are hardware-dependent.
@@ -64,7 +65,7 @@ Before launching:
 1. If you do not already have a local configuration, run `Copy-Item config.example.toml config.toml` in PowerShell (the GUI also creates it if absent). Set model and runtime paths for your machine. Keep `config.toml` private and untracked; do not overwrite your existing settings during updates.
 2. Supply the Haas model and compatible speech.cpp executable if using the default ASR backend.
 3. For GGUF backends, extract the official [llama.cpp b12719 Windows x64 CUDA 12.4 binary](https://github.com/ggml-org/llama.cpp/releases/download/b12719/llama-b12719-bin-win-cuda-12.4-x64.zip) and its matching [CUDA runtime DLL archive](https://github.com/ggml-org/llama.cpp/releases/download/b12719/cudart-llama-bin-win-cuda-12.4-x64.zip) into `.runtime/llama-b12719-cuda12/`; keep the DLLs beside `llama-server.exe`. This is the configured default. Preserve older versioned runtime folders for rollback by changing `server_path` in `config.toml`.
-4. Confirm that FFmpeg, MPV, and yt-dlp are installed and discoverable.
+4. Confirm that FFmpeg and MPV are available, and Deno `2.3+` is on `PATH`. `uv sync` installs the project-managed yt-dlp executable and compatible `yt-dlp-ejs` package used by both extraction and MPV's YouTube hook.
 
 ## Configuration
 

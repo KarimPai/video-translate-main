@@ -28,7 +28,7 @@ PCM = np.zeros(16000, dtype=np.float32)
 def test_llama_server_defaults_use_b12719_cuda12_runtime():
     expected = ".runtime/llama-b12719-cuda12/llama-server.exe"
     assert LLAMA_SERVER_PATH == expected
-    assert qwen.LLAMA_SERVER_DEFAULT == expected
+    assert qwen.LLAMA_SERVER_PATH is LLAMA_SERVER_PATH
 
 
 def completion(text="はい。", *, finish="stop", tokens=None):
